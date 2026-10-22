@@ -317,10 +317,14 @@ grant itself more than you gave it:
   and an unmasked `procMount`. Each reaches the node itself.
 - **Applying a pod spec that carries a Secret** — a secret volume, a projected
   secret or `serviceAccountToken` source, a `secretKeyRef`, an `envFrom`
-  `secretRef`, or an `imagePullSecrets` reference. A container that mounts a
-  Secret can print it, and `pod_logs` is read-tier, so this is the read above by
-  a longer route. `imagePullSecrets` needs no container at all: the kubelet
-  presents the credential to whatever registry the image names.
+  `secretRef`, an `imagePullSecrets` reference, or a volume that names a Secret
+  for the kubelet to deliver (`iscsi`, `rbd`, `cephfs`, `cinder`, `scaleIO`,
+  `storageos` and `flexVolume` `secretRef`, `csi` `nodePublishSecretRef`,
+  `azureFile` `secretName`). A container that mounts a Secret can print it, and
+  `pod_logs` is read-tier, so this is the read above by a longer route.
+  `imagePullSecrets` and the volume references need no container at all: the
+  kubelet presents the credential to whatever registry the image names, or to
+  whatever endpoint the volume names, such as an iSCSI portal's CHAP login.
 - **Mounting a claim backed by a node-path volume** — writing a
   PersistentVolume or a claim is already refused, but an operator may have left
   a `hostPath` or `local` PV behind, and mounting a claim bound to one reaches
