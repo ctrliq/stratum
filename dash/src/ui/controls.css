@@ -1,0 +1,952 @@
+/* ============================================================
+   Controls — the light-DOM stylesheet for ui/controls.jsx.
+
+   These rules are written for plain elements: one rule per control element,
+   child selectors for composition, and `.color--<name>` blocks for the six
+   colours the screens actually pass (gray, brand, error, warning, success,
+   blue).
+
+   src/theme.css supplies the token defaults, app.css re-skins them in :root,
+   and .login-split re-scopes a subset for the sign-in screen; all three
+   share the token names.
+
+   Class prefix `qc-`. app.css owns the app's own layout classes and is loaded
+   after this file.
+   ============================================================ */
+
+/* ---- Icon -------------------------------------------------------------- */
+/* IconBase: a box sized in px with the glyph filling it. */
+.qc-icon {
+  display: inline-block;
+  width: var(--qc-icon-size, var(--quantic-spacing-6));
+  height: var(--qc-icon-size, var(--quantic-spacing-6));
+}
+.qc-icon > svg { width: 100%; height: 100%; }
+
+/* ---- Button ------------------------------------------------------------ */
+.qc-btn {
+  position: relative;
+  appearance: none;
+  border: none;
+  border-radius: var(--quantic-radius-xs);
+  font-family: var(--quantic-font-family-body);
+  font-weight: var(--quantic-font-weight-semibold);
+  white-space: nowrap;
+  text-decoration: none;
+  text-transform: uppercase;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--quantic-spacing-2);
+  color: var(--quantic-text-primary);
+  background: none;
+  cursor: pointer;
+  outline: none;
+  box-sizing: border-box;
+  vertical-align: middle;
+  transition:
+    background-color 0.2s ease-in-out,
+    border-color 0.2s ease-in-out,
+    color 0.2s ease-in-out;
+}
+.qc-btn:disabled {
+  pointer-events: none;
+  opacity: 0.5;
+}
+.qc-btn::before {
+  content: '';
+  display: block;
+  position: absolute;
+  inset: 0;
+  border-radius: var(--quantic-radius-sm);
+  border: 2px solid var(--quantic-focus-ring);
+  transition: all 0.2s ease-in-out;
+  opacity: 0;
+}
+.qc-btn:focus-visible::before {
+  inset: -4px;
+  opacity: 1;
+}
+.qc-btn > * {
+  display: flex;
+  align-items: center;
+}
+
+.qc-btn--xs {
+  padding: var(--quantic-spacing-1) var(--quantic-spacing-2);
+  font-size: var(--quantic-font-size-body-xs);
+  line-height: var(--quantic-line-height-body-xs);
+  min-height: calc(var(--quantic-line-height-body-xs) + var(--quantic-spacing-1) * 2);
+}
+.qc-btn--sm {
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+  font-size: var(--quantic-font-size-body-sm);
+  line-height: var(--quantic-line-height-body-sm);
+  min-height: calc(var(--quantic-line-height-body-sm) + var(--quantic-spacing-2) * 2);
+}
+.qc-btn--md {
+  padding: 10px var(--quantic-spacing-3);
+  font-size: var(--quantic-font-size-body-md);
+  line-height: var(--quantic-line-height-body-md);
+  min-height: calc(var(--quantic-line-height-body-md) + 10px * 2);
+}
+.qc-btn--lg {
+  padding: var(--quantic-spacing-3) var(--quantic-spacing-4);
+  font-size: var(--quantic-font-size-body-lg);
+  line-height: var(--quantic-line-height-body-lg);
+  min-height: calc(var(--quantic-line-height-body-lg) + var(--quantic-spacing-3) * 2);
+}
+
+/* icon-only: square, no padding */
+.qc-btn--icon {
+  padding: 0;
+  justify-content: center;
+  line-height: 100%;
+}
+.qc-btn--icon.qc-btn--xs { width: 1.75rem; }
+.qc-btn--icon.qc-btn--sm { width: 2.25rem; }
+.qc-btn--icon.qc-btn--md { width: 2.75rem; }
+.qc-btn--icon.qc-btn--lg { width: 3.25rem; }
+
+.qc-btn--primary {
+  background-color: var(--quantic-bg-brand-primary);
+  color: var(--quantic-text-primary-on-brand);
+}
+.qc-btn--primary:hover { background-color: var(--quantic-bg-brand-primary-hover); }
+
+.qc-btn--secondary {
+  background-color: transparent;
+  border: 1px solid var(--quantic-border-brand);
+  color: var(--quantic-fg-brand-primary);
+}
+.qc-btn--secondary:hover {
+  background-color: var(--quantic-bg-brand-primary);
+  color: var(--quantic-text-primary-on-brand);
+}
+
+.qc-btn--outline {
+  background-color: transparent;
+  border: 1px solid var(--quantic-border-primary);
+}
+.qc-btn--outline:hover { border-color: var(--quantic-border-brand); }
+
+.qc-btn--ghost {
+  background-color: transparent;
+  border: transparent;
+  padding: 0;
+}
+
+/* The DS also had container-query grow steps (sm/md/lg) that widened a button
+   inside a narrow card. Nothing here used them, so `grow` is the one value the
+   login form passes. */
+.qc-btn--grow-always { width: 100%; }
+
+/* ---- Card -------------------------------------------------------------- */
+.qc-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  container-name: box-container;
+  container-type: inline-size;
+  font-family: var(--quantic-font-family-body);
+  color: var(--quantic-text-secondary);
+  position: relative;
+}
+/* The padded box is a child so the container query below resolves against the
+   CARD's width, as it did in the shadow DOM. On .qc-card itself it would query
+   the next container up — the splitter pane — and pad every card as if it were
+   wide. */
+.qc-card > .qc-card-main {
+  display: block;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: var(--quantic-component-card-padding);
+  border-radius: var(--quantic-component-card-radius);
+  border: 1px solid var(--quantic-border-primary);
+  font-size: var(--quantic-component-card-font-size);
+  line-height: var(--quantic-component-card-line-height);
+
+  --quantic-component-card-padding: var(--quantic-spacing-5);
+  --quantic-component-card-radius: var(--quantic-radius-md);
+  --quantic-component-card-font-size: var(--quantic-font-size-body-md);
+  --quantic-component-card-line-height: var(--quantic-line-height-body-md);
+}
+@container (min-width: 40rem) {
+  .qc-card > .qc-card-main { --quantic-component-card-padding: var(--quantic-spacing-6); }
+}
+
+/* ---- Table ------------------------------------------------------------- */
+/* The DS host was width:fit-content with a width:100% grid inside, so a table
+   shrink-wraps unless the call site passes width:100% — preserved here. */
+.qc-table {
+  display: block;
+  width: fit-content;
+  font-family: var(--quantic-font-family-body);
+  font-size: var(--quantic-component-table-font-size);
+  overflow-x: auto;
+
+  --quantic-component-table-padding: var(--quantic-spacing-5);
+  --quantic-component-table-font-size: var(--quantic-font-size-body-md);
+  --quantic-component-table-color: var(--quantic-text-secondary);
+  --quantic-component-table-header-color: var(--quantic-text-secondary);
+  --quantic-component-table-border-color: var(--quantic-border-secondary);
+}
+.qc-table--xs {
+  --quantic-component-table-padding: var(--quantic-spacing-3);
+  --quantic-component-table-font-size: var(--quantic-font-size-body-xs);
+}
+.qc-table--sm {
+  --quantic-component-table-padding: var(--quantic-spacing-4);
+  --quantic-component-table-font-size: var(--quantic-font-size-body-sm);
+}
+.qc-table--lg {
+  --quantic-component-table-padding: var(--quantic-spacing-6);
+}
+.qc-table > table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+  table-layout: auto;
+}
+.qc-table thead { border-bottom: 1px solid var(--quantic-border-secondary); }
+.qc-table th {
+  padding: var(--quantic-component-table-padding);
+  font-weight: var(--quantic-font-weight-semibold);
+  color: var(--quantic-component-table-header-color);
+  border-bottom: 1px solid var(--quantic-component-table-border-color);
+  text-align: left;
+  vertical-align: middle;
+}
+.qc-table td {
+  padding: var(--quantic-component-table-padding);
+  font-size: var(--quantic-component-table-font-size);
+  color: var(--quantic-component-table-color);
+  vertical-align: middle;
+  text-align: left;
+}
+/* The DS ignored `selected` on a row — it was never one of its props, so the
+   open detail pane had no row to point at. Plain rows can say which one. */
+.qc-table tr.is-selected { background-color: var(--quantic-bg-secondary); }
+
+/* ---- TextInput --------------------------------------------------------- */
+.qc-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  justify-content: center;
+  width: 100%;
+  font-family: var(--quantic-font-family-body);
+  border: 1px solid var(--quantic-component-text-input-border-color, var(--quantic-border-primary));
+  border-radius: var(--quantic-component-text-input-border-radius, var(--quantic-radius-sm));
+  color: var(--quantic-component-text-input-color, var(--quantic-text-primary));
+  background-color: var(--quantic-component-text-input-bg, var(--quantic-bg-primary));
+  padding: var(--quantic-component-text-input-padding-block, var(--quantic-spacing-md))
+    var(--quantic-component-text-input-padding-inline, var(--quantic-spacing-3));
+  font-size: var(--quantic-font-size-body-md);
+  transition:
+    border-color 0.2s ease-in-out,
+    box-shadow 0.2s ease-in-out;
+}
+.qc-field::before {
+  content: '';
+  pointer-events: none;
+  display: block;
+  position: absolute;
+  inset: 0;
+  border-radius: var(--quantic-component-text-input-border-radius, var(--quantic-radius-sm));
+  border: 2px solid var(--quantic-focus-ring);
+  transition: all 0.2s ease-in-out;
+  opacity: 0;
+}
+.qc-field:focus-within::before {
+  inset: -4px;
+  opacity: 1;
+  border-radius: calc(var(--quantic-component-text-input-border-radius, var(--quantic-radius-sm)) + 4px);
+}
+.qc-field--xs {
+  font-size: 13px;
+  --quantic-component-text-input-padding-inline: var(--quantic-spacing-2);
+  --quantic-component-text-input-padding-block: var(--quantic-spacing-xxs);
+  --quantic-component-select-padding-inline: var(--quantic-spacing-2);
+  --quantic-component-select-padding-block: var(--quantic-spacing-xxs);
+}
+.qc-field--sm {
+  font-size: var(--quantic-font-size-body-sm);
+  --quantic-component-text-input-padding-inline: var(--quantic-spacing-2);
+  --quantic-component-text-input-padding-block: var(--quantic-spacing-sm);
+  --quantic-component-select-padding-inline: var(--quantic-spacing-2);
+  --quantic-component-select-padding-block: var(--quantic-spacing-sm);
+}
+.qc-field--lg {
+  font-size: var(--quantic-font-size-body-lg);
+  --quantic-component-text-input-padding-inline: var(--quantic-spacing-4);
+  --quantic-component-text-input-padding-block: var(--quantic-spacing-3);
+  --quantic-component-select-padding-inline: var(--quantic-spacing-4);
+  --quantic-component-select-padding-block: var(--quantic-spacing-3);
+}
+.qc-field > input,
+.qc-field > select {
+  appearance: none;
+  flex-grow: 1;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--quantic-text-secondary);
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  line-height: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: var(--quantic-font-weight-regular);
+}
+.qc-field > input:disabled,
+.qc-field > select:disabled {
+  cursor: not-allowed;
+  color: var(--quantic-fg-disabled-subtle);
+}
+.qc-field > input:-webkit-autofill {
+  -webkit-text-fill-color: var(--quantic-text-secondary);
+  -webkit-box-shadow: 0 0 0 1000px var(--quantic-component-text-input-bg, var(--quantic-bg-primary)) inset;
+}
+.qc-field .qc-field-toggle { margin-inline-start: var(--quantic-spacing-2); }
+.qc-field .qc-field-suffix {
+  color: var(--quantic-text-tertiary);
+  pointer-events: none;
+  display: flex;
+}
+
+/* The select variant sizes off its own custom properties, as the DS did. */
+.qc-field--select {
+  border-color: var(--quantic-component-select-border-color, var(--quantic-border-primary));
+  border-radius: var(--quantic-component-select-border-radius, var(--quantic-radius-sm));
+  padding: var(--quantic-component-select-padding-block, var(--quantic-spacing-md))
+    var(--quantic-component-select-padding-inline, var(--quantic-spacing-3));
+  font-size: var(--quantic-component-select-font-size, var(--quantic-font-size-body-md));
+  line-height: var(--quantic-line-height-body-md);
+  color: var(--quantic-text-primary);
+  background-color: var(--quantic-bg-primary);
+}
+
+/* ---- Badge / StatusBadge ----------------------------------------------- */
+.qc-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--quantic-spacing-2);
+  font-family: var(--quantic-font-family-body);
+  font-weight: var(--quantic-font-weight-regular);
+  line-height: 1.5em;
+  white-space: nowrap;
+  box-sizing: border-box;
+  vertical-align: middle;
+  border-radius: var(--quantic-radius-sm);
+  padding: var(--quantic-spacing-0-5) var(--quantic-spacing-2);
+  font-size: var(--quantic-font-size-body-sm);
+  background-color: var(--qc-badge-bg);
+  border: 1px solid var(--qc-badge-border);
+  color: var(--qc-badge-text);
+}
+.qc-badge--sm {
+  padding: var(--quantic-spacing-0-5) var(--quantic-spacing-1-5);
+  font-size: var(--quantic-font-size-body-xs);
+}
+.qc-badge--lg {
+  padding: var(--quantic-spacing-1) var(--quantic-spacing-3);
+  font-size: var(--quantic-font-size-body-sm);
+  border-radius: var(--quantic-radius-lg);
+}
+.qc-badge .qc-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: currentColor;
+  flex-shrink: 0;
+}
+.qc-badge.qc-c-gray    { --qc-badge-bg: var(--quantic-utility-gray-50);    --qc-badge-border: var(--quantic-utility-gray-200);    --qc-badge-text: var(--quantic-utility-gray-700); }
+.qc-badge.qc-c-brand   { --qc-badge-bg: var(--quantic-utility-brand-50);   --qc-badge-border: var(--quantic-utility-brand-200);   --qc-badge-text: var(--quantic-utility-brand-700); }
+.qc-badge.qc-c-error   { --qc-badge-bg: var(--quantic-utility-error-50);   --qc-badge-border: var(--quantic-utility-error-200);   --qc-badge-text: var(--quantic-utility-error-700); }
+.qc-badge.qc-c-warning { --qc-badge-bg: var(--quantic-utility-warning-50); --qc-badge-border: var(--quantic-utility-warning-200); --qc-badge-text: var(--quantic-utility-warning-700); }
+.qc-badge.qc-c-success { --qc-badge-bg: var(--quantic-utility-success-50); --qc-badge-border: var(--quantic-utility-success-200); --qc-badge-text: var(--quantic-utility-success-700); }
+.qc-badge.qc-c-blue    { --qc-badge-bg: var(--quantic-utility-blue-50);    --qc-badge-border: var(--quantic-utility-blue-200);    --qc-badge-text: var(--quantic-utility-blue-700); }
+
+/* ---- Tabs -------------------------------------------------------------- */
+.qc-tabs {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  align-items: flex-end;
+  border-bottom: 1px solid var(--quantic-border-secondary);
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.qc-tabs::-webkit-scrollbar { display: none; }
+.qc-tab {
+  appearance: none;
+  cursor: pointer;
+  color: var(--quantic-text-quaternary);
+  font-family: var(--quantic-font-family-body);
+  border: none;
+  background: none;
+  position: relative;
+  font-weight: var(--quantic-font-weight-semibold);
+  outline: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-1-5);
+}
+.qc-tab.is-active { color: var(--quantic-text-primary); }
+.qc-tab::before {
+  content: '';
+  pointer-events: none;
+  display: block;
+  position: absolute;
+  inset: 0;
+  border-radius: var(--quantic-radius-sm);
+  border: 2px solid var(--quantic-focus-ring);
+  transition: all 0.2s ease-in-out;
+  opacity: 0;
+}
+.qc-tab:focus-visible::before { inset: 2px; opacity: 1; }
+.qc-tab::after {
+  content: '';
+  display: block;
+  position: absolute;
+  background-color: var(--quantic-fg-brand-primary);
+  transition: transform 0.2s ease-in-out;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  transform: scaleX(0);
+  transform-origin: left;
+}
+.qc-tab:hover::after,
+.qc-tab.is-active::after { transform: scaleX(1); }
+
+/* ---- Progress ---------------------------------------------------------- */
+.qc-progress {
+  align-items: center;
+  display: flex;
+  gap: var(--quantic-spacing-2);
+  width: 100%;
+}
+.qc-progress-track {
+  flex: 1;
+  overflow: hidden;
+  border-radius: var(--quantic-radius-full);
+  background-color: var(--quantic-color-gray-dark-mode-700);
+  height: var(--qc-progress-height, 6px);
+}
+.qc-progress--xs .qc-progress-track { --qc-progress-height: 2px; }
+.qc-progress--sm .qc-progress-track { --qc-progress-height: 4px; }
+.qc-progress--lg .qc-progress-track { --qc-progress-height: 8px; }
+.qc-progress-fill {
+  height: 100%;
+  border-radius: var(--quantic-radius-full);
+  background-color: var(--qc-progress-color, var(--quantic-fg-brand-primary));
+  transition: width 0.2s ease-in-out;
+}
+.qc-progress-track.qc-c-gray    { --qc-progress-color: var(--quantic-utility-gray-500); }
+.qc-progress-track.qc-c-brand   { --qc-progress-color: var(--quantic-utility-brand-500); }
+.qc-progress-track.qc-c-error   { --qc-progress-color: var(--quantic-utility-error-500); }
+.qc-progress-track.qc-c-warning { --qc-progress-color: var(--quantic-utility-warning-500); }
+.qc-progress-track.qc-c-success { --qc-progress-color: var(--quantic-utility-success-500); }
+.qc-progress-track.qc-c-blue    { --qc-progress-color: var(--quantic-utility-blue-500); }
+
+/* ---- Sparkline --------------------------------------------------------- */
+.qc-sparkline {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.qc-sparkline polyline {
+  fill: none;
+  stroke: var(--qc-spark-color, var(--quantic-fg-brand-primary));
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.qc-sparkline polygon { stroke: none; }
+.qc-sparkline polygon.fill {
+  fill: var(--qc-spark-color, var(--quantic-fg-brand-primary));
+  opacity: 0.15;
+}
+.qc-sparkline stop:first-child {
+  stop-color: var(--qc-spark-color, var(--quantic-fg-brand-primary));
+  stop-opacity: 0.3;
+}
+.qc-sparkline stop:last-child {
+  stop-color: var(--qc-spark-color, var(--quantic-fg-brand-primary));
+  stop-opacity: 0;
+}
+.qc-sparkline.qc-c-gray    { --qc-spark-color: var(--quantic-utility-gray-500); }
+.qc-sparkline.qc-c-brand   { --qc-spark-color: var(--quantic-utility-brand-500); }
+.qc-sparkline.qc-c-error   { --qc-spark-color: var(--quantic-utility-error-500); }
+.qc-sparkline.qc-c-warning { --qc-spark-color: var(--quantic-utility-warning-500); }
+.qc-sparkline.qc-c-success { --qc-spark-color: var(--quantic-utility-success-500); }
+.qc-sparkline.qc-c-blue    { --qc-spark-color: var(--quantic-utility-blue-500); }
+
+/* ---- Splitter ---------------------------------------------------------- */
+.qc-splitter {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  container-type: inline-size;
+}
+.qc-splitter--horizontal { flex-direction: row; }
+.qc-splitter--vertical { flex-direction: column; }
+.qc-splitter--stacked { flex-direction: column; overflow-y: auto; }
+.qc-splitter-pane {
+  display: block;
+  flex: var(--qc-pane-grow, 1) 0 0%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.qc-splitter--stacked > .qc-splitter-pane { flex: 0 0 auto; overflow: auto; }
+/* After the stacked rule on purpose: both are two-class selectors, so source
+   order decides, and a collapsed pane has to stay collapsed once the group
+   stacks. The DS had the same pair in the same order — with the same problem —
+   but its collapsed panes are always empty here, so nothing showed for it. */
+.qc-splitter-pane.is-collapsed { flex: 0 0 0%; overflow: hidden; }
+.qc-splitter-pane--solid { background: var(--quantic-bg-secondary); }
+.qc-splitter-divider {
+  flex: 0 0 1px;
+  position: relative;
+  z-index: 1;
+  touch-action: none;
+  user-select: none;
+  background: var(--quantic-border-primary);
+  transition: background 0.15s ease-in-out;
+}
+.qc-splitter--horizontal > .qc-splitter-divider:not(.is-disabled) { cursor: col-resize; }
+.qc-splitter--vertical > .qc-splitter-divider:not(.is-disabled) { cursor: row-resize; }
+.qc-splitter-divider::before {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  background: transparent;
+}
+.qc-splitter-divider::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  background: transparent;
+  transition:
+    background 0.15s ease-in-out,
+    width 0.15s ease-in-out,
+    height 0.15s ease-in-out;
+}
+.qc-splitter--horizontal > .qc-splitter-divider::after {
+  top: 0; bottom: 0; width: 1px; left: 50%; transform: translateX(-50%);
+}
+.qc-splitter--vertical > .qc-splitter-divider::after {
+  left: 0; right: 0; height: 1px; top: 50%; transform: translateY(-50%);
+}
+.qc-splitter--horizontal > .qc-splitter-divider:hover::after,
+.qc-splitter--horizontal > .qc-splitter-divider.is-dragging::after {
+  width: 4px;
+  background: var(--quantic-fg-brand-primary);
+}
+.qc-splitter--vertical > .qc-splitter-divider:hover::after,
+.qc-splitter--vertical > .qc-splitter-divider.is-dragging::after {
+  height: 4px;
+  background: var(--quantic-fg-brand-primary);
+}
+.qc-splitter-divider.is-disabled { pointer-events: none; cursor: default; }
+.qc-splitter-divider.is-disabled::after { display: none; }
+.qc-splitter--stacked > .qc-splitter-divider { display: none; }
+
+/* ---- Dialog ------------------------------------------------------------ */
+.qc-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background-color: rgba(var(--quantic-bg-primary-rgb), 0.95);
+  backdrop-filter: blur(4px);
+}
+.qc-dialog-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--quantic-spacing-4);
+  font-family: var(--quantic-font-family-body);
+}
+.qc-dialog {
+  position: relative;
+  display: flex;
+  gap: var(--quantic-component-dialog-gap);
+  flex-direction: column;
+  container-name: box-container;
+  container-type: inline-size;
+  width: 100%;
+  max-height: calc(100vh - 4rem);
+  background-color: var(--quantic-bg-primary);
+  border: 1px solid var(--quantic-border-secondary);
+  border-radius: var(--quantic-radius-lg);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.07);
+  box-sizing: border-box;
+  padding-block: var(--quantic-component-dialog-padding-block);
+  color: var(--quantic-text-secondary);
+
+  --quantic-component-dialog-padding-inline: var(--quantic-spacing-6);
+  --quantic-component-dialog-padding-block: var(--quantic-spacing-6);
+  --quantic-component-dialog-gap: var(--quantic-spacing-4);
+}
+.qc-dialog--sm {
+  max-width: var(--quantic-width-xs);
+  --quantic-component-dialog-padding-inline: var(--quantic-spacing-4);
+  --quantic-component-dialog-padding-block: var(--quantic-spacing-4);
+  --quantic-component-dialog-gap: var(--quantic-spacing-3);
+}
+.qc-dialog--md { max-width: var(--quantic-width-md); }
+.qc-dialog--lg {
+  max-width: var(--quantic-width-lg);
+  --quantic-component-dialog-gap: var(--quantic-spacing-5);
+}
+.qc-dialog--xl {
+  max-width: var(--quantic-width-xl);
+  --quantic-component-dialog-padding-inline: var(--quantic-spacing-8);
+  --quantic-component-dialog-padding-block: var(--quantic-spacing-8);
+  --quantic-component-dialog-gap: var(--quantic-spacing-6);
+}
+.qc-dialog > .qc-dialog-header,
+.qc-dialog > .qc-dialog-body,
+.qc-dialog > .qc-dialog-footer {
+  display: block;
+  padding-inline: var(--quantic-component-dialog-padding-inline);
+}
+.qc-dialog > .qc-dialog-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  flex: 1;
+  margin-block: calc(-1 * var(--quantic-spacing-1));
+  padding-block: var(--quantic-spacing-1);
+}
+.qc-dialog > .qc-dialog-header,
+.qc-dialog > .qc-dialog-footer { flex-shrink: 0; }
+.qc-dialog-close {
+  position: absolute;
+  top: var(--quantic-spacing-2);
+  right: var(--quantic-spacing-2);
+  color: var(--quantic-text-tertiary);
+  transition: color 0.15s;
+}
+.qc-dialog-close:hover,
+.qc-dialog-close:focus { color: var(--quantic-text-primary); }
+.qc-dialog-title {
+  display: block;
+  color: var(--quantic-text-primary);
+  font-size: var(--quantic-font-size-body-lg);
+  font-weight: var(--quantic-font-weight-semibold);
+}
+
+/* ---- Layout: frame, sidebar, navbar, page ------------------------------ */
+.qc-layout {
+  background-color: var(--quantic-bg-primary);
+  min-height: 100dvh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+
+  --qc-aside-width: var(--quantic-spacing-80);
+  --qc-aside-width-collapsed: var(--quantic-spacing-16);
+}
+.qc-layout-header {
+  border-bottom: 1px solid var(--quantic-border-secondary);
+  background-color: var(--quantic-bg-primary);
+  min-height: var(--quantic-spacing-20);
+  display: flex;
+  align-items: center;
+  gap: var(--quantic-spacing-4);
+  padding: var(--quantic-spacing-3) var(--quantic-spacing-6);
+  justify-content: space-between;
+  width: 100%;
+  box-sizing: border-box;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.qc-layout-titlebar {
+  display: block;
+  padding: var(--quantic-spacing-4) var(--quantic-spacing-6);
+  background-color: var(--quantic-bg-primary);
+  border-bottom: 1px solid var(--quantic-border-secondary);
+}
+.qc-layout-logo { flex-shrink: 0; margin-inline: auto; }
+.qc-layout-navbar { display: block; margin-left: auto; flex-shrink: 0; }
+.qc-layout-body { flex: 1 1 auto; min-height: 0; overflow: auto; display: block; }
+.qc-layout-aside {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100vh;
+  max-height: 100vh;
+  box-sizing: border-box;
+  z-index: 30;
+  width: var(--qc-aside-width);
+  padding-inline: var(--quantic-spacing-3);
+  padding-block: var(--quantic-spacing-6);
+  border-right: 1px solid var(--quantic-border-secondary);
+  background-color: var(--quantic-bg-primary);
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-6);
+  transform: translateX(calc(-1 * var(--qc-aside-width)));
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 0.3s ease-in-out,
+    opacity 0.3s ease-in-out,
+    width 0.3s ease-in-out;
+}
+.qc-layout.is-aside-expanded .qc-layout-aside {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+.qc-layout-backdrop {
+  display: none;
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background-color: var(--quantic-bg-primary);
+  z-index: 20;
+  transition: opacity 0.3s ease-in-out;
+  opacity: 0;
+}
+.qc-layout.is-aside-expanded .qc-layout-backdrop {
+  display: block;
+  pointer-events: auto;
+  opacity: 0.85;
+}
+
+@media only screen and (min-width: 1024px) {
+  .qc-layout {
+    display: grid;
+    grid-template-areas:
+      'aside header'
+      'aside main';
+    grid-template-rows: auto 1fr;
+    grid-template-columns: var(--qc-aside-width-collapsed) 1fr;
+  }
+  .qc-layout.is-aside-expanded { grid-template-columns: var(--qc-aside-width) 1fr; }
+  .qc-layout-header { grid-area: header; }
+  .qc-layout-logo { width: var(--qc-aside-width); }
+  .qc-layout-titlebar {
+    padding: 0;
+    border-bottom: none;
+    flex: 1;
+    min-width: 0;
+    width: auto;
+    position: static;
+    background-color: transparent;
+  }
+  .qc-layout-aside {
+    grid-area: aside;
+    position: sticky;
+    top: 0;
+    align-self: start;
+    transform: translateX(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .qc-layout.is-aside-expanded .qc-layout-backdrop { display: none; }
+  .qc-layout:not(.is-aside-expanded) .qc-layout-aside,
+  .qc-layout:not(.is-aside-expanded) .qc-layout-logo {
+    width: var(--qc-aside-width-collapsed);
+    padding-inline: 0;
+  }
+  .qc-layout-body { grid-area: main; min-width: 0; }
+}
+
+.qc-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
+  padding: var(--quantic-spacing-2);
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.qc-sidebar-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-6);
+  flex: 1;
+}
+.qc-layout:not(.is-aside-expanded) .qc-sidebar-body { gap: var(--quantic-spacing-2); }
+.qc-sidebar-toggle {
+  margin-top: var(--quantic-spacing-2);
+  padding-top: var(--quantic-spacing-2);
+  border-top: 1px solid var(--quantic-border-secondary);
+}
+
+.qc-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--quantic-spacing-3);
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+  font-family: var(--quantic-font-family-body);
+  font-size: var(--quantic-font-size-body-md);
+  line-height: var(--quantic-line-height-body-md);
+  font-weight: var(--quantic-font-weight-medium);
+  color: var(--quantic-text-primary);
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--quantic-radius-md);
+  transition:
+    background-color 0.15s ease-in-out,
+    color 0.15s ease-in-out;
+  outline: none;
+  text-decoration: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.qc-nav-item--secondary {
+  font-size: var(--quantic-font-size-body-sm);
+  line-height: var(--quantic-line-height-body-sm);
+  color: var(--quantic-text-secondary);
+}
+.qc-nav-item > .qc-icon {
+  width: var(--quantic-spacing-4);
+  height: var(--quantic-spacing-4);
+  opacity: 0.75;
+}
+.qc-nav-item:hover { background-color: var(--quantic-bg-secondary-hover); }
+.qc-nav-item:focus-visible {
+  background-color: var(--quantic-bg-secondary-hover);
+  box-shadow:
+    0 0 0 2px var(--quantic-bg-primary),
+    0 0 0 4px var(--quantic-focus-ring);
+}
+.qc-nav-item.is-selected { background-color: var(--quantic-bg-active, var(--quantic-bg-secondary)); }
+.qc-nav-item > * { flex-shrink: 0; }
+.qc-nav-item .qc-nav-label {
+  flex: 1;
+  white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.2s ease-in-out, width 0.2s ease-in-out;
+}
+.qc-nav-item.is-collapsed { justify-content: center; padding-inline: 0; }
+
+.qc-navbar {
+  display: flex;
+  align-items: center;
+  gap: var(--quantic-spacing-2);
+  box-sizing: border-box;
+}
+.qc-navbar-item > .qc-icon {
+  width: var(--quantic-spacing-5);
+  height: var(--quantic-spacing-5);
+}
+.qc-navbar-item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--quantic-spacing-10);
+  height: var(--quantic-spacing-10);
+  font-size: var(--quantic-font-size-body-lg);
+  color: var(--quantic-text-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--quantic-radius-md);
+  transition:
+    background-color 0.15s ease-in-out,
+    color 0.15s ease-in-out;
+  outline: none;
+  text-decoration: none;
+}
+.qc-navbar-item:hover { background-color: var(--quantic-bg-secondary-hover); }
+.qc-navbar-item:focus-visible {
+  background-color: var(--quantic-bg-secondary-hover);
+  box-shadow:
+    0 0 0 2px var(--quantic-bg-primary),
+    0 0 0 4px var(--quantic-focus-ring);
+}
+.qc-navbar-item.is-selected { background-color: var(--quantic-bg-secondary); }
+
+.qc-page {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  padding: var(--quantic-spacing-4);
+}
+
+/* ---- Code view (replaces the DS log-output viewer) --------------------- */
+.qc-codeview {
+  display: flex;
+  flex-direction: column;
+  color: var(--quantic-text-secondary);
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  min-height: 0;
+  overflow: hidden;
+}
+.qc-codeview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--quantic-spacing-4);
+  padding: var(--quantic-spacing-1-5) var(--quantic-spacing-2);
+  border-bottom: 1px solid var(--quantic-border-secondary);
+  flex-shrink: 0;
+  font-family: var(--quantic-font-family-body);
+}
+.qc-codeview-count {
+  font-size: var(--quantic-font-size-body-xs);
+  color: var(--quantic-text-quaternary);
+  border-radius: var(--quantic-radius-full);
+  padding: 1px var(--quantic-spacing-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.qc-codeview-output {
+  flex: 1;
+  overflow: auto;
+  padding: var(--quantic-spacing-3);
+  min-height: 0;
+  margin: 0;
+  background-color: var(--quantic-color-gray-dark-mode-900);
+  counter-reset: log-line;
+}
+.qc-codeview-output .qc-codeview-row {
+  white-space: pre;
+  min-height: 1lh;
+  counter-increment: log-line;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--quantic-spacing-4);
+}
+.qc-codeview-output .qc-codeview-row::before {
+  content: counter(log-line);
+  color: rgba(255, 255, 255, 0.2);
+  user-select: none;
+  text-align: right;
+  min-width: 3ch;
+  font-variant-numeric: tabular-nums;
+}

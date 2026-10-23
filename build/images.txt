@@ -1,0 +1,59 @@
+# Runtime OCI images, digest-pinned. Second half of the pin surface: binaries
+# are pinned in build/versions.mk, images here. Both are allowlisted by
+# tools/lint-versions.sh; nothing else in the repo may pin a version.
+#
+# Format: <ref>:<tag>@<digest>   (tag is documentation; the digest is the pin)
+# Consumed by: make airgap (pulls each and tars it into the airgap bundle).
+
+# Control-plane static pods. The kube-* tags must equal
+# v$(kubernetes_version) in build/versions.mk; etcd's tag is the upstream image
+# build of $(etcd_version) (the -N suffix is registry.k8s.io's image revision,
+# pinned to what kubernetes/kubernetes build/dependencies.yaml declares).
+# renovate: datasource=docker depName=registry.k8s.io/kube-apiserver
+registry.k8s.io/kube-apiserver:v1.36.5@sha256:4b3e69973a1d58d3c1f670d3477a9b9f14a03a271823113e8e0c9a333eb84f48
+# renovate: datasource=docker depName=registry.k8s.io/kube-controller-manager
+registry.k8s.io/kube-controller-manager:v1.36.5@sha256:2d717af134451db77ea053c3426bc82edc0e55415eb36e1260313c636ebe9a4d
+# renovate: datasource=docker depName=registry.k8s.io/kube-scheduler
+registry.k8s.io/kube-scheduler:v1.36.5@sha256:3804f66442962cefbe11fcd5330d5e7a797bfb3dc8535c322d005637b404a85f
+# renovate: datasource=docker depName=registry.k8s.io/etcd
+registry.k8s.io/etcd:3.6.8-0@sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5
+# renovate: datasource=docker depName=ghcr.io/kube-vip/kube-vip
+ghcr.io/kube-vip/kube-vip:v1.3.1@sha256:1962f9daf226503f7e6b107f595cb28b7917fd2d0113957075e19a3e5a6c1e33
+
+# Sandbox image. Version tracks kubernetes/kubernetes build/dependencies.yaml
+# for the pinned kubernetes_version.
+# renovate: datasource=docker depName=registry.k8s.io/pause
+registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
+
+# Cluster DNS.
+# renovate: datasource=docker depName=coredns/coredns
+docker.io/coredns/coredns:1.14.7@sha256:7efd3c635b03efd68c4e8398fc45f0d993d0e9ab016f72c1cefb0fd6d01aa286
+
+# Pod networking, network policy, and the kube-proxy replacement.
+# Cilium is the one bundled CNI; these two tags are the one pin surface for
+# the cilium version — the Makefile stamps internal/version.CiliumVersion from this list
+# (CILIUM_VERSION, derived like every other image fact) and
+# tools/gen-cilium-manifest.sh renders the embedded manifest at the same tag.
+# Cilium ships as images (cilium, operator-generic) and installs its own CNI
+# plugins on each node, so there is no separate containernetworking/plugins
+# pin.
+# renovate: datasource=docker depName=quay.io/cilium/cilium
+quay.io/cilium/cilium:v1.20.3@sha256:95cfa5c2427cc6b452c00908778d0566311f572589284af949d06a013db1a849
+# renovate: datasource=docker depName=quay.io/cilium/operator-generic
+quay.io/cilium/operator-generic:v1.20.3@sha256:efdd8d89d6d8f63d21a065fa2f9e17614a2b3ac9371b221af9355f63829e2dbc
+
+# Cilium's Envoy sidecar image — version is the cilium chart's own pin, carried
+# by the generated manifest (tools/gen-cilium-manifest.sh); listed here so the
+# airgap payload contains it. Bump lands with each cilium manifest regeneration.
+# renovate: datasource=docker depName=quay.io/cilium/cilium-envoy
+quay.io/cilium/cilium-envoy:v1.38.6-1791537840-00e749f11f69334c625e53fc1ce2fc6c7f34a51f@sha256:d6c8c0c91954d1885026d82a31b341f37dcd34a4b127fdaf1587e43ddd224cef
+
+# Default StorageClass provisioner.
+# renovate: datasource=docker depName=rancher/local-path-provisioner
+docker.io/rancher/local-path-provisioner:v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f
+
+# local-path's helper image, and the nsenter image for the node Jobs that cert
+# rotation and cluster upgrade run (internal/version.NsenterImage). Those Jobs
+# run on airgapped clusters, so the image has to be in this payload, not pulled.
+# renovate: datasource=docker depName=library/busybox
+docker.io/library/busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e

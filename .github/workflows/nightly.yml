@@ -1,0 +1,206 @@
+name: nightly
+
+# The slow suites that do not fit the PR budget. Everything here runs per active
+# branch, because "it passes on main" says nothing about release-1.35.
+#
+# The leaked-resource sweeper runs nightly: a leaked cluster costs by the day,
+# not by the week, and the sweep itself is cheap.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: branch to run against
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  branches:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      providers: ${{ steps.providers.outputs.providers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: gen
+        # Same source of truth as the fences: build/branches.txt.
+        run: |
+          branches=$(grep -v '^#' build/branches.txt | grep . | sed 's/^/release-/')
+          echo "matrix=$(printf 'main\n%s\n' "$branches" | jq -Rsc 'split("\n") | map(select(length > 0))')" >> "$GITHUB_OUTPUT"
+      # The sweep job's dimension — the same generator the weekly e2e matrix
+      # and the release matrix use, so the sweeper covers exactly the clouds
+      # that can leak.
+      - id: providers
+        run: echo "providers=$(tools/ostests/matrix.sh providers)" >> "$GITHUB_OUTPUT"
+
+  reproducible:
+    # The PR workflow asserts reproducibility for one cheap component; nightly
+    # does the whole set, which is the claim we actually publish.
+    needs: branches
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ${{ fromJSON(needs.branches.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { ref: '${{ matrix.branch }}', fetch-depth: 0 }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        # runner-prep isn't on every release branch (it's newer than some of
+        # them); always take it from the ref running this workflow instead of
+        # matrix.branch.
+        with: { sparse-checkout: .github/actions/runner-prep, path: .runner-prep-src }
+      - uses: ./.runner-prep-src/.github/actions/runner-prep
+      - run: |
+          for c in $(make -s -C build/components list); do
+            make verify-reproducible COMPONENT="$c"
+            # Ten no-cache builds (5 components x 2 rounds) in one job would
+            # otherwise keep every layer; prune after each component so disk
+            # use stays bounded to the current component instead of the sum.
+            docker system prune -af --volumes
+          done
+
+  freshness:
+    # Days behind upstream, per branch. Published because nobody in the field
+    # shows this evidence.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { fetch-depth: 0 }
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tools/days-behind.sh | tee -a "$GITHUB_STEP_SUMMARY"
+          tools/days-behind.sh --json > days-behind.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with: { name: freshness, path: days-behind.json }
+
+  sweep:
+    # Gated SEPARATELY from OSTESTS_ENABLED. sweep.sh speaks GCP,
+    # but it has still never run against a real project. Going live needs a
+    # supervised run against a deliberately created leak. It deletes instances,
+    # networks, firewall rules and Pulumi stacks, so it goes live when a human
+    # has watched it do that once, not when its tests pass.
+    #
+    # One leg per provider (the branches job's list), because each has its own
+    # credentials, CLI and state bucket.
+    needs: branches
+    if: vars.OSTESTS_SWEEP_ENABLED == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: ${{ fromJSON(needs.branches.outputs.providers) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write        # Workload Identity Federation / OIDC
+    env:
+      PROVIDER: ${{ matrix.provider }}
+      GCP_PROJECT: ${{ vars.OSTESTS_GCP_PROJECT }}
+      # PULUMI_BACKEND_URL comes from the "provider settings" step: the
+      # sweeper removes the orphaned stack along with the resources it
+      # describes, so it needs the same state bucket the runs write to.
+      # Without it it refuses to delete anything rather than leaving state
+      # pointing at resources that no longer exist.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
+      # One state bucket per cloud: a job's credentials reach exactly one, and
+      # the backend refuses any other scheme (backends/ssh-lib.sh). Resolved in
+      # shell rather than a chain of `&&`/`||` expressions so that an unset
+      # variable fails HERE, by name, instead of quietly selecting another
+      # provider's bucket for the expression to fall through to.
+      - name: provider settings
+        env:
+          GCP_URL: ${{ vars.OSTESTS_PULUMI_BACKEND_URL }}
+        run: |
+          case "$PROVIDER" in
+            gcp)   url=$GCP_URL;   var=OSTESTS_PULUMI_BACKEND_URL ;;
+            *)     echo "::error::unknown provider '$PROVIDER'"; exit 1 ;;
+          esac
+          [ -n "$url" ] || { echo "::error::no Pulumi state URL configured for $PROVIDER — set the $var repository variable"; exit 1; }
+          echo "PULUMI_BACKEND_URL=$url" >> "$GITHUB_ENV"
+      # The sweeper's whole job is to find what the weekly ostests job's
+      # teardown could not, so it needs that job's credentials: the same
+      # federated identity, minted here in a different workflow.
+      #
+      # gcloud comes from the runner image (`ubuntu-latest`, which is the
+      # ubuntu-24.04 image at the time of writing, ships it), which is why there
+      # is no setup step for it; the auth action mints credentials, it does not
+      # install a CLI. If a future image drops it, the sweeper's own guard fails
+      # the job with "not installed" and deletes nothing — the right direction —
+      # and the fix is a setup step here, not a weaker guard.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: matrix.provider == 'gcp'
+        with:
+          workload_identity_provider: ${{ vars.OSTESTS_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.OSTESTS_GCP_SERVICE_ACCOUNT }}
+
+      # Exit codes, not `continue-on-error` plus outcome=='failure' — that
+      # shape lets a broken sweeper hide: the sweeper signals "found leaks" with
+      # exit 1, so a crashed sweeper files the same issue as a successful sweep
+      # and nobody can tell it never worked at all. 10 means it ran and
+      # found leaks; anything else non-zero means it did not finish, and that
+      # fails the job loudly instead of filing a reassuring issue.
+      - id: sweep
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.OSTESTS_PULUMI_PASSPHRASE }}
+        run: |
+          set -uo pipefail
+          rc=0
+          tools/ostests/sweep.sh --max-age-hours 24 || rc=$?
+          case $rc in
+            0)  echo 'result=clean' >> "$GITHUB_OUTPUT" ;;
+            10) echo 'result=leaked' >> "$GITHUB_OUTPUT" ;;
+            *)  echo "::error::the sweeper exited $rc — it did NOT complete, so leaks may still be running." \
+                     "No issue is filed for this: the run log is the report."
+                exit "$rc" ;;
+          esac
+      - if: steps.sweep.outputs.result == 'leaked'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: 'ostests leaked cloud resources (${{ matrix.provider }})',
+              body: 'The nightly sweeper destroyed ostests clusters older than 24h on ${{ matrix.provider }}. The run log names each swept cluster — the cluster name carries the run id and matrix index of the job that leaked it — plus anything it deliberately left alone.',
+              labels: ['ostests', 'cost'],
+            })
+
+  report:
+    # `contains(needs.*.result ...)` below can only see jobs listed here. The
+    # e2e legs live in weekly.yml; the dashboard
+    # line covers what runs nightly. if:always() keeps the report posting when
+    # a job fails; a skipped result is not a failure.
+    needs: [reproducible, freshness]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const failed = ${{ contains(needs.*.result, 'failure') }};
+            const title = 'Nightly dashboard';
+            const list = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'nightly-dashboard',
+            });
+            const line = `- ${new Date().toISOString().slice(0,10)}: ${failed ? '❌ failures' : '✅ green'} — [run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`;
+            if (list.data.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: list.data[0].number, body: line,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body: `Nightly results, newest last.\n\n${line}`,
+                labels: ['nightly-dashboard'],
+              });
+            }

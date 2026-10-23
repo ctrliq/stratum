@@ -1,0 +1,109 @@
+site_name: Stratum Kubernetes Engine
+site_description: >-
+  Public documentation for Stratum Kubernetes Engine (SKE) — a Kubernetes
+  distribution that ships as one binary, airgapped by default.
+site_url: https://docs.ciq.com/
+copyright: Copyright &copy; CIQ, Inc.
+
+repo_url: https://github.com/ctrliq/stratum
+repo_name: ctrliq/stratum
+edit_uri: edit/main/docs/docs/
+
+# A broken internal link, a nav entry pointing at a file that does not exist, or
+# an unrecognised config key becomes a build failure instead of a warning nobody
+# reads. This is the whole reason the CI job is worth having: without it
+# `mkdocs build` exits 0 and renders the page short.
+strict: true
+
+theme:
+  name: material
+  # OFF deliberately. Left unset, Material downloads Inter and the code font from
+  # fonts.googleapis.com DURING THE BUILD and bundles them, so the build needs
+  # network access. Inter is vendored in docs/assets/fonts/ instead and declared
+  # by assets/extra.css — see the comment at the top of that file.
+  font: false
+  features:
+    - navigation.sections
+    # Without this, a section whose first nav entry is its own index.md renders
+    # the section label AND a child entry for the index — the section appears
+    # twice in the sidebar. This attaches the index page to the section label
+    # instead.
+    - navigation.indexes
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    # geekdoc had no automatic table of contents, only a hand-placed shortcode,
+    # which had left 5 of these 14 pages without one. These two are the native
+    # replacement for the scroll-spy rail that had to be hand-built for it.
+    - toc.follow
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - assets/extra.css
+
+markdown_extensions:
+  - admonition
+  # Hugo's Goldmark typographer curled quotes and dashes (it emitted &rsquo; for
+  # an apostrophe). Without this the same prose renders with straight quotes,
+  # which is a visible change to every page. Code spans and fences are exempt,
+  # so `--flag` is untouched — asserted in the build check below.
+  - smarty
+  - attr_list          # grid cards on the landing page
+  - md_in_html         # ditto
+  - tables
+  - toc:
+      permalink: true
+      # h1 is the page title, so the on-page contents start at h2 — the same
+      # range the Hugo site used.
+      toc_depth: "2-3"
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+# Order is the `weight:` the Hugo front matter carried: 10..80, and 10..40 within
+# Cluster Administration. It now lives here, which is the only place MkDocs reads
+# it from.
+nav:
+  - Home: index.md
+  - Overview: overview/index.md
+  - Quick Start: quick-start/index.md
+  - Installation:
+      - installation/index.md
+      - Configuration: installation/configuration.md
+  - Cluster Administration:
+      - cluster-admin/index.md
+      - High Availability: cluster-admin/high-availability.md
+      - Upgrades & Rollback: cluster-admin/upgrades.md
+      - Snapshot & Restore: cluster-admin/snapshot-restore.md
+      - Certificates: cluster-admin/certificates.md
+      - Hardening: cluster-admin/hardening.md
+      - MCP Server: cluster-admin/mcp.md
+  - Container Runtime: runtime/index.md
+  - Networking & Storage: networking-storage/index.md
+  - Stratum PRO: pro/index.md
+  - Releases & Support: releases/index.md
+  - Appendices:
+      - appendices/index.md
+      - Glossary: appendices/glossary.md
+      - Paths and Names: appendices/paths-and-names.md
+      - Snapshot Reference: appendices/snapshot-reference.md
+      - Upgrade Reference: appendices/upgrade-reference.md

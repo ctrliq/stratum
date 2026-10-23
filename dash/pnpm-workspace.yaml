@@ -1,0 +1,7 @@
+# pnpm 10 and newer run no dependency build scripts unless they are listed here,
+# and pnpm 12 fails the install (ERR_PNPM_IGNORED_BUILDS) instead of warning.
+# esbuild's postinstall is the only one in the tree. It checks and links the
+# platform binary that vite 5 uses, and pnpm 9 used to run it unasked.
+# Written by `pnpm approve-builds esbuild`.
+allowBuilds:
+  esbuild: true

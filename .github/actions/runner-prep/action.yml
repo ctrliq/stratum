@@ -1,0 +1,94 @@
+name: runner prep
+description: >
+  Free the disk the payload needs, put Docker on the containerd image store, and
+  install crane (make images assembles the payload archive with it). Every job
+  that runs components -> images -> package -> smoke needs these, so they live
+  here rather than duplicated per workflow.
+
+runs:
+  using: composite
+  steps:
+    # The artifact is ~1.4G and the staging image tar is ~1.2G, on top of a
+    # BuildKit cache holding Kubernetes, etcd and containerd. That does not fit
+    # in the ~14G a stock runner leaves free: `make images` dies mid `docker
+    # save` on a full disk, and the go build after it in a full /tmp.
+    #
+    # Runs before setup-go on purpose, so dropping the CodeQL toolcache cannot
+    # take the Go install with it.
+    - name: free disk
+      shell: bash
+      run: |
+        set -euo pipefail
+        before=$(df -B1 --output=avail / | tail -1)
+        # Absent paths differ per runner image and per arch; rm -rf is silent on
+        # the ones that are not there.
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /usr/local/lib/android \
+          /opt/ghc \
+          /usr/local/share/powershell \
+          /usr/share/swift \
+          /opt/hostedtoolcache/CodeQL
+        after=$(df -B1 --output=avail / | tail -1)
+        echo "freed $(( (after - before) / 1024 / 1024 / 1024 ))G — $(( after / 1024 / 1024 / 1024 ))G now available"
+        df -h /
+
+    # verify-payload matches the payload against the digests pinned in
+    # build/images.txt, which are registry multi-arch INDEX digests. Whether
+    # `docker save` emits those is a property of the image store: the containerd
+    # store preserves the index digest, the classic graphdriver store
+    # re-serializes a single-platform manifest and computes a fresh digest that
+    # exists in no registry. On the stock runner the check therefore compared
+    # pins against locally-invented digests and could never pass.
+    - name: containerd image store
+      shell: bash
+      run: |
+        set -euo pipefail
+        cfg=/etc/docker/daemon.json
+        sudo mkdir -p /etc/docker
+        [ -f "$cfg" ] || echo '{}' | sudo tee "$cfg" >/dev/null
+        # Merge: the runner image ships its own daemon.json and clobbering it
+        # would drop settings that have nothing to do with this.
+        tmp=$(mktemp)
+        jq '.features."containerd-snapshotter" = true' "$cfg" > "$tmp"
+        sudo mv "$tmp" "$cfg"
+        sudo systemctl restart docker
+        # Assert it actually took. A silent no-op here is the same failure this
+        # step exists to fix — verify-payload passing or failing for reasons that
+        # have nothing to do with the pins.
+        docker info -f '{{.DriverStatus}}' | grep -q io.containerd.snapshotter \
+          || { echo "::error title=image store::containerd image store did not come up; verify-payload would compare pins against locally recomputed digests"; exit 1; }
+        docker info -f 'image store: {{.DriverStatus}}'
+
+    # `make images` assembles the airgap archive with crane
+    # (tools/build-image-archive.sh), not `docker save` — so every image-building
+    # job needs crane, and installing it here covers all of them (ci, release,
+    # dev-release, weekly) from one place. Best-effort: this action is also used
+    # by jobs that never build images (nightly's reproducibility check) and on
+    # older release branches with no crane_version or crane digest pin, which
+    # must not fail here — build-image-archive.sh's own `command -v crane` guard
+    # is the backstop for a context that needs crane but somehow did not get it.
+    - name: install crane
+      shell: bash
+      run: |
+        set -euo pipefail
+        v=$(sed -n 's/^crane_version *= *//p' build/versions.mk 2>/dev/null | tr -d ' ')
+        if [ -z "$v" ]; then
+          echo "::notice::no crane_version pin found; skipping crane install (not an image-building context)"
+          exit 0
+        fi
+        case "$(uname -m)" in
+          x86_64|amd64)  a=amd64 asset=x86_64 ;;
+          aarch64|arm64) a=arm64 asset=arm64 ;;
+          *) echo "::error::unsupported arch $(uname -m) for crane"; exit 1 ;;
+        esac
+        want=$(sed -n "s/^crane_sha256_linux_${a} *= *//p" build/versions.mk | tr -d ' ')
+        if [ -z "$want" ]; then
+          echo "::notice::no crane_sha256_linux_${a} pin found; skipping crane install (a branch without the digest pins)"
+          exit 0
+        fi
+        curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/crane.tgz" \
+          "https://github.com/google/go-containerregistry/releases/download/v$v/go-containerregistry_Linux_$asset.tar.gz"
+        echo "$want  $RUNNER_TEMP/crane.tgz" | sha256sum -c -
+        sudo tar -xz -C /usr/local/bin crane < "$RUNNER_TEMP/crane.tgz"
+        crane version

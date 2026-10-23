@@ -1,0 +1,64 @@
+name: droppable-patches
+
+# A patch can become droppable between releases, when upstream ships the fix we
+# were carrying. Nobody remembers to check, so this checks.
+on:
+  schedule:
+    - cron: '17 6 * * 1'    # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          out=$(tools/check-droppable-patches.sh 2>&1); rc=$?
+          {
+            echo "rc=$rc"
+            echo "out<<EOF"
+            echo "$out"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "$out"
+          # rc 3 is "rate limited, inconclusive" — not a finding, not a failure.
+          exit 0
+      - name: open an issue for droppable patches
+        if: steps.check.outputs.rc == '1'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          # Via env, not string interpolation: the script output contains patch
+          # filenames and upstream titles, and interpolating those into JS is an
+          # injection waiting to happen.
+          FINDINGS: ${{ steps.check.outputs.out }}
+        with:
+          script: |
+            const body = [
+              'The weekly patch review found patches whose upstream fix is already in the pinned tag.',
+              '', '```', process.env.FINDINGS, '```', '',
+              'Delete each patch marked DROPPABLE from its `build/components/<component>/patches/` queue: deleting the file is the whole change.',
+            ].join('\n');
+            const title = 'Droppable patches detected';
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'droppable-patches',
+            });
+            if (existing.data.length) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['droppable-patches'],
+              });
+            }

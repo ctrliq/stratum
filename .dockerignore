@@ -1,0 +1,5 @@
+# The image copies exactly one file. Everything else — the repo, staging trees,
+# other architectures' artifacts — would only make the build context large and
+# the layer cache useless.
+*
+!dist/stratum
