@@ -1,0 +1,259 @@
+name: ske-ostests
+runtime: yaml
+description: |
+  Multi-node SKE clusters on real infrastructure, for the weekly deep matrix.
+
+  GCP, because it is the only provider in reach that covers BOTH architectures:
+  release-publish.yml puts a final release back into draft unless it carries a
+  conformance-results tarball for each of amd64 and arm64, and that evidence must be
+  native — emulated runs do not count (policy; the gate only checks names).
+  Vultr is x86-only and would have needed a second provider for the
+  arm64 leg. The arm64 leg is also the one with prior art here: a 3-CP+worker
+  arm64 HA cluster has been live-validated on T2A.
+
+  NOT YET APPLIED against a real project. Treat every resource here as
+  a first draft that has not met a real API.
+
+  Pulumi YAML has no iteration, so the five instances are written out. That is a
+  deliberate trade: the contract fixes the topology at >= 3 controllers and
+  >= 2 workers, and five explicit resources read better than count indirection —
+  but it does mean the node counts are no longer a variable.
+
+config:
+  # Provider config carries NO type declarations: a provider-namespaced key
+  # ("gcp:...") with a `type:` is a project-LOAD error — every pulumi command
+  # in this directory fails before doing anything, teardown's `stack ls`
+  # included. gcp:project is not declared at all (gcp.sh sets it, and it has
+  # no safe default); the zone default is a plain value, which is allowed.
+  gcp:zone: us-central1-a
+
+  # Unique per run; names every resource and labels every instance, so leaks
+  # are attributable.
+  clusterName:
+    type: string
+
+  # amd64 and arm64 differ in BOTH machine type and image, and YAML has no
+  # conditionals — so the caller passes the pair. Defaults are the amd64 leg.
+  machineType:
+    type: string
+    default: e2-standard-4
+  image:
+    type: string
+    default: rocky-linux-cloud/rocky-linux-9
+  diskSize:
+    type: integer
+    # Controllers and workers alike. Conformance pulls the upstream e2e image and
+    # schedules its workloads on the workers, and crossing kubelet's nodefs
+    # threshold there surfaces as evicted pods and a DiskPressure taint — i.e. as
+    # a distribution bug rather than as a full disk.
+    default: 40
+
+  sshUser:
+    type: string
+    default: stratum
+  # Authorized key for sshUser, injected via instance metadata.
+  sshPublicKey:
+    type: string
+
+variables:
+  # Applied to every INSTANCE — GCP does not support labels on Networks or
+  # Firewalls at all, so those are found by their EXACT names instead: the
+  # network is ${clusterName}, and the firewalls are ${clusterName}-internal
+  # and ${clusterName}-ssh. Not by prefix — the GCP project is shared, and a
+  # ${clusterName}-prefixed resource that is not one of those three belongs to
+  # someone else. sweep.sh is written that way on purpose; anything that
+  # cleans these up later must be too.
+  #
+  # GCP labels are lowercase-alphanumeric-and-dashes only, so the ske: prefix
+  # used elsewhere becomes ske-. sweep.sh matches on exactly these three keys,
+  # in this dash form: renaming one there is a sweeper that finds
+  # nothing, silently.
+  #
+  # ske-repo matters more here than it would elsewhere: the GCP project is
+  # SHARED. Without it, triaging a leaked instance means guessing which
+  # repository created it, and cost attribution has nothing to group by.
+  commonLabels:
+    ske-cluster: ${clusterName}
+    ske-owner: ostests
+    ske-repo: ctrliq-stratum
+  sshKeys: "${sshUser}:${sshPublicKey}"
+
+resources:
+  network:
+    type: gcp:compute:Network
+    properties:
+      name: ${clusterName}
+      autoCreateSubnetworks: true
+
+  # Cluster-internal traffic, unrestricted between cluster members only. There is
+  # deliberately no rule opening 6443 to the world: the test driver reaches the
+  # apiserver over an SSH tunnel, so the control plane never needs public ingress
+  # and a leaked cluster is not a public apiserver.
+  allowInternal:
+    type: gcp:compute:Firewall
+    properties:
+      name: ${clusterName}-internal
+      network: ${network.name}
+      sourceTags: ["${clusterName}"]
+      targetTags: ["${clusterName}"]
+      allows:
+        - protocol: tcp
+          ports: ["0-65535"]
+        - protocol: udp
+          ports: ["0-65535"]
+        - protocol: icmp
+
+  allowSsh:
+    type: gcp:compute:Firewall
+    properties:
+      name: ${clusterName}-ssh
+      network: ${network.name}
+      sourceRanges: ["0.0.0.0/0"]
+      targetTags: ["${clusterName}"]
+      allows:
+        - protocol: tcp
+          ports: ["22"]
+
+  # Each instance takes an ephemeral external IP (the empty accessConfigs entry).
+  # It is for SSH from the runner, and for egress: the default network has no
+  # Cloud NAT, and without egress the nodes cannot pull the upstream conformance
+  # image — which run-conformance.sh requires come from upstream, not our mirror.
+  controller0:
+    type: gcp:compute:Instance
+    properties:
+      name: ${clusterName}-controller-0
+      machineType: ${machineType}
+      zone: ${gcp:zone}
+      tags: ["${clusterName}"]
+      labels: ${commonLabels}
+      bootDisk:
+        initializeParams:
+          image: ${image}
+          size: ${diskSize}
+      networkInterfaces:
+        - network: ${network.name}
+          accessConfigs: [{}]
+      metadata:
+        ssh-keys: ${sshKeys}
+        # The GCP project is SHARED: without this, GCP also honours project-level
+        # ssh-keys metadata, so any project-wide key held by another team logs
+        # into nodes carrying the cluster root CA and admin.conf. String, not
+        # boolean — GCE metadata values are strings.
+        block-project-ssh-keys: "true"
+
+  controller1:
+    type: gcp:compute:Instance
+    properties:
+      name: ${clusterName}-controller-1
+      machineType: ${machineType}
+      zone: ${gcp:zone}
+      tags: ["${clusterName}"]
+      labels: ${commonLabels}
+      bootDisk:
+        initializeParams:
+          image: ${image}
+          size: ${diskSize}
+      networkInterfaces:
+        - network: ${network.name}
+          accessConfigs: [{}]
+      metadata:
+        ssh-keys: ${sshKeys}
+        # The GCP project is SHARED: without this, GCP also honours project-level
+        # ssh-keys metadata, so any project-wide key held by another team logs
+        # into nodes carrying the cluster root CA and admin.conf. String, not
+        # boolean — GCE metadata values are strings.
+        block-project-ssh-keys: "true"
+
+  controller2:
+    type: gcp:compute:Instance
+    properties:
+      name: ${clusterName}-controller-2
+      machineType: ${machineType}
+      zone: ${gcp:zone}
+      tags: ["${clusterName}"]
+      labels: ${commonLabels}
+      bootDisk:
+        initializeParams:
+          image: ${image}
+          size: ${diskSize}
+      networkInterfaces:
+        - network: ${network.name}
+          accessConfigs: [{}]
+      metadata:
+        ssh-keys: ${sshKeys}
+        # The GCP project is SHARED: without this, GCP also honours project-level
+        # ssh-keys metadata, so any project-wide key held by another team logs
+        # into nodes carrying the cluster root CA and admin.conf. String, not
+        # boolean — GCE metadata values are strings.
+        block-project-ssh-keys: "true"
+
+  worker0:
+    type: gcp:compute:Instance
+    properties:
+      name: ${clusterName}-worker-0
+      machineType: ${machineType}
+      zone: ${gcp:zone}
+      tags: ["${clusterName}"]
+      labels: ${commonLabels}
+      bootDisk:
+        initializeParams:
+          image: ${image}
+          size: ${diskSize}
+      networkInterfaces:
+        - network: ${network.name}
+          accessConfigs: [{}]
+      metadata:
+        ssh-keys: ${sshKeys}
+        # The GCP project is SHARED: without this, GCP also honours project-level
+        # ssh-keys metadata, so any project-wide key held by another team logs
+        # into nodes carrying the cluster root CA and admin.conf. String, not
+        # boolean — GCE metadata values are strings.
+        block-project-ssh-keys: "true"
+
+  worker1:
+    type: gcp:compute:Instance
+    properties:
+      name: ${clusterName}-worker-1
+      machineType: ${machineType}
+      zone: ${gcp:zone}
+      tags: ["${clusterName}"]
+      labels: ${commonLabels}
+      bootDisk:
+        initializeParams:
+          image: ${image}
+          size: ${diskSize}
+      networkInterfaces:
+        - network: ${network.name}
+          accessConfigs: [{}]
+      metadata:
+        ssh-keys: ${sshKeys}
+        # The GCP project is SHARED: without this, GCP also honours project-level
+        # ssh-keys metadata, so any project-wide key held by another team logs
+        # into nodes carrying the cluster root CA and admin.conf. String, not
+        # boolean — GCE metadata values are strings.
+        block-project-ssh-keys: "true"
+
+# Public IPs are for SSH from the runner and nothing else.
+#
+# Private IPs are what the cluster is built out of: join URLs, --node-ip, and
+# every intra-cluster hop, which allowInternal permits by tag. A private address
+# is in the node's apiserver cert SANs (internal/pki/pki.go:239) while the public
+# one is not, so a join pointed at a public IP fails TLS verification.
+#
+# backends/gcp.sh pairs these lists by index, so the ordering here is load-bearing.
+outputs:
+  controllers:
+    - ${controller0.networkInterfaces[0].accessConfigs[0].natIp}
+    - ${controller1.networkInterfaces[0].accessConfigs[0].natIp}
+    - ${controller2.networkInterfaces[0].accessConfigs[0].natIp}
+  controllersPrivate:
+    - ${controller0.networkInterfaces[0].networkIp}
+    - ${controller1.networkInterfaces[0].networkIp}
+    - ${controller2.networkInterfaces[0].networkIp}
+  workers:
+    - ${worker0.networkInterfaces[0].accessConfigs[0].natIp}
+    - ${worker1.networkInterfaces[0].accessConfigs[0].natIp}
+  workersPrivate:
+    - ${worker0.networkInterfaces[0].networkIp}
+    - ${worker1.networkInterfaces[0].networkIp}
+  clusterName: ${clusterName}

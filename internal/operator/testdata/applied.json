@@ -1,0 +1,14 @@
+{
+  "alpha": [
+    {
+      "gvk": "v1,ConfigMap",
+      "namespace": "kube-system",
+      "name": "a"
+    },
+    {
+      "gvk": "v1,ConfigMap",
+      "namespace": "kube-system",
+      "name": "b"
+    }
+  ]
+}

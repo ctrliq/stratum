@@ -1,0 +1,484 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  // JSON5 so the compatibility fences can carry their upstream source as a
+  // comment. A fence without its source is tribal knowledge with extra steps.
+  extends: [
+    "config:recommended",
+    ":configMigration",
+    ":gitSignOff",
+    ":automergeMinor",
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  gitAuthor: "stratum-bot <stratum-bot@users.noreply.github.com>",
+  labels: ["dependencies"],
+  semanticCommits: "enabled",
+  semanticCommitType: "deps",
+  commitMessageAction: "Bump",
+  commitMessageTopic: "{{depName}}",
+  prTitleStrict: true,
+
+  // Apply a group's settings even when only one of its members has an update, so
+  // a lone Kubernetes bump still lands on the `renovate/kubernetes` branch under
+  // the group's name rather than as a one-off branch beside it. Renovate's
+  // default is false, so this is what makes a group of one keep the group's
+  // naming. The grouping itself comes from packageRules
+  // below — this only decides whether the group's naming survives a group of one.
+  groupSingleUpdates: true,
+
+  // Security bumps go through the same grouped, CI-gated path as everything
+  // else. An out-of-band ungrouped PR is exactly the skew this config prevents.
+  vulnerabilityAlerts: { enabled: false },
+
+  enabledManagers: ["gomod", "custom.regex", "github-actions", "terraform", "npm"],
+  postUpdateOptions: ["gomodTidy"],
+
+  // npm is scoped to dash/ by the FIRST packageRule below, not by a
+  // `npm: { managerFilePatterns: [...] }` block here. That block is
+  // what the obvious reading of "scope the manager" reaches for and it does not
+  // work: managerFilePatterns is `mergeable: true` in Renovate's option schema,
+  // so a value here is ADDED to the npm manager's defaults
+  // (`(^|/)package.json$`, `pnpm-workspace.yaml`, `.yarnrc.yml`) rather than
+  // replacing them — leaving npm repo-wide while reading as though it were
+  // narrowed. Verified against the pinned renovate's own
+  // config/options/index.js. A packageRule is the mechanism that actually
+  // scopes it.
+  //
+  // dash/pnpm-lock.yaml needs no mention: Renovate reads it as that package
+  // file's lock, and postUpdateOptions needs no pnpm entry for it to be
+  // refreshed.
+
+  // >>> BEGIN GENERATED baseBranchPatterns — tools/gen-fences.sh
+  baseBranchPatterns: ["main", "release-1.37", "release-1.36", "release-1.35"],
+  // <<< END GENERATED baseBranchPatterns
+
+  customManagers: [
+    {
+      description: "Pins in the version manifest, read from their renovate annotations",
+      customType: "regex",
+      managerFilePatterns: ["/^build/versions\\.mk$/"],
+      // The optional trailing group is the pin's `<x>_revision`, read as the
+      // digest so Renovate rewrites it with the version. Without it
+      // every bump leaves the old SHA behind and fails lint-revisions and the
+      // components build. Only github-tags can fill it: it carries each tag's
+      // peeled commit as the release's digest, whereas github-releases looks
+      // the digest up by the exact tag name — `2.4.0` against upstream's
+      // `v2.4.0` finds nothing, and Renovate drops an update whose digest it
+      // cannot resolve. The extractVersion rule below makes the names line up.
+      // A trailing `# ...` on the version line is Make syntax lint-revisions
+      // accepts, so it is skipped rather than allowed to end the match before
+      // the revision line. The revision must be the very next line: `\s+` there
+      // would step over a blank line and take a later pin's SHA as this one's.
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\s+[a-z_-]+_version\\s*=\\s*(?<currentValue>\\S+)(?:[ \\t]*#[^\\n]*)?(?:[ \\t]*\\r?\\n[ \\t]*[a-z_-]+_revision\\s*=\\s*(?<currentDigest>[0-9a-f]{40}))?",
+      ],
+    },
+    {
+      description: "Digest-pinned runtime images",
+      customType: "regex",
+      managerFilePatterns: ["/^build/images\\.txt$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\S+:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]{64})",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      description: "Any pin that leaks into a component Dockerfile (there should be none)",
+      customType: "regex",
+      managerFilePatterns: ["/^build/components/[^/]+/Dockerfile$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+\\S+\\s*=\\s*(?<currentValue>\\S+)",
+      ],
+    },
+  ],
+
+  packageRules: [
+    {
+      description: "npm applies to dash/ and nowhere else. This rule, not \
+        managerFilePatterns, is what scopes the manager — see the note above enabledManagers. \
+        Negation rather than the disable-then-allowlist pair the gomod rules use, because \
+        there is exactly one npm tree and naming it twice would only invite the two lists to \
+        drift. A package.json added elsewhere for tooling therefore gets no PRs until someone \
+        changes this line on purpose.",
+      matchManagers: ["npm"],
+      matchFileNames: ["!dash/**"],
+      enabled: false,
+    },
+    {
+      description: "The dashboard's npm dependencies as one PR. Nothing a cluster \
+        runs depends on them — `stratum dash` serves a bundle, not a Node process — so they \
+        carry none of the skew risk the Kubernetes group exists to prevent, and a dozen \
+        separate React/vite PRs a week is the only real hazard. ci.yml's `dash` job is the \
+        gate: `pnpm test` and `pnpm run build` both run on the PR.",
+      matchManagers: ["npm"],
+      groupName: "dashboard npm dependencies",
+      groupSlug: "dash-npm",
+    },
+    {
+      description: "pnpm's own version, in its own PR — and in ONE PR across both places it \
+        appears. The npm manager extracts dash/package.json's `packageManager` field as a \
+        dependency and the custom regex manager watches pnpm_version in build/versions.mk; \
+        tools/lint-versions.sh asserts the two agree, so a PR that moved only one of them \
+        would fail its own lint. Matching by name with no matchManagers is what puts both \
+        under one branch. Kept out of the dashboard group above for the reason the pin's \
+        comment in build/versions.mk gives: a pnpm major rewrites the lockfile, and that \
+        must land with `pnpm test` and `pnpm run build` green on its own rather than riding \
+        in on a React bump nobody read.",
+      matchPackageNames: ["pnpm"],
+      groupName: "pnpm",
+      groupSlug: "pnpm",
+    },
+    {
+      description: "The revisioned pins in build/versions.mk track github-tags. The \
+        manifest writes versions without the `v`, so strip it here, or the version Renovate \
+        writes and the tag it takes the digest from stop matching. Anchored on `v` and a \
+        numeric x.y.z: containerd also carries `api/v1.10.0` and bare `0.0.2` tags, which \
+        are not releases of the thing pinned. matchManagers keeps github-actions, which \
+        uses the same datasource, out of it.",
+      matchManagers: ["custom.regex"],
+      matchDatasources: ["github-tags"],
+      extractVersion: "^v(?<version>\\d+\\.\\d+\\.\\d+.*)$",
+    },
+    {
+      description: "Ignore all Go module updates by default",
+      matchManagers: ["gomod"],
+      enabled: false,
+    },
+    {
+      description: "Kubernetes Go libraries: allowlisted so the group below can catch them. \
+        client-go and friends are in go.mod at the pinned minor (v0.36.x \
+        alongside kubernetes 1.36.x); this list is what stops them arriving as 30 \
+        separate PRs.",
+      matchPackageNames: [
+        "k8s.io/api",
+        "k8s.io/apiextensions-apiserver",
+        "k8s.io/apimachinery",
+        "k8s.io/apiserver",
+        "k8s.io/cli-runtime",
+        "k8s.io/client-go",
+        "k8s.io/cloud-provider",
+        "k8s.io/cluster-bootstrap",
+        "k8s.io/code-generator",
+        "k8s.io/component-base",
+        "k8s.io/component-helpers",
+        "k8s.io/controller-manager",
+        "k8s.io/cri-api",
+        "k8s.io/cri-client",
+        "k8s.io/csi-translation-lib",
+        "k8s.io/dynamic-resource-allocation",
+        "k8s.io/endpointslice",
+        "k8s.io/kms",
+        "k8s.io/kube-aggregator",
+        "k8s.io/kube-controller-manager",
+        "k8s.io/kube-scheduler",
+        "k8s.io/kubectl",
+        "k8s.io/kubelet",
+        "k8s.io/kubernetes",
+        "k8s.io/metrics",
+        "k8s.io/mount-utils",
+        "k8s.io/pod-security-admission",
+      ],
+      enabled: true,
+      allowedVersions: "/^v0\\./",
+    },
+    {
+      description: "THE grouping rule: the Kubernetes binary pin, every k8s.io Go module, \
+        and the pause image move as ONE PR. Binaries and libraries can then never skew, \
+        which is the single most valuable thing this config does.",
+      matchPackageNames: [
+        "k8s.io/**",
+        "**/kubernetes",
+        "registry.k8s.io/pause",
+      ],
+      groupName: "Kubernetes",
+      groupSlug: "kubernetes",
+      // main pins pre-releases on purpose; the per-branch rules below re-fence it.
+      ignoreUnstable: false,
+      respectLatest: false,
+    },
+    {
+      description: "etcd: binary pin and Go client together",
+      matchPackageNames: ["etcd-io/etcd", "go.etcd.io/etcd/**"],
+      groupName: "etcd",
+      groupSlug: "etcd",
+    },
+    {
+      description: "containerd and runc move together — the CRI and its OCI runtime are \
+        one compatibility surface, and splitting them invites a skew nobody tests",
+      matchPackageNames: [
+        "containerd/containerd",
+        "opencontainers/runc",
+        "github.com/containerd/containerd{/,}**",
+      ],
+      groupName: "containerd+runc",
+      groupSlug: "containerd",
+    },
+    {
+      description: "Cilium: the agent images and the release pin",
+      matchPackageNames: ["cilium/cilium", "quay.io/cilium/**"],
+      groupName: "cilium",
+      groupSlug: "cilium",
+    },
+    {
+      description: "kube-vip",
+      matchPackageNames: ["kube-vip/kube-vip", "ghcr.io/kube-vip/**"],
+      groupName: "kube-vip",
+      groupSlug: "kube-vip",
+    },
+    {
+      description: "CoreDNS: the pin and its image",
+      matchPackageNames: ["coredns/coredns", "docker.io/coredns/coredns"],
+      groupName: "coredns",
+      groupSlug: "coredns",
+    },
+    {
+      description: "Go toolchain follows upstream Kubernetes's pinned Go, so it is never \
+        bumped on its own judgement — the per-branch ceiling below is upstream's pin \
+        for that branch, and a bump only lands when upstream moves first",
+      matchDepNames: ["go", "docker.io/library/golang"],
+      groupName: "Go toolchain",
+      groupSlug: "go",
+    },
+    {
+      description: "Release branches take patch updates only, and never pre-releases. \
+        main is where a pre-release is allowed to break things early.",
+      matchBaseBranches: ["!main"],
+      prTitleStrict: false,
+      ignoreUnstable: true,
+      respectLatest: true,
+    },
+
+    // >>> BEGIN GENERATED FENCES — tools/gen-fences.sh (do not edit by hand)
+        {
+            "description": "Kubernetes on release-1.37 — source: the branch's own minor",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.37"
+            ],
+            "matchPackageNames": [
+                "k8s.io/**",
+                "**/kubernetes",
+                "registry.k8s.io/pause"
+            ],
+            "allowedVersions": "/^v?[01]\\.37\\./"
+        },
+        {
+            "description": "Go toolchain on release-1.37 — source: kubernetes/kubernetes v1.37.1 .go-version",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.37"
+            ],
+            "matchDepNames": [
+                "go",
+                "docker.io/library/golang"
+            ],
+            "allowedVersions": "<=1.26"
+        },
+        {
+            "description": "etcd on release-1.37 — source: kubeadm DefaultEtcdVersion at v1.37.1",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.37"
+            ],
+            "matchPackageNames": [
+                "etcd-io/etcd",
+                "go.etcd.io/etcd/**"
+            ],
+            "allowedVersions": "<=3.7"
+        },
+        {
+            "description": "CoreDNS on release-1.37 — source: kubeadm CoreDNSVersion at v1.37.1",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.37"
+            ],
+            "matchPackageNames": [
+                "coredns/coredns",
+                "docker.io/coredns/coredns"
+            ],
+            "allowedVersions": "<=1.14"
+        },
+        {
+            "description": "containerd and runc on release-1.37 — source: containerd RELEASES.md Kubernetes Support matrix",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.37"
+            ],
+            "matchPackageNames": [
+                "containerd/containerd",
+                "opencontainers/runc",
+                "github.com/containerd/containerd{/,}**"
+            ],
+            "allowedVersions": "<=2.4"
+        },
+        {
+            "description": "Cilium on release-1.37 — source: Cilium Documentation/network/kubernetes/compatibility.rst (1.36 row inherited: no 1.37 row published yet)",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.37"
+            ],
+            "matchPackageNames": [
+                "cilium/cilium",
+                "quay.io/cilium/**"
+            ],
+            "allowedVersions": "<=1.20"
+        },
+        {
+            "description": "Kubernetes on release-1.36 — source: the branch's own minor",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.36"
+            ],
+            "matchPackageNames": [
+                "k8s.io/**",
+                "**/kubernetes",
+                "registry.k8s.io/pause"
+            ],
+            "allowedVersions": "/^v?[01]\\.36\\./"
+        },
+        {
+            "description": "Go toolchain on release-1.36 — source: kubernetes/kubernetes v1.36.5 .go-version",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.36"
+            ],
+            "matchDepNames": [
+                "go",
+                "docker.io/library/golang"
+            ],
+            "allowedVersions": "<=1.26"
+        },
+        {
+            "description": "etcd on release-1.36 — source: kubeadm DefaultEtcdVersion at v1.36.5",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.36"
+            ],
+            "matchPackageNames": [
+                "etcd-io/etcd",
+                "go.etcd.io/etcd/**"
+            ],
+            "allowedVersions": "<=3.6"
+        },
+        {
+            "description": "CoreDNS on release-1.36 — source: kubeadm CoreDNSVersion at v1.36.5",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.36"
+            ],
+            "matchPackageNames": [
+                "coredns/coredns",
+                "docker.io/coredns/coredns"
+            ],
+            "allowedVersions": "<=1.14"
+        },
+        {
+            "description": "containerd and runc on release-1.36 — source: containerd RELEASES.md Kubernetes Support matrix",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.36"
+            ],
+            "matchPackageNames": [
+                "containerd/containerd",
+                "opencontainers/runc",
+                "github.com/containerd/containerd{/,}**"
+            ],
+            "allowedVersions": "<=2.3"
+        },
+        {
+            "description": "Cilium on release-1.36 — source: Cilium Documentation/network/kubernetes/compatibility.rst",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.36"
+            ],
+            "matchPackageNames": [
+                "cilium/cilium",
+                "quay.io/cilium/**"
+            ],
+            "allowedVersions": "<=1.20"
+        },
+        {
+            "description": "Kubernetes on release-1.35 — source: the branch's own minor",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.35"
+            ],
+            "matchPackageNames": [
+                "k8s.io/**",
+                "**/kubernetes",
+                "registry.k8s.io/pause"
+            ],
+            "allowedVersions": "/^v?[01]\\.35\\./"
+        },
+        {
+            "description": "Go toolchain on release-1.35 — source: kubernetes/kubernetes v1.35.9 .go-version",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.35"
+            ],
+            "matchDepNames": [
+                "go",
+                "docker.io/library/golang"
+            ],
+            "allowedVersions": "<=1.26"
+        },
+        {
+            "description": "etcd on release-1.35 — source: kubeadm DefaultEtcdVersion at v1.35.9",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.35"
+            ],
+            "matchPackageNames": [
+                "etcd-io/etcd",
+                "go.etcd.io/etcd/**"
+            ],
+            "allowedVersions": "<=3.6"
+        },
+        {
+            "description": "CoreDNS on release-1.35 — source: kubeadm CoreDNSVersion at v1.35.9",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.35"
+            ],
+            "matchPackageNames": [
+                "coredns/coredns",
+                "docker.io/coredns/coredns"
+            ],
+            "allowedVersions": "<=1.13"
+        },
+        {
+            "description": "containerd and runc on release-1.35 — source: containerd RELEASES.md Kubernetes Support matrix",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.35"
+            ],
+            "matchPackageNames": [
+                "containerd/containerd",
+                "opencontainers/runc",
+                "github.com/containerd/containerd{/,}**"
+            ],
+            "allowedVersions": "<=2.2"
+        },
+        {
+            "description": "Cilium on release-1.35 — source: Cilium Documentation/network/kubernetes/compatibility.rst",
+            "enabled": true,
+            "matchBaseBranches": [
+                "release-1.35"
+            ],
+            "matchPackageNames": [
+                "cilium/cilium",
+                "quay.io/cilium/**"
+            ],
+            "allowedVersions": "<=1.20"
+        },
+        {
+            "description": "kube-vip has no published Kubernetes support matrix, so it carries no derived fence and tracks latest on every branch. Revisit if kube-vip starts publishing one. — source: none available",
+            "matchPackageNames": [
+                "kube-vip/kube-vip",
+                "ghcr.io/kube-vip/**"
+            ]
+        }
+    // <<< END GENERATED FENCES
+  ],
+}

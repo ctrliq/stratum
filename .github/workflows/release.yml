@@ -1,0 +1,678 @@
+name: release
+
+# Everything a release is, from one signed tag. tools/release.sh creates the tag;
+# from here nothing is done by hand except writing the summary paragraph and
+# pressing Publish. See RELEASE.md.
+#
+# The release is created as a DRAFT. Publishing is a separate, human act, and it
+# is what fires release-publish.yml (channels + the conformance guard).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write     # create the draft, upload assets
+  packages: write     # ghcr.io
+  id-token: write     # cosign keyless signing via GitHub OIDC
+
+# One release at a time per tag. A re-run must not race the run it replaces
+# over the same draft.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GHCR_IMAGE: ghcr.io/ctrliq/stratum
+  # checksums and conformance-upload run gh without a checkout, and gh infers
+  # the repository from git when not told — "fatal: not a git repository".
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # What kind of release this is. Every later job asks this rather than
+  # re-parsing the tag, so "is this a final" has exactly one definition.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ github.ref_name }}
+      prerelease: ${{ steps.k.outputs.prerelease }}
+      final: ${{ steps.k.outputs.final }}
+      conformance: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0          # version.sh derives from the whole tag list
+      - id: k
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref_name }}" == *-rc.* ]]; then
+            echo "prerelease=true"  >> "$GITHUB_OUTPUT"
+            echo "final=false"      >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "final=true"       >> "$GITHUB_OUTPUT"
+          fi
+      - name: the tag must be what the pins and history derive
+        # Catches the two failures that actually happen: a pin bumped without
+        # retagging, and a typo'd tag. Before anything is built from it.
+        run: make check-version
+      # Which clouds certify this release (gcp), both architectures each. One
+      # generator with the nightly (tools/ostests/matrix.sh), so the two cannot
+      # disagree about what a provider leg is.
+      - id: matrix
+        run: echo "matrix=$(tools/ostests/matrix.sh release)" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # The runtime images, in our namespace, before anything is built from
+  # them. `make images` prefers the mirror and falls back to upstream on the
+  # same digest, so this running first is what makes the payload's names right.
+  mirror-images:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: pins
+        run: echo "crane=$(sed -n 's/^crane_version *= *//p' build/versions.mk | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - name: install crane
+        run: |
+          set -euo pipefail
+          v=${{ steps.pins.outputs.crane }}
+          [ -n "$v" ] || { echo "::error::no crane_version in this tag's versions.mk"; exit 1; }
+          want=$(sed -n 's/^crane_sha256_linux_amd64 *= *//p' build/versions.mk | tr -d ' ')
+          [ -n "$want" ] || { echo "::error::no crane_sha256_linux_amd64 pin in this tag's versions.mk — backport the digest pins"; exit 1; }
+          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/crane.tgz" \
+            "https://github.com/google/go-containerregistry/releases/download/v$v/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "$want  $RUNNER_TEMP/crane.tgz" | sha256sum -c -
+          tar -xz -C /usr/local/bin crane < "$RUNNER_TEMP/crane.tgz"
+      - name: login
+        run: |
+          crane auth login ghcr.io -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
+      - run: make mirror-images
+      - name: the mirror serves every pinned digest
+        run: make verify-mirror
+
+  draft-release:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=${{ needs.meta.outputs.tag }}
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "draft for $TAG already exists (workflow re-run) — leaving it alone"
+            exit 0
+          fi
+          # --notes, never --generate-notes: the notes are hand-written before
+          # publish (tools/release-notes.sh generates the skeleton, a human writes
+          # the summary). A body GitHub wrote is a body nobody read.
+          gh release create "$TAG" \
+            --draft \
+            --title "$TAG" \
+            ${{ needs.meta.outputs.prerelease == 'true' && '--prerelease' || '' }} \
+            --notes "$(printf '%s\n' \
+              '> **Draft — notes not written yet.**' \
+              '>' \
+              '> Generate the skeleton with `tools/release-notes.sh '"$TAG"'`,' \
+              '> write the summary paragraph at the top, and follow the' \
+              '> pre-publish checklist in [RELEASE.md](../blob/main/RELEASE.md).')"
+
+  # ---------------------------------------------------------------------------
+  # Native per architecture. Nothing here is cross-compiled: the artifact
+  # is static-musl with a cgo runc in it, and cross builds are exactly where that
+  # breaks in ways a `file` check does not catch.
+  build:
+    needs: [meta, mirror-images, draft-release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/runner-prep
+      # Node + pnpm: `make package` builds the SPA the Go build embeds. Beside
+      # runner-prep rather than inside it — see that action's header for why.
+      - uses: ./.github/actions/node-prep
+      - id: pins
+        run: echo "go=$(sed -n 's/^go_version *= *//p' build/versions.mk | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+
+      # Before the build, not just before the push: `make images` pulls the
+      # MIRRORED refs, and a private ghcr package would 401 and silently take the
+      # upstream fallback — which builds fine and quietly proves nothing about
+      # the mirror.
+      - name: registry login
+        run: |
+          set -euo pipefail
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: build components
+        run: make components TARGET_ARCH=${{ matrix.arch }}
+      - name: stage images
+        run: make images TARGET_ARCH=${{ matrix.arch }}
+      - name: package
+        run: make package TARGET_ARCH=${{ matrix.arch }}
+
+      # BEFORE signing, always. A signature on an untested binary is a signature
+      # that says "we vouch for this" about something nobody ran. smoke includes
+      # verify-payload: the embedded image set must equal the mirrored pin set by
+      # name and digest, which is the airgap claim.
+      - name: smoke test the artifact
+        run: make smoke TARGET_ARCH=${{ matrix.arch }}
+
+      # The in-cluster dashboard's image on ghcr too, under the name stamped
+      # into the binary, so a node that lost it can pull it. The payload's own
+      # archive, smoke-tested above, is what is pushed, so the registry serves
+      # the digest the nodes import. Before the step below deletes it.
+      - name: push the dashboard image to ghcr
+        run: |
+          tools/push-dash-image.sh "staging/linux-${{ matrix.arch }}/images/stratum-dash.tar" \
+            "$GHCR_IMAGE/stratum-dash:${{ needs.meta.outputs.tag }}" ${{ matrix.arch }}
+
+      # What an importer of pkg/cli rebuilds this release from: the payload,
+      # carved off the smoke-tested binary, and the engine's -X stamps. Delete
+      # the staged image tar first: with it, the binary and the carved zip, the
+      # runner would hold three copies of the image set.
+      - name: importer assets
+        run: |
+          set -euo pipefail
+          rm -rf "staging/linux-${{ matrix.arch }}/images"
+          make payload-asset engine-ldflags TARGET_ARCH=${{ matrix.arch }}
+
+      - name: build-info
+        run: make build-info TARGET_ARCH=${{ matrix.arch }}
+
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v2: cosign v3, installer v4's default, ignores sign-blob's
+          # --output-signature/--output-certificate.
+          cosign-release: v2.6.5
+
+      - name: SBOM
+        run: make sbom TARGET_ARCH=${{ matrix.arch }}
+      - name: sign the artifact, its SBOM and the importer assets
+        # Keyless, via the GitHub OIDC token above. There is no long-lived
+        # private key: the signing identity is this workflow file at this tag,
+        # which is what `cosign verify-blob --certificate-identity-regexp`
+        # checks.
+        run: make sign TARGET_ARCH=${{ matrix.arch }}
+
+      - name: name the assets for the arch they were built on
+        # dist/stratum is what the Makefile builds; the release carries one file
+        # per architecture. Renaming after signing is safe — a cosign blob
+        # signature is over the bytes, not the filename.
+        id: assets
+        run: |
+          set -euo pipefail
+          for f in dist/stratum dist/stratum.*; do
+            [ -e "$f" ] || continue
+            mv "$f" "dist/stratum-linux-${{ matrix.arch }}${f#dist/stratum}"
+          done
+          for f in dist/stratum-payload.zip* dist/stratum-ldflags.txt*; do
+            base=${f#dist/}; stem=${base%%.*}; rest=${base#"$stem"}
+            mv "$f" "dist/${stem}-linux-${{ matrix.arch }}${rest}"
+          done
+          mv build-info.json "dist/build-info-${{ matrix.arch }}.json"
+          # The importer assets stay out of sha256sums: release-publish checks
+          # every listed name against its download, and they are signed alone.
+          ( cd dist && sha256sum stratum-linux-${{ matrix.arch }}* build-info-${{ matrix.arch }}.json \
+              > "sha256sums-${{ matrix.arch }}.txt" )
+          ls -l dist/
+
+      - name: upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
+            dist/stratum-linux-${{ matrix.arch }} \
+            dist/stratum-linux-${{ matrix.arch }}.spdx.json \
+            dist/stratum-linux-${{ matrix.arch }}.sig \
+            dist/stratum-linux-${{ matrix.arch }}.pem \
+            dist/stratum-linux-${{ matrix.arch }}.spdx.json.sig \
+            dist/stratum-linux-${{ matrix.arch }}.spdx.json.pem \
+            dist/stratum-payload-linux-${{ matrix.arch }}.zip \
+            dist/stratum-payload-linux-${{ matrix.arch }}.zip.sig \
+            dist/stratum-payload-linux-${{ matrix.arch }}.zip.pem \
+            dist/stratum-ldflags-linux-${{ matrix.arch }}.txt \
+            dist/stratum-ldflags-linux-${{ matrix.arch }}.txt.sig \
+            dist/stratum-ldflags-linux-${{ matrix.arch }}.txt.pem \
+            dist/build-info-${{ matrix.arch }}.json
+
+      # The importer assets once more on ghcr, beside this release's images. The
+      # release stays a draft until someone publishes it, and a draft's assets
+      # need write on this repository to read; an importer's CI holds only
+      # read:packages. Same signed bytes, so the importer's verify-blob holds.
+      - name: push the importer assets to ghcr
+        run: tools/push-importer-assets.sh dist "$GHCR_IMAGE:${{ needs.meta.outputs.tag }}" ${{ matrix.arch }}
+
+      # The same binary, once more as a WORKFLOW artifact — for conformance-test.
+      # That job is deliberately scoped down to contents:read, and reading a
+      # DRAFT release's assets requires write, so `gh release download` fails
+      # there. Handing the bytes over in-workflow keeps the scope-down intact.
+      # Must run before the image step below, which renames this file away.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: bin-${{ matrix.arch }}
+          path: dist/stratum-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          # Every other write in this job is re-run-safe (the draft is detected,
+          # the release upload --clobbers) — without this, a re-run after a
+          # registry hiccup dies on a 409 for an artifact the first attempt
+          # already uploaded. Free on the first run.
+          overwrite: true
+
+      # The per-arch image. The multi-arch index is assembled in `images` below
+      # from these two, which is how a natively-built pair becomes one tag.
+      - name: build and push the per-arch image
+        run: |
+          set -euo pipefail
+          # The image carries the artifact that was just built, smoke-tested and
+          # signed — it is not a second build.
+          mv "dist/stratum-linux-${{ matrix.arch }}" dist/stratum
+          docker build \
+            --build-arg "ALPINE_VERSION=$(sed -n 's/^alpine_version *= *//p' build/versions.mk | tr -d ' ')" \
+            -t "$GHCR_IMAGE:${{ needs.meta.outputs.tag }}-${{ matrix.arch }}" .
+          docker push "$GHCR_IMAGE:${{ needs.meta.outputs.tag }}-${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: sums-${{ matrix.arch }}
+          path: dist/sha256sums-${{ matrix.arch }}.txt
+          overwrite: true
+
+  # ---------------------------------------------------------------------------
+  # One tag, both architectures, on ghcr.io.
+  images:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v2: cosign v3, installer v4's default, ignores sign-blob's
+          # --output-signature/--output-certificate.
+          cosign-release: v2.6.5
+      - name: registry login
+        run: |
+          set -euo pipefail
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - name: assemble the multi-arch index and sign it
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          image="$GHCR_IMAGE"
+          docker buildx imagetools create -t "$image:$TAG" \
+            "$image:$TAG-amd64" "$image:$TAG-arm64"
+          # Sign the index by DIGEST. Signing a tag signs whatever the tag
+          # points at today, which is not a claim anyone can rely on.
+          digest=$(docker buildx imagetools inspect "$image:$TAG" --format '{{.Manifest.Digest}}')
+          cosign sign --yes "$image@$digest"
+          echo "signed $image@$digest"
+          # `latest` follows finals only: an RC that moved it would hand every
+          # `docker pull` user a prerelease.
+          if [ "${{ needs.meta.outputs.final }}" = "true" ]; then
+            docker buildx imagetools create -t "$image:latest" "$image:$TAG"
+          fi
+      - name: assemble the dashboard image's index and sign it
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          image="$GHCR_IMAGE/stratum-dash"
+          docker buildx imagetools create -t "$image:$TAG" \
+            "$image:$TAG-amd64" "$image:$TAG-arm64"
+          digest=$(docker buildx imagetools inspect "$image:$TAG" --format '{{.Manifest.Digest}}')
+          cosign sign --yes "$image@$digest"
+          echo "signed $image@$digest"
+
+  checksums:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # v2: cosign v3, installer v4's default, ignores sign-blob's
+          # --output-signature/--output-certificate.
+          cosign-release: v2.6.5
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: sums-*
+          merge-multiple: true
+      - name: one sha256sums.txt for the whole release
+        run: |
+          set -euo pipefail
+          cat sha256sums-*.txt | sort -k2 > sha256sums.txt
+          cat sha256sums.txt
+          cosign sign-blob --yes sha256sums.txt \
+            --output-signature sha256sums.txt.sig \
+            --output-certificate sha256sums.txt.pem
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
+            sha256sums.txt sha256sums.txt.sig sha256sums.txt.pem
+
+  # ---------------------------------------------------------------------------
+  # The dashboard as a package. This repo owns dash/; a downstream build consumes it as
+  # @ctrliq/stratum-dash and adds its own screens through the seam in
+  # dash/src/registry.js rather than forking the shell — which keeps
+  # downstream-only screens out of this repo. The package version IS the stratum version
+  # without its leading v, so "which dashboard shipped in this release" has one
+  # answer instead of two version schemes to reconcile.
+  #
+  # Credential: the workflow's own GITHUB_TOKEN (packages: write, above). No PAT,
+  # and nothing here reads from GitHub Packages — dash/ installs entirely from
+  # the public npm registry, and setup-node's .npmrc points only the
+  # @ctrliq scope at npm.pkg.github.com.
+  #
+  # Nothing downstream waits on this: a dashboard that fails to publish must not
+  # hold up the binaries, and the job is re-runnable on its own.
+  dash-publish:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Pinned Node + pnpm from build/versions.mk. Shared with ci.yml's dash and
+      # go jobs, which need the same pair.
+      - uses: ./.github/actions/node-prep
+      # `make dash` — the same install/test/build the `dash` CI job and every
+      # `make package` run, rather than the three pnpm commands spelled out
+      # again here. What gets published is then what the build produces, by
+      # construction; the step below only stamps the version and pushes.
+      # It runs before the step that writes .npmrc on purpose: the install needs
+      # no credential at all, and only `npm view`/`pnpm publish` do.
+      - run: make dash
+      - name: publish @ctrliq/stratum-dash
+        working-directory: dash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          # An RC must never become the `latest` that a bare `pnpm add` resolves.
+          DIST_TAG: ${{ needs.meta.outputs.prerelease == 'true' && 'rc' || 'latest' }}
+        run: |
+          set -euo pipefail
+          V=${TAG#v}
+          # Written here rather than taken from setup-node's registry-url, which
+          # puts its npmrc somewhere only npm is guaranteed to read. It is the
+          # USER config, outside the checkout, not dash/.npmrc: pnpm 12 ignores
+          # an env-referenced _authToken in a repository-controlled npmrc
+          # ("environment variables are not expanded in repository-controlled
+          # registry credentials") and publishes with no token. npm and pnpm
+          # both read NPM_CONFIG_USERCONFIG. The token
+          # stays an env reference, expanded when npm/pnpm read the file, so it
+          # is never written to disk.
+          #
+          # ONLY @ctrliq points at GitHub Packages. The default registry stays
+          # public, which is what makes `pnpm install` below need no credential
+          # at all.
+          export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc"
+          cat > "$NPM_CONFIG_USERCONFIG" <<'NPMRC'
+          @ctrliq:registry=https://npm.pkg.github.com/
+          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+          NPMRC
+          # The version lives in the tag, not in the tree: dash/package.json
+          # carries 0.0.0 so nobody has to keep it in step by hand.
+          npm pkg set version="$V"
+          # A re-run must not fail on the version it already published; GitHub
+          # Packages refuses to replace one, which is the behaviour we want.
+          if npm view "@ctrliq/stratum-dash@$V" version >/dev/null 2>&1; then
+            echo "@ctrliq/stratum-dash@$V is already published — leaving it alone"
+            exit 0
+          fi
+          pnpm publish --no-git-checks --tag "$DIST_TAG"
+
+  # ---------------------------------------------------------------------------
+  # Conformance against the artifacts that were just built, on real
+  # provisioned infrastructure. Hours long, and nothing above waits for it: the
+  # release page has its artifacts long before this resolves.
+  #
+  # Gated on OSTESTS_ENABLED because it costs real money and needs cloud
+  # credentials. A final with this disabled fails at conformance-gate — skipping
+  # is not the same as passing.
+  conformance-test:
+    needs: [meta, build]
+    if: vars.OSTESTS_ENABLED == 'true'
+    # Scoped DOWN from the workflow block (contents:write, packages:write): this
+    # job runs an e2e suite against throwaway infrastructure and builds nothing
+    # it publishes. Inheriting write on the release and on ghcr.io would put the
+    # release itself inside the blast radius of anything that goes wrong out
+    # there. contents:read to check out; id-token for WIF.
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      # provider x arch, from tools/ostests/matrix.sh (the meta job). No
+      # max-parallel: one release at a time, and every leg's quota is its own
+      # cloud's.
+      # matrix.sh emits the whole {"include":[...]} object, so it is the matrix,
+      # not the include list — nested under include: GitHub rejects the
+      # strategy and the job never exists.
+      matrix: ${{ fromJSON(needs.meta.outputs.conformance) }}
+    runs-on: ${{ matrix.runner }}
+    # Provisioning ~40m + certified-conformance up to 4h; GitHub's 6h kill runs
+    # NO further steps, teardown included, so an uncapped job that hits the
+    # platform limit leaks the release cluster. Same budget as nightly's ostests.
+    timeout-minutes: 330
+    env:
+      CLUSTER_NAME: ske-conf-${{ github.run_id }}-${{ matrix.provider }}-${{ matrix.arch }}
+      ARCH: ${{ matrix.arch }}
+      PROVISION_BACKEND: ${{ matrix.provider }}
+      PROVIDER: ${{ matrix.provider }}
+      GCP_PROJECT: ${{ vars.OSTESTS_GCP_PROJECT }}
+      GCP_ZONE: ${{ vars.OSTESTS_GCP_ZONE }}
+      # PULUMI_BACKEND_URL is set per provider by the "provider settings" step
+      # below. Self-managed state: Pulumi requires a backend where OpenTofu
+      # defaulted to a local file, and a runner that dies mid-job would
+      # otherwise take the state with it and orphan the whole cluster.
+      # The Pulumi passphrase is deliberately NOT here: it is step-scoped to
+      # `up` and `teardown`, the only steps that run pulumi — same pattern and
+      # rationale as nightly's ostests job.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # Provisioning is Pulumi-on-GCP; the runner needs only the Pulumi CLI.
+      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
+      # One state bucket per cloud: a job's credentials reach exactly one, and
+      # the backend refuses any other scheme (backends/ssh-lib.sh). Resolved in
+      # shell rather than a chain of `&&`/`||` expressions so that an unset
+      # variable fails HERE, by name, instead of quietly selecting another
+      # provider's bucket for the expression to fall through to.
+      - name: provider settings
+        env:
+          GCP_URL: ${{ vars.OSTESTS_PULUMI_BACKEND_URL }}
+        run: |
+          case "$PROVIDER" in
+            gcp)   url=$GCP_URL;   var=OSTESTS_PULUMI_BACKEND_URL ;;
+            *)     echo "::error::unknown provider '$PROVIDER'"; exit 1 ;;
+          esac
+          [ -n "$url" ] || { echo "::error::no Pulumi state URL configured for $PROVIDER — set the $var repository variable"; exit 1; }
+          echo "PULUMI_BACKEND_URL=$url" >> "$GITHUB_ENV"
+      # provision.sh's backend uploads the public half via instance metadata;
+      # hosted runners have no keypair.
+      - name: generate an ssh keypair
+        run: test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -N '' -q -f ~/.ssh/id_ed25519
+      - name: install hydrophone
+        run: |
+          set -euo pipefail
+          a=${{ matrix.arch }}
+          # BOTH lookups before the download, each guarded, and fail closed but
+          # legibly: this checks out the TAG, and a v1.35.x/v1.36.x tag on a
+          # branch that predates these pins has NEITHER key. An empty version
+          # would build a malformed URL and die as a baffling curl 404 before
+          # any guard placed after the download could speak; an empty digest
+          # would surface as a sha256sum format error. Name the actual fix
+          # (backport the pins) in both cases.
+          v=$(sed -n 's/^hydrophone_version *= *//p' build/versions.mk | tr -d ' ')
+          [ -n "$v" ] || { echo "::error::no hydrophone_version in this tag's versions.mk — backport the hydrophone pins"; exit 1; }
+          want=$(sed -n "s/^hydrophone_sha256_linux_${a} *= *//p" build/versions.mk | tr -d ' ')
+          [ -n "$want" ] || { echo "::error::no hydrophone_sha256_linux_${a} pin in this tag's versions.mk — backport the digest pins"; exit 1; }
+          # Upstream names its x86-64 asset x86_64, not amd64.
+          asset=hydrophone_Linux_$([ "$a" = amd64 ] && echo x86_64 || echo "$a").tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/hydrophone.tgz" \
+            "https://github.com/kubernetes-sigs/hydrophone/releases/download/v$v/$asset"
+          # Digest-checked before extracting onto PATH: TLS authenticates the
+          # channel, not the artifact, and this workflow cosigns its own
+          # checksums two jobs up. Pins live beside hydrophone_version.
+          echo "$want  $RUNNER_TEMP/hydrophone.tgz" | sha256sum -c -
+          sudo tar -xz -C /usr/local/bin hydrophone < "$RUNNER_TEMP/hydrophone.tgz"
+
+      # Minted AFTER the third-party download and root extract above — the
+      # federated identity should not exist yet while those run. Same principle
+      # as nightly's ostests job, and this is the job with the most to lose.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: matrix.provider == 'gcp'
+        with:
+          workload_identity_provider: ${{ vars.OSTESTS_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.OSTESTS_GCP_SERVICE_ACCOUNT }}
+
+      # The artifact under test is the one that will be published — the exact
+      # bytes the build job put on the draft, handed over as a workflow artifact
+      # (uploaded by the same job in the same step sequence, so identity holds).
+      # Not `gh release download`: this job runs with contents:read — scoped
+      # down deliberately, see the permissions block — and reading a DRAFT
+      # release's assets requires write, so that path fails here by design.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: bin-${{ matrix.arch }}
+          path: dist
+      - name: stage the artifact under test
+        run: |
+          set -euo pipefail
+          mv "dist/stratum-linux-${{ matrix.arch }}" dist/stratum
+          chmod +x dist/stratum
+
+      - id: up
+        # OS_IMAGE deliberately unset: the gcp backend's per-arch defaults are
+        # the supported Rocky images, and the release gate certifies the default
+        # configuration. The OS matrix belongs to nightly.
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.OSTESTS_PULUMI_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # Plain assignment first: a command substitution embedded in echo's
+          # arguments does NOT propagate failure under set -e (the step would
+          # go green with an empty KUBECONFIG and the real error would surface
+          # one step later, attributed to conformance).
+          kc=$(tools/ostests/provision.sh dist/stratum)
+          echo "KUBECONFIG=$kc" >> "$GITHUB_ENV"
+
+      - name: conformance
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: tools/ostests/run-conformance.sh
+
+      # Re-mint the federated credential for teardown: WIF access tokens live
+      # about an hour and certified-conformance runs about four, so the token
+      # from the auth step above is long dead by now — and the credential file
+      # it wrote cannot self-refresh, because the GitHub OIDC token inside it
+      # expired with it. id-token:write is valid for the job's whole life, so
+      # minting again here works. always(): teardown runs on failure and
+      # cancel, so the auth it depends on must too.
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: always() && matrix.provider == 'gcp'
+        with:
+          workload_identity_provider: ${{ vars.OSTESTS_GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.OSTESTS_GCP_SERVICE_ACCOUNT }}
+
+      - name: teardown
+        # always(), so a failed or cancelled run still destroys. run-conformance
+        # deliberately does not clean up after itself — see provision.sh.
+        #
+        # An unreachable backend must fail loudly; a genuinely absent stack
+        # must not — same structure and reason as nightly's ostests teardown.
+        if: always()
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.OSTESTS_PULUMI_PASSPHRASE }}
+        run: |
+          set -uo pipefail
+          # Each provider's program is its own Pulumi project: its own
+          # directory under tools/ostests/, its own state bucket.
+          cd "tools/ostests/$PROVIDER" || { echo "::error::tools/ostests/$PROVIDER missing — cannot run teardown"; exit 1; }
+
+          if ! stacks=$(pulumi stack ls --json 2>&1); then
+            echo "::error::cannot reach the Pulumi backend, so teardown could not run." \
+                 "Resources may be leaked — check $PROVIDER for label/tag ske-cluster=$CLUSTER_NAME"
+            echo "$stacks"
+            exit 1
+          fi
+
+          if ! grep -q "\"name\": *\"$CLUSTER_NAME\"" <<<"$stacks"; then
+            echo "no stack '$CLUSTER_NAME' — provisioning did not get far enough to create one"
+            exit 0
+          fi
+
+          # Checked, not chained past. Without -e a failed select leaves whatever
+          # stack was already selected in place, and the destroy below would run
+          # against THAT — on a self-hosted runner carrying prior state, another
+          # cluster. Failing here leaks this cluster, which is recoverable; the
+          # alternative destroys someone else's, which is not. --stack on the
+          # destroy as well, so it names its target even if the selection lied.
+          if ! pulumi stack select "$CLUSTER_NAME"; then
+            echo "::error::could not select stack '$CLUSTER_NAME', so nothing was destroyed." \
+                 "This cluster is leaked — see the label/tag and names above"
+            exit 1
+          fi
+          pulumi destroy --yes --non-interactive --remove --stack "$CLUSTER_NAME"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: conformance-${{ matrix.provider }}-${{ matrix.arch }}
+          path: _output/conformance/
+
+  conformance-upload:
+    needs: [meta, conformance-test]
+    if: always() && needs.conformance-test.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: conformance-*
+          merge-multiple: true
+      - name: attach the evidence to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -l
+          gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
+            conformance-results-*.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # The gate. A final may not publish without green conformance attached, and
+  # "the job was skipped" is not green. This failing is what tells a captain not
+  # to press Publish; release-publish.yml enforces it again if they do anyway.
+  conformance-gate:
+    needs: [meta, conformance-test, conformance-upload]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: verdict
+        run: |
+          set -euo pipefail
+          result='${{ needs.conformance-test.result }}'
+          if [ "${{ needs.meta.outputs.final }}" != "true" ]; then
+            echo "::notice title=release candidate::conformance=$result. RCs are where conformance is allowed to fail — that is what they are for."
+            exit 0
+          fi
+          if [ "$result" = "success" ] && [ "${{ needs.conformance-upload.result }}" = "success" ]; then
+            echo "conformance green and attached — this final may be published."
+            exit 0
+          fi
+          echo "::error title=do not publish::conformance=$result, upload=${{ needs.conformance-upload.result }}. A final may not publish without green conformance attached (RELEASE.md 2.1). Fix and cut the next counter."
+          exit 1

@@ -1,0 +1,12 @@
+# Supported Kubernetes minors, newest first. One release-1.X branch per line.
+#
+# main tracks the NEXT minor (including alphas/betas/RCs) — deliberate early
+# warning.
+#
+# This file is the source of truth for the branch list: tools/gen-fences.sh reads
+# it to generate Renovate's baseBranchPatterns and per-branch version fences,
+# and tools/cut-release-branch.sh / tools/retire-branch.sh edit it.
+#
+1.37
+1.36
+1.35

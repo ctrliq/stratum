@@ -1,0 +1,17 @@
+From 2222222222222222222222222222222222222222 Mon Sep 17 00:00:00 2001
+From: Somebody <nobody@example.com>
+Date: Thu, 21 Aug 2026 09:00:00 -0600
+Subject: [PATCH] quick fix
+
+Fixture: everything wrong. Bad filename, no upstream link, no Carry-Reason,
+no Justification. lint-patches.sh must reject it.
+---
+ a.txt | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1,2 @@
+ x
++y

@@ -1,0 +1,210 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: helmcharts.stratum.ciq.com
+spec:
+  group: stratum.ciq.com
+  scope: Namespaced
+  names:
+    kind: HelmChart
+    listKind: HelmChartList
+    plural: helmcharts
+    singular: helmchart
+    shortNames: [hc]
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    subresources:
+      status: {}
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: >-
+          A Helm release the operator installs and keeps reconciled. The chart
+          source is either a repo (chart+repo, http(s):// index or oci://
+          reference) or an inline chartContent (base64 .tgz) for air-gapped
+          clusters. Values precedence, lowest to highest:
+          chart defaults < .spec.valuesContent
+          < the same-name HelmChartConfig .spec.valuesContent
+          < .spec.valuesSecrets < .spec.set < .spec.setString.
+        properties:
+          spec:
+            type: object
+            # releaseName and targetNamespace together identify the Helm release
+            # this resource owns, and the operator uninstalls exactly that release
+            # when the resource is deleted. If they could be edited after the
+            # release exists, a delete would either uninstall someone else's
+            # release or orphan this one. Transition rules, so they bind
+            # on update only — a create is free to set or omit either field.
+            x-kubernetes-validations:
+            - rule: "(!has(oldSelf.releaseName) && !has(self.releaseName)) || (has(oldSelf.releaseName) && has(self.releaseName) && self.releaseName == oldSelf.releaseName)"
+              message: "spec.releaseName is immutable: it identifies the Helm release this HelmChart owns, which the operator uninstalls when this resource is deleted"
+            - rule: "(!has(oldSelf.targetNamespace) && !has(self.targetNamespace)) || (has(oldSelf.targetNamespace) && has(self.targetNamespace) && self.targetNamespace == oldSelf.targetNamespace)"
+              message: "spec.targetNamespace is immutable: it identifies where the Helm release this HelmChart owns is installed, which the operator uninstalls from when this resource is deleted"
+            properties:
+              chart:
+                type: string
+                description: >-
+                  Chart name within the repo (e.g. "podinfo"). Omit when
+                  chartContent is set.
+              repo:
+                type: string
+                description: >-
+                  Chart repository: an http(s):// Helm repo URL (index.yaml) or
+                  an oci:// registry reference. Ignored when chartContent is set.
+              version:
+                type: string
+                description: >-
+                  Exact chart version to install (e.g. "6.7.1"); empty resolves
+                  to the newest version in the repo.
+              chartContent:
+                type: string
+                description: >-
+                  Base64-encoded chart .tgz, embedded directly in the CR as an
+                  air-gap alternative to repo/chart. When set, repo/chart/version
+                  are ignored. Produce with:
+                  helm package mychart && base64 -i mychart-0.1.0.tgz
+              releaseName:
+                type: string
+                description: >-
+                  Helm release name; defaults to the CR name (.metadata.name).
+              targetNamespace:
+                type: string
+                description: >-
+                  Namespace the release is installed into; defaults to the CR
+                  namespace (.metadata.namespace).
+              createNamespace:
+                type: boolean
+                default: false
+                description: Create targetNamespace if it does not exist.
+              valuesContent:
+                type: string
+                description: >-
+                  Inline YAML values (a values.yaml body). Lowest user-supplied
+                  override precedence — overridden by a same-name HelmChartConfig
+                  and by .spec.set.
+              set:
+                type: object
+                additionalProperties:
+                  type: string
+                description: >-
+                  Individual value overrides (Helm --set semantics). Wins over
+                  valuesContent and HelmChartConfig; overridden in turn by a
+                  same-key entry in .spec.setString.
+              setString:
+                type: object
+                additionalProperties:
+                  type: string
+                description: >-
+                  Individual value overrides with Helm --set-string semantics:
+                  the value is always passed through as a string and is never
+                  type-inferred, so "true" stays the string "true" and "42"
+                  stays "42" rather than becoming a bool or an int. Use this
+                  for values a chart must receive as strings. Applied after
+                  .spec.set, so on a same-key collision setString wins.
+              valuesSecrets:
+                type: array
+                description: >-
+                  Values read from Secrets in this HelmChart's namespace, for
+                  values that must not sit in the HelmChart, such as passwords:
+                  anyone who can read the HelmChart can read its spec. Each
+                  listed key holds a values.yaml body. They are merged in list
+                  order, keys in the order given, over valuesContent and the
+                  HelmChartConfig and under .spec.set and .spec.setString.
+                  Honoured only for a HelmChart in a privileged namespace
+                  (kube-system by default), which installs as the operator;
+                  elsewhere the chart is refused, since a Secret's writer
+                  would steer the release. A change to
+                  a listed Secret upgrades the release, as does any edit to
+                  valuesContent, the HelmChartConfig, set or setString; a
+                  missing Secret or key fails the chart until it exists. A
+                  failed install, upgrade or recovery reports only that it
+                  failed: Helm's error can quote values, so the operator logs
+                  it instead, from then on (status.valuesFromSecrets).
+                items:
+                  type: object
+                  required: [name, keys]
+                  properties:
+                    name:
+                      type: string
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$'
+                      description: Name of a Secret in this HelmChart's namespace.
+                    keys:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: string
+                        maxLength: 253
+                        pattern: '^[-._a-zA-Z0-9]+$'
+                      description: >-
+                        Keys of that Secret, each holding a values.yaml body,
+                        merged in this order.
+              timeout:
+                type: string
+                default: "5m"
+                description: >-
+                  Go duration string bounding each Helm operation the
+                  controller performs for this chart (install, upgrade,
+                  uninstall), e.g. "5m" or "10m". The controller does not
+                  wait for applied resources to become ready, so this
+                  bounds the Helm operation itself, not resource readiness.
+              repoCA:
+                type: string
+                description: >-
+                  PEM CA bundle used to verify the repo/OCI registry TLS
+                  certificate (for private/self-signed registries).
+              insecureSkipTLSVerify:
+                type: boolean
+                default: false
+                description: >-
+                  Skip TLS verification when fetching the chart. Insecure; prefer
+                  repoCA. Ignored when chartContent is set.
+          status:
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+    additionalPrinterColumns:
+    - { name: Chart, type: string, jsonPath: .spec.chart }
+    - { name: Version, type: string, jsonPath: .spec.version }
+    - { name: Release, type: string, jsonPath: .status.releaseName }
+    - { name: Phase, type: string, jsonPath: .status.phase }
+    - { name: Revision, type: integer, jsonPath: .status.revision }
+    - { name: Age, type: date, jsonPath: .metadata.creationTimestamp }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: helmchartconfigs.stratum.ciq.com
+spec:
+  group: stratum.ciq.com
+  scope: Namespaced
+  names:
+    kind: HelmChartConfig
+    listKind: HelmChartConfigList
+    plural: helmchartconfigs
+    singular: helmchartconfig
+    shortNames: [hcc]
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    # No status subresource: a HelmChartConfig is pure additional-values input,
+    # merged by the same-name+namespace HelmChart's reconcile.
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: >-
+          Additional Helm values overlaid onto the HelmChart with the SAME name
+          and namespace. Lets operators/add-ons layer values without editing the
+          base HelmChart. Precedence: sits ABOVE HelmChart .spec.valuesContent
+          and BELOW HelmChart .spec.set.
+        properties:
+          spec:
+            type: object
+            properties:
+              valuesContent:
+                type: string
+                description: >-
+                  Inline YAML values overlaid onto the same-name HelmChart,
+                  overriding that chart's .spec.valuesContent.
