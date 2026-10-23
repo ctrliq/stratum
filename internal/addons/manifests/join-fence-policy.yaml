@@ -1,0 +1,99 @@
+# A bootstrap token may hold only its own maintenance fence. The
+# stratum:certs-reader Role lets the control-plane bootstrap group create,
+# renew and release the two maintenance leases, so a joining control plane can
+# fence its etcd member-add with the one credential it has there, its bootstrap
+# token. RBAC cannot restrict a create by name, and a join token is printed on
+# stdout, so without this policy anyone holding one could create any Lease in
+# kube-system, or overwrite the holder of the lease a running rotation,
+# migration or upgrade holds and halt it.
+#
+# Older bindings grant the shared worker group this Role until migration
+# narrows them. Match both groups so those cached or failed migrations cannot
+# expose unrestricted lease writes.
+#
+# A join token's lease write is admitted only for the two maintenance leases,
+# with a lease duration of at most the 60 seconds stratum writes, and under a holder that
+# starts with the token's own username, system:bootstrap:<token-id>/. It may
+# renew, release or take over only a lease that already names it, or take an
+# empty one: admission cannot read the clock, so a lease another run holds is
+# never the token's to overwrite or delete, even once it has expired. Every
+# other identity is unaffected.
+# Token writes also forbid owner references and finalizers: a later privileged
+# takeover keeps metadata, so neither token garbage collection nor a finalizer
+# may delete or strand a maintenance run's fence.
+#
+# Not a manifest-deployer stack: the mint (ha.GrantCertsReader) creates this
+# policy and its binding, or converges them, before it writes the Role's lease
+# rules, so every field the apiserver would default is spelled out here.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: stratum-join-maintenance-fence
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    matchPolicy: Equivalent
+    namespaceSelector: {}
+    objectSelector: {}
+    resourceRules:
+      - apiGroups: ["coordination.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["leases"]
+        scope: "*"
+  # A condition that errors fails closed and would deny every lease write in
+  # kube-system, the control plane's own leader elections included, so these
+  # guard every field they read.
+  matchConditions:
+    - name: stratum-bootstrap-token
+      expression: >-
+        has(request.userInfo.groups) &&
+        ('system:bootstrappers:stratum:control-planes' in request.userInfo.groups ||
+         'system:bootstrappers:stratum:nodes' in request.userInfo.groups)
+    - name: kube-system
+      expression: "request.namespace == 'kube-system'"
+  variables:
+    - name: maxDurationSeconds
+      expression: "60"
+    - name: own
+      expression: "request.userInfo.username + '/'"
+    - name: name
+      expression: "request.operation == 'DELETE' ? oldObject.metadata.name : object.metadata.name"
+    - name: holder
+      expression: >-
+        object != null && has(object.spec) && has(object.spec.holderIdentity)
+        ? object.spec.holderIdentity : ''
+    - name: oldHolder
+      expression: >-
+        oldObject != null && has(oldObject.spec) && has(oldObject.spec.holderIdentity)
+        ? oldObject.spec.holderIdentity : ''
+  validations:
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !has(object.metadata.ownerReferences) || size(object.metadata.ownerReferences) == 0
+      message: a control-plane join token may not set owner references on a maintenance lease
+    - expression: >-
+        request.operation == 'DELETE' ||
+        !has(object.metadata.finalizers) || size(object.metadata.finalizers) == 0
+      message: a control-plane join token may not set finalizers on a maintenance lease
+    - expression: "variables.name in ['stratum-cluster-maintenance', 'stratum-cluster-upgrade']"
+      message: a control-plane join token may write only the stratum-cluster-maintenance and stratum-cluster-upgrade leases
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (has(object.spec) && has(object.spec.leaseDurationSeconds) &&
+        object.spec.leaseDurationSeconds <= variables.maxDurationSeconds)
+      message: a control-plane join token may record a maintenance lease duration of at most 60 seconds
+    - expression: "request.operation == 'DELETE' || variables.holder.startsWith(variables.own)"
+      message: a control-plane join token may name only itself as a maintenance lease's holder
+    - expression: >-
+        request.operation == 'CREATE' || variables.oldHolder.startsWith(variables.own) ||
+        (request.operation == 'UPDATE' && variables.oldHolder == '')
+      message: a control-plane join token may not take over or delete a maintenance lease another run holds, even an expired one
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: stratum-join-maintenance-fence
+spec:
+  policyName: stratum-join-maintenance-fence
+  validationActions: [Deny]

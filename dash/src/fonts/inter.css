@@ -1,0 +1,53 @@
+/* Inter 4.001 — the dashboard UI font, vendored first-party.
+ *
+ * The faces are declared in CSS, not injected from JS: hardcoded
+ * "/assets/<file>.woff2" strings are invisible to Vite, so a JS injector
+ * needs a build plugin to copy the files into place by hand, while CSS
+ * faces let Vite hash and emit them like any other asset — which is why
+ * vite.config.js carries no font plugin.
+ *
+ * Five upright weights. The screens ask for 400, 500, 600, 650 and 700 (650
+ * resolves to the 700 face), and the logo's <strong> lands on 900: `bolder`
+ * against the inherited 700 of the wordmark. Without a 900 face the wordmark
+ * renders a visible step lighter — which is why the 900 face is vendored.
+ * No italics are used anywhere in the SPA, and a browser only ever fetches
+ * the weights in use.
+ *
+ * Inter is (c) 2016 The Inter Project Authors, SIL Open Font License 1.1 —
+ * see OFL.txt beside these files, and THIRD_PARTY_NOTICES.md at the repo root.
+ */
+@font-face {
+  font-family: 'Inter';
+  src: url('./Inter-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./Inter-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./Inter-SemiBold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./Inter-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('./Inter-Black.woff2') format('woff2');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}

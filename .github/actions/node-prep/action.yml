@@ -1,0 +1,137 @@
+name: node prep
+description: >
+  Put the pinned Node and pnpm on PATH for anything that touches dash/. Every
+  job that runs `make dash` — directly, or through `make build` / `make test` /
+  `make package`, which depend on it — needs both, so reading the pins
+  and installing them lives here rather than once per workflow.
+
+  Its own action rather than a step inside runner-prep, which is where the
+  packaging jobs would put it: those need both, while ci.yml's `dash` and `go`
+  jobs need only Node and pnpm and have no business freeing 20G of disk or
+  reconfiguring Docker's image store. That alone would argue for two actions;
+  what settles it is resolution.
+  nightly.yml runs runner-prep from a SPARSE CHECKOUT of main against older
+  release branches (see its `reproducible` job), and a nested local `uses: ./…`
+  inside a composite action resolves against the WORKSPACE rather than against
+  the action's own tree — so runner-prep would look for node-prep in the release
+  branch checked out at the workspace root, find nothing, and fail every
+  nightly reproducibility leg. Hence two actions, used side by side.
+
+inputs:
+  manifest:
+    description: >
+      Path to the build/versions.mk to read the pins from, relative to the
+      workspace. Override it when the tree being BUILT is not the workspace
+      root: weekly.yml packages a release branch out of .branch-src, and the
+      pins that matter there are that branch's, not main's. Getting this wrong
+      is silent — the job installs a toolchain the build never asked for, and
+      once release branches carry dash/ it would build them against main's pins.
+    required: false
+    default: build/versions.mk
+
+runs:
+  using: composite
+  steps:
+    # A note that governs every step below: pin values reach these scripts
+    # through `env`, never as `${{ }}` inside `run:`. An expression is
+    # substituted into the script TEXT before bash parses it, so a value
+    # carrying a quote or a semicolon would run as code rather than be read as
+    # data — and these values come from a manifest in the checked-out tree,
+    # which on `pull_request` is the PR's own. ci.yml's inttest job spells the
+    # same rule out at length; this is the same rule, for the same reason.
+    # setup-node's `with:` is not affected: that is an action input, not a
+    # shell script.
+    # From build/versions.mk, like every other toolchain version in CI: a
+    # version literal in a workflow file is exactly what tools/lint-versions.sh
+    # exists to reject.
+    #
+    # Best-effort on a missing pin, for the same reason runner-prep's crane step
+    # is: this action is reachable from jobs that check out an older release
+    # branch, and those have no node_version. A job that then needs Node fails
+    # at `make dash`'s own guard, which names Node and pnpm — not here, with a
+    # message about a manifest.
+    - id: pins
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A manifest that is absent is a misconfiguration; a manifest that is
+        # PRESENT with neither pin is a legitimate older branch. Those must not
+        # collapse into each other, and without this check they do: sed's error
+        # goes to /dev/null, the echo still succeeds, both pins come back empty,
+        # and the no-op path below hands `make dash` whatever node and pnpm the
+        # runner image preinstalled — an unpinned dashboard build, from a typo.
+        #
+        # A manifest that is present but points at a tree the job does not
+        # have — a wrong path — would fail later and confusingly instead of
+        # here and obviously. Failing closed on the class beats fixing one
+        # instance.
+        [[ -f $MANIFEST ]] || {
+          echo "::error title=no such manifest::node-prep: '$MANIFEST' does not exist. Pass a manifest path relative to the workspace, or omit the input to use build/versions.mk."
+          exit 1
+        }
+        # Shape-checked as it is read, not trusted. These values come out of a
+        # manifest in the CHECKED-OUT tree — which on `pull_request` is the PR's
+        # own build/versions.mk — and they reach both a shell command and a
+        # workflow command below. A version is digits, dots and the usual
+        # pre-release punctuation; anything else is either a broken pin or an
+        # attempt to be something other than a version, and neither should get
+        # past here. tools/lint-versions.sh does not police this: it checks that
+        # pins are not duplicated, not that they look like versions.
+        for p in node pnpm; do
+          v=$(sed -n "s/^${p}_version *= *//p" "$MANIFEST" | tr -d ' ')
+          if [[ -n $v && ! $v =~ ^[0-9]+(\.[0-9]+)*([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error title=malformed pin::${p}_version in $MANIFEST is not a version"
+            exit 1
+          fi
+          echo "$p=$v" >> "$GITHUB_OUTPUT"
+        done
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+    # Three states, not two.
+    #
+    # NEITHER pinned is a legitimate manifest: a release branch that predates
+    # the dashboard. Install nothing and let the build proceed — it will use its
+    # own `TAGS ?= noui` and never call pnpm.
+    - if: steps.pins.outputs.node == '' && steps.pins.outputs.pnpm == ''
+      shell: bash
+      run: echo "::notice::no node_version/pnpm_version in $MANIFEST; installing neither (not a dashboard-building context)"
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+    # EXACTLY ONE pinned is a broken manifest — someone added a pin and forgot
+    # its partner — and it is the dangerous case, so it fails here rather than
+    # installing half a toolchain. `make dash`'s guard only tests that *some*
+    # node and pnpm are on PATH, so a hosted runner's preinstalled pair would
+    # otherwise sail past it and build the SPA on versions nobody chose, which
+    # is the whole thing the pins exist to prevent.
+    # Spelled out rather than as a boolean `!=` of two comparisons: this is a
+    # gate that must fail correctly, and the explicit form needs no assumption
+    # about how GitHub coerces operands.
+    - if: |
+        (steps.pins.outputs.node == '' && steps.pins.outputs.pnpm != '') ||
+        (steps.pins.outputs.node != '' && steps.pins.outputs.pnpm == '')
+      shell: bash
+      run: |
+        echo "::error title=half-pinned toolchain::$MANIFEST pins node_version='$NODE_V' and pnpm_version='$PNPM_V'. Pin both or neither: one alone would build the dashboard on an unpinned tool."
+        exit 1
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+        NODE_V: ${{ steps.pins.outputs.node }}
+        PNPM_V: ${{ steps.pins.outputs.pnpm }}
+    # Both pinned: the dashboard-building path.
+    - if: steps.pins.outputs.node != '' && steps.pins.outputs.pnpm != ''
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      with:
+        node-version: ${{ steps.pins.outputs.node }}
+    # npm install -g, not corepack: corepack's own pnpm shim would resolve the
+    # version from dash/package.json's `packageManager` and is therefore only
+    # correct inside dash/ — and release.yml's publish step runs `npm pkg set`
+    # and `npm view` from there too. This puts the pinned pnpm on PATH for the
+    # whole job, which is what `make dash` shelling out from the repo root needs.
+    - if: steps.pins.outputs.node != '' && steps.pins.outputs.pnpm != ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        npm install --global "pnpm@$PNPM_V"
+        pnpm --version
+      env:
+        PNPM_V: ${{ steps.pins.outputs.pnpm }}

@@ -1,0 +1,94 @@
+# Layer membership for the module's internal/... packages. An internal
+# package may import only packages of its own or a strictly lower layer;
+# same-layer imports are legal on purpose (the orchestration packages share
+# each other), and every upward import is either fixed or recorded as a
+# reviewed exception in tools/importlayers/exceptions.txt. One
+# `layer<N> <import-path-prefix>` rule per line, longest prefix wins; a
+# package matching no rule, and a rule matching no package, both fail the
+# guard (tools/importlayers), so this table and the tree cannot drift apart.
+#
+# The layers are assignments of purpose, not a sorting of today's imports:
+# a package sits where its job belongs, and an import that fights that
+# assignment is the thing the guard exists to catch.
+
+# Layer 1 — foundations: pure logic and single-purpose clients (version
+# parsing, signal handling, the node profile layout, the S3 client, the
+# phase state machine, the cluster-id verifier, the environment and lookup
+# of host tools). Everything else builds on
+# these; a layer-1 package may import only other layer-1 packages, and none
+# reaches higher.
+layer1 github.com/ctrliq/stratum/internal/bootstrap/clusterinfo
+layer1 github.com/ctrliq/stratum/internal/enginesettings
+layer1 github.com/ctrliq/stratum/internal/interrupt
+layer1 github.com/ctrliq/stratum/internal/k8sver
+layer1 github.com/ctrliq/stratum/internal/objstore
+layer1 github.com/ctrliq/stratum/internal/profile/profiletest
+layer1 github.com/ctrliq/stratum/internal/profile
+layer1 github.com/ctrliq/stratum/internal/rollout
+layer1 github.com/ctrliq/stratum/internal/rtcheck
+layer1 github.com/ctrliq/stratum/internal/toolenv
+
+# Layer 2 — primitives: small stamped helpers over the foundations —
+# ldflags-stamped version and the /var/lib/stratum path layout, SELinux
+# labels, the atomic file writer, PID identification, the node lock, etcd
+# data-dir paths, node-Job manifests, the registry config reader, the
+# supervisor state reader, component supervision, embedded payload
+# extraction. A layer-1 rule for profile/profiletest sits above this
+# comment's packages only because the test fixture imports profile and
+# nothing else.
+layer2 github.com/ctrliq/stratum/internal/version
+layer2 github.com/ctrliq/stratum/internal/selinux
+layer2 github.com/ctrliq/stratum/internal/atomicfile
+layer2 github.com/ctrliq/stratum/internal/procid
+layer2 github.com/ctrliq/stratum/internal/nodelock
+layer2 github.com/ctrliq/stratum/internal/etcddata
+layer2 github.com/ctrliq/stratum/internal/nodejob
+layer2 github.com/ctrliq/stratum/internal/registry
+layer2 github.com/ctrliq/stratum/internal/supervisor
+layer2 github.com/ctrliq/stratum/internal/comps
+layer2 github.com/ctrliq/stratum/internal/assets
+
+# Layer 3 — host, PKI and node-state helpers: the shared substrate the
+# orchestration layer coordinates over — host inspection, cert mint and
+# load, cert issuance and CA rotation, persisted node state, kubeconfig
+# read/write, profile file materialization, network config, cert SAN
+# assembly, typed client-go helpers, the bootstrap-token kubeconfig, addon
+# manifest handling. Cert issuance sits beside pki because it is PKI work:
+# its four upward imports into the orchestration layer are reviewed
+# exceptions in exceptions.txt, not free same-layer reach.
+layer3 github.com/ctrliq/stratum/internal/host
+layer3 github.com/ctrliq/stratum/internal/pki
+layer3 github.com/ctrliq/stratum/internal/certs
+layer3 github.com/ctrliq/stratum/internal/nodestate
+layer3 github.com/ctrliq/stratum/internal/kubeconfig
+layer3 github.com/ctrliq/stratum/internal/profilefiles
+layer3 github.com/ctrliq/stratum/internal/netcfg
+layer3 github.com/ctrliq/stratum/internal/certinputs
+layer3 github.com/ctrliq/stratum/internal/k8sutil
+layer3 github.com/ctrliq/stratum/internal/maintlease
+layer3 github.com/ctrliq/stratum/internal/bootstrap
+layer3 github.com/ctrliq/stratum/internal/addons
+
+# Layer 4 — orchestration and domain services: multi-step node or cluster
+# operations (static-pod manifests, payload component config, control-plane
+# HA members, bootstrap tokens, trust-bundle audits, etcd snapshots, node
+# teardown, the cluster operator, cluster init/join, upgrades). These
+# packages legitimately import each other — that is what same-layer
+# legality is for.
+layer4 github.com/ctrliq/stratum/internal/staticpod
+layer4 github.com/ctrliq/stratum/internal/runtime
+layer4 github.com/ctrliq/stratum/internal/ha
+layer4 github.com/ctrliq/stratum/internal/token
+layer4 github.com/ctrliq/stratum/internal/trustaudit
+layer4 github.com/ctrliq/stratum/internal/etcdsnap
+layer4 github.com/ctrliq/stratum/internal/uninstall
+layer4 github.com/ctrliq/stratum/internal/operator
+layer4 github.com/ctrliq/stratum/internal/cluster
+layer4 github.com/ctrliq/stratum/internal/upgrade
+
+# Layer 5 — interfaces: the user- and program-facing servers. They may
+# import everything below and nothing above.
+layer5 github.com/ctrliq/stratum/internal/dashboard
+layer5 github.com/ctrliq/stratum/internal/mcp/kube/kubetest
+layer5 github.com/ctrliq/stratum/internal/mcp/kube
+layer5 github.com/ctrliq/stratum/internal/mcp

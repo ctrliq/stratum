@@ -1,0 +1,14 @@
+# Deliberate upward imports of the internal layering rule, one edge per
+# line: `importer -> imported  # reason`. The guard (tools/importlayers)
+# fails on an entry whose edge no longer exists, or whose edge the layers no
+# longer call a violation, so an exception is re-justified or dropped in the
+# same change that touches the code behind it. An entry without a reason is
+# a config error, not an exception.
+
+# Cert issuance (layer 3) deliberately reaches the four orchestration
+# packages below while rotating CAs across the cluster. Each edge names the
+# rotation step that needs it; if the step moves, the edge moves with it.
+github.com/ctrliq/stratum/internal/certs -> github.com/ctrliq/stratum/internal/staticpod # rotation bounces the control-plane static pods and waits for them to serve the reissued certs (certs.go restartControlPlane*, etcdca.go's restartPod, kubeletca.go's kube-apiserver restart)
+github.com/ctrliq/stratum/internal/certs -> github.com/ctrliq/stratum/internal/ha # cluster-wide rotation runs HA member operations: fresh member cert keys, etcd member health checks, admin cert download (cacluster.go, etcdcacluster.go)
+github.com/ctrliq/stratum/internal/certs -> github.com/ctrliq/stratum/internal/token # kubelet-CA rotation republishes the CA through the bootstrap-token machinery so every node re-trusts it (kubeletca.go's republish, carotate.go's RepinCAWith)
+github.com/ctrliq/stratum/internal/certs -> github.com/ctrliq/stratum/internal/runtime # kubelet-serving rotation gates on the payload runtime's serving-bootstrap state (kubeletserving.go)

@@ -1,0 +1,119 @@
+# The in-cluster dashboard. It holds no cluster permissions of its own: every
+# request it proxies carries the signed-in user's token. The operator keeps the
+# stratum-dashboard-tls and stratum-dashboard-session Secrets.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stratum-dashboard
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stratum-dashboard
+  namespace: stratum-dashboard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stratum-dashboard
+  namespace: stratum-dashboard
+  labels:
+    app.kubernetes.io/name: stratum-dashboard
+  annotations:
+    stratum.ciq.com/serving-hosts: "__STRATUM_DASH_HOSTS__"
+spec:
+  type: __STRATUM_DASH_SERVICE_TYPE__
+  selector:
+    app.kubernetes.io/name: stratum-dashboard
+  ports:
+  - name: https
+    port: 443
+    targetPort: https
+    nodePort: __STRATUM_DASH_NODEPORT__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stratum-dashboard
+  namespace: stratum-dashboard
+  labels:
+    app.kubernetes.io/name: stratum-dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stratum-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stratum-dashboard
+    spec:
+      serviceAccountName: stratum-dashboard
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        effect: NoSchedule
+      containers:
+      - name: dashboard
+        image: __STRATUM_DASH_IMAGE__
+        imagePullPolicy: IfNotPresent
+        args:
+        - --listen=:8443
+        - --tls-cert=/tls/tls.crt
+        - --tls-key=/tls/tls.key
+        - --session-key-file=/session/key
+        - __STRATUM_DASH_EXTRA_ARGS__
+        ports:
+        - name: https
+          containerPort: 8443
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: https
+            scheme: HTTPS
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: tls
+          mountPath: /tls
+          readOnly: true
+        - name: session
+          mountPath: /session
+          readOnly: true
+      volumes:
+      - name: tls
+        secret:
+          secretName: __STRATUM_DASH_TLS_SECRET__
+      - name: session
+        secret:
+          secretName: stratum-dashboard-session
+          defaultMode: 0440

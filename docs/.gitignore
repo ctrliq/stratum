@@ -1,0 +1,3 @@
+# The MkDocs build output and the virtualenv `make docs` creates for it.
+site/
+.venv/

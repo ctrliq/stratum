@@ -1,0 +1,295 @@
+name: dev-release
+
+# Throwaway artifacts from any ref, for developers to test with. This is NOT a
+# release and deliberately shares none of release.yml's guarantees: nothing is
+# signed, no SBOM is produced, the image mirror is not written, conformance does
+# not run, and no update channel is touched.
+# See tools/dev-release.sh.
+#
+# Dispatch-only, on purpose. A dev build is something a person asks for; nothing
+# should produce one on a schedule or on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: branch, tag or sha to build
+        required: false
+        default: main
+      arches:
+        description: which architectures to build
+        required: false
+        default: both
+        type: choice
+        options: [both, amd64, arm64]
+      push_images:
+        description: push the container image to ghcr.io/ctrliq/stratum-dev
+        required: false
+        default: true
+        type: boolean
+      tag:
+        description: override the derived dev-<ref>-<date>-<sha> tag
+        required: false
+
+permissions:
+  contents: write # create the prerelease and its tag, upload assets
+  packages: write # ghcr.io
+  # Deliberately NO id-token: nothing here signs anything. A dev artifact that
+  # carried a cosign signature from this repo's OIDC identity would be
+  # indistinguishable from a released one to `cosign verify-blob`.
+
+concurrency:
+  group: dev-release-${{ inputs.tag || inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  # NOT ghcr.io/ctrliq/stratum. That repo is both the release product image and
+  # the runtime image mirror namespace (image_registry in build/versions.mk), and
+  # `latest` lives there. Dev tags do not belong in it.
+  DEV_IMAGE: ghcr.io/ctrliq/stratum-dev
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.k.outputs.tag }}
+      sha: ${{ steps.k.outputs.sha }}
+      matrix: ${{ steps.k.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0 # version.sh --stamp reads the tag list
+      - id: k
+        env:
+          IN_TAG: ${{ inputs.tag }}
+          IN_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse --short=7 HEAD)
+          if [ -n "$IN_TAG" ]; then
+            tag=$IN_TAG
+          else
+            # Same derivation as tools/dev-release.sh, for a dispatch made from
+            # the GitHub UI without the script.
+            slug=$(printf '%s' "$IN_REF" \
+                   | sed 's#^refs/heads/##; s#^refs/tags/##' \
+                   | tr '[:upper:]' '[:lower:]' \
+                   | sed 's#[^a-z0-9._-]#-#g; s#--*#-#g; s#^[-.]*##; s#[-.]*$##')
+            [ -n "$slug" ] || slug=detached
+            tag="dev-$slug-$(date -u +%Y%m%d)-$sha"
+          fi
+
+          # The guard that keeps a dev build out of the real release pipeline:
+          # release.yml triggers on `tags: ['v*']`, and such a tag would fire it
+          # and then fail at `make check-version`. Fail here instead, before a
+          # tag exists.
+          case "$tag" in
+            v*) echo "::error title=refusing::'$tag' matches release.yml's v* tag trigger"; exit 1 ;;
+          esac
+          # A dev tag must also never collide with a real one.
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error title=tag exists::$tag already exists"; exit 1
+          fi
+
+          case "${{ inputs.arches }}" in
+            amd64) m='[{"arch":"amd64","runner":"ubuntu-latest"}]' ;;
+            arm64) m='[{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' ;;
+            *)     m='[{"arch":"amd64","runner":"ubuntu-latest"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]' ;;
+          esac
+
+          {
+            echo "tag=$tag"
+            echo "sha=$(git rev-parse HEAD)"
+            echo "matrix=$m"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice title=dev build::$tag at $sha (${{ inputs.arches }})"
+
+  # ---------------------------------------------------------------------------
+  # Published as a PRERELEASE, not a draft, so a tester can fetch an asset
+  # without a token. Publishing fires release-publish.yml, which is safe here:
+  # it sets final=false for a prerelease, so its conformance guard does not
+  # apply and its `channels` job — the one that writes the update channel — is
+  # gated on final == 'true' and skips. The run is a no-op.
+  release:
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+      - name: create the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release for $TAG already exists (re-run) — leaving it alone"
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --target "${{ needs.meta.outputs.sha }}" \
+            --title "$TAG" \
+            --prerelease \
+            --notes "$(printf '%s\n' \
+              '**This is a development build, not a release.**' \
+              '' \
+              'Built from `${{ inputs.ref }}` at `${{ needs.meta.outputs.sha }}` for testing.' \
+              'It is **unsigned**, carries **no SBOM**, has **not** been through' \
+              'conformance, and is **not** on any update channel. Do not install it' \
+              'anywhere that matters, and do not treat its version string as a release.' \
+              '' \
+              'It may be deleted at any time. For a real release see' \
+              '[RELEASE.md](../blob/main/RELEASE.md).')"
+
+  # ---------------------------------------------------------------------------
+  # Native per architecture, same as release.yml: the artifact is static-musl
+  # with a cgo runc in it and cross builds break in ways `file` does not catch.
+  build:
+    needs: [meta, release]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.meta.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      # Not optional. Without it `make package` dies with "No space left on
+      # device".
+      - uses: ./.github/actions/runner-prep
+      # Node + pnpm: `make package` builds the SPA the Go build embeds.
+      #
+      # Taken from the ref that defines this WORKFLOW, not from inputs.ref, the
+      # way nightly.yml takes runner-prep — and for a sharper reason here. This
+      # workflow dev-releases an arbitrary branch, tag or SHA, and node-prep
+      # exists on no ref that predates the dashboard build: a bare `uses: ./.github/...`
+      # would fail to resolve the action and kill the job before it built
+      # anything, on any ref that predates the action.
+      #
+      # The pins still come from the workspace, i.e. from inputs.ref's own
+      # build/versions.mk. A ref without them installs neither tool and builds
+      # with its own `TAGS ?= noui`, which is exactly right.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          { sparse-checkout: .github/actions/node-prep, path: .node-prep-src }
+      - uses: ./.node-prep-src/.github/actions/node-prep
+      - id: pins
+        run: echo "go=$(sed -n 's/^go_version *= *//p' build/versions.mk | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+
+      # Before the build, not just before the push: `make images` pulls the
+      # MIRRORED refs first, and an unauthenticated ghcr would 401 and silently
+      # take the upstream fallback.
+      - name: ghcr login
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # mirror-images is deliberately NOT run: it is a release gate that writes
+      # the shared mirror. Skipping it does not weaken the payload — `make
+      # images` tags whatever it pulled (mirror hit or identical-digest upstream
+      # fallback) with the mirror NAME, so the payload is mirror-named either way.
+      - name: build components
+        run: make components TARGET_ARCH=${{ matrix.arch }}
+      - name: stage images
+        run: make images TARGET_ARCH=${{ matrix.arch }}
+      - name: package
+        run: make package TARGET_ARCH=${{ matrix.arch }}
+
+      # Kept, and the reason this is worth more than a bare build: smoke runs
+      # verify-payload, which asserts the embedded image set equals the pinned
+      # set by name AND digest — the airgap claim — entirely offline. It then
+      # runs the artifact in a clean container the way a user would.
+      - name: smoke test the artifact
+        run: make smoke TARGET_ARCH=${{ matrix.arch }}
+      - name: build-info
+        run: make build-info TARGET_ARCH=${{ matrix.arch }}
+
+      - name: name the assets for the arch they were built on
+        run: |
+          set -euo pipefail
+          mv dist/stratum "dist/stratum-linux-${{ matrix.arch }}"
+          mv build-info.json "dist/build-info-${{ matrix.arch }}.json"
+          ( cd dist && sha256sum "stratum-linux-${{ matrix.arch }}" "build-info-${{ matrix.arch }}.json" \
+              > "sha256sums-${{ matrix.arch }}.txt" )
+          ls -l dist/
+
+      - name: upload to the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
+            "dist/stratum-linux-${{ matrix.arch }}" \
+            "dist/build-info-${{ matrix.arch }}.json" \
+            "dist/sha256sums-${{ matrix.arch }}.txt"
+
+      - name: build and push the per-arch image
+        if: ${{ inputs.push_images }}
+        run: |
+          set -euo pipefail
+          # Carries the artifact just built and smoke-tested — not a second build.
+          cp "dist/stratum-linux-${{ matrix.arch }}" dist/stratum
+          docker build \
+            --build-arg "ALPINE_VERSION=$(sed -n 's/^alpine_version *= *//p' build/versions.mk | tr -d ' ')" \
+            -t "$DEV_IMAGE:${{ needs.meta.outputs.tag }}-${{ matrix.arch }}" .
+          docker push "$DEV_IMAGE:${{ needs.meta.outputs.tag }}-${{ matrix.arch }}"
+
+  # ---------------------------------------------------------------------------
+  # One tag, both architectures. Unsigned, unlike release.yml's equivalent.
+  images:
+    needs: [meta, build]
+    if: ${{ inputs.push_images && inputs.arches == 'both' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: ghcr login
+        run: echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+      - name: assemble the multi-arch index
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "$DEV_IMAGE:$TAG" \
+            "$DEV_IMAGE:$TAG-amd64" "$DEV_IMAGE:$TAG-arm64"
+          docker buildx imagetools inspect "$DEV_IMAGE:$TAG" --format '{{.Manifest.Digest}}'
+          # No `latest`, ever: this repo has no stable tag by design, so nobody
+          # can accidentally pull a dev build by omitting one.
+
+  depot:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    concurrency:
+      group: depot-dev-${{ needs.meta.outputs.tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      DEPOT_RELEASE_ID: dev-${{ github.run_id }}-${{ github.run_attempt }}
+      SOURCE_COMMIT: ${{ needs.meta.outputs.sha }}
+      ARCHES: ${{ inputs.arches == 'both' && 'amd64,arm64' || inputs.arches }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: download the existing dev release assets
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
+            --pattern 'stratum-linux-*' --pattern 'build-info-*.json'
+      - name: publish the unsigned dev build to Depot
+        env:
+          DEPOT_USERNAME: ${{ secrets.DEPOT_USERNAME }}
+          DEPOT_TOKEN: ${{ secrets.DEPOT_DEV_TOKEN }}
+          DEPOT_HOSTNAME: ${{ vars.DEPOT_DEV_HOSTNAME }}
+        run: |
+          go run ./tools/depotrelease --assets dist --release "$DEPOT_RELEASE_ID" \
+            --channel dev --arches "$ARCHES" --source "$SOURCE_COMMIT" \
+            --environment dev --publish

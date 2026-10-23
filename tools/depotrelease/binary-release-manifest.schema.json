@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ciq.com/schemas/binary-release-manifest-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "schemaVersion",
+    "productKey",
+    "repositoryId",
+    "definitionId",
+    "definitionRevision",
+    "releaseId",
+    "publishedAt",
+    "variants"
+  ],
+  "properties": {
+    "kind": { "const": "binary-release-manifest" },
+    "schemaVersion": { "const": 1 },
+    "productKey": { "$ref": "#/definitions/productKey" },
+    "repositoryId": { "$ref": "#/definitions/productKey" },
+    "definitionId": { "$ref": "#/definitions/productKey" },
+    "definitionRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "releaseId": { "$ref": "#/definitions/segment" },
+    "publishedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "channel": { "$ref": "#/definitions/value" },
+    "releaseAttributes": { "$ref": "#/definitions/attributes" },
+    "variants": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["variantId", "artifact"],
+        "properties": {
+          "variantId": { "$ref": "#/definitions/segment" },
+          "architecture": { "$ref": "#/definitions/value" },
+          "os": { "$ref": "#/definitions/value" },
+          "variantAttributes": { "$ref": "#/definitions/attributes" },
+          "artifact": { "$ref": "#/definitions/file" },
+          "checksum": { "$ref": "#/definitions/file" },
+          "signature": { "$ref": "#/definitions/file" },
+          "certificate": { "$ref": "#/definitions/file" },
+          "sbom": { "$ref": "#/definitions/file" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "productKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "not": { "enum": ["__proto__", "prototype", "constructor"] }
+    },
+    "segment": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+      "not": { "enum": ["__proto__", "prototype", "constructor"] }
+    },
+    "value": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "not": { "enum": ["__proto__", "prototype", "constructor"] }
+    },
+    "attributes": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$",
+        "not": { "enum": ["__proto__", "prototype", "constructor"] }
+      },
+      "additionalProperties": { "$ref": "#/definitions/value" }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^releases/[a-zA-Z0-9][a-zA-Z0-9._-]*/[a-zA-Z0-9][a-zA-Z0-9._-]*(/[a-zA-Z0-9][a-zA-Z0-9._-]*)*$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    }
+  }
+}

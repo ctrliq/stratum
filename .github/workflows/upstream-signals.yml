@@ -1,0 +1,58 @@
+name: upstream-signals
+
+# Tag detection is Renovate's job. This watches the things that happen BEFORE a
+# tag: the published release schedule, and CVE announcements.
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: sched
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        continue-on-error: true
+        run: tools/upstream-schedule.sh --warn | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: warn when a tracked release lands within 7 days
+        if: steps.sched.outcome == 'failure'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            core.notice('An upstream release for a tracked branch lands within 7 days — ' +
+                        'expect bump PRs and assign a release captain.');
+
+  cves:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: cve
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Since the last run, not since forever: a daily job that re-reports
+          # month-old CVEs is a job people stop reading.
+          tools/cve-watch.sh --since "$(date -u -d '2 days ago' +%F)" | tee cves.txt
+          tools/cve-watch.sh --issue --since "$(date -u -d '2 days ago' +%F)" > cve-issue.md
+          if [ "$(wc -l < cves.txt)" -gt 1 ]; then echo "found=true" >> "$GITHUB_OUTPUT"; fi
+      - name: open a triage issue
+        if: steps.cve.outputs.found == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BODY_FILE: cve-issue.md
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Kubernetes CVE triage — ${new Date().toISOString().slice(0,10)}`,
+              body: fs.readFileSync(process.env.BODY_FILE, 'utf8'),
+              labels: ['security', 'cve-triage'],
+            });

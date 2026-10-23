@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.bundle/
+secret.env
+.npmrc
+*.log
+.DS_Store
