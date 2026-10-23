@@ -1,0 +1,40 @@
+# Only a node may mark its own Node for removal. The operator deletes
+# a Node that `stratum uninstall` marked with stratum.ciq.com/uninstalled once
+# its kubelet is gone, so a mark written by anyone else would turn a grant to
+# patch nodes into a way to delete one. The mark may be taken off by anyone.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: stratum-node-uninstall-mark
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["nodes"]
+  variables:
+    - name: key
+      expression: "'stratum.ciq.com/uninstalled'"
+    - name: mark
+      expression: >-
+        has(object.metadata.annotations) && variables.key in object.metadata.annotations
+        ? object.metadata.annotations[variables.key] : ''
+    - name: oldMark
+      expression: >-
+        oldObject != null && has(oldObject.metadata.annotations) && variables.key in oldObject.metadata.annotations
+        ? oldObject.metadata.annotations[variables.key] : ''
+  validations:
+    - expression: >-
+        variables.mark == '' || variables.mark == variables.oldMark ||
+        request.userInfo.username == 'system:node:' + object.metadata.name
+      message: only the node itself may mark its Node for removal (stratum.ciq.com/uninstalled)
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: stratum-node-uninstall-mark
+spec:
+  policyName: stratum-node-uninstall-mark
+  validationActions: [Deny]

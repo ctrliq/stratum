@@ -1,0 +1,108 @@
+site_name: Stratum Kubernetes Engine
+site_description: >-
+  Public documentation for Stratum Kubernetes Engine (SKE) — a Kubernetes
+  distribution that ships as one binary, airgapped by default.
+site_url: https://docs.ciq.com/
+copyright: Copyright &copy; CIQ, Inc.
+
+repo_url: https://github.com/ctrliq/stratum
+repo_name: ctrliq/stratum
+edit_uri: edit/main/docs/docs/
+
+# A broken internal link, a nav entry pointing at a file that does not exist, or
+# an unrecognised config key becomes a build failure instead of a warning nobody
+# reads. This is the whole reason the CI job is worth having: without it
+# `mkdocs build` exits 0 and renders the page short.
+strict: true
+
+theme:
+  name: material
+  # OFF deliberately. Left unset, Material links every page to Roboto and
+  # Roboto Mono on fonts.googleapis.com, so each reader's browser makes a
+  # third-party request. Inter is vendored in docs/docs/assets/fonts/ instead
+  # and declared by docs/docs/assets/extra.css — see the comment at the top of
+  # that file.
+  font: false
+  features:
+    - navigation.sections
+    # Without this, a section whose first nav entry is its own index.md renders
+    # the section label AND a child entry for the index — the section appears
+    # twice in the sidebar. This attaches the index page to the section label
+    # instead.
+    - navigation.indexes
+    - navigation.top
+    - navigation.instant
+    - navigation.tracking
+    # toc.follow keeps the current section highlighted in the on-page
+    # contents as the reader scrolls.
+    - toc.follow
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - assets/extra.css
+
+extra_javascript:
+  - assets/copy-commands.js
+
+markdown_extensions:
+  - admonition
+  # smarty curls straight quotes and dashes in prose, and leaves code spans
+  # and fences alone, so `--flag` is untouched.
+  - smarty
+  - attr_list          # grid cards on the landing page
+  - md_in_html         # ditto
+  - tables
+  - toc:
+      permalink: true
+      # h1 is the page title, so the on-page contents start at h2.
+      toc_depth: "2-3"
+  - pymdownx.details
+  - pymdownx.highlight:
+      pygments_lang_class: true
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+# This list sets the sidebar order.
+nav:
+  - Home: index.md
+  - Overview: overview/index.md
+  - Quick Start: quick-start/index.md
+  - Installation:
+      - installation/index.md
+      - Configuration: installation/configuration.md
+  - Cluster Administration:
+      - cluster-admin/index.md
+      - High Availability: cluster-admin/high-availability.md
+      - Upgrades & Rollback: cluster-admin/upgrades.md
+      - Snapshot & Restore: cluster-admin/snapshot-restore.md
+      - Certificates: cluster-admin/certificates.md
+      - Hardening: cluster-admin/hardening.md
+      - MCP Server: cluster-admin/mcp.md
+  - Container Runtime: runtime/index.md
+  - Networking & Storage: networking-storage/index.md
+  - Stratum PRO: pro/index.md
+  - Releases & Support: releases/index.md
+  - Appendices:
+      - appendices/index.md
+      - Glossary: appendices/glossary.md
+      - Paths and Names: appendices/paths-and-names.md
+      - Snapshot Reference: appendices/snapshot-reference.md
+      - Upgrade Reference: appendices/upgrade-reference.md

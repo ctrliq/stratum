@@ -1,0 +1,15 @@
+# Public keys of the SKE release captains, so anyone can verify a release tag
+# they did not cut:
+#
+#   git config gpg.ssh.allowedSignersFile .github/allowed_signers
+#   git tag -v <tag>
+#
+# Format: <email> namespaces="git" <keytype> <key>   (git's allowed-signers format)
+#
+# THIS FILE IS EMPTY AND MUST NOT STAY THAT WAY. Adding a captain to RELEASE.md
+# without adding their key here means their tags are signed and unverifiable,
+# which is most of the way back to unsigned. See RELEASE.md §1.
+#
+# jrbing@ciq.com namespaces="git" ssh-ed25519 AAAA...
+jrbing@users.noreply.github.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4WT9kzN/lethognYhVwH8tB/2+cAn2wB2khIKfN15c
+WolfyChris@users.noreply.github.com namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILelEExaywkGQCod6l7cgpbiNJJ8GaUf5/VU9mYmHdOD

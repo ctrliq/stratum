@@ -1,0 +1,131 @@
+/* ============================================================
+   Design tokens — first-party.
+
+   Only the ~90 tokens below are defined — everything a control, a screen or
+   app.css actually resolves.
+
+   app.css re-skins the dashboard by overriding a subset of them in :root,
+   and .login-split re-scopes another subset for the sign-in screen; both
+   depend on the names here. Import order matters: this file FIRST, app.css
+   second, so the app's overrides win.
+
+   Values are that sheet's dark-theme resolutions; THIRD_PARTY_NOTICES.md
+   records where they came from and what is still to clear. This file exists
+   so the clearance is 90 lines rather than 360 KB, and so no build needs a
+   token for a private registry.
+   ============================================================ */
+:root {
+  /* spacing scale */
+  --quantic-spacing-0-5: 0.125rem;
+  --quantic-spacing-1: 0.25rem;
+  --quantic-spacing-1-5: 0.375rem;
+  --quantic-spacing-2: 0.5rem;
+  --quantic-spacing-3: 0.75rem;
+  --quantic-spacing-4: 1rem;
+  --quantic-spacing-5: 1.25rem;
+  --quantic-spacing-6: 1.5rem;
+  --quantic-spacing-8: 2rem;
+  --quantic-spacing-10: 2.5rem;
+  --quantic-spacing-16: 4rem;
+  --quantic-spacing-20: 5rem;
+  --quantic-spacing-80: 20rem;
+  --quantic-spacing-xxs: 0.125rem;
+  --quantic-spacing-sm: 0.375rem;
+  --quantic-spacing-md: 0.5rem;
+
+  /* type scale */
+  --quantic-font-family-body: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --quantic-font-size-body-xs: 0.75rem;
+  --quantic-font-size-body-sm: 0.875rem;
+  --quantic-font-size-body-md: 1rem;
+  --quantic-font-size-body-lg: 1.125rem;
+  --quantic-font-size-body-xl: 1.25rem;
+  --quantic-line-height-body-xs: 1.125rem;
+  --quantic-line-height-body-sm: 1.25rem;
+  --quantic-line-height-body-md: 1.5rem;
+  --quantic-line-height-body-lg: 1.75rem;
+  --quantic-line-height-body-xl: 1.875rem;
+  --quantic-font-weight-regular: 400;
+  --quantic-font-weight-medium: 500;
+  --quantic-font-weight-semibold: 600;
+  --quantic-font-weight-bold: 700;
+
+  /* shape */
+  --quantic-radius-xs: 0.25rem;
+  --quantic-radius-sm: 0.375rem;
+  --quantic-radius-md: 0.5rem;
+  --quantic-radius-lg: 0.625rem;
+  --quantic-radius-full: 624.9375rem;
+
+  /* surfaces */
+  --quantic-bg-primary: #13161b;
+  --quantic-bg-primary-rgb: 19 22 27;
+  --quantic-bg-secondary: #1a1e25;
+  --quantic-bg-primary-hover: #22262f;
+  --quantic-bg-secondary-hover: #22262f;
+  --quantic-bg-brand-primary: #12a66f;
+  --quantic-bg-brand-primary-hover: #17c484;
+
+  /* lines */
+  --quantic-border-primary: #373a41;
+  --quantic-border-secondary: #22262f;
+  --quantic-border-tertiary: #22262f;
+  --quantic-border-brand: #12a66f;
+  --quantic-border-error: #f97066;
+  --quantic-focus-ring: #0b8759;
+  /* The progress track and the code viewer's background are keyed to the raw
+     gray ramp, not to the themable surface tokens — app.css re-skins those. */
+  --quantic-color-gray-dark-mode-700: #373a41;
+  --quantic-color-gray-dark-mode-900: #13161b;
+
+  /* text */
+  --quantic-text-primary: #f7f7f7;
+  --quantic-text-secondary: #cecfd2;
+  --quantic-text-tertiary: #94979c;
+  --quantic-text-quaternary: #94979c;
+  --quantic-text-white: #ffffff;
+  --quantic-text-primary-on-brand: #13161b;
+  --quantic-text-error-primary-hover: #fda29b;
+
+  /* foreground accents */
+  --quantic-fg-brand-primary: #12a66f;
+  --quantic-fg-error-primary: #f04438;
+  --quantic-fg-success-primary: #17b26a;
+  --quantic-fg-warning-primary: #f79009;
+  --quantic-fg-disabled-subtle: #61656c;
+  --quantic-fg-white-rgb: 255 255 255;
+
+  /* dialog widths */
+  --quantic-width-xs: 24rem;
+  --quantic-width-md: 35rem;
+  --quantic-width-lg: 40rem;
+  --quantic-width-xl: 48rem;
+
+  /* utility ramps — the six ComponentColor values the screens pass to
+     Badge / StatusBadge / Progress / Sparkline. 50 = fill, 200 = border,
+     500 = solid, 700 = text. */
+  --quantic-utility-gray-50: #13161b;
+  --quantic-utility-gray-200: #373a41;
+  --quantic-utility-gray-500: #85888e;
+  --quantic-utility-gray-700: #cecfd2;
+  --quantic-utility-brand-50: #04140c;
+  --quantic-utility-brand-200: #053722;
+  --quantic-utility-brand-500: #0b8759;
+  --quantic-utility-brand-700: #17c484;
+  --quantic-utility-error-50: #55160c;
+  --quantic-utility-error-200: #912018;
+  --quantic-utility-error-500: #f04438;
+  --quantic-utility-error-700: #fda29b;
+  --quantic-utility-warning-50: #4e1d09;
+  --quantic-utility-warning-200: #93370d;
+  --quantic-utility-warning-500: #f79009;
+  --quantic-utility-warning-700: #fec84b;
+  --quantic-utility-success-50: #053321;
+  --quantic-utility-success-200: #085d3a;
+  --quantic-utility-success-500: #17b26a;
+  --quantic-utility-success-700: #75e0a7;
+  --quantic-utility-blue-50: #102a56;
+  --quantic-utility-blue-200: #1849a9;
+  --quantic-utility-blue-500: #2e90fa;
+  --quantic-utility-blue-700: #84caff;
+}

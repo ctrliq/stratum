@@ -1,0 +1,377 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    # The release branches are in the push trigger because the branch-aware
+    # pin policy (build/versions.mk) is enforced from the branch the run is
+    # on: a push to a release branch under a main-only trigger runs no lint
+    # at all, and the equality half of the policy has no CI run to enforce
+    # it. Pull requests against release branches are already covered — the
+    # gate takes the PR's target branch from GITHUB_BASE_REF, since a PR's
+    # checkout is detached and git names no branch there. What that push needs
+    # is the lint job alone; the build-heavy jobs below carry a pull-request-
+    # or-main condition so merging into a release branch does not re-run —
+    # minutes after its own PR finished — the component builds, the whole
+    # integration matrix and the reproducibility check on every merge.
+    branches: [main, 'release/*', 'release-*']
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    # The two GitHub API gates (check-droppable-patches, the fence check) run
+    # inside `make lint`, so the token sits on the job rather than on a step.
+    # It is the workflow's automatic token — scoped contents:read above — and
+    # it lifts the anonymous 60/hr limit both scripts would otherwise hit.
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0          # version.sh derives the counter from tags
+      # The Makefile's lint target is the one gate list: this job runs it
+      # rather than keeping its own steps for the same scripts — two
+      # hand-maintained lists of the same gates drift, and the gatelist
+      # self-tests in tools/gatelist pin the lists together.
+      #
+      # The node-file write guard (tools/nodefilewrites) is the lint target's
+      # first gate to compile a package of THIS module, so the job pins the
+      # toolchain the `go` and `licenses` jobs do: whichever Go a runner image
+      # happens to preinstall must not decide what compiles the gate. From the
+      # pin manifest, as they do: a version literal here is what
+      # lint-versions.sh rejects.
+      - id: pins
+        run: echo "go=$(sed -n 's/^go_version *= *//p' build/versions.mk)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+      - run: make lint
+      # Informational, not a gate: the version the pins and the tag history
+      # derive. It is why the checkout above keeps fetch-depth: 0.
+      - run: make print-version
+
+  # The dashboard SPA (dash/). Its own job rather than a step on `go`, so a
+  # broken bundle reads as a dashboard failure and a Go failure reads as a Go
+  # one. No credentials: dash/ installs entirely from the public npm registry,
+  # so there is no @ctrliq .npmrc and no PAT here.
+  #
+  # `make dash`, not the three pnpm commands spelled out: the target is what a
+  # developer runs and what `make package` depends on, so this job cannot drift
+  # away from the build.
+  dash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/node-prep
+      # The vite entry-point check lives inside `make dash`, so every
+      # caller gets it — including release.yml's dash-publish, which this
+      # job does not gate. vite's own output already lists the emitted
+      # assets with their sizes, so there is nothing for a separate step
+      # to add.
+      - run: make dash
+
+  # The public docs site. Its own job for the same reason `dash` is not a step
+  # on `go`: a broken site should read as a docs failure, not get buried in
+  # `lint`'s log.
+  #
+  # `make docs` runs `mkdocs build --strict`, which fails on a broken
+  # internal link or a nav entry pointing at a file that is not there, and
+  # then asserts the page count, which --strict does not — so "it built" is
+  # never mistaken for "it works".
+  #
+  # Unconditional, not filtered on docs/**: a flag renamed in pkg/cli
+  # breaks the documentation without touching docs/, which is the whole reason
+  # tools/lint-docs-cli.sh scans every tracked *.md regardless of the diff.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # python3 is preinstalled on ubuntu-latest; the pins that matter
+      # (mkdocs, mkdocs-material) come from build/versions.mk inside the target.
+      - run: make docs
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The public API compatibility test reads the released baseline tag.
+          fetch-depth: 0
+      - id: pins
+        # Read the toolchain from the pin manifest rather than duplicating it
+        # here: a version literal in this file is exactly what
+        # lint-versions.sh exists to reject.
+        run: echo "go=$(sed -n 's/^go_version *= *//p' build/versions.mk)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+      # `make test` builds the SPA too: with no build tag the Go
+      # packages embed dash/dist, so `go vet`/`go test` do not compile without
+      # it. Running the same command CI runs is the point — a `TAGS=noui` here
+      # would leave the untagged embed compiled by no test job at all.
+      - uses: ./.github/actions/node-prep
+      # The envtest control-plane binaries (a real kube-apiserver and etcd)
+      # make internal/mcp/kube's cases run instead of skip. Exported
+      # into the environment rather than passed to a separate target so plain
+      # `make test` picks them up, keeping the "run the same command CI runs"
+      # property the comment above is about.
+      #
+      # Not cached: that needs actions/cache, which nothing here uses yet, and
+      # the download is a fraction of this job's runtime.
+      - name: Fetch envtest control-plane binaries
+        run: echo "KUBEBUILDER_ASSETS=$(make envtest-assets)" >> "$GITHUB_ENV"
+      - run: make test
+      # The destructive tools serialize on one operation lock (opMu, the
+      # destructive tools' sole exclusion), and a regression that lets two
+      # operation bodies run at once races on shared state; an overlap flag
+      # alone misses narrow windows, the race detector does not. Scoped to
+      # ./internal/mcp/... -- see RACE_PACKAGES.
+      - run: make test-race
+
+  # License conformance of the code stratum ships: the Go packages linked into
+  # ./cmd/stratum for linux/amd64 and linux/arm64, and the npm packages vite
+  # bundles into dash/dist. Its own job, like `dash` and `docs`, so a
+  # disallowed license reads as a license failure; an unknown or missing
+  # license is a ::warning:: annotation and does not fail the job.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: pins
+        # From the pin manifest, as the `go` job does: a version literal here
+        # is what lint-versions.sh rejects.
+        run: echo "go=$(sed -n 's/^go_version *= *//p' build/versions.mk)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+      # `make licenses` builds the SPA (NEEDS_DASH), whose build writes the
+      # list of npm packages it bundled for the gate to check.
+      - uses: ./.github/actions/node-prep
+      - name: the license gate catches what it claims to
+        # Here rather than in `lint`, beside the gate it tests: the test
+        # builds tools/licensecheck and runs go list on throwaway modules.
+        # Hermetic, ~20s.
+        run: tools/test-lint-licenses.sh
+      - run: make licenses
+
+  # Runs on pull requests and main only (as do the inttest jobs and
+  # reproducible below): what a push to a release branch exists to check is
+  # the lint job's branch-aware pin gate, and every change reaching a release
+  # branch ran this matrix as its own PR minutes earlier. A merge commit
+  # re-running it doubles the cost of nothing new — until some flow pushes
+  # straight to a release branch without a PR, at which point the push needs
+  # the pin gate here and would still get it from `lint`.
+  components:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native runners per arch. No emulation: a
+        # cross-built binary is not the artifact we ship.
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/runner-prep
+      # Node + pnpm: `make package` builds the SPA the Go build embeds. Beside
+      # runner-prep rather than inside it — see that action's header for why.
+      - uses: ./.github/actions/node-prep
+      - id: pins
+        run: echo "go=$(sed -n 's/^go_version *= *//p' build/versions.mk)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+      - name: build components
+        run: make components TARGET_ARCH=${{ matrix.arch }}
+      - name: stage images
+        # The artifact carries the images, so this is part of building it, not
+        # an optional airgap extra.
+        run: make images TARGET_ARCH=${{ matrix.arch }}
+      - name: package
+        run: make package TARGET_ARCH=${{ matrix.arch }}
+      - name: smoke test
+        # Includes verify-payload: the embedded image set must equal
+        # build/images.txt by name and digest.
+        run: make smoke TARGET_ARCH=${{ matrix.arch }}
+      - name: build-info
+        run: make build-info TARGET_ARCH=${{ matrix.arch }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: stratum-linux-${{ matrix.arch }}
+          path: |
+            dist/stratum
+            build-info.json
+
+  # The integration matrix is generated from tools/inttest/, so adding a check file
+  # adds a CI job with no edit here. PR/main only — see the components job for why.
+  inttest-matrix:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: gen
+        run: echo "matrix=$(tools/inttest-matrix.sh)" >> "$GITHUB_OUTPUT"
+
+  inttest:
+    # PR/main only — see the components job. Its needs would skip it on a
+    # release-branch push anyway; naming the condition here keeps the reason
+    # legible on this job rather than inherited from two jobs up.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    needs: [inttest-matrix, components]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.inttest-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: free runner disk
+        # The payload carries the control-plane images (it runs as static
+        # pods), so a test cluster's containerd store is ~1.5G bigger. On a
+        # stock runner that crosses kubelet's nodefs eviction threshold:
+        # DiskPressure taints the node and image GC reclaims the add-on images
+        # (pinning protects them in-product, but the taint alone fails tests).
+        # Dropping the runner's unused toolchains frees ~20G.
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: matrix.pending == ''
+        with:
+          name: stratum-linux-amd64
+          # Extract at the workspace root, NOT into dist/. The upload lists two
+          # paths (dist/stratum and build-info.json), so upload-artifact roots the
+          # archive at their least common ancestor — the workspace — and the
+          # archive therefore contains "dist/stratum", not "stratum". Extracting
+          # that into dist/ yields dist/dist/stratum and `chmod +x
+          # dist/stratum` dies on a binary that is not there. Extracting at "."
+          # restores the layout the upload captured, and puts build-info.json
+          # back at the root where the build wrote it.
+          path: .
+      - name: fetch the previous release
+        # A check whose header carries `# ske-inttest: previous=<tag>` runs
+        # against that published engine release too (an installed node handed
+        # this build). Read through the one header parser, as inttest-run.sh
+        # reads network; without the directive the step is a no-op. The asset
+        # is named exactly, not globbed: its .sig, .pem and .spdx.json sit
+        # beside it in the release, and -O takes one file.
+        if: matrix.pending == ''
+        env:
+          CHECK_SCRIPT: ${{ matrix.script }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CHECK_SCRIPT=$(printf %s "$CHECK_SCRIPT" | tr -d '[:cntrl:]')
+          prev=$(tools/inttest-matrix.sh --directive previous "$CHECK_SCRIPT")
+          [ -n "$prev" ] || exit 0
+          echo "fetching stratum-linux-amd64 from release $prev"
+          gh release download "$prev" -R ctrliq/stratum -p stratum-linux-amd64 -O dist/stratum-previous
+          chmod +x dist/stratum-previous
+          dist/stratum-previous version || true
+      - name: ${{ matrix.name }}
+        # Through env, never `${{ }}` inside run:. An expression is substituted
+        # into the script TEXT before bash parses it, so a value carrying a quote
+        # or a semicolon would run as code rather than be read as data.
+        #
+        # inttest-matrix.sh already forecloses that: filenames must match
+        # check-<lowercase-dash-separated>.sh and directive values must be
+        # [A-Za-z0-9._-], so neither of these can hold such a character today.
+        # This is the second lock, and it holds if that guard is ever loosened.
+        env:
+          CHECK_NAME: ${{ matrix.name }}
+          CHECK_SCRIPT: ${{ matrix.script }}
+          CHECK_PENDING: ${{ matrix.pending }}
+        run: |
+          # Belt and braces over inttest-matrix.sh's validation: both values
+          # reach `::` workflow commands below, and a control character cannot
+          # be part of a legitimate check path or name — so dropping one here is
+          # a no-op on anything well-formed, and closes the hole if that guard
+          # is ever loosened. Done once, not re-escaped at each use site.
+          CHECK_SCRIPT=$(printf %s "$CHECK_SCRIPT" | tr -d '[:cntrl:]')
+          CHECK_NAME=$(printf %s "$CHECK_NAME" | tr -d '[:cntrl:]')
+          if [ -n "$CHECK_PENDING" ]; then
+            echo "::notice title=pending::$CHECK_NAME is registered but not yet implementable"
+            # bash, not sh: every check declares `#!/usr/bin/env bash`, and on a
+            # runner /bin/sh is dash. A pending stub using a bash-ism today
+            # prints `[[: not found` and STILL exits 0 — the check reports
+            # success while its body never ran, which is the one failure mode
+            # this job exists to catch.
+            bash "$CHECK_SCRIPT"
+            exit 0
+          fi
+          chmod +x dist/stratum
+          tools/inttest-run.sh "$CHECK_SCRIPT" && exit 0
+          # Quarantine: a check whose header carries
+          # `# ske-inttest: flaky=until-YYYY-MM-DD`
+          # gets one retry, annotated so the flake stays countable instead of
+          # being laundered by a manual re-run. Two failures in a row still fail
+          # the job, so a real regression cannot pass through here.
+          # One command, not `sed ... | head -1`: match the directive line, take
+          # the value, stop. No pipeline to carry a status. The trailing `20q`
+          # is what actually makes this header-only — the match itself only
+          # quits when there IS one, so without it an ordinary un-quarantined
+          # failure reads the whole file. 20 lines is also exactly the window
+          # inttest-matrix.sh parses, so both consumers honour one contract.
+          # [^[:space:]], not [^ ]: inttest-matrix.sh splits directives on any
+          # whitespace, so a tab-separated trailing comment ends the value there
+          # too. Matching only a literal space would swallow the tab and the
+          # comment into the key, and refuse a quarantine the generator accepted.
+          hdr='/^# ske-inttest:.*flaky=/'
+          flaky=$(sed -n "$hdr"'{s/^# ske-inttest:.*flaky=\([^[:space:]]*\).*/\1/p;q;};20q' "$CHECK_SCRIPT")
+          # Anchored to an expiry: a quarantine without one is a deletion that
+          # still costs a CI line. So `flaky=yes` or a typo buys no retry, and
+          # neither does a quarantine nobody came back to. It names no ticket:
+          # the header is public, and the reason belongs in a comment beside it.
+          # It doubles as the sanitiser: the value comes out of a file the PR
+          # itself can edit and goes into a workflow command, and the anchored
+          # form admits only the literal until- and a date, so nothing else
+          # reaches the annotation.
+          if [[ ! $flaky =~ ^until-[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            # No directive at all is an ordinary failure and stays quiet; a
+            # directive that IS present but does not carry a date is a
+            # misconfiguration, and silence there sends someone hunting. The
+            # test is presence, not emptiness — `flaky=` with nothing after it
+            # yields the same empty capture as no directive at all. The value
+            # is scrubbed on the way out: an invalid key is by definition
+            # arbitrary and must not become a workflow command.
+            if [[ -n $(sed -n "$hdr"'{p;q;};20q' "$CHECK_SCRIPT") ]]; then
+              shown=$(printf %s "$flaky" | tr -cd 'A-Za-z0-9._-')
+              echo "::error title=bad quarantine key::$CHECK_SCRIPT declares flaky=$shown," \
+                   "which is not until-YYYY-MM-DD — no retry granted (shown" \
+                   "scrubbed, so an invisible character will not appear here)"
+            fi
+            exit 1
+          fi
+          # Past its date, the quarantine is over and the leg is required again.
+          # Lexicographic compare is correct for ISO-8601 and needs no date math.
+          if [[ $(date -u +%F) > ${flaky#until-} ]]; then
+            echo "::error title=quarantine expired::$CHECK_SCRIPT is quarantined" \
+                 "until ${flaky#until-}, which has passed — fix it or" \
+                 "move the date with a reason. No retry granted."
+            exit 1
+          fi
+          echo "::warning title=flaky::$CHECK_NAME failed; retrying once (quarantined $flaky)"
+          tools/inttest-run.sh "$CHECK_SCRIPT"
+
+  reproducible:
+    # One cheap component per PR proves determinism without paying for a full
+    # double Kubernetes build. The nightly job does the whole set. Runs on
+    # pull requests and main only — see the components job for why.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - run: make verify-reproducible COMPONENT=runc

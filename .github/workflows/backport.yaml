@@ -1,0 +1,95 @@
+name: backport
+
+# Label-driven backports. A maintainer puts backport/release-1.X on a PR; when
+# it merges, the backport PR opens itself. Labelling after the merge works too —
+# that is when people usually realise a fix is needed on a release branch.
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backport:
+    # Only merged PRs, and only when a backport label is present. The labeled
+    # event fires for every label, so the second condition is what keeps this
+    # from running on every triage label.
+    if: >
+      github.event.pull_request.merged &&
+      (github.event.action == 'closed' ||
+       startsWith(github.event.label.name, 'backport/'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: install mergiraf
+        # Syntax-aware merge driver: resolves cherry-pick conflicts that are
+        # only textual (two functions added in the same place, imports
+        # reordered) and leaves genuine semantic conflicts alone.
+        # Pinned from build/versions.mk like every other tool a job installs.
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^mergiraf_version *= *//p' build/versions.mk | tr -d ' ')
+          [ -n "$v" ] || { echo "::error::no mergiraf_version in build/versions.mk"; exit 1; }
+          cargo install --locked mergiraf --version "=$v"
+          git config --global merge.mergiraf.name "mergiraf"
+          git config --global merge.mergiraf.driver "mergiraf merge --git %O %A %B -s %S -x %X -y %Y -p %P"
+          printf '* merge=mergiraf\n' >> "$HOME/.gitattributes-mergiraf"
+          git config --global core.attributesFile "$HOME/.gitattributes-mergiraf"
+
+      - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4.7.0
+        id: backport
+        with:
+          label_pattern: '^backport/(?<target>release-1\.[0-9]+)$'
+          pull_title: '[Backport ${target_branch}] ${pull_title}'
+          branch_name: backport-${pull_number}-to-${target_branch}
+          # Push the branch and open the PR even when the cherry-pick conflicts:
+          # a half-done backport with a checklist is far more useful than a
+          # failed workflow nobody reads.
+          merge_commits: skip
+          experimental: >
+            {"conflict_resolution": "draft_commit_conflicts"}
+          copy_labels_pattern: '^(bug|security|area/.*)$'
+          pull_description: |
+            Backport of #${pull_number} to `${target_branch}`.
+
+            Original: ${pull_title}
+
+            Backport PRs run the **full** CI gauntlet — same required checks as
+            any other PR to this branch.
+
+            If this PR contains conflict markers, the cherry-pick did not apply
+            cleanly and mergiraf could not resolve it. Resolve on the branch,
+            push, and un-draft.
+
+      # A target it could not push is an *output* of the action, not a failed
+      # step — nothing in it calls core.setFailed, so a rejected push still
+      # concludes success. A backport that did not open has to be red.
+      #
+      # `== 'false'`, not `!= 'true'`: this runs on every merge, and the action
+      # returns before setting any output when there is nothing to backport (no
+      # label, or none matching the pattern), so the output is then empty. Any
+      # other error is a setFailed and skips this step by itself.
+      - name: a backport that did not open is a failure
+        if: steps.backport.outputs.was_successful == 'false'
+        env:
+          BY_TARGET: ${{ steps.backport.outputs.was_successful_by_target }}
+        run: |
+          # Plain echos, not a heredoc: inside a YAML block scalar the
+          # terminator is indented too, so `<<'EOT'` never matches it and
+          # `exit 1` is swallowed as heredoc body — the step then prints all
+          # of this and exits 0.
+          echo "::error::backport did not open for every target — $BY_TARGET"
+          {
+            echo "If this PR touches .github/workflows/, the push was rejected and"
+            echo "nothing in this file can fix it: 'workflows' is not a GITHUB_TOKEN"
+            echo "scope, so GitHub refuses workflow-file writes from a GitHub App"
+            echo "whatever 'contents: write' grants. Open the backport by hand: on a"
+            echo "branch off release-1.X, cherry-pick the commit this PR merged as,"
+            echo "push it yourself and open the pull request against release-1.X."
+          } >&2
+          exit 1

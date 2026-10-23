@@ -1,0 +1,71 @@
+/* Inter is VENDORED, not fetched. An @import is render-blocking and an external
+   request on every page load; shipping one in the documentation of a product
+   whose headline claim is airgap operation would be a poor advertisement.
+   Source: @fontsource-variable/inter@5.2.8, latin subset, variable weight.
+
+   This is also why mkdocs.yml sets `theme.font: false`. Left unset, Material
+   links every page to Roboto and Roboto Mono on fonts.googleapis.com — the
+   same external request on every page load, to Google. */
+@font-face {
+  font-family: 'Inter Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+                 U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+                 U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/*
+ * Brand colour system, mapped onto Material's variables.
+ *
+ * Brand: green palette, brand.50 #cbfce1 ... brand.600 #097049
+ * Surface: light #ffffff on #13161B text; dark #13161B on #ffffff text
+ *
+ * Only the tokens Material actually reads are set here: Material
+ * derives the rest from the primary/accent pair.
+ */
+
+:root {
+  --md-text-font: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                  Roboto, Helvetica, Arial, sans-serif;
+  --md-code-font: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+                  'Liberation Mono', monospace;
+}
+
+/* Light */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:        #0b8759;  /* brand.500 */
+  --md-primary-fg-color--light: #12a66f;  /* brand.400 */
+  --md-primary-fg-color--dark:  #097049;  /* brand.600 */
+  --md-accent-fg-color:         #12a66f;  /* brand.400 */
+  --md-typeset-a-color:         #0b8759;  /* brand.500: AA on white */
+  --md-typeset-mark-color:      #cbfce1;  /* brand.50 */
+  --md-default-fg-color:        #13161B;
+}
+
+/* Dark */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:        #12a66f;  /* brand.400 */
+  --md-primary-fg-color--light: #2be099;  /* brand.200 */
+  --md-primary-fg-color--dark:  #0b8759;  /* brand.500 */
+  --md-accent-fg-color:         #2be099;  /* brand.200 */
+  --md-typeset-a-color:         #2be099;  /* brand.200: the lighter end reads on dark */
+  --md-typeset-mark-color:      #17c48433;
+  --md-default-bg-color:        #13161B;  /* exact match to the product web UI */
+}
+
+/* The landing page's section cards. `grid cards` is Material's own recipe; this
+   only removes the heading's default top margin so the card's first line sits
+   where the card starts. */
+.md-typeset .grid.cards > ul > li > h3:first-child,
+.md-typeset .grid.cards > ol > li > h3:first-child {
+  margin-top: 0;
+}
+
+/* A console block's prompt is not part of the command: selecting the text
+   by hand leaves it out, as the copy button does (copy-commands.js). */
+.highlight .gp {
+  user-select: none;
+}

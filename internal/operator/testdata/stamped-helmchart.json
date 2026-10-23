@@ -1,0 +1,18 @@
+{
+  "apiVersion": "stratum.ciq.com/v1",
+  "kind": "HelmChart",
+  "metadata": {
+    "annotations": {
+      "stratum.ciq.com/requester": "alice",
+      "stratum.ciq.com/requester-groups": "[\"system:authenticated\"]",
+      "stratum.ciq.com/requester-sig": "9cHHuoCJeU+pN435a4q1fH6X97EShVgi2yBjztE5W6c",
+      "stratum.ciq.com/requester-uid": "alice-uid"
+    },
+    "name": "app",
+    "namespace": "team-a"
+  },
+  "spec": {
+    "chart": "app",
+    "valuesContent": "replicas: 1"
+  }
+}

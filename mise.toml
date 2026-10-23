@@ -1,0 +1,82 @@
+# Host tools for the dev loop. Dev-only, with one exception: `make lint` —
+# which CI's lint job and the pre-push stage both run — reads the kubectl pin
+# below via tools/lint-kube-images.sh and fails the build when it sits beyond
+# one minor of kubernetes_version. No workflow reads anything else in this
+# file.
+#
+# The rule that shapes it: build/versions.mk is the ONLY place a third-party
+# version may appear, and tools/lint-versions.sh greps the whole tree to prove
+# it. So nothing already pinned there may be named here with a literal, and
+# every entry is "latest" — these are conveniences, not build inputs. Nothing a
+# release carries depends on the version a dev's syft or crane happens to be.
+#
+# kubectl and cosign are the exceptions, and deliberately so: see their entries
+# below. Do not "fix" them to "latest" for consistency with the paragraph above
+# — kubectl tracks kubernetes_version instead of drifting ahead of it, and
+# cosign v3 breaks the sign-blob flags `make sign` uses.
+#
+# Deliberately absent, so their absence does not read as an oversight:
+#
+#   go        go_version is versions.mk's, and rule 3 ties it to the pinned
+#             Kubernetes' .go-version. A literal here fails `make lint`; a
+#             "latest" here would be a Go that does not match the pin, which is
+#             worse than none. CI derives it from the manifest (ci.yml's `pins`
+#             step feeds setup-go). Consequence: `mise install` alone does not
+#             give you `make build` — Go comes from go.mod's toolchain or your
+#             own setup.
+#
+#   hydrophone pinned at versions.mk with sha256s per arch, precisely so a
+#             release can say which hydrophone produced its conformance evidence.
+#             An unpinned one on PATH would shadow that, and run-conformance.sh
+#             takes whatever it finds. It also needs a real multi-node cluster
+#             and four hours; it is not a laptop tool.
+#
+#   docker    a daemon, not a mise-managed binary. Required by `make inttest`
+#             and the `local` provisioning backend. Same for ssh/scp, which the
+#             gcp backend shells out to. See README.
+#
+#   Bare metal needs no host tooling until it has a backend.
+
+[tools]
+# --- ostests provisioning ------------------------------------------
+# The GCP Pulumi program behind the backend contract in
+# tools/ostests/backends/README.md. gcloud has no aqua build — it comes from a
+# vfox/asdf plugin. run-skew.sh and the inttest matrix use system python3 for
+# stdlib json, which is fine wherever it exists.
+pulumi      = "latest"   # tools/ostests/gcp/Pulumi.yaml; sweep.sh
+gcloud      = "latest"   # sweep.sh hard-requires it; gcp.sh preflights
+
+# --- the test drivers ---------------------------------------------------------
+# Minor-pinned, not "latest", so the client tracks kubernetes_version rather
+# than drifting ahead of it. Minor only, and mise resolves the patch itself: the
+# full x.y.z is a kubernetes_version literal, and naming it here fails
+# `make lint`. Bump this when kubernetes_version crosses a minor. This is the
+# one entry a workflow reads: tools/lint-kube-images.sh, in `make lint`, fails
+# the build if this pin drifts beyond one minor of kubernetes_version, either way.
+kubectl     = "1.37"     # ostests/run-skew.sh, ostests/provision.sh
+jq          = "latest"   # release-notes.sh, dev-release.sh
+
+# --- targets that silently no-op without these --------------------------------
+# Each of these gates a `command -v` guard that prints "not installed —
+# skipping" and exits 0, so on a box without them the target passes while doing
+# nothing. That is what this file is mainly for.
+syft        = "latest"   # make sbom
+# Major-pinned: v3 ignores sign-blob's --output-signature/--output-certificate,
+# so `make sign` writes nothing. Matches the workflows' cosign-release.
+cosign      = "2"        # make sign, tools/gen-channel.sh
+crane       = "latest"   # tools/mirror-images.sh --verify/--push
+shellcheck  = "latest"   # make lint-shell, tools/test-ostests-sweep.sh
+# "latest" for both, not $(node_version)/$(pnpm_version) — and that is not the
+# oversight it looks like. Those pins are what BUILDS the dashboard in CI
+# (node-prep reads them from the manifest); a literal here would fail
+# `make lint`, and the header above forbids naming a versions.mk pin in this
+# file at all.
+#
+# pnpm is here because `make dash` — and therefore `make build`, `make test` and
+# `make package` — shells out to it, so `mise install` has to provide
+# it. A "latest" pnpm is safe against the pin: dash/package.json's
+# `packageManager` field names pnpm@$(pnpm_version), and pnpm 10 and newer honour
+# it by downloading and re-execing that version, so the lockfile is always
+# resolved by the pinned pnpm no matter which one mise put on PATH.
+node        = "latest"   # make dash; make lint's renovate-config-validator via npx
+pnpm        = "latest"   # make dash -> dash's install + test + vite build
