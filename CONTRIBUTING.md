@@ -51,11 +51,11 @@ mise install
 
 **Docker** is needed for `make smoke` and the integration tests.
 
-**pre-commit** runs the fast checks on every commit and `make lint` before
-every push. Enable both stages once per clone:
+**pre-commit** runs the fast checks and the sign-off check on every commit,
+and `make lint` before every push. Enable all three stages once per clone:
 
 ```bash
-pre-commit install --hook-type pre-commit --hook-type pre-push
+pre-commit install
 ```
 
 ## Building
@@ -190,8 +190,11 @@ Every commit carries a `Signed-off-by:` line certifying the
 By signing off, you certify that you wrote the change, or otherwise have the
 right to submit it under the project's open source license.
 
-`git commit -s` adds the line from your `user.name` and `user.email`. To add a
-missing sign-off:
+`git commit -s` adds the line from your `user.name` and `user.email`. The
+sign-off must carry the commit author's email. The pre-commit `commit-msg` hook
+refuses a commit without one, and CI's `signoff` check fails a pull request
+with any commit that lacks one; merge commits are not checked. To add a missing
+sign-off:
 
 ```bash
 git commit --amend --signoff
