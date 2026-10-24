@@ -13,6 +13,8 @@ import { Button, Badge, StatusBadge, Progress, Sparkline as BaseSparkline, Dialo
 import { Icon } from '../icons.jsx';
 import { navGroups } from '../registry.js';
 import { sameCrdRoute } from '../crd-nav.js';
+import stratumLogo from '../assets/stratum-logo.svg';
+import stratumIcon from '../assets/stratum-icon.svg';
 
 // The design system's viewport split: below it the sidebar is an overlay
 // raised by a hamburger, at or above it a grid column that collapses to a rail.
@@ -346,12 +348,12 @@ export function AppShell({ active, crdGroups, onNavigate, counts, crumbs, namesp
       <aside className="qc-layout-aside" tabIndex={-1} inert={!desktop && !asideExpanded ? '' : undefined}>
         <div className="qc-layout-logo">
           {rail ? (
-            <div className="brand" style={{ display: 'flex', justifyContent: 'center', fontSize: 22, fontWeight: 700 }}>
-              <strong aria-label="Stratum">S</strong>
+            <div className="brand" style={{ display: 'flex', justifyContent: 'center' }}>
+              <img src={stratumIcon} alt="Stratum" height={28} />
             </div>
           ) : (
-            <div className="row brand" style={{ fontSize: 22, fontWeight: 700 }}>
-              <strong className="nowrap">Stratum</strong>
+            <div className="row brand">
+              <img src={stratumLogo} alt="Stratum" height={28} />
             </div>
           )}
         </div>
