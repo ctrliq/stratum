@@ -352,7 +352,7 @@ export function AppShell({ active, crdGroups, onNavigate, counts, crumbs, namesp
               <img src={stratumIcon} alt="Stratum" height={28} />
             </div>
           ) : (
-            <div className="row brand">
+            <div className="row brand brand-full">
               <img src={stratumLogo} alt="Stratum" height={28} />
             </div>
           )}
