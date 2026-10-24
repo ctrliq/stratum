@@ -16,6 +16,7 @@ import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button, TextInput } from '../ui/controls.jsx';
 import { isSessionCurrent, login } from '../session.js';
+import stratumLogoStacked from '../assets/stratum-logo-stacked.svg';
 
 export function Login({ config, onSignedIn }) {
   const navigate = useNavigate();
@@ -51,7 +52,7 @@ export function Login({ config, onSignedIn }) {
       <section className="login-split-panel" aria-labelledby="login-split-title">
         <div className="login-split-content">
           <header className="login-split-brand">
-            <h1 id="login-split-title">Stratum</h1>
+            <h1 id="login-split-title"><img className="login-split-logo" src={stratumLogoStacked} alt="Stratum" /></h1>
             <p>Sign in with a Kubernetes token</p>
           </header>
 

@@ -6,10 +6,8 @@
  * faces let Vite hash and emit them like any other asset — which is why
  * vite.config.js carries no font plugin.
  *
- * Five upright weights. The screens ask for 400, 500, 600, 650 and 700 (650
- * resolves to the 700 face), and the logo's <strong> lands on 900: `bolder`
- * against the inherited 700 of the wordmark. Without a 900 face the wordmark
- * renders a visible step lighter — which is why the 900 face is vendored.
+ * Four upright weights. The screens ask for 400, 500, 600, 650 and 700 (650
+ * resolves to the 700 face).
  * No italics are used anywhere in the SPA, and a browser only ever fetches
  * the weights in use.
  *
@@ -41,13 +39,6 @@
   font-family: 'Inter';
   src: url('./Inter-Bold.woff2') format('woff2');
   font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: 'Inter';
-  src: url('./Inter-Black.woff2') format('woff2');
-  font-weight: 900;
   font-style: normal;
   font-display: swap;
 }

@@ -8,8 +8,8 @@ distributions and are not restated here.
 ## Inter (font)
 
 - **Files:** `dash/src/fonts/Inter-Regular.woff2`, `Inter-Medium.woff2`,
-  `Inter-SemiBold.woff2`, `Inter-Bold.woff2`, `Inter-Black.woff2`
-- **Version:** 4.001 (`git-9221beed3`), the five upright weights the dashboard uses
+  `Inter-SemiBold.woff2`, `Inter-Bold.woff2`
+- **Version:** 4.001 (`git-9221beed3`), the four upright weights the dashboard uses
 - **Copyright:** Copyright (c) 2016 The Inter Project Authors
 - **Upstream:** https://github.com/rsms/inter
 - **License:** SIL Open Font License, Version 1.1 — the full text is in
