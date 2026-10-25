@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -968,6 +969,122 @@ func TestPruneScheduledContext_LeavesAnExtendingHostInS3AndLocal(t *testing.T) {
 	for i, n := range names {
 		if want := i != 0; exists(dir, n) != want {
 			t.Errorf("local %s exists = %v, want %v", n, !want, want)
+		}
+	}
+}
+
+func writeAt(t *testing.T, dir, name string, mod time.Time) {
+	t.Helper()
+	write(t, dir, name)
+	if err := os.Chtimes(filepath.Join(dir, name), mod, mod); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPruneKeepsTheNewestByModTimeAfterAClockStepBack: snapshots taken after
+// the clock stepped back carry earlier-looking names. Prune must keep the
+// snapshots that were written last, not the ones whose names sort last.
+func TestPruneKeepsTheNewestByModTimeAfterAClockStepBack(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	stale1 := ScheduledName("cp1", "20270101-000000")
+	stale2 := ScheduledName("cp1", "20270101-120000")
+	fresh := ScheduledName("cp1", "20261020-120000")
+	writeAt(t, dir, stale1, base)
+	writeAt(t, dir, stale2, base.Add(12*time.Hour))
+	writeAt(t, dir, fresh, base.Add(24*time.Hour))
+
+	if err := Prune(dir, hostSnapshot("cp1"), 2); err != nil {
+		t.Fatal(err)
+	}
+	if !exists(dir, fresh) {
+		t.Errorf("Prune deleted %s, the snapshot written last", fresh)
+	}
+	if exists(dir, stale1) {
+		t.Errorf("Prune kept %s, the snapshot written first", stale1)
+	}
+	if !exists(dir, stale2) {
+		t.Errorf("Prune deleted %s, the second newest by modification time", stale2)
+	}
+}
+
+// TestPruneTriesEveryExpiredSnapshot: one snapshot that cannot be removed must
+// not stop retention for the others, and its failure is still returned.
+func TestPruneTriesEveryExpiredSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	var names []string
+	for i := range 5 {
+		n := ScheduledName("cp1", fmt.Sprintf("20261020-0%d0000", i))
+		writeAt(t, dir, n, base.Add(time.Duration(i)*time.Hour))
+		names = append(names, n)
+	}
+	stuck := filepath.Join(dir, names[0])
+	old := removeSnapshot
+	removeSnapshot = func(p string) error {
+		if p == stuck {
+			return &os.PathError{Op: "remove", Path: p, Err: os.ErrPermission}
+		}
+		return os.Remove(p)
+	}
+	t.Cleanup(func() { removeSnapshot = old })
+
+	err := Prune(dir, hostSnapshot("cp1"), 2)
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Prune = %v, want the stuck snapshot's permission error", err)
+	}
+	for _, n := range names[1:3] {
+		if exists(dir, n) {
+			t.Errorf("expired %s survived because an older snapshot could not be removed", n)
+		}
+	}
+	for _, n := range names[3:] {
+		if !exists(dir, n) {
+			t.Errorf("Prune removed %s, one of the newest two", n)
+		}
+	}
+}
+
+// TestSaveContextStillTrimsLocalSnapshotsWhenTheUploadFails: an S3 outage must
+// not stop local retention, or /var/backups/etcd fills the disk etcd shares.
+// The upload error is still returned, and the bucket is not pruned, since the
+// newest snapshot never reached it.
+func TestSaveContextStillTrimsLocalSnapshotsWhenTheUploadFails(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-48 * time.Hour)
+	var older []string
+	for i := range 4 {
+		n := ScheduledName("cp1", fmt.Sprintf("20200101-0%d0000", i))
+		writeAt(t, dir, n, base.Add(time.Duration(i)*time.Hour))
+		older = append(older, n)
+	}
+	fakeEtcdctl(t, "printf 'snapshot' > \"$3\"")
+	var s3Calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s3Calls = append(s3Calls, r.Method)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	path, err := SaveContext(context.Background(), io.Discard, SaveOptions{Dir: dir, Host: "cp1", Retain: 2,
+		S3: &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}})
+	if err == nil || !strings.Contains(err.Error(), "S3 upload failed") {
+		t.Fatalf("SaveContext = %v, want the upload error", err)
+	}
+	if _, serr := os.Stat(path); serr != nil {
+		t.Fatalf("the new local snapshot is missing: %v", serr)
+	}
+	for _, n := range older[:3] {
+		if exists(dir, n) {
+			t.Errorf("%s survived: a failed upload skipped local retention", n)
+		}
+	}
+	if !exists(dir, older[3]) {
+		t.Errorf("%s, the newest older snapshot, was removed; retain=2 keeps it with the new one", older[3])
+	}
+	for _, m := range s3Calls {
+		if m != http.MethodPut {
+			t.Errorf("S3 saw a %s after the upload failed; the bucket must not be pruned", m)
 		}
 	}
 }

@@ -35,8 +35,10 @@ File names carry a UTC timestamp in the form `YYYYMMDD-HHMMSS`.
 ## Retention
 
 After every `snapshot save`, scheduled snapshot and `snapshot prune`, Stratum
-keeps the newest `retain` snapshots for this host. It deletes the older ones
-whose names match:
+keeps the newest `retain` snapshots for this host. Newest means the latest
+file modification time locally and the latest upload time in S3, so a clock
+that steps backwards cannot make a fresh snapshot look old. Stratum deletes
+the older snapshots whose names match:
 
 | Where | Pruned when the name is exactly |
 |---|---|
@@ -51,7 +53,11 @@ whose names match:
   target whose prefix sits inside this one keeps its own snapshots.
 - `snapshot prune --retain <n>` keeps the newest `<n>` for that run, in place
   of the configured count.
-- A prune that fails prints a `WARN:` line. The command still exits 0.
+- A prune tries every older snapshot even when one cannot be deleted, and
+  prints a `WARN:` line naming each one that failed. The command still exits 0.
+- If the S3 upload fails, the save still prunes the snapshot directory, so an
+  S3 outage cannot fill the disk. It leaves the bucket alone and exits with
+  the upload error.
 
 ## Where retention and the upload target come from
 
