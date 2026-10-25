@@ -139,7 +139,7 @@ resuming. See the [certificate lifecycle upgrade notes](../cluster-admin/certifi
 `stratum certs migrate-etcd-ca --cluster` now waits, with pauses that add up to
 about 90 seconds, for a member whose etcd refused the connection or accepted it
 but did not answer TLS — what a just-power-cycled control plane looks like
-before it rejoins raft — and, if it still refuses, names the steps to take. See
+before it rejoins [raft](../appendices/glossary.md) — and, if it still refuses, names the steps to take. See
 [the etcd trust domain](../cluster-admin/hardening.md#etcds-trust-domain).
 
 The kubelets have their own client CA. On a cluster created by this release,
