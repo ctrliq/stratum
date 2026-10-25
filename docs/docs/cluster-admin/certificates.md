@@ -408,14 +408,14 @@ Set the partition to 0, or switch the update strategy to `RollingUpdate`, then
 run `rotate-ca --cluster` again. For a StatefulSet with a partition:
 
 ```console
-# stratum kubectl -n db patch statefulset postgres \
+# /usr/local/bin/stratum kubectl -n db patch statefulset postgres \
   -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":0}}}}'
 ```
 
 For a StatefulSet or DaemonSet with `OnDelete`:
 
 ```console
-# stratum kubectl -n kube-system patch daemonset cilium \
+# /usr/local/bin/stratum kubectl -n kube-system patch daemonset cilium \
   -p '{"spec":{"updateStrategy":{"type":"RollingUpdate"}}}'
 ```
 
@@ -460,7 +460,7 @@ Delete the ConfigMap. kube-controller-manager recreates it with a current write
 time. Then run `rotate-ca --cluster` again:
 
 ```console
-# stratum kubectl -n apipoller delete configmap kube-root-ca.crt
+# /usr/local/bin/stratum kubectl -n apipoller delete configmap kube-root-ca.crt
 ```
 
 If you pass `--skip-workload-check` instead, Stratum does not check whether

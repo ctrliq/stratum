@@ -137,7 +137,7 @@ on a cluster that has one. Its image is in the payload, so it starts with no
 registry access. To see its objects:
 
 ```console
-# stratum kubectl -n stratum-dashboard get deploy,svc,secret
+# /usr/local/bin/stratum kubectl -n stratum-dashboard get deploy,svc,secret
 ```
 
 The dashboard pod itself has no cluster permissions. It forwards each request
@@ -249,7 +249,7 @@ With `nodePort: 0`, or when the node port is not reachable, forward the Service
 to your own machine. This needs only access to the API server:
 
 ```console
-# stratum kubectl -n stratum-dashboard port-forward svc/stratum-dashboard 8443:443
+# /usr/local/bin/stratum kubectl -n stratum-dashboard port-forward svc/stratum-dashboard 8443:443
 ```
 
 Then open `https://localhost:8443`. The certificate names `localhost` and
@@ -318,7 +318,7 @@ yourself, for example if its key may have leaked, delete the Secret; the
 operator creates a new CA and reissues the certificate:
 
 ```console
-# stratum kubectl -n kube-system delete secret stratum-dashboard-ca
+# /usr/local/bin/stratum kubectl -n kube-system delete secret stratum-dashboard-ca
 ```
 
 To serve your own certificate instead, put it in a `kubernetes.io/tls` Secret in

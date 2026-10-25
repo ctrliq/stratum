@@ -148,7 +148,9 @@ can read or write:
 
 ```console
 # install -d -m 0700 /etc/stratum/mcp
+
 # install -m 0600 /dev/null /etc/stratum/mcp/token
+
 # openssl rand -hex 32 > /etc/stratum/mcp/token
 ```
 
@@ -374,7 +376,7 @@ PersistentVolumeClaim, node or CRD needs it, as does creating or changing a
 namespace or CRD, because an apply can be as hard to undo as a delete: it can
 rewrite a CRD's schema or a namespace's finalizers.
 
-And some tools simply do not exist: there is no `etcdctl` (raw datastore access,
+Some tools do not exist at all: there is no `etcdctl` (raw datastore access,
 including removing a member), no `up` (it stands up host state with no
 confirmation gate), and no `operator` or `dash` (daemons, not request/response).
 
