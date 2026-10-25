@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ske-inttest: previous=v1.37.1-stratum.0-rc.10
+# ske-inttest: previous=v1.37.1-stratum.0-rc.1
 #
 # A node brought up on a published engine release, upgraded to this build the
 # documented way: the installed release runs `stratum upgrade --from <this
@@ -15,10 +15,7 @@
 # written before the upgrade survives.
 #
 # previous= is the newest published release of this line. Move it forward when
-# a newer one is published. The path most worth covering starts from a release
-# that predates containerd's reload op (v1.37.0-stratum.0-rc.4); no such
-# release is still published, so that exact path cannot be run from a real
-# artifact.
+# a newer one is published.
 . "$(dirname "$0")/harness.sh"
 
 PREVIOUS=/dist/stratum-previous
