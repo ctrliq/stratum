@@ -6,6 +6,7 @@
 package objstore
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -236,8 +238,8 @@ func (t *Target) List(ctx context.Context) ([]Object, error) {
 }
 
 // Prune deletes objects whose base name owned accepts, keeping the newest
-// `keep` (names carry a sortable UTC timestamp, so lexical == chronological).
-// keep <= 0 is a no-op (never prune-all).
+// `keep` by LastModified with the name breaking ties, and tries every older
+// one even when a delete fails. keep <= 0 is a no-op (never prune-all).
 func (t *Target) Prune(ctx context.Context, owned func(name string) bool, keep int) error {
 	if keep <= 0 {
 		return nil
@@ -255,16 +257,20 @@ func (t *Target) Prune(ctx context.Context, owned func(name string) bool, keep i
 	if len(matches) <= keep {
 		return nil
 	}
+	slices.SortFunc(matches, func(a, b Object) int {
+		return cmp.Or(a.Modified.Compare(b.Modified), strings.Compare(a.Name, b.Name))
+	})
 	cli, err := t.client(ctx)
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, o := range matches[:len(matches)-keep] {
 		if _, err := cli.DeleteObject(ctx, &s3.DeleteObjectInput{
 			Bucket: aws.String(t.Bucket), Key: aws.String(t.Key(o.Name)),
 		}); err != nil {
-			return fmt.Errorf("objstore: prune %s: %w", o.Name, err)
+			errs = append(errs, fmt.Errorf("objstore: prune %s: %w", o.Name, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
