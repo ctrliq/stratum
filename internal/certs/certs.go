@@ -74,6 +74,14 @@ type RenewalRecord struct {
 // the node's state area.
 func RenewalRecordPath() string { return filepath.Join(version.K8sConfDir, "renewal.yaml") }
 
+// incompleteRotationPath marks a leaf rotation that reissued leaves but has not
+// yet rewritten every kubeconfig and restarted every component onto them. The
+// fresh leaves on disk then say nothing about what the running control plane
+// uses, so while the marker exists the timer rotates again.
+func incompleteRotationPath() string {
+	return filepath.Join(version.K8sConfDir, "rotation-incomplete")
+}
+
 // SaveRenewalRecord persists the renewal record atomically through the shared
 // atomic writer (internal/atomicfile): a failed or crashed save leaves either
 // the old record or the new one, never a truncated one and never a stray temp
@@ -351,6 +359,10 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 	if !needed {
 		needed = anyLeafExpiringWithin(statuses, o.IfExpiringDays)
 	}
+	if !needed {
+		_, err := os.Lstat(incompleteRotationPath())
+		needed = !errors.Is(err, fs.ErrNotExist)
+	}
 	var confirm func(string) error
 	var rideOffLocal func(nodeIP string) error
 	if needed && !o.NodeLockHeld {
@@ -412,6 +424,12 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 			return false, err
 		}
 	}
+	if err := os.MkdirAll(filepath.Dir(incompleteRotationPath()), 0o755); err != nil {
+		return false, err
+	}
+	if err := atomicfile.WriteFile(incompleteRotationPath(), nil, 0o600); err != nil {
+		return false, fmt.Errorf("certs: marking the rotation incomplete before reissuing leaves: %w", err)
+	}
 	step(w, o, "Reissue control-plane leaf certificates")
 	if err := pki.RotateLeaves(hostname, nodeIP, apiExtra); err != nil {
 		return false, err
@@ -442,6 +460,9 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 	step(w, o, "Restart control-plane units")
 	if err := restartControlPlaneGuarded(w, staticpod.Restart, waitBounced, confirm, o.KubeVipRequired); err != nil {
 		return false, err
+	}
+	if err := os.Remove(incompleteRotationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("certs: rotation completed but its incomplete marker could not be removed: %w", err)
 	}
 	if !o.Quiet {
 		fmt.Fprintf(w, "certs: rotated — leaves valid for ~%d days\n", int(pki.LeafValidity.Hours()/24))
