@@ -1,15 +1,16 @@
 # Stratum Kubernetes Engine (SKE)
 
-A new Kubernetes distribution: one self-extracting binary that carries its
-component binaries AND container images (no airgap variant — the artifact is
-airgap-complete), pins every version in one file, builds hermetically from
-unmodified upstream tags (with one exception: the dashboard's npm dependencies
-resolve from the public registry), and runs the control plane as
-kubelet-managed static pods with a full product layer on top — declarative
-cluster config, token joins, managed etcd with scheduled/S3 snapshots, a
-manifest deployer with pruning, a HelmChart operator, and rolling upgrades.
-The CIS hardening profile and its auditor are part of
-[Stratum PRO](docs/docs/pro/index.md); the engine keeps the profile mechanism
+Stratum is a Kubernetes distribution that ships as one self-extracting binary.
+The binary carries its component binaries and container images.
+`build/versions.mk` pins every version. Components build hermetically from
+unmodified upstream tags. The one exception is the dashboard, whose npm
+dependencies resolve from the public registry.
+
+The control plane runs as kubelet-managed static pods. The product layer on top
+adds declarative cluster config, token joins, managed etcd with scheduled and S3
+snapshots, a manifest deployer with pruning, a HelmChart operator, and rolling
+upgrades. The CIS hardening profile and its auditor are part of
+[Stratum PRO](docs/docs/pro/index.md). The engine keeps the profile mechanism
 they are built on.
 
 ## What is in the box
@@ -25,25 +26,14 @@ they are built on.
 | local-path 0.0.37 | OCI images, manifest stack | default StorageClass |
 | dashboard | React + Vite SPA, embedded in the binary | `stratum dash`: cluster views, pod `exec`, optional node shell |
 
-## Naming
-
-The product is **Stratum Kubernetes Engine**, SKE for short. Every *code*
-identifier uses the standalone name `stratum` — the binary, the module path,
-`/var/lib/stratum/bin`, the version suffix, the patch prefix.
-
-That split is deliberate, not an inconsistency to tidy up. "Kubernetes"
-in a product name is a Linux Foundation mark usable only after CNCF conformance
-certification, so the combination name cannot be load-bearing in code that ships
-before certification. `stratum` works standalone at every stage.
-
 ## Quick start
 
 Host tools come from [`mise.toml`](mise.toml): install
-[mise](https://mise.jdx.dev/installing-mise.html), then `mise install`. It does
-not provide Go (that pin lives in `build/versions.mk`), nor `docker` and `ssh`,
-which `make inttest` and the ostests backends need. It does provide `node` and
-`pnpm`, which `make build` needs: the dashboard SPA is embedded in the binary, so
-building it is part of building `stratum` (`TAGS=noui` skips it).
+[mise](https://mise.jdx.dev/installing-mise.html), then run `mise install`. mise
+does not provide Go, which `build/versions.mk` pins. It also does not provide
+`docker` or `ssh`, which `make inttest` and the ostests backends need. It does
+provide `node` and `pnpm` for `make build`. The binary embeds the dashboard SPA,
+so building `stratum` also builds the dashboard. `TAGS=noui` skips it.
 
 ```bash
 make help                      # targets, current version, target platform
@@ -73,7 +63,7 @@ make verify-reproducible COMPONENT=runc
 
 | Path | What |
 |---|---|
-| `build/versions.mk` | **The** pin file. Every version and build flag. Nothing else may pin a version. |
+| `build/versions.mk` | The only pin file. It holds every version and build flag. |
 | `build/images.txt` | Runtime OCI images, digest-pinned. Staged into the binary's payload. |
 | `build/components/<name>/Dockerfile` | Hermetic per-component build. All versions arrive as build args. |
 | `build/components/<name>/patches/` | Ordered `git am` queue. Ships empty. |
@@ -101,31 +91,21 @@ build/images.txt  ─────→ docker pull @digest + save ─────�
                                                                         (cat zip >> binary)
 ```
 
-The last step is the interesting one. A ZIP reader locates the central directory
-by scanning backwards from EOF, and an ELF loader ignores trailing bytes, so
-`dist/stratum` is simultaneously a working executable and a working archive of its
-own payload. At runtime it opens itself, extracts `bin/` and `images/` under
-`/var/lib/stratum`, and skips extraction entirely when size and mtime already
-match — which matters when the payload is a third of a gigabyte of images.
-Carrying the images in the same archive is what removes the separate airgap
+The last step appends the payload ZIP to the binary. A ZIP reader finds the
+central directory by scanning backwards from the end of the file. An ELF loader
+ignores trailing bytes. So `dist/stratum` is both a working executable and a
+working archive of its own payload. At runtime it opens itself and extracts
+`bin/` and `images/` under `/var/lib/stratum`. It skips extraction when size and
+mtime already match, because the payload holds about a third of a gigabyte of
+images. The images ship in the same archive, so there is no separate airgap
 bundle.
 
 ## Documentation
 
-- [**Cutting a release**](RELEASE.md) — who may, the RC and hotfix and batch
-  rules, and the whole procedure end to end
-- [**Public documentation**](docs/README.md) — the user-facing MkDocs site,
-  and how to build it locally
-- [**Contributing**](CONTRIBUTING.md) — building, testing, and the commit and
-  pull request conventions
-- [**Security**](SECURITY.md) — reporting a vulnerability, supported versions,
-  and how `stratum dash` handles credentials and the node shell
-
-## What is not here
-
-These are deferred, and nothing blocks them: an SSH installer that builds a
-fleet from zero, channel-polling autopilot CRs, konnectivity, SLSA attestations,
-and a nightly rebuild-and-compare.
+- [**Cutting a release**](RELEASE.md): who may, the RC and hotfix and batch rules, and the whole procedure end to end
+- [**Public documentation**](docs/README.md): the user-facing MkDocs site, and how to build it locally
+- [**Contributing**](CONTRIBUTING.md): building, testing, and the commit/pull request conventions
+- [**Security**](SECURITY.md): reporting a vulnerability, supported versions, and how `stratum dash` handles credentials and the node shell
 
 ## License
 
