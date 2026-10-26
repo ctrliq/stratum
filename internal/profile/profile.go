@@ -251,6 +251,7 @@ var engineConfigNames = map[string]bool{
 	"registries.yaml":           true,
 	"renewal.yaml":              true,
 	"resolv.conf":               true,
+	"rotation-incomplete":       true,
 	"selinux-confined-since":    true,
 	"webhook-client.kubeconfig": true,
 }
