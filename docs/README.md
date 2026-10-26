@@ -164,9 +164,7 @@ release is available. You need the new binary and root access to the nodes.
 
 Spell out each acronym the first time a page uses it, as in *virtual IP (VIP)*,
 and link the glossary entry if one exists. Write a new term in italics where you
-define it. A term used on more than one page also gets a glossary entry. Terms
-these pages use without spelling out or linking at first use include VIP, CRI,
-CIS and raft.
+define it. A term used on more than one page also gets a glossary entry.
 
 #### Voice
 
