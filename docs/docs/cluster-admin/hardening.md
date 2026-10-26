@@ -809,10 +809,24 @@ admission.
 After all operator instances have stopped, use an administrator kubeconfig:
 
 ```sh
+<<<<<<< HEAD
 stratum kubectl delete mutatingwebhookconfiguration stratum-operator-requester --ignore-not-found
 stratum kubectl -n kube-system delete service stratum-operator-webhook --ignore-not-found
 stratum kubectl -n kube-system delete endpointslices -l kubernetes.io/service-name=stratum-operator-webhook
 ```
+||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
+# stratum kubectl delete mutatingwebhookconfiguration stratum-operator-requester --ignore-not-found
+
+# stratum kubectl -n kube-system delete service stratum-operator-webhook --ignore-not-found
+
+# stratum kubectl -n kube-system delete endpointslices -l kubernetes.io/service-name=stratum-operator-webhook```
+=======
+# /usr/local/bin/stratum kubectl delete mutatingwebhookconfiguration stratum-operator-requester --ignore-not-found
+
+# /usr/local/bin/stratum kubectl -n kube-system delete service stratum-operator-webhook --ignore-not-found
+
+# /usr/local/bin/stratum kubectl -n kube-system delete endpointslices -l kubernetes.io/service-name=stratum-operator-webhook```
+>>>>>>> ac2596c (docs: close the gaps left from the docs content review)
 
 Tenant HelmChart writes then no longer depend on the webhook, but no HelmChart
 reconciliation occurs while the operator is disabled. Re-enabling it restores

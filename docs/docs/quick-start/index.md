@@ -29,10 +29,11 @@ sudo install -m 0755 stratum /usr/local/bin/stratum
 stratum version
 ```
 
-The commands below run it as `sudo /usr/local/bin/stratum`, by its full path,
+A command shown after a `#` prompt runs as root, in a root shell or with
+`sudo`. These docs call `stratum` by its full path, `/usr/local/bin/stratum`,
 because `sudo` may not search `/usr/local/bin`. On stock Rocky Linux, for
 example, sudo's `secure_path` leaves it out, so `sudo stratum` fails with
-`command not found`. The rest of these docs do the same.
+`command not found`.
 
 ## 2. Start a node
 
@@ -131,8 +132,8 @@ for about 30 seconds, then fails with
 `cluster-info carries no jws-kubeconfig-<token-id> signature`. Run
 `sudo /usr/local/bin/stratum token list` on the controller to see the live tokens and their
 remaining lifetime, then mint a fresh one. `--ttl 0` mints a token that never
-expires, which `stratum token list` shows as `never` and you delete by hand. For
-`--ttl`, see the command reference in [Appendices](../appendices/index.md).
+expires, which `stratum token list` shows as `never` and you delete by hand. Run
+`stratum token create --help` for `--ttl` and the other flags.
 
 To add control-plane nodes instead, see
 [Growing to three controllers](../cluster-admin/high-availability.md#growing-to-three-controllers).

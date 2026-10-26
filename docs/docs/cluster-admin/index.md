@@ -135,8 +135,16 @@ namespace, served over HTTPS on NodePort `30443` of every node, and of the VIP
 on a cluster that has one. Its image is in the payload, so it starts with no
 registry access. To see its objects:
 
+<<<<<<< HEAD
 ```bash
 stratum kubectl -n stratum-dashboard get deploy,svc,secret
+||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
+```console
+# stratum kubectl -n stratum-dashboard get deploy,svc,secret
+=======
+```console
+# /usr/local/bin/stratum kubectl -n stratum-dashboard get deploy,svc,secret
+>>>>>>> ac2596c (docs: close the gaps left from the docs content review)
 ```
 
 The dashboard pod itself has no cluster permissions. It forwards each request
@@ -246,8 +254,16 @@ minutes and the cluster fills in a new token. Get it again and sign in with it.
 With `nodePort: 0`, or when the node port is not reachable, forward the Service
 to your own machine. This needs only access to the API server:
 
+<<<<<<< HEAD
 ```bash
 stratum kubectl -n stratum-dashboard port-forward svc/stratum-dashboard 8443:443
+||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
+```console
+# stratum kubectl -n stratum-dashboard port-forward svc/stratum-dashboard 8443:443
+=======
+```console
+# /usr/local/bin/stratum kubectl -n stratum-dashboard port-forward svc/stratum-dashboard 8443:443
+>>>>>>> ac2596c (docs: close the gaps left from the docs content review)
 ```
 
 Then open `https://localhost:8443`. The certificate names `localhost` and
@@ -314,8 +330,16 @@ the CA does not include. Export and trust the new CA after that. To replace it
 yourself, for example if its key may have leaked, delete the Secret; the
 operator creates a new CA and reissues the certificate:
 
+<<<<<<< HEAD
 ```bash
 stratum kubectl -n kube-system delete secret stratum-dashboard-ca
+||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
+```console
+# stratum kubectl -n kube-system delete secret stratum-dashboard-ca
+=======
+```console
+# /usr/local/bin/stratum kubectl -n kube-system delete secret stratum-dashboard-ca
+>>>>>>> ac2596c (docs: close the gaps left from the docs content review)
 ```
 
 To serve your own certificate instead, put it in a `kubernetes.io/tls` Secret in
