@@ -1,0 +1,68 @@
+# Exported API of github.com/ctrliq/stratum/pkg/cli at v1.37.1-stratum.0-rc.1, one declaration per line.
+# Regenerate with: go test ./tools/apiboundary/ -run TestPkgCLIExportedAPICompatibleWithTheReleasedBaseline -update-baseline
+const github.com/ctrliq/stratum/pkg/cli.AuditException github.com/ctrliq/stratum/pkg/cli.AuditResult = 3
+const github.com/ctrliq/stratum/pkg/cli.AuditFail github.com/ctrliq/stratum/pkg/cli.AuditResult = 2
+const github.com/ctrliq/stratum/pkg/cli.AuditPass github.com/ctrliq/stratum/pkg/cli.AuditResult = 1
+const github.com/ctrliq/stratum/pkg/cli.ProfileAdmissionConfiguration github.com/ctrliq/stratum/pkg/cli.ProfileFileKind = 2
+const github.com/ctrliq/stratum/pkg/cli.ProfileConfigFile github.com/ctrliq/stratum/pkg/cli.ProfileSource = 2
+const github.com/ctrliq/stratum/pkg/cli.ProfileLiteral github.com/ctrliq/stratum/pkg/cli.ProfileSource = 1
+const github.com/ctrliq/stratum/pkg/cli.ProfileLogFile github.com/ctrliq/stratum/pkg/cli.ProfileSource = 3
+const github.com/ctrliq/stratum/pkg/cli.ProfilePKIFile github.com/ctrliq/stratum/pkg/cli.ProfileSource = 4
+const github.com/ctrliq/stratum/pkg/cli.ProfilePlainFile github.com/ctrliq/stratum/pkg/cli.ProfileFileKind = 1
+const github.com/ctrliq/stratum/pkg/cli.TierDestructive github.com/ctrliq/stratum/pkg/cli.Tier = 2
+const github.com/ctrliq/stratum/pkg/cli.TierRead github.com/ctrliq/stratum/pkg/cli.Tier = 0
+const github.com/ctrliq/stratum/pkg/cli.TierWrite github.com/ctrliq/stratum/pkg/cli.Tier = 1
+func (*github.com/ctrliq/stratum/pkg/cli.ErrExitCode).Error() string
+func (*github.com/ctrliq/stratum/pkg/cli.ErrUsage).Error() string
+func (*github.com/ctrliq/stratum/pkg/cli.ErrUsage).Unwrap() error
+func (*github.com/ctrliq/stratum/pkg/cli.Registrar).Allows(t github.com/ctrliq/stratum/pkg/cli.Tier) bool
+func (*github.com/ctrliq/stratum/pkg/cli.Registrar).Registered() []string
+func (github.com/ctrliq/stratum/pkg/cli.AuditResult).String() string
+func (github.com/ctrliq/stratum/pkg/cli.Tier).String() string
+func github.com/ctrliq/stratum/pkg/cli.AddDestructiveNodeTool[In any](r *github.com/ctrliq/stratum/pkg/cli.Registrar, t *github.com/modelcontextprotocol/go-sdk/mcp.Tool, op github.com/ctrliq/stratum/pkg/cli.NodeOperation[In])
+func github.com/ctrliq/stratum/pkg/cli.AddTool[In, Out any](r *github.com/ctrliq/stratum/pkg/cli.Registrar, tier github.com/ctrliq/stratum/pkg/cli.Tier, t *github.com/modelcontextprotocol/go-sdk/mcp.Tool, h github.com/modelcontextprotocol/go-sdk/mcp.ToolHandlerFor[In, Out])
+func github.com/ctrliq/stratum/pkg/cli.AuditEtcdTrust(ctx context.Context) github.com/ctrliq/stratum/pkg/cli.AuditVerdict
+func github.com/ctrliq/stratum/pkg/cli.AuditKubeletClientTrust() github.com/ctrliq/stratum/pkg/cli.AuditVerdict
+func github.com/ctrliq/stratum/pkg/cli.AuditKubeletsRefuseRoot(ctx context.Context, cs k8s.io/client-go/kubernetes.Interface) github.com/ctrliq/stratum/pkg/cli.AuditVerdict
+func github.com/ctrliq/stratum/pkg/cli.DestructiveTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
+func github.com/ctrliq/stratum/pkg/cli.EngineAPIServerArgs() []string
+func github.com/ctrliq/stratum/pkg/cli.ExitCode(err error, stderr io.Writer) int
+func github.com/ctrliq/stratum/pkg/cli.Layout() github.com/ctrliq/stratum/pkg/cli.NodeLayout
+func github.com/ctrliq/stratum/pkg/cli.NewRootCommand(opts ...github.com/ctrliq/stratum/pkg/cli.Option) *github.com/spf13/cobra.Command
+func github.com/ctrliq/stratum/pkg/cli.NodeAdminClientset() (k8s.io/client-go/kubernetes.Interface, error)
+func github.com/ctrliq/stratum/pkg/cli.PKIRotationCopies(name string) []string
+func github.com/ctrliq/stratum/pkg/cli.ProfileAPIServerArgs(p github.com/ctrliq/stratum/pkg/cli.Profile) ([]string, error)
+func github.com/ctrliq/stratum/pkg/cli.ReadTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
+func github.com/ctrliq/stratum/pkg/cli.StampedVersions() github.com/ctrliq/stratum/pkg/cli.ComponentVersions
+func github.com/ctrliq/stratum/pkg/cli.TLSCipherSuites() []string
+func github.com/ctrliq/stratum/pkg/cli.WithComponentVersions(v github.com/ctrliq/stratum/pkg/cli.ComponentVersions) github.com/ctrliq/stratum/pkg/cli.Option
+func github.com/ctrliq/stratum/pkg/cli.WithProfiles(ps ...github.com/ctrliq/stratum/pkg/cli.Profile) github.com/ctrliq/stratum/pkg/cli.Option
+func github.com/ctrliq/stratum/pkg/cli.WithStacks(f github.com/ctrliq/stratum/pkg/cli.StackFunc) github.com/ctrliq/stratum/pkg/cli.Option
+func github.com/ctrliq/stratum/pkg/cli.WithToolSets(sets ...github.com/ctrliq/stratum/pkg/cli.ToolSet) github.com/ctrliq/stratum/pkg/cli.Option
+func github.com/ctrliq/stratum/pkg/cli.WithVersionOverride(display string) github.com/ctrliq/stratum/pkg/cli.Option
+func github.com/ctrliq/stratum/pkg/cli.WriteTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
+type github.com/ctrliq/stratum/pkg/cli.AuditResult int
+type github.com/ctrliq/stratum/pkg/cli.AuditVerdict struct{Result github.com/ctrliq/stratum/pkg/cli.AuditResult; Detail string}
+type github.com/ctrliq/stratum/pkg/cli.ComponentVersions struct{Containerd string; Runc string; KubeVip string; Cilium string; CoreDNS string; Konnectivity string}
+type github.com/ctrliq/stratum/pkg/cli.ErrExitCode struct{Code int}
+type github.com/ctrliq/stratum/pkg/cli.ErrUsage struct{<private>}
+type github.com/ctrliq/stratum/pkg/cli.NodeEnv struct{Out io.Writer; Clientset k8s.io/client-go/kubernetes.Interface}
+type github.com/ctrliq/stratum/pkg/cli.NodeLayout struct{ConfDir string; DataDir string; PKIDir string; KubeconfigDir string; K8sConfigDir string; StaticPodDir string; KubeletConfig string; AdminConf string; SuperAdminConf string; BinDir string; ContainerdConfig string; ContainerdConfinedSinceStamp string; SELinuxLabelStamp string; EtcdDataDir string}
+type github.com/ctrliq/stratum/pkg/cli.NodeOperation[In any] func(ctx context.Context, env github.com/ctrliq/stratum/pkg/cli.NodeEnv, in In) (github.com/ctrliq/stratum/pkg/cli.NodeResult, error)
+type github.com/ctrliq/stratum/pkg/cli.NodeResult struct{Next string; Warnings []string}
+type github.com/ctrliq/stratum/pkg/cli.Option func(*github.com/ctrliq/stratum/pkg/cli.rootConfig)
+type github.com/ctrliq/stratum/pkg/cli.Profile struct{Name string; APIServerFlags []github.com/ctrliq/stratum/pkg/cli.ProfileFlag; KubeletSettings []github.com/ctrliq/stratum/pkg/cli.ProfileSetting; ConfigFiles []github.com/ctrliq/stratum/pkg/cli.ProfileFile; SharedSecrets []github.com/ctrliq/stratum/pkg/cli.ProfileSecret; Sysctls []string; RequiresOperator bool; RequiresSELinux bool; KubeletServerTLSBootstrap bool; DisableNodeShell bool}
+type github.com/ctrliq/stratum/pkg/cli.ProfileContext struct{KubernetesVersion string}
+type github.com/ctrliq/stratum/pkg/cli.ProfileFile struct{Name string; Kind github.com/ctrliq/stratum/pkg/cli.ProfileFileKind; Render func(github.com/ctrliq/stratum/pkg/cli.ProfileContext) ([]byte, error)}
+type github.com/ctrliq/stratum/pkg/cli.ProfileFileKind int
+type github.com/ctrliq/stratum/pkg/cli.ProfileFlag struct{Name string; Value string; From github.com/ctrliq/stratum/pkg/cli.ProfileSource}
+type github.com/ctrliq/stratum/pkg/cli.ProfileSecret struct{Name string; Mint func() ([]byte, error)}
+type github.com/ctrliq/stratum/pkg/cli.ProfileSetting struct{Key string; Value string; From github.com/ctrliq/stratum/pkg/cli.ProfileSource}
+type github.com/ctrliq/stratum/pkg/cli.ProfileSource int
+type github.com/ctrliq/stratum/pkg/cli.Registrar struct{<private>}
+type github.com/ctrliq/stratum/pkg/cli.StackContext struct{ClusterDomain string; ServiceCIDR string}
+type github.com/ctrliq/stratum/pkg/cli.StackFunc func(github.com/ctrliq/stratum/pkg/cli.StackContext) (map[string][]byte, error)
+type github.com/ctrliq/stratum/pkg/cli.Tier int
+type github.com/ctrliq/stratum/pkg/cli.ToolSet interface{Name() string; Register(*github.com/ctrliq/stratum/pkg/cli.Registrar)}
+var github.com/ctrliq/stratum/pkg/cli.ErrCheckFailed error
+var github.com/ctrliq/stratum/pkg/cli.ErrNoCommand error
