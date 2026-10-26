@@ -74,6 +74,9 @@ func newCertsCheckCommand() *cobra.Command {
 			} else {
 				fmt.Printf("\nlast renewal attempt: %s (failed: %s)\n", rec.AttemptedAt.UTC().Format("2006-01-02 15:04"), rec.Result)
 			}
+			if incomplete, _ := certs.IncompleteRotation(); incomplete {
+				fmt.Printf("leaf rotation: INCOMPLETE: leaves were reissued but not every component restarted onto them; the scheduled renewal rotates again, or run `sudo /usr/local/bin/stratum certs rotate --yes`\n")
+			}
 			// The HA shared certificate-key's age: it only re-keys as a
 			// side effect of `token create --control-plane` or `certs rotate-ca`, so a
 			// key that has not moved since install is worth surfacing. Cluster-facing,

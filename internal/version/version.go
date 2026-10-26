@@ -335,9 +335,11 @@ func nodeFileOwners() map[string]string {
 		// node.yaml, the node's own state record.
 		K8sConfDir + "/node.yaml": "internal/nodestate",
 
-		// The kubelet leaf-renewal record and the CA-rotation run id.
-		K8sConfDir + "/renewal.yaml": "internal/certs",
-		PKIDir + "/carotate-run-id":  "internal/certs",
+		// The kubelet leaf-renewal record, the incomplete leaf-rotation
+		// marker and the CA-rotation run id.
+		K8sConfDir + "/renewal.yaml":        "internal/certs",
+		K8sConfDir + "/rotation-incomplete": "internal/certs",
+		PKIDir + "/carotate-run-id":         "internal/certs",
 
 		// The component kubeconfigs (admin, kubelet, controller-manager, ...),
 		// the kubectl admin.conf, and the bootstrap kubeconfig — which
