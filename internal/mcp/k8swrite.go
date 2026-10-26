@@ -635,6 +635,9 @@ func checkPodSpec(spec map[string]any) error {
 			if _, hasSecret := vol["secret"]; hasSecret {
 				return errSecretInPodSpec("a secret volume")
 			}
+			if what := volumeSecretRef(vol); what != "" {
+				return errSecretSentByKubelet(what)
+			}
 			sources, found, err := unstructured.NestedSlice(vol, "projected", "sources")
 			if err != nil || !found {
 				continue
@@ -735,6 +738,45 @@ func checkContainerSecrets(container map[string]any) error {
 		}
 	}
 	return nil
+}
+
+// volumeSecretRefs are the volume sources whose Secret the kubelet reads
+// and hands to a volume plugin or driver rather than to the container.
+// iscsi is live at the pinned kubelet; csi and flexVolume reach node-local
+// drivers; the rest name in-tree plugins the kubelet no longer has, and are
+// refused so that a kubelet which brings one back cannot reopen the leak.
+var volumeSecretRefs = []struct{ source, field string }{
+	{"iscsi", "secretRef"},
+	{"csi", "nodePublishSecretRef"},
+	{"flexVolume", "secretRef"},
+	{"rbd", "secretRef"},
+	{"cephfs", "secretRef"},
+	{"cinder", "secretRef"},
+	{"scaleIO", "secretRef"},
+	{"storageos", "secretRef"},
+	{"azureFile", "secretName"},
+}
+
+// volumeSecretRef names the first Secret reference vol carries for the
+// kubelet to deliver, or returns "" when it carries none.
+func volumeSecretRef(vol map[string]any) string {
+	for _, ref := range volumeSecretRefs {
+		if _, found, _ := unstructured.NestedFieldNoCopy(vol, ref.source, ref.field); found {
+			return fmt.Sprintf("a volume's %s.%s", ref.source, ref.field)
+		}
+	}
+	return ""
+}
+
+// errSecretSentByKubelet refuses a pod spec that has the kubelet send a
+// Secret's values to an endpoint the pod spec chooses. No container reads
+// the Secret, so the pod_logs reasoning does not apply: the values leave
+// the cluster on the kubelet's own connection.
+func errSecretSentByKubelet(what string) error {
+	return fmt.Errorf("this server will not apply a pod spec with %s: the kubelet reads that Secret "+
+		"and hands its values to the volume plugin, which presents them to the endpoint the pod spec "+
+		"names (an iSCSI portal's CHAP login, for one), so the Secret leaves the cluster without any "+
+		"container reading it. This is a fixed policy, not a permission that can be granted by a flag", what)
 }
 
 // errSecretInPodSpec refuses a pod spec that puts a Secret where the
