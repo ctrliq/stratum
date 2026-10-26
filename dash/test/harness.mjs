@@ -98,6 +98,7 @@ export async function harness({ config = null, signedIn = false, view = 'list', 
       }
       if (specifier.endsWith('/resources.jsx')) return stub({ RESOURCES: {} });
       if (specifier.endsWith('/codeview.jsx')) return stub({ CodeView: 'CodeView' });
+      if (specifier.endsWith('.svg')) return stub({ default: specifier });
       if (specifier.endsWith('/k8sutil.js')) return stub({ k8sGet: () => {}, k8sPost: () => {}, k8sPatch: () => {}, k8sDelete: () => {}, k8sFetch: async () => ({ ok: false, status: 0 }), listItems: () => [], age: () => '' });
       throw new Error('Unmocked dependency: ' + specifier);
     });
