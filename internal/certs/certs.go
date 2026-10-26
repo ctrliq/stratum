@@ -630,11 +630,11 @@ func restartReplaced(name string, restartPod func(string) error) error {
 
 // healthzAttempts and downWindowWait are part of the worst-case time one control
 // plane restart sequence can take, which the remote CA Job limits must cover
-// (caJobDeadline): the apiserver /healthz poll is one probe every 2s, and each pod
-// is given downWindowWait to drop its listener before its serve gate starts.
+// (caJobDeadline): the apiserver /healthz wait ends after healthzAttempts ×
+// k8sutil.HealthzPollInterval, and each pod is given downWindowWait to drop its
+// listener before its serve gate starts.
 const (
 	healthzAttempts = 60
-	healthzInterval = 2 * time.Second // k8sutil.WaitHealthz's poll interval
 	downWindowWait  = 30 * time.Second
 )
 
