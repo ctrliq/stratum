@@ -505,6 +505,7 @@ lint: lint-shell
 	tools/test-lint-shell.sh
 	tools/test-lint-licenses.sh
 	tools/test-lint-tracker-keys.sh
+	tools/test-check-signoff.sh
 	tools/test-cve-watch.sh
 	tools/test-check-supervisor-restart.sh
 	tools/test-ostests-provision.sh
