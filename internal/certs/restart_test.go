@@ -33,9 +33,12 @@ func TestRestartControlPlaneReportsBestEffortFailure(t *testing.T) {
 	}
 	var progress bytes.Buffer
 	onStdout := captureRealStdout(t, func() {
-		err := restartControlPlaneGuarded(&progress, func(string) error { return errors.New("VIP restart refused") }, func(string) error { return nil }, nil, false)
+		allRestarted, err := restartControlPlaneGuarded(&progress, func(string) error { return errors.New("VIP restart refused") }, func(string) error { return nil }, nil, false)
 		if err != nil {
 			t.Fatalf("best-effort restart failed the rotation: %v", err)
+		}
+		if allRestarted {
+			t.Fatal("a failed best-effort restart was reported as every component restarted")
 		}
 	})
 	if onStdout != "" {
@@ -77,7 +80,7 @@ func TestRestartControlPlaneFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var restarted, waited []string
-			err := restartControlPlaneGuarded(io.Discard, func(name string) error {
+			_, err := restartControlPlaneGuarded(io.Discard, func(name string) error {
 				restarted = append(restarted, name)
 				return tc.restart[name]
 			}, func(name string) error {
@@ -141,7 +144,7 @@ func TestRestartControlPlaneCarriesOnAfterGateFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var restarted, healthzCalls = []string{}, 0
 			waitHealthz = func(int) error { healthzCalls++; return tc.healthz }
-			err := restartControlPlaneGuarded(io.Discard, func(name string) error {
+			_, err := restartControlPlaneGuarded(io.Discard, func(name string) error {
 				restarted = append(restarted, name)
 				return nil
 			}, func(name string) error { return tc.wait[name] }, nil, false)
@@ -194,7 +197,7 @@ func TestRestartControlPlaneCarriesOnAfterAFailedRestart(t *testing.T) {
 	waitHealthz = func(int) error { healthzCalls++; return nil }
 
 	var restarted, waited []string
-	err := restartControlPlaneGuarded(io.Discard, func(name string) error {
+	_, err := restartControlPlaneGuarded(io.Discard, func(name string) error {
 		restarted = append(restarted, name)
 		if name == "kube-apiserver" {
 			return apiRestart
@@ -435,7 +438,7 @@ func TestRenewalFenceHeldThroughReadinessAndStopsLaterRestarts(t *testing.T) {
 	}
 	defer release()
 	var restarts []string
-	err = restartControlPlaneGuarded(io.Discard, func(name string) error { restarts = append(restarts, name); return nil }, func(name string) error {
+	_, err = restartControlPlaneGuarded(io.Discard, func(name string) error { restarts = append(restarts, name); return nil }, func(name string) error {
 		lease, err := cs.CoordinationV1().Leases(caNamespace).Get(ctx, maintenanceLeaseName, v1.GetOptions{})
 		if err != nil || *lease.Spec.HolderIdentity != "renewal/1" {
 			t.Fatalf("lease not held through readiness: %v", err)
@@ -468,7 +471,7 @@ func TestRestartFailureSurvivesLaterFenceCancellation(t *testing.T) {
 		t.Run(phase, func(t *testing.T) {
 			failure := errors.New("etcd restart failed")
 			var restarted []string
-			err := restartControlPlaneGuarded(io.Discard, func(name string) error {
+			_, err := restartControlPlaneGuarded(io.Discard, func(name string) error {
 				restarted = append(restarted, name)
 				if phase == "restart" {
 					return failure
@@ -532,7 +535,7 @@ func TestKubeVipRequiredFailsTheRestart(t *testing.T) {
 				waits++
 				return tc.replaced
 			}
-			err := restartControlPlaneGuarded(io.Discard, func(string) error { return tc.restart }, wait, nil, tc.required)
+			_, err := restartControlPlaneGuarded(io.Discard, func(string) error { return tc.restart }, wait, nil, tc.required)
 			switch {
 			case tc.want == nil && err != nil:
 				t.Errorf("restart = %v, want success", err)
