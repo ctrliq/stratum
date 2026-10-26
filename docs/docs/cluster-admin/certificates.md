@@ -405,31 +405,15 @@ refusing to start: 2 workload(s) are not restarted whole by Stratum, so their po
 Set the partition to 0, or switch the update strategy to `RollingUpdate`, then
 run `rotate-ca --cluster` again. For a StatefulSet with a partition:
 
-<<<<<<< HEAD
-```bash
-stratum kubectl -n db patch statefulset postgres \
-||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
-```console
-# stratum kubectl -n db patch statefulset postgres \
-=======
 ```console
 # /usr/local/bin/stratum kubectl -n db patch statefulset postgres \
->>>>>>> ac2596c (docs: close the gaps left from the docs content review)
   -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":0}}}}'
 ```
 
 For a StatefulSet or DaemonSet with `OnDelete`:
 
-<<<<<<< HEAD
-```bash
-stratum kubectl -n kube-system patch daemonset cilium \
-||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
-```console
-# stratum kubectl -n kube-system patch daemonset cilium \
-=======
 ```console
 # /usr/local/bin/stratum kubectl -n kube-system patch daemonset cilium \
->>>>>>> ac2596c (docs: close the gaps left from the docs content review)
   -p '{"spec":{"updateStrategy":{"type":"RollingUpdate"}}}'
 ```
 
@@ -471,16 +455,8 @@ refusing to start: apipoller/kube-root-ca.crt was written by kube-controller-man
 Delete the ConfigMap. kube-controller-manager recreates it with a current write
 time. Then run `rotate-ca --cluster` again:
 
-<<<<<<< HEAD
-```bash
-stratum kubectl -n apipoller delete configmap kube-root-ca.crt
-||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
-```console
-# stratum kubectl -n apipoller delete configmap kube-root-ca.crt
-=======
 ```console
 # /usr/local/bin/stratum kubectl -n apipoller delete configmap kube-root-ca.crt
->>>>>>> ac2596c (docs: close the gaps left from the docs content review)
 ```
 
 If you pass `--skip-workload-check` instead, Stratum does not check whether

@@ -146,23 +146,13 @@ local user, and every `hostNetwork` pod on the node, can reach `127.0.0.1`, and
 the tools run as root. Create the token in a directory and a file only root
 can read or write:
 
-```bash
-<<<<<<< HEAD
-sudo install -d -m 0700 /etc/stratum/mcp
-sudo install -m 0600 /dev/null /etc/stratum/mcp/token
-openssl rand -hex 32 | sudo tee /etc/stratum/mcp/token >/dev/null
+```console
+# install -d -m 0700 /etc/stratum/mcp
+
+# install -m 0600 /dev/null /etc/stratum/mcp/token
+
+# openssl rand -hex 32 > /etc/stratum/mcp/token
 ```
-||||||| parent of ac2596c (docs: close the gaps left from the docs content review)
-# install -d -m 0700 /etc/stratum/mcp
-# install -m 0600 /dev/null /etc/stratum/mcp/token
-# openssl rand -hex 32 > /etc/stratum/mcp/token```
-=======
-# install -d -m 0700 /etc/stratum/mcp
-
-# install -m 0600 /dev/null /etc/stratum/mcp/token
-
-# openssl rand -hex 32 > /etc/stratum/mcp/token```
->>>>>>> ac2596c (docs: close the gaps left from the docs content review)
 
 Then start the server with it:
 
