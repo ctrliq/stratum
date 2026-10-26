@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ske-inttest: previous=v1.37.1-stratum.0-rc.1
+# ske-inttest: previous=v1.35.9-stratum.0-rc.1
 #
 # A node brought up on a published engine release, upgraded to this build the
 # documented way: the installed release runs `stratum upgrade --from <this
