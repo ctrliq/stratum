@@ -33,12 +33,6 @@ is_allowed() {
     # kubernetes_version moves, and tools/apiboundary's own tests (apidiff,
     # golden) keep the fixture honest, not this grep.
     tools/apiboundary/testdata/*) return 0 ;;
-    # The profile-refusal inttest names, in its previous= header, the last
-    # engine release that carried the cis profile. That is the same kind of
-    # prose about a release tag (v$(kubernetes_version)-stratum.N), and the
-    # check downloads exactly that release, so a pin substitution would break
-    # it. Version check only; it carries no revision.
-    tools/inttest/check-cis-profile-refusal.sh) [[ ${2:-} == version ]] && return 0; return 1 ;;
     # The one test that has to carry real pins, version and revision both: it
     # feeds fixture manifests to tools/lint-revisions.sh, which resolves the
     # tag upstream, so a made-up version or a made-up SHA would assert nothing.
@@ -115,6 +109,12 @@ while IFS='=' read -r key val; do
   while IFS= read -r hit; do
     file=${hit%%:*}
     is_allowed "$file" version && continue
+    # An inttest's previous= header names the published release the check
+    # downloads (v$(kubernetes_version)-stratum.N): a release tag, not a pin,
+    # and substituting the pin would fetch a different release. Only that
+    # header line is exempt; the same version anywhere else in the check is not.
+    line=${hit#*:}; line=${line#*:}
+    [[ $file == tools/inttest/check-*.sh && $line =~ ^\#\ ske-inttest:.*[[:space:]]previous= ]] && continue
     if [[ ${#val} -lt 5 ]]; then
       echo "lint-versions: WARN  $file pins $name literal '$val' (short version, verify by hand)"
     else
