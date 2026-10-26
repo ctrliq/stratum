@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
@@ -73,6 +74,30 @@ type RenewalRecord struct {
 // RenewalRecordPath is where the renewal record persists, beside node.yaml in
 // the node's state area.
 func RenewalRecordPath() string { return filepath.Join(version.K8sConfDir, "renewal.yaml") }
+
+// incompleteRotationPath marks a leaf rotation that reissued leaves but has not
+// yet rewritten every kubeconfig and restarted every component onto them. The
+// fresh leaves on disk then say nothing about what the running control plane
+// uses, so while the marker exists the timer rotates again.
+func incompleteRotationPath() string {
+	return filepath.Join(version.K8sConfDir, "rotation-incomplete")
+}
+
+// incompleteRotationExpired is the marker content of a rotation that began from
+// expired leaves: its control plane may still run on them after the leaves on
+// disk are fresh, so its retry keeps the expired-leaf path to the node lock.
+const incompleteRotationExpired = "expired"
+
+// IncompleteRotation reports whether a leaf rotation reissued leaves but has
+// not yet restarted every component onto them, and whether that rotation began
+// from expired leaves. A marker that cannot be read still counts as present.
+func IncompleteRotation() (present, expired bool) {
+	if _, err := os.Lstat(incompleteRotationPath()); errors.Is(err, fs.ErrNotExist) {
+		return false, false
+	}
+	b, _ := os.ReadFile(incompleteRotationPath())
+	return true, strings.TrimSpace(string(b)) == incompleteRotationExpired
+}
 
 // SaveRenewalRecord persists the renewal record atomically through the shared
 // atomic writer (internal/atomicfile): a failed or crashed save leaves either
@@ -351,6 +376,12 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 	if !needed {
 		needed = anyLeafExpiringWithin(statuses, o.IfExpiringDays)
 	}
+	incomplete, startedExpired := IncompleteRotation()
+	expired := anyLeafExpiringWithin(statuses, -1) || startedExpired
+	if !needed && incomplete {
+		needed = true
+		fmt.Fprintf(w, "  WARN: a previous leaf rotation reissued leaves but did not restart every component onto them; rotating again\n")
+	}
 	var confirm func(string) error
 	var rideOffLocal func(nodeIP string) error
 	if needed && !o.NodeLockHeld {
@@ -371,7 +402,7 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 			rideOffLocal = func(nodeIP string) error {
 				return rideLeaseOffLocalAPIServer(ctx, w, rider, guard, cs, nodeIP)
 			}
-		case ctx.Err() == nil && !errors.Is(err, maintlease.ErrTaken) && anyLeafExpiringWithin(statuses, -1):
+		case ctx.Err() == nil && !errors.Is(err, maintlease.ErrTaken) && expired:
 			// An expired leaf is what keeps the API from answering (admin.conf
 			// rejected, or the apiserver's etcd client refused), so no fence
 			// can be taken through it, and refusing would leave the node with
@@ -412,6 +443,16 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 			return false, err
 		}
 	}
+	var mark []byte
+	if expired {
+		mark = []byte(incompleteRotationExpired + "\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(incompleteRotationPath()), 0o755); err != nil {
+		return false, fmt.Errorf("certs: marking the rotation incomplete before reissuing leaves: %w", err)
+	}
+	if err := atomicfile.WriteFile(incompleteRotationPath(), mark, 0o600); err != nil {
+		return false, fmt.Errorf("certs: marking the rotation incomplete before reissuing leaves: %w", err)
+	}
 	step(w, o, "Reissue control-plane leaf certificates")
 	if err := pki.RotateLeaves(hostname, nodeIP, apiExtra); err != nil {
 		return false, err
@@ -440,8 +481,16 @@ func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 	}
 
 	step(w, o, "Restart control-plane units")
-	if err := restartControlPlaneGuarded(w, staticpod.Restart, waitBounced, confirm, o.KubeVipRequired); err != nil {
+	allRestarted, err := restartControlPlaneGuarded(w, staticpod.Restart, waitBounced, confirm, o.KubeVipRequired)
+	if err != nil {
 		return false, err
+	}
+	if !allRestarted {
+		fmt.Fprintf(w, "  WARN: not every component restarted onto the reissued leaves; the next scheduled renewal rotates again\n")
+		return true, nil
+	}
+	if err := os.Remove(incompleteRotationPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return false, fmt.Errorf("certs: rotation completed but its incomplete marker could not be removed: %w", err)
 	}
 	if !o.Quiet {
 		fmt.Fprintf(w, "certs: rotated — leaves valid for ~%d days\n", int(pki.LeafValidity.Hours()/24))
@@ -466,24 +515,30 @@ func stepBoundary(ctx context.Context) error {
 // host processes remain best-effort. Absent components are skipped. Shared by
 // leaf rotation and CA rotation.
 func restartControlPlane(w io.Writer) error {
-	return restartControlPlaneWith(w, staticpod.Restart, waitBounced)
+	_, err := restartControlPlaneGuarded(w, staticpod.Restart, waitBounced, nil, false)
+	return err
 }
 
 // Pass the pod operations explicitly so restart and readiness failures can be
 // exercised without restarting a live control plane or waiting for timeouts.
-func restartControlPlaneWith(w io.Writer, restartPod, waitPod func(string) error) error {
+func restartControlPlaneWith(w io.Writer, restartPod, waitPod func(string) error) (bool, error) {
 	return restartControlPlaneGuarded(w, restartPod, waitPod, nil, false)
 }
 
-func restartControlPlaneGuarded(w io.Writer, restartPod, waitPod func(string) error, confirm func(string) error, kubeVipRequired bool) error {
+// restartControlPlaneGuarded takes its pod operations explicitly so restart and
+// readiness failures can be exercised without restarting a live control plane
+// or waiting for timeouts. allRestarted is false when a best-effort restart
+// failed without failing the sequence.
+func restartControlPlaneGuarded(w io.Writer, restartPod, waitPod func(string) error, confirm func(string) error, kubeVipRequired bool) (allRestarted bool, err error) {
 	var failures []error
+	allRestarted = true
 	for _, name := range podRestartOrder {
 		if !staticpod.Exists(name) {
 			continue
 		}
 		if confirm != nil {
 			if err := confirm("restarting " + name); err != nil {
-				return errors.Join(append(failures, err)...)
+				return false, errors.Join(append(failures, err)...)
 			}
 		}
 		switch name {
@@ -526,6 +581,7 @@ func restartControlPlaneGuarded(w io.Writer, restartPod, waitPod func(string) er
 			if !kubeVipRequired {
 				if err := restartPod(name); err != nil {
 					fmt.Fprintf(w, "  WARN: restart %s: %v (continuing)\n", name, err)
+					allRestarted = false
 				}
 				continue
 			}
@@ -541,18 +597,19 @@ func restartControlPlaneGuarded(w io.Writer, restartPod, waitPod func(string) er
 		}
 		if confirm != nil {
 			if err := confirm("restarting " + u); err != nil {
-				return errors.Join(append(failures, err)...)
+				return false, errors.Join(append(failures, err)...)
 			}
 		}
 		if err := comps.Restart(u); err != nil {
 			fmt.Fprintf(w, "  WARN: restart %s: %v (continuing)\n", u, err)
+			allRestarted = false
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("control-plane restart incomplete (every remaining restart was still attempted): %w",
+		return false, fmt.Errorf("control-plane restart incomplete (every remaining restart was still attempted): %w",
 			errors.Join(failures...))
 	}
-	return nil
+	return allRestarted, nil
 }
 
 // waitHealthz is a variable so the apiserver gate can be exercised without a
