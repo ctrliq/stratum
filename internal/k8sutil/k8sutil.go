@@ -340,16 +340,14 @@ func etcdCACertPath() string {
 	return filepath.Join(version.PKIDir, "ca.crt")
 }
 
-// WaitHealthz polls the apiserver /healthz until it returns "ok" or attempts run out.
+// WaitHealthz polls the apiserver /healthz until it returns "ok" or
+// attempts × HealthzPollInterval elapses. Callers size their own deadlines
+// from that window, so a probe that hangs is cut off at it instead of holding
+// the caller forever.
 func WaitHealthz(attempts int) error {
-	for i := 0; i < attempts; i++ {
-		out, _ := Kubectl("get", "--raw", "/healthz").Output()
-		if strings.TrimSpace(string(out)) == "ok" {
-			return nil
-		}
-		time.Sleep(2 * time.Second)
-	}
-	return fmt.Errorf("apiserver /healthz did not become ok")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(attempts)*HealthzPollInterval)
+	defer cancel()
+	return WaitHealthzContext(ctx)
 }
 
 // WaitHealthzContext is WaitHealthz bounded by ctx instead of an attempt count:
@@ -377,6 +375,10 @@ func WaitHealthzClient(ctx context.Context, cs kubernetes.Interface) error {
 // request for the same reason.
 const healthzAttemptTimeout = 10 * time.Second
 
+// HealthzPollInterval is the wait between /healthz probes, and the unit of
+// WaitHealthz's window.
+const HealthzPollInterval = 2 * time.Second
+
 // probeAttempt runs one probe under its own deadline, a child of the window's
 // ctx: a probe that hangs is cut off at healthzAttemptTimeout while the window
 // keeps running, and the timeout is named in the error so the wait's final
@@ -397,7 +399,7 @@ func probeAttempt(ctx context.Context, probe func(context.Context) ([]byte, erro
 	return out, err
 }
 
-// waitHealthz polls probe every two seconds until it answers "ok" or ctx
+// waitHealthz polls probe every HealthzPollInterval until it answers "ok" or ctx
 // ends, and names the last answer it got when it gives up.
 func waitHealthz(ctx context.Context, probe func(context.Context) ([]byte, error)) error {
 	var last error
@@ -425,7 +427,7 @@ func waitHealthz(ctx context.Context, probe func(context.Context) ([]byte, error
 		}
 		select {
 		case <-ctx.Done():
-		case <-time.After(2 * time.Second):
+		case <-time.After(HealthzPollInterval):
 		}
 	}
 }
