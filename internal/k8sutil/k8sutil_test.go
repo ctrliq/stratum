@@ -209,6 +209,27 @@ func TestWaitHealthzContextEndsWithItsContext(t *testing.T) {
 	}
 }
 
+// An apiserver that accepts the request and never answers must not hold
+// WaitHealthz past its attempts window: the cert restart gate and the CA
+// preflight size their deadlines from that window.
+func TestWaitHealthzEndsWithItsAttemptsWindow(t *testing.T) {
+	fakeKubectl(t, "exec sleep 30")
+	begin := time.Now()
+	if err := WaitHealthz(1); err == nil {
+		t.Fatal("WaitHealthz succeeded against a kubectl that never answered")
+	}
+	if took := time.Since(begin); took > HealthzPollInterval+3*time.Second {
+		t.Errorf("took %v for one attempt; want it cut off near %v", took, HealthzPollInterval)
+	}
+}
+
+func TestWaitHealthzOK(t *testing.T) {
+	fakeKubectl(t, "echo ok")
+	if err := WaitHealthz(1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWaitHealthzContextOK(t *testing.T) {
 	fakeKubectl(t, "echo ok")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

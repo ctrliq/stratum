@@ -29,6 +29,7 @@ import (
 
 	"github.com/ctrliq/stratum/internal/bootstrap/clusterinfo"
 	"github.com/ctrliq/stratum/internal/comps"
+	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/pki"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -602,7 +603,7 @@ func TestHaltedStep(t *testing.T) {
 func TestCAJobLimitsCoverTheRestartSequence(t *testing.T) {
 	worst := serveBudget("etcd") +
 		3*serveBudget("kube-apiserver") + // apiserver, controller-manager, scheduler
-		healthzAttempts*healthzInterval +
+		healthzAttempts*k8sutil.HealthzPollInterval +
 		4*downWindowWait + // etcd, apiserver, controller-manager, scheduler
 		time.Duration(len(hostRestartOrder))*90*time.Second // kubelet and operator (comps.Restart waits up to 90s each)
 	if caJobDeadline <= worst {
