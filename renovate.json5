@@ -11,7 +11,11 @@
     "helpers:pinGitHubActionDigests",
   ],
 
-  gitAuthor: "stratum-bot <stratum-bot@users.noreply.github.com>",
+  // The hosted app commits through the GitHub API, which ignores gitAuthor and
+  // authors every commit as renovate[bot]. :gitSignOff writes the sign-off from
+  // gitAuthor, and CI's signoff check wants the author's email there, so this
+  // names the identity the commits really carry.
+  gitAuthor: "renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
   labels: ["dependencies"],
   semanticCommits: "enabled",
   semanticCommitType: "deps",
