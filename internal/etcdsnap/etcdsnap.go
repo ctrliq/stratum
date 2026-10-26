@@ -5,17 +5,18 @@
 package etcdsnap
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -190,9 +191,12 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	if err := snapshotContext(ctx, w, path); err != nil {
 		return "", err
 	}
-	if o.S3.Enabled() {
-		if err := o.S3.Upload(ctx, path, name); err != nil {
-			return path, fmt.Errorf("snapshot saved locally (%s) but S3 upload failed: %w", path, err)
+	remote := o.S3
+	var uploadErr error
+	if remote.Enabled() {
+		if err := remote.Upload(ctx, path, name); err != nil {
+			uploadErr = fmt.Errorf("snapshot saved locally (%s) but S3 upload failed: %w", path, err)
+			remote = nil
 		}
 	}
 	if o.Retain > 0 {
@@ -201,14 +205,14 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		// handed for the scheduled loop and `stratum snapshot save`, whose
 		// output must not change, and handed to PruneWarn as data for callers
 		// that report it beside the path.
-		for _, perr := range PruneScheduledContext(ctx, dir, hn, o.Retain, o.S3) {
+		for _, perr := range PruneScheduledContext(ctx, dir, hn, o.Retain, remote) {
 			fmt.Fprintf(w, "  WARN: %v\n", perr)
 			if o.PruneWarn != nil {
 				o.PruneWarn(perr)
 			}
 		}
 	}
-	return path, nil
+	return path, uploadErr
 }
 
 // PruneScheduled keeps the newest `keep` of `host`'s scheduled snapshots, locally
@@ -241,8 +245,11 @@ func PruneScheduledContext(ctx context.Context, dir, host string, keep int, s3 *
 	return errs
 }
 
-// Prune keeps the newest `keep` local snapshots whose name owned accepts
-// (timestamped names sort chronologically). keep <= 0 is a no-op.
+var removeSnapshot = os.Remove
+
+// Prune keeps the newest `keep` local snapshots whose name owned accepts,
+// newest by modification time with the name breaking ties, and removes every
+// older one it can. keep <= 0 is a no-op.
 func Prune(dir string, owned func(name string) bool, keep int) error {
 	if keep <= 0 {
 		return nil
@@ -254,22 +261,37 @@ func Prune(dir string, owned func(name string) bool, keep int) error {
 		}
 		return err
 	}
-	var names []string
+	type snap struct {
+		name string
+		mod  time.Time
+	}
+	var snaps []snap
+	var errs []error
 	for _, e := range entries {
-		if !e.IsDir() && owned(e.Name()) {
-			names = append(names, e.Name())
+		if e.IsDir() || !owned(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		snaps = append(snaps, snap{e.Name(), info.ModTime()})
+	}
+	if len(snaps) <= keep {
+		return errors.Join(errs...)
+	}
+	slices.SortFunc(snaps, func(a, b snap) int {
+		return cmp.Or(a.mod.Compare(b.mod), strings.Compare(a.name, b.name))
+	})
+	for _, s := range snaps[:len(snaps)-keep] {
+		if err := removeSnapshot(filepath.Join(dir, s.name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
 		}
 	}
-	sort.Strings(names)
-	if len(names) <= keep {
-		return nil
-	}
-	for _, n := range names[:len(names)-keep] {
-		if err := os.Remove(filepath.Join(dir, n)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // SnapItem is one snapshot in a listing (local or S3).
