@@ -302,6 +302,9 @@ table.q-table { width: 100%; }
 .crumb.current { color: #fff; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .crumb-sep { color: var(--quantic-fg-quaternary, #474b54); flex-shrink: 0; }
 
+@media only screen and (min-width: 1024px) {
+  .brand-full { padding-inline-start: 10px; }
+}
 /* ---- cluster identity block (under the logo, inside the Sidebar) ---- */
 .switcher-wrap { padding: 6px 4px 10px; container-type: inline-size; }
 .sw-glyph { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; background: var(--green-soft); color: var(--quantic-fg-brand-secondary, #43e57f); border: 1px solid var(--quantic-border-brand, rgba(43,214,106,.42)); }
@@ -348,6 +351,7 @@ table.q-table { width: 100%; }
 .login-split-content { width: 100%; max-width: 384px; }
 .login-split-brand { margin-bottom: 28px; text-align: center; }
 .login-split-brand h1 { margin: 0; font: 700 24px/32px Inter, sans-serif; letter-spacing: -.025em; }
+.login-split-logo { display: block; height: 96px; margin: 0 auto; }
 .login-split-brand p { margin: 4px 0 0; color: var(--quantic-fg-secondary); font-size: 14px; line-height: 20px; }
 .login-split-form { display: flex; flex-direction: column; gap: 16px; }
 .login-split-field { display: flex; flex-direction: column; gap: 6px; }
