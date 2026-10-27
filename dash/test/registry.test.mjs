@@ -258,7 +258,7 @@ const SIDEBAR = [
   ['Helm', ['helm', 'helmcharts', 'helmchartconfigs']],
   ['Access Control', ['serviceaccounts', 'clusterroles', 'roles', 'clusterrolebindings', 'rolebindings']],
   ['Custom Resources', ['crds']],
-  ['Links', ['link:docs', 'link:grafana']],
+  ['Links', ['link:docs', 'link:grafana', 'link:pro']],
 ];
 
 test('the sidebar lists every page in Lens order', async () => {
@@ -431,4 +431,20 @@ test('a section collapsed under its bare label by an earlier build stays collaps
   const workloads = collect(tree, (n) => typeof n.props?.className === 'string' && /^nav-group( |$)/.test(n.props.className))
     .find((n) => text(collect(n, (c) => c.props?.className === 'grow nav-group-label')) === 'Workloads');
   assert.match(workloads.props.className, /collapsed/);
+});
+
+test('Get Pro shows only when the server serves its link, and opens it in a new tab', async () => {
+  const { h } = await consumer();
+  const proRow = (tree) => collect(tree, (n) => n.props && n.props.label === 'Get Pro');
+
+  assert.equal(proRow(await renderShell(h, { active: 'overview' })).length, 0,
+    'a server that serves no pro link, such as the PRO hub, gets no row');
+
+  const url = 'https://ciq.com/product/stratum';
+  const rows = proRow(await renderShell(h, { active: 'overview', config: { links: { pro: url } } }));
+  assert.equal(rows.length, 1);
+  const opened = [];
+  h.browser.open = (...args) => { opened.push(args); };
+  rows[0].props.onClick();
+  assert.deepEqual(opened.map((a) => [...a]), [[url, '_blank', 'noopener,noreferrer']]);
 });
