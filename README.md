@@ -109,7 +109,7 @@ bundle.
 
 ## Get Pro
 
-CIQ supports Stratum through a [Stratum PRO](https://ciq.com/product/stratum)
+CIQ supports Stratum through a [Stratum PRO](https://ciq.com/products/stratum)
 license. Support is not sold separately. Stratum PRO adds the CIS hardening
 profile, fleet management, single sign-on and cluster provisioning to the same
 engine; the [Stratum PRO page](docs/docs/pro/index.md) lists what it adds.

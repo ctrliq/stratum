@@ -440,7 +440,7 @@ test('Get Pro shows only when the server serves its link, and opens it in a new 
   assert.equal(proRow(await renderShell(h, { active: 'overview' })).length, 0,
     'a server that serves no pro link, such as the PRO hub, gets no row');
 
-  const url = 'https://ciq.com/product/stratum';
+  const url = 'https://ciq.com/products/stratum';
   const rows = proRow(await renderShell(h, { active: 'overview', config: { links: { pro: url } } }));
   assert.equal(rows.length, 1);
   const opened = [];

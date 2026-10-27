@@ -136,7 +136,7 @@ func (s *server) getConfig(w http.ResponseWriter, _ *http.Request) {
 		"features": map[string]any{"nodeShell": s.nodeShell, "nodeShellImage": s.nodeShellImage, "secretSummaries": true},
 		"links": map[string]string{
 			"docs": "https://docs.ciq.com/stratum",
-			"pro":  "https://ciq.com/product/stratum",
+			"pro":  "https://ciq.com/products/stratum",
 		},
 	})
 }

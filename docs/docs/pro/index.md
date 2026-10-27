@@ -25,4 +25,4 @@ includes.
 
 CIQ support for Stratum comes with a Stratum PRO license; it is not sold
 separately. To get Stratum PRO, see
-[ciq.com/product/stratum](https://ciq.com/product/stratum).
+[ciq.com/products/stratum](https://ciq.com/products/stratum).
