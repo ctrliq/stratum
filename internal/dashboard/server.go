@@ -134,7 +134,10 @@ func (s *server) getConfig(w http.ResponseWriter, _ *http.Request) {
 		// SPA must use for the debug pod, so it never falls back to a public
 		// registry on an airgapped node.
 		"features": map[string]any{"nodeShell": s.nodeShell, "nodeShellImage": s.nodeShellImage, "secretSummaries": true},
-		"links":    map[string]string{"docs": "https://docs.ciq.com/stratum"},
+		"links": map[string]string{
+			"docs": "https://docs.ciq.com/stratum",
+			"pro":  "https://ciq.com/products/stratum",
+		},
 	})
 }
 
