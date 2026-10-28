@@ -368,7 +368,7 @@
             "allowedVersions": "/^v?[01]\\.37\\./"
         },
         {
-            "description": "Go toolchain on release-1.37 — source: kubernetes/kubernetes v1.37.1 .go-version",
+            "description": "Go toolchain on release-1.37 — source: kubernetes/kubernetes v1.37.2 .go-version",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.37"
@@ -377,12 +377,12 @@
                 "go",
                 "docker.io/library/golang"
             ],
-            "allowedVersions": "/^v?1\\.26\\.8$/",
+            "allowedVersions": "/^v?1\\.26\\.10$/",
             "groupName": "Kubernetes",
             "groupSlug": "kubernetes"
         },
         {
-            "description": "etcd on release-1.37 — source: kubeadm DefaultEtcdVersion at v1.37.1 (exact)",
+            "description": "etcd on release-1.37 — source: kubeadm DefaultEtcdVersion at v1.37.2 (exact)",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.37"
@@ -395,7 +395,7 @@
             "allowedVersions": "/^v?3\\.7\\.0(-\\d+)?$/"
         },
         {
-            "description": "CoreDNS on release-1.37 — source: kubeadm CoreDNSVersion at v1.37.1",
+            "description": "CoreDNS on release-1.37 — source: kubeadm CoreDNSVersion at v1.37.2",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.37"
@@ -445,7 +445,7 @@
             "allowedVersions": "/^v?[01]\\.36\\./"
         },
         {
-            "description": "Go toolchain on release-1.36 — source: kubernetes/kubernetes v1.36.5 .go-version",
+            "description": "Go toolchain on release-1.36 — source: kubernetes/kubernetes v1.36.6 .go-version",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.36"
@@ -454,12 +454,12 @@
                 "go",
                 "docker.io/library/golang"
             ],
-            "allowedVersions": "/^v?1\\.26\\.8$/",
+            "allowedVersions": "/^v?1\\.26\\.10$/",
             "groupName": "Kubernetes",
             "groupSlug": "kubernetes"
         },
         {
-            "description": "etcd on release-1.36 — source: kubeadm DefaultEtcdVersion at v1.36.5 (exact)",
+            "description": "etcd on release-1.36 — source: kubeadm DefaultEtcdVersion at v1.36.6 (exact)",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.36"
@@ -472,7 +472,7 @@
             "allowedVersions": "/^v?3\\.6\\.8(-\\d+)?$/"
         },
         {
-            "description": "CoreDNS on release-1.36 — source: kubeadm CoreDNSVersion at v1.36.5",
+            "description": "CoreDNS on release-1.36 — source: kubeadm CoreDNSVersion at v1.36.6",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.36"
@@ -522,7 +522,7 @@
             "allowedVersions": "/^v?[01]\\.35\\./"
         },
         {
-            "description": "Go toolchain on release-1.35 — source: kubernetes/kubernetes v1.35.9 .go-version",
+            "description": "Go toolchain on release-1.35 — source: kubernetes/kubernetes v1.35.10 .go-version",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.35"
@@ -531,12 +531,12 @@
                 "go",
                 "docker.io/library/golang"
             ],
-            "allowedVersions": "/^v?1\\.26\\.8$/",
+            "allowedVersions": "/^v?1\\.26\\.10$/",
             "groupName": "Kubernetes",
             "groupSlug": "kubernetes"
         },
         {
-            "description": "etcd on release-1.35 — source: kubeadm DefaultEtcdVersion at v1.35.9 (exact)",
+            "description": "etcd on release-1.35 — source: kubeadm DefaultEtcdVersion at v1.35.10 (exact)",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.35"
@@ -549,7 +549,7 @@
             "allowedVersions": "/^v?3\\.6\\.6(-\\d+)?$/"
         },
         {
-            "description": "CoreDNS on release-1.35 — source: kubeadm CoreDNSVersion at v1.35.9",
+            "description": "CoreDNS on release-1.35 — source: kubeadm CoreDNSVersion at v1.35.10",
             "enabled": true,
             "matchBaseBranches": [
                 "release-1.35"
