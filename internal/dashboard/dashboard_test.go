@@ -958,8 +958,12 @@ func TestConfigReportsTheNodeShellFlagAndTheProxyBase(t *testing.T) {
 				NodeShellImage  string `json:"nodeShellImage"`
 				SecretSummaries bool   `json:"secretSummaries"`
 			} `json:"features"`
+			Links map[string]string `json:"links"`
 		}
 		decode(t, resp, &cfg)
+		if cfg.Links["pro"] == "" {
+			t.Error("links.pro is empty; the SPA drops the Get Pro row without it")
+		}
 		if cfg.Features.NodeShell != nodeShell {
 			t.Errorf("features.nodeShell = %t, want %t", cfg.Features.NodeShell, nodeShell)
 		}
