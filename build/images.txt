@@ -10,11 +10,11 @@
 # build of $(etcd_version) (the -N suffix is registry.k8s.io's image revision,
 # pinned to what kubernetes/kubernetes build/dependencies.yaml declares).
 # renovate: datasource=docker depName=registry.k8s.io/kube-apiserver
-registry.k8s.io/kube-apiserver:v1.36.5@sha256:4b3e69973a1d58d3c1f670d3477a9b9f14a03a271823113e8e0c9a333eb84f48
+registry.k8s.io/kube-apiserver:v1.36.6@sha256:c627b6c01a056b30feab4f277aecc0d690afab061f935615c0d67b32e39d7823
 # renovate: datasource=docker depName=registry.k8s.io/kube-controller-manager
-registry.k8s.io/kube-controller-manager:v1.36.5@sha256:2d717af134451db77ea053c3426bc82edc0e55415eb36e1260313c636ebe9a4d
+registry.k8s.io/kube-controller-manager:v1.36.6@sha256:8548e3b0aa48070c69535a13b5728e337d99176451ddd5656a8d5203dedb937b
 # renovate: datasource=docker depName=registry.k8s.io/kube-scheduler
-registry.k8s.io/kube-scheduler:v1.36.5@sha256:3804f66442962cefbe11fcd5330d5e7a797bfb3dc8535c322d005637b404a85f
+registry.k8s.io/kube-scheduler:v1.36.6@sha256:a3f959875bf26c1219e5aa33032c673aee9c394d4bc10a48b9b1ac5e5c819068
 # renovate: datasource=docker depName=registry.k8s.io/etcd
 registry.k8s.io/etcd:3.6.8-0@sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5
 # renovate: datasource=docker depName=ghcr.io/kube-vip/kube-vip
