@@ -26,7 +26,7 @@
 # Matches kubernetes/kubernetes v$(kubernetes_version) .go-version exactly.
 # Do not bump independently: bump kubernetes_version, then re-read .go-version.
 # renovate: datasource=golang-version depName=go
-go_version = 1.26.8
+go_version = 1.26.10
 
 # renovate: datasource=docker depName=alpine versioning=docker
 alpine_version = 3.24
@@ -54,8 +54,8 @@ pnpm_version = 12.15.0
 # --- kubernetes --------------------------------------------------------------
 
 # renovate: datasource=github-tags depName=kubernetes/kubernetes
-kubernetes_version = 1.36.5
-kubernetes_revision = ad950d1cc78b0183c476bd4d3f1934c104229727
+kubernetes_version = 1.36.6
+kubernetes_revision = 1b2171b110bb2a2542e1322035c6583ec86eb976
 kubernetes_buildimage = $(default_buildimage)
 kubernetes_build_go_tags = providerless
 kubernetes_build_go_cgo_enabled = 0
