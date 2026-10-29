@@ -49,7 +49,7 @@ node_version = 24.22.2
 # it moves on its own Renovate PR with `pnpm test` and `pnpm run build` green,
 # not as a side effect of a dashboard change.
 # renovate: datasource=npm depName=pnpm
-pnpm_version = 12.15.0
+pnpm_version = 12.16.1
 
 # --- kubernetes --------------------------------------------------------------
 

@@ -1,6 +1,6 @@
 {
   "name": "@ctrliq/stratum-dash",
-  "packageManager": "pnpm@12.15.0",
+  "packageManager": "pnpm@12.16.1",
   "version": "0.0.0",
   "type": "module",
   "description": "Stratum — cluster dashboard (React + Vite)",
