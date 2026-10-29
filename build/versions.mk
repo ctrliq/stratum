@@ -40,7 +40,7 @@ default_buildimage = docker.io/library/golang:$(go_version)-alpine$(alpine_versi
 # toolchain that fails the build for reasons that have nothing to do with the
 # change. release.yml's dash-publish job is the only CI consumer.
 # renovate: datasource=node-version depName=node
-node_version = 24.22.1
+node_version = 24.22.2
 
 # What dash/pnpm-lock.yaml was written by, and what dash/package.json's
 # `packageManager` must say — corepack needs a literal there, so
