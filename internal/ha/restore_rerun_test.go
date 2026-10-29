@@ -455,6 +455,11 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 		}
 	}
 
+	joinedPending := func() *nodestate.NodeState {
+		st := recorded()
+		st.EtcdPromotePending = true
+		return st
+	}
 	staleRecord := func() *nodestate.NodeState {
 		return &nodestate.NodeState{Role: "controller", EtcdName: "cp2", EtcdState: "existing",
 			EtcdInitialCluster: "cp2=" + selfPeer}
@@ -570,6 +575,21 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			healthy: map[string]bool{"10.0.0.1": true, "10.0.0.3": true},
 			want:    "save, start etcd, start kube-apiserver",
 		},
+		{
+			// A join's learner the controller had not promoted yet: the
+			// rejoin promotes it and clears the pending record, so the
+			// controller's learner task does not race it. The save changes
+			// no field etcd's manifest is rendered from, so the serving
+			// member is not restarted.
+			name: "a joined learner still pending, serving as itself", seed: seedWith(learner), st: joinedPending(),
+			local: runningAs(2, true),
+			want:  "save, start etcd, promote, start kube-apiserver",
+		},
+		{
+			name: "a joined learner still pending, never started", seed: seedWith(unstartedLearner), st: joinedPending(),
+			local: servingAfter(0, addedID, true),
+			want:  "remove 2, wipe, add-learner, save, start etcd, promote, start kube-apiserver",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeRejoin(t, tc.seed, tc.st)
@@ -588,8 +608,12 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			if got := f.steps(); got != tc.want {
 				t.Errorf("steps = %q, want %q", got, tc.want)
 			}
-			if f.saved != nil && (f.saved.EtcdState != "existing" || !strings.Contains(f.saved.EtcdInitialCluster, "cp2="+selfPeer)) {
+			if f.saved != nil && (f.saved.EtcdState != "existing" || !strings.Contains(f.saved.EtcdInitialCluster, "cp2="+selfPeer) ||
+				f.saved.EtcdPromotePending) {
 				t.Errorf("saved state = %+v", f.saved)
+			}
+			if tc.st.EtcdPromotePending && f.saved == nil {
+				t.Error("the rejoin left the join's pending promote recorded")
 			}
 		})
 	}

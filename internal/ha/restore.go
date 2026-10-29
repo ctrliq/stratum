@@ -605,6 +605,12 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 		st.EtcdName = etcdName
 		st.EtcdInitialCluster = initial
 		st.EtcdState = "existing"
+		st.EtcdPromotePending = false
+		if err := rejoinSaveState(st); err != nil {
+			return err
+		}
+	} else if st.EtcdPromotePending {
+		st.EtcdPromotePending = false
 		if err := rejoinSaveState(st); err != nil {
 			return err
 		}

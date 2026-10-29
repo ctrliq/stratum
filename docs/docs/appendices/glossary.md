@@ -50,8 +50,9 @@ plane but no workloads.
 root, so a certificate issued for the cluster is not a valid etcd client. See
 [etcd's trust domain](../cluster-admin/hardening.md#etcds-trust-domain).
 
-**Learner**: an etcd member with no vote. A rejoining control plane joins as a
-learner and becomes a voter once it has caught up. See
+**Learner**: an etcd member with no vote. A joining or rejoining control plane
+joins as a learner and becomes a voter once it has caught up. See
+[High Availability](../cluster-admin/high-availability.md) and
 [Rejoin](snapshot-reference.md#rejoin).
 
 **Node**: the `stratum up` default: one machine that is both control plane (run

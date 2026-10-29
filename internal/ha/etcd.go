@@ -168,16 +168,24 @@ func memberAddRefused(addErr error) bool {
 	return false
 }
 
-// MemberAdd adds newPeerURL to the cluster reachable at any of cpIPs' etcd and
-// returns the ETCD_INITIAL_CLUSTER string the new member must boot with
-// (state=existing).
+// MemberAdd adds newPeerURL to the cluster reachable at any of cpIPs' etcd as
+// a learner and returns the ETCD_INITIAL_CLUSTER string the new member must
+// boot with (state=existing). The controller's start promotes it to a voter
+// once it has caught up (PromoteLearner).
 //
-// It retries etcd's "unhealthy cluster" refusal, and only that. etcd's strict
-// reconfiguration check refuses a MemberAdd until every member has been
-// connected for a few seconds, so a join that follows another one closely,
-// which is what a scripted three-node bring-up does, was refused outright and
-// the node exited half-joined. The refusal means nothing was added, so
-// retrying it is safe; any other error is returned at once.
+// A learner, not a voter: a voter counts towards quorum from the moment it is
+// added, so growing one member to two needs both for every write until the
+// new etcd has started and replayed the log. The existing member's apiserver
+// stalls meanwhile, and kube-vip, which renews its lease through that
+// apiserver, gives up the VIP. A learner does not count towards quorum.
+//
+// It retries etcd's "unhealthy cluster" refusal and its one-learner-at-a-time
+// refusal, and only those. etcd's strict reconfiguration check refuses a
+// MemberAdd until every member has been connected for a few seconds, and a
+// join that follows another one closely, which is what a scripted three-node
+// bring-up does, finds the earlier joiner still a learner. Both refusals mean
+// nothing was added, so retrying them is safe; any other error is returned at
+// once.
 func MemberAdd(cpIPs []string, newName, newPeerURL string) (string, error) {
 	cli, err := clusterClient(cpIPs)
 	if err != nil {
@@ -185,9 +193,9 @@ func MemberAdd(cpIPs []string, newName, newPeerURL string) (string, error) {
 	}
 	defer cli.Close()
 	resp, err := addSettling(os.Stdout, func(ctx context.Context) (*clientv3.MemberAddResponse, error) {
-		return cli.MemberAdd(ctx, []string{newPeerURL})
-	}, isUnhealthyCluster,
-		"stratum HA join: etcd is not accepting a new member yet (the last one is still settling); retrying")
+		return cli.MemberAddAsLearner(ctx, []string{newPeerURL})
+	}, func(err error) bool { return isUnhealthyCluster(err) || isTooManyLearners(err) },
+		"stratum HA join: etcd is not accepting a new member yet (the last one is still settling or catching up); retrying")
 	if err != nil {
 		return "", fmt.Errorf("etcd member add: %w", err)
 	}
