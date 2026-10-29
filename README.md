@@ -107,6 +107,13 @@ bundle.
 - [**Contributing**](CONTRIBUTING.md): building, testing, and the commit/pull request conventions
 - [**Security**](SECURITY.md): reporting a vulnerability, supported versions, and how `stratum dash` handles credentials and the node shell
 
+## Get Pro
+
+CIQ supports Stratum through a [Stratum PRO](https://ciq.com/products/stratum)
+license. Support is not sold separately. Stratum PRO adds the CIS hardening
+profile, fleet management, single sign-on and cluster provisioning to the same
+engine; the [Stratum PRO page](docs/docs/pro/index.md) lists what it adds.
+
 ## License
 
 Stratum is licensed under the [Apache License, Version 2.0](LICENSE).
