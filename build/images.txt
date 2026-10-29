@@ -38,9 +38,9 @@ docker.io/coredns/coredns:1.13.2@sha256:94caebb89dcfb9d2c4be45bfda34410a3e109245
 # plugins on each node, so there is no separate containernetworking/plugins
 # pin.
 # renovate: datasource=docker depName=quay.io/cilium/cilium
-quay.io/cilium/cilium:v1.20.3@sha256:95cfa5c2427cc6b452c00908778d0566311f572589284af949d06a013db1a849
+quay.io/cilium/cilium:v1.20.4@sha256:20fe92e4c86641233a450098c158d2d29085f3419931ab6bf681d2485dedf16e
 # renovate: datasource=docker depName=quay.io/cilium/operator-generic
-quay.io/cilium/operator-generic:v1.20.3@sha256:efdd8d89d6d8f63d21a065fa2f9e17614a2b3ac9371b221af9355f63829e2dbc
+quay.io/cilium/operator-generic:v1.20.4@sha256:7a7a3489dc66ad67e420d285c8a8d2e169b0957ad15e120f593d27081bf38d82
 
 # Cilium's Envoy sidecar image — version is the cilium chart's own pin, carried
 # by the generated manifest (tools/gen-cilium-manifest.sh); listed here so the
