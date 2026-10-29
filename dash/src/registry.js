@@ -88,6 +88,7 @@ const NAV = [
   { id: 'links', label: 'Links', items: [
     { id: 'link:docs', label: 'Documentation', icon: 'book', link: 'docs' },
     { id: 'link:grafana', label: 'Grafana', icon: 'activity', link: 'grafana' },
+    { id: 'link:pro', label: 'Get Pro', icon: 'zap', link: 'pro' },
   ]},
 ];
 
