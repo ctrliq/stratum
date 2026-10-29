@@ -269,6 +269,14 @@ upgrade interrupted before its host binaries were swapped. `stratum upgrade` ref
 suggests `stratum rollback` when an interrupted upgrade left a backup set that
 can recover it. Roll back, then re-run the upgrade.
 
+A control plane joins as an etcd learner, and its controller promotes it to a
+voter once it has caught up. A release from before learner joins does not
+promote it, so roll back a control plane only once every member shows `false`
+under `IS LEARNER` in `sudo /usr/local/bin/stratum etcdctl member list -w table`.
+If a rolled-back control plane is left a learner, its apiserver stays down and
+the next control-plane join is refused. Promote it from another control plane
+with `sudo /usr/local/bin/stratum etcdctl member promote <member ID>`.
+
 A cluster initialized with a non-default `spec.network.clusterDomain` cannot be
 rolled back to a release that predates custom-domain support.
 

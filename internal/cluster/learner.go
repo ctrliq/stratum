@@ -30,8 +30,6 @@ var (
 // (EtcdPromotePending): one that stopped before the promote landed leaves a
 // learner the next start promotes.
 func promoteLearner(ctx context.Context) {
-	t := time.NewTicker(learnerPromotePoll)
-	defer t.Stop()
 	var warned string
 	for {
 		if promoteLearnerOnce(&warned) {
@@ -41,25 +39,23 @@ func promoteLearner(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(learnerPromotePoll):
 		}
 	}
 }
 
 // promoteLearnerOnce is one look, and reports whether nothing is left to
-// promote. It runs under the etcd data lock, against node state read after
-// taking it: a snapshot rejoin holds that lock while it replaces this node's
-// member, promotes its own learner and clears EtcdPromotePending, so a held
-// lock skips the look. warned is the last warning printed, so a refusal that
-// repeats is printed once.
+// promote. It reads node state under the etcd data lock, then releases the
+// lock for the etcd calls, which can take seconds and would otherwise refuse
+// a rejoin, repoint, restore or uninstall that needs the lock, and retakes it
+// to clear EtcdPromotePending only if it is still recorded. A snapshot rejoin
+// holds that lock while it replaces this node's member, promotes its own
+// learner and clears EtcdPromotePending, so a held lock skips the look.
+// warned is the last warning printed, so a refusal that repeats is printed
+// once.
 func promoteLearnerOnce(warned *string) bool {
-	release, err := lockEtcdData()
-	if err != nil {
-		return false
-	}
-	defer release()
-	st, err := LoadState()
-	if err != nil {
+	st, ok := readPendingPromote()
+	if !ok {
 		return false
 	}
 	if !st.EtcdPromotePending {
@@ -79,6 +75,11 @@ func promoteLearnerOnce(warned *string) bool {
 	if state == ha.LearnerPromoted {
 		fmt.Println("stratum: this node's etcd member caught up and was promoted from learner to voter")
 	}
+	release, err := lockEtcdData()
+	if err != nil {
+		return false
+	}
+	defer release()
 	err = nodestate.MutateHeld(release, func(cur *NodeState) error {
 		if !cur.EtcdPromotePending {
 			return nodestate.ErrUnchanged
@@ -91,4 +92,19 @@ func promoteLearnerOnce(warned *string) bool {
 		return false
 	}
 	return true
+}
+
+// readPendingPromote reads node state under the etcd data lock and releases
+// it, reporting false when the lock is held or the state cannot be read.
+func readPendingPromote() (*NodeState, bool) {
+	release, err := lockEtcdData()
+	if err != nil {
+		return nil, false
+	}
+	defer release()
+	st, err := LoadState()
+	if err != nil {
+		return nil, false
+	}
+	return st, true
 }

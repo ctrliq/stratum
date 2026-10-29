@@ -19,8 +19,9 @@ func joinedLearnerState() *NodeState {
 }
 
 // stubLearnerPromotion saves st as this node's state and points the learner
-// task's seams at answer and a lock that is free unless held is set. It
-// returns the number of promote attempts made.
+// task's seams at answer and a lock that is free unless held is set or the
+// task already holds it, and that answer must be asked without. It returns
+// the number of promote attempts made.
 func stubLearnerPromotion(t *testing.T, st *NodeState, held *bool, answer func() (ha.LearnerState, error)) *int {
 	t.Helper()
 	redirectStateArea(t)
@@ -29,15 +30,20 @@ func stubLearnerPromotion(t *testing.T, st *NodeState, held *bool, answer func()
 	}
 	oldPromote, oldLock := promoteLocalLearner, lockEtcdData
 	t.Cleanup(func() { promoteLocalLearner, lockEtcdData = oldPromote, oldLock })
+	var locked bool
 	lockEtcdData = func() (func(), error) {
-		if held != nil && *held {
+		if locked || (held != nil && *held) {
 			return nil, errors.New("etcd data lock: another operation is changing the data dir")
 		}
-		return func() {}, nil
+		locked = true
+		return func() { locked = false }, nil
 	}
 	var attempts int
 	promoteLocalLearner = func(nodeIP, initialCluster string) (ha.LearnerState, error) {
 		attempts++
+		if locked {
+			t.Error("the promote ran under the etcd data lock, refusing every other operation that needs it")
+		}
 		if nodeIP != st.NodeIP || initialCluster != st.EtcdInitialCluster {
 			t.Errorf("promote asked about %s in %q, want this node's %s in %q", nodeIP, initialCluster, st.NodeIP, st.EtcdInitialCluster)
 		}
@@ -111,6 +117,63 @@ func TestPromoteLearnerOnceLeavesARejoinsLearnerAlone(t *testing.T) {
 		var warned string
 		if !promoteLearnerOnce(&warned) || *attempts != 0 {
 			t.Fatalf("a member nothing records pending is not the task's: attempts = %d", *attempts)
+		}
+	})
+}
+
+// TestPromoteLearnerOnceKeepsARejoinsRecord: the promote runs without the
+// etcd data lock, so a snapshot rejoin can land meanwhile and clear the
+// pending record itself. The look then has nothing to record and is done.
+func TestPromoteLearnerOnceKeepsARejoinsRecord(t *testing.T) {
+	rejoined := joinedLearnerState()
+	rejoined.EtcdPromotePending = false
+	rejoined.EtcdInitialCluster = grownThree + ",cp4=https://10.0.0.4:2380"
+	stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) {
+		if err := SaveState(rejoined); err != nil {
+			t.Fatal(err)
+		}
+		return ha.LearnerPromoted, nil
+	})
+	var warned string
+	if !promoteLearnerOnce(&warned) {
+		t.Fatal("a look whose promote a rejoin overtook is not done")
+	}
+	st, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.EtcdPromotePending || st.EtcdInitialCluster != rejoined.EtcdInitialCluster {
+		t.Fatalf("saved state = %+v, want the rejoin's record untouched", st)
+	}
+}
+
+// TestPromoteLearnerWaitsAFullPollAfterASlowLook: a look whose etcd calls
+// take longer than the poll still leaves a full poll before the next one, so
+// an operation that needs the etcd data lock gets a window to take it.
+func TestPromoteLearnerWaitsAFullPollAfterASlowLook(t *testing.T) {
+	stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerWaiting, nil })
+	var starts, ends []time.Time
+	promoteLocalLearner = func(string, string) (ha.LearnerState, error) {
+		starts = append(starts, time.Now())
+		time.Sleep(2 * learnerPromotePoll)
+		ends = append(ends, time.Now())
+		return ha.LearnerWaiting, nil
+	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { promoteLearner(ctx); close(done) }()
+		time.Sleep(10 * learnerPromotePoll)
+		synctest.Wait()
+		cancel()
+		<-done
+		if len(starts) < 2 {
+			t.Fatalf("looks = %d, want several", len(starts))
+		}
+		for i := 1; i < len(starts) && i <= len(ends); i++ {
+			if gap := starts[i].Sub(ends[i-1]); gap < learnerPromotePoll {
+				t.Errorf("look %d started %v after the last one ended, want at least %v", i+1, gap, learnerPromotePoll)
+			}
 		}
 	})
 }

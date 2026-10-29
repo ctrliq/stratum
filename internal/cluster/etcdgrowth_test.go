@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ctrliq/stratum/internal/etcddata"
+	"github.com/ctrliq/stratum/internal/ha"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/staticpod"
 	"github.com/ctrliq/stratum/internal/version"
@@ -264,6 +265,21 @@ func TestKeepEtcdMembershipCarriesTheGrowthRecord(t *testing.T) {
 	}
 }
 
+// TestKeepEtcdMembershipCarriesAPendingPromote: a joined control plane that
+// stops before its learner is promoted is promoted by a later start, which
+// runs the promotion only while node state records it pending. A restart's
+// fresh state that dropped the record would leave the member a learner, and
+// etcd's one-learner limit would then refuse every later join.
+func TestKeepEtcdMembershipCarriesAPendingPromote(t *testing.T) {
+	prev := seedState()
+	prev.EtcdState, prev.EtcdPromotePending = "existing", true
+	fresh := &NodeState{Role: "controller", EtcdName: "cp1", EtcdState: "new", EtcdInitialCluster: "other"}
+	keepEtcdMembership(fresh, prev)
+	if !fresh.EtcdPromotePending {
+		t.Fatalf("fresh = %+v, want the pending promote kept", fresh)
+	}
+}
+
 // TestNodeStateWritersKeepFieldsTheyDoNotOwn is the write rule for node.yaml:
 // SaveState replaces the whole file, so a writer that applies its change to a
 // fresh NodeState instead of one read back from disk drops every field another
@@ -283,6 +299,7 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 	seed.VIP = VIP{Address: "10.0.0.254", Interface: "eth0", BGP: true}
 	seed.CIS = true
 	seed.DualStack = true
+	seed.EtcdPromotePending = true
 
 	fields := []struct {
 		name string
@@ -304,6 +321,7 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 		{"cis", func(s *NodeState) any { return s.CIS }},
 		{"vip", func(s *NodeState) any { return s.VIP }},
 		{"etcdHasPeers", func(s *NodeState) any { return s.EtcdHasPeers }},
+		{"etcdPromotePending", func(s *NodeState) any { return s.EtcdPromotePending }},
 		{"configPath", func(s *NodeState) any { return s.ConfigPath }},
 	}
 
@@ -315,6 +333,15 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 		{"saveGrowth", "etcdHasPeers", func(t *testing.T, _ *NodeState) {
 			if !saveGrowth(3) {
 				t.Fatal("saveGrowth recorded nothing")
+			}
+		}},
+		{"promoteLearnerOnce", "etcdPromotePending", func(t *testing.T, _ *NodeState) {
+			old := promoteLocalLearner
+			t.Cleanup(func() { promoteLocalLearner = old })
+			promoteLocalLearner = func(string, string) (ha.LearnerState, error) { return ha.LearnerPromoted, nil }
+			var warned string
+			if !promoteLearnerOnce(&warned) {
+				t.Fatal("promoteLearnerOnce recorded nothing")
 			}
 		}},
 		{"recordConfigPath", "configPath", func(t *testing.T, st *NodeState) {

@@ -617,14 +617,13 @@ func restampOwnNodeWhenRegistered(hostname string) {
 }
 
 // postStart starts the controller's post-start housekeeping: the etcd growth
-// recorder for an ungrown seed, the learner promotion for a joined member,
-// the node-registered task, and the long-lived
-// cert-renew and snapshot loops the config enables, each a run-group task
-// with the controller's context. No task waits on the apiserver to start —
-// and none needs it: renewal reads
-// and reissues local certificates only, a snapshot needs only the local
-// etcd, the recorder only this node's own etcd, and the node-registered
-// task's per-tick registration check is itself the apiserver wait.
+// recorder for an ungrown seed, the learner promotion for a joined member, the
+// node-registered task, and the long-lived cert-renew and snapshot loops the
+// config enables, each a run-group task with the controller's context. No task
+// waits on the apiserver to start, and none needs it: renewal reads and
+// reissues local certificates only, a snapshot needs only the local etcd, the
+// recorder and the learner promotion only etcd, and the node-registered task's
+// per-tick registration check is itself the apiserver wait.
 func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// Only this node's own etcd, no apiserver: started first, so a seed whose
 	// apiserver never becomes ready still records HA growth.

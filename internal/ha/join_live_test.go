@@ -96,7 +96,13 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 	if err := writeJoinIntent(j); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := MemberAdd([]string{seedIP}, hostname, joinPeer); err != nil {
+	// A voter, added directly: the production join adds a learner, which
+	// leaves the seed its quorum, so it cannot build the quorumless two-voter
+	// cluster an older join left behind.
+	addCtx, addCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_, err = cli.MemberAdd(addCtx, []string{joinPeer})
+	addCancel()
+	if err != nil {
 		t.Fatal(err)
 	}
 	// The add committed, but the joiner never started and its reply/state
@@ -154,7 +160,7 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 		_, err = cli.Put(ctx, "join-recovery-gate", "quorum-restored")
 		return err
 	})
-	// With two live voters, a failed third-voter join still has a majority.
+	// With two live voters, a failed third join still has a majority.
 	// Exercise real compensation as well as the quorumless refusal above.
 	thirdPeer := fmt.Sprintf("https://127.77.0.3:%d", version.EtcdPeerPort)
 	third := joinIntent{MemberName: "never-started-third", PeerURL: thirdPeer, Phase: intentPhasePrepared}
