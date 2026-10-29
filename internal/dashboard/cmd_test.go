@@ -369,9 +369,11 @@ func waitForListenerClosed(t *testing.T, addr string) {
 			if errors.Is(err, syscall.ECONNREFUSED) {
 				return
 			}
-			// A dial racing listener shutdown can reset before the next dial
-			// is refused. Keep polling until refusal proves it has closed.
-			if !errors.Is(err, syscall.ECONNRESET) {
+			// A dial racing listener shutdown can reset, or time out on a
+			// loaded runner, before the next dial is refused. Keep polling
+			// until refusal proves it has closed.
+			var ne net.Error
+			if !errors.Is(err, syscall.ECONNRESET) && !(errors.As(err, &ne) && ne.Timeout()) {
 				t.Fatalf("observe listener shutdown: %v", err)
 			}
 		} else {
