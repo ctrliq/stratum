@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
@@ -72,6 +74,12 @@ type WorkerOptions struct {
 	SELinuxOptOut *bool
 	// DualStack registers a v4,v6 node IP pair on a join (--dual-stack).
 	DualStack bool
+	// Node is --node-label, --node-taint and --runtime-handler. A nil field
+	// was not given. A join lays it over ConfigNode; a restart given a field
+	// replaces the one the worker saved with it.
+	Node NodeSpec
+	// ConfigNode is spec.node from the config file, which only a join reads.
+	ConfigNode NodeSpec
 }
 
 // PrepareWorker runs the worker join flow: discover + pin the CA,
@@ -128,6 +136,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		} else if o.PodCIDR != "" && o.PodCIDR != st.PodCIDR {
 			return nil, fmt.Errorf("--pod-cidr %s conflicts with this worker's saved pod CIDR %s", o.PodCIDR, st.PodCIDR)
 		}
+		if err := o.Node.Validate(); err != nil {
+			return nil, fmt.Errorf("worker restart: %w; nothing was saved", err)
+		}
+		facts := restartNodeFacts(st, o.Node)
 		// A restart keeps the address this worker registered with unless
 		// --node-ip moves it, by the rule every controller start uses: the
 		// saved address outranks $NODE_IP, which says only what the
@@ -193,6 +205,15 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if facts.changed {
+			if err := nodestate.Mutate(func(cur *NodeState) error {
+				cur.NodeLabels, cur.NodeTaints, cur.RuntimeHandlers = facts.Labels, facts.Taints, facts.RuntimeHandlers
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("save worker node facts: %w", err)
+			}
+			st.NodeLabels, st.NodeTaints, st.RuntimeHandlers = facts.Labels, facts.Taints, facts.RuntimeHandlers
+		}
 		if recordPodCIDR {
 			if err := nodestate.Mutate(func(cur *NodeState) error { cur.PodCIDR = o.PodCIDR; return nil }); err != nil {
 				return nil, fmt.Errorf("save worker pod CIDR: %w", err)
@@ -252,6 +273,13 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := netcfg.ValidateDomain(o.ClusterDomain); err != nil {
 			return nil, fmt.Errorf("--cluster-domain: %w", err)
 		}
+	}
+	node := mergeNodeSpec(o.ConfigNode, o.Node)
+	if err := node.Validate(); err != nil {
+		return nil, fmt.Errorf("worker join: %w", err)
+	}
+	if err := node.CheckBinaries(); err != nil {
+		return nil, fmt.Errorf("worker join: %w", err)
 	}
 	hostname, err := hostHostname()
 	if err != nil {
@@ -348,6 +376,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		Server: o.Server, Profile: profileName, CIS: profileName == nodestate.CISProfile, SELinuxOptOut: optOut, DualStack: o.DualStack,
 		ServiceCIDR: o.ServiceCIDR, PodCIDR: o.PodCIDR,
 		ClusterDomain: o.ClusterDomain,
+		NodeLabels:    node.Labels, NodeTaints: node.Taints, RuntimeHandlers: node.RuntimeHandlers,
 	}
 	// containerd and kubelet configs are RunWorker's, on this start as on
 	// every other.
@@ -359,4 +388,26 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		return nil, err
 	}
 	return st, nil
+}
+
+// nodeFacts is what a worker restart saves of spec.node.
+type nodeFacts struct {
+	NodeSpec
+	changed bool
+}
+
+// restartNodeFacts is the saved spec.node with each field a restart's flags
+// gave replacing it, and whether that changes what the worker saved.
+func restartNodeFacts(st *NodeState, flags NodeSpec) nodeFacts {
+	f := nodeFacts{NodeSpec: NodeSpec{Labels: st.NodeLabels, Taints: st.NodeTaints, RuntimeHandlers: st.RuntimeHandlers}}
+	if flags.Labels != nil && !maps.Equal(flags.Labels, f.Labels) {
+		f.Labels, f.changed = flags.Labels, true
+	}
+	if flags.Taints != nil && !slices.Equal(flags.Taints, f.Taints) {
+		f.Taints, f.changed = flags.Taints, true
+	}
+	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, f.RuntimeHandlers) {
+		f.RuntimeHandlers, f.changed = flags.RuntimeHandlers, true
+	}
+	return f
 }

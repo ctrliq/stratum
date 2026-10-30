@@ -29,6 +29,9 @@ type joinCall struct {
 	// selinuxOptOut is the opt-out runUp passed; nil when it found no
 	// spec.selinux to pass.
 	selinuxOptOut *bool
+	// node and configNode are the spec.node runUp passed from the flags and
+	// from the config file.
+	node, configNode cluster.NodeSpec
 }
 
 // runUpWorker runs runUp on a scratch host with prepareWorkerFn stubbed, and
@@ -65,7 +68,7 @@ func runUpWorker(t *testing.T, o runUpOptions, config string, saved *cluster.Nod
 	runWorkerFn = func(context.Context, *cluster.NodeState) error { return nil }
 	call := &joinCall{}
 	prepareWorkerFn = func(_ context.Context, w cluster.WorkerOptions) (*cluster.NodeState, error) {
-		*call = joinCall{called: true, server: w.Server, token: w.Token, caHash: w.CAHash, nodeIP: w.NodeIP, configNodeIP: w.ConfigNodeIP, serviceCIDR: w.ServiceCIDR, podCIDR: w.PodCIDR, domain: w.ClusterDomain, profile: w.Profile, dual: w.DualStack, selinuxOptOut: w.SELinuxOptOut}
+		*call = joinCall{called: true, server: w.Server, token: w.Token, caHash: w.CAHash, nodeIP: w.NodeIP, configNodeIP: w.ConfigNodeIP, serviceCIDR: w.ServiceCIDR, podCIDR: w.PodCIDR, domain: w.ClusterDomain, profile: w.Profile, dual: w.DualStack, selinuxOptOut: w.SELinuxOptOut, node: w.Node, configNode: w.ConfigNode}
 		return &cluster.NodeState{Role: "worker", Hostname: "w1", Server: w.Server}, nil
 	}
 

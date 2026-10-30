@@ -78,12 +78,15 @@ func newUpCommand(cfg rootConfig) *cobra.Command {
 	fs.StringVar(&o.certKey, "certificate-key", "", "HA join: shared-cert decryption key (prefer --certificate-key-file to keep it out of ps/shell history)")
 	fs.StringVar(&o.certKeyFile, "certificate-key-file", "", "HA join: read the shared-cert decryption key from this file (0600) instead of passing it on the command line")
 	fs.StringVar(&o.server, "server", "", "--worker join: control-plane or VIP URL (https://host:6443)")
-	fs.StringVar(&o.nodeIP, "node-ip", "", "this node's IP (\"v4\" or \"v4,v6\"); on a control plane it outranks spec.network.nodeIP and $NODE_IP, on a --worker join it outranks spec.network.nodeIP (which, with spec.selinux, is all a worker reads from --config) and $NODE_IP, and on a --worker restart it outranks the saved address, moving the worker to it and saving it (an IPv4 address on a single-stack worker, the v4,v6 pair on a dual-stack one)")
+	fs.StringVar(&o.nodeIP, "node-ip", "", "this node's IP (\"v4\" or \"v4,v6\"); on a control plane it outranks spec.network.nodeIP and $NODE_IP, on a --worker join it outranks spec.network.nodeIP (which, with spec.selinux and spec.node, is all a worker reads from --config) and $NODE_IP, and on a --worker restart it outranks the saved address, moving the worker to it and saving it (an IPv4 address on a single-stack worker, the v4,v6 pair on a dual-stack one)")
 	fs.BoolVar(&o.confirmEtcdQuorumLost, "confirm-etcd-quorum-lost", false, "control plane: start a node whose saved state records an etcd cluster but whose etcd data is gone; only after confirming no other control plane holds quorum (snapshot restore)")
 	fs.BoolVar(&o.dual, "dual-stack", false, "--worker join: register a v4,v6 node IP pair")
 	fs.StringVar(&o.serviceCIDR, "service-cidr", "", "--worker join: the cluster's service CIDR, when not the default (stratum token create prints it)")
 	fs.StringVar(&o.clusterDomain, "cluster-domain", "", "--worker join: the cluster's DNS domain, when not cluster.local (stratum token create prints it)")
 	fs.StringVar(&o.podCIDR, "pod-cidr", "", "--worker join or legacy-worker migration: the cluster's pod CIDR (stratum token create prints a non-default range)")
+	fs.StringArrayVar(&o.nodeLabels, "node-label", nil, "--worker: a label for this node's Node object, key=value (repeatable); on a join it adds to spec.node.labels, on a restart the labels given replace the saved ones")
+	fs.StringArrayVar(&o.nodeTaints, "node-taint", nil, "--worker: a taint this node registers with, key[=value]:Effect (repeatable); on a join it adds to spec.node.taints, on a restart the taints given replace the saved ones")
+	fs.StringArrayVar(&o.runtimeHandlers, "runtime-handler", nil, "--worker: an extra containerd runtime handler, name=/absolute/path/to/runtime (repeatable); on a join it adds to spec.node.runtimeHandlers, on a restart the handlers given replace the saved ones")
 	return cmd
 }
 
@@ -104,6 +107,11 @@ type runUpOptions struct {
 	podCIDR       string
 	clusterDomain string
 	dual          bool
+	// nodeLabels, nodeTaints and runtimeHandlers are --node-label,
+	// --node-taint and --runtime-handler, as given.
+	nodeLabels      []string
+	nodeTaints      []string
+	runtimeHandlers []string
 	// confirmEtcdQuorumLost lifts the refusal to start a recorded etcd member on
 	// an empty data dir.
 	confirmEtcdQuorumLost bool
@@ -206,6 +214,9 @@ func cleanStopOr(err error, ctx context.Context) error {
 // workload-only node that joins an existing cluster.
 func runUp(parent context.Context, o runUpOptions) error {
 	if err := upFlagConflict(o); err != nil {
+		return err
+	}
+	if _, err := o.nodeSpec(); err != nil {
 		return err
 	}
 	configPath, err := upConfigPath(o.configPath, o.worker)
@@ -318,10 +329,15 @@ func runUp(parent context.Context, o runUpOptions) error {
 		if err != nil {
 			return err
 		}
+		node, err := o.nodeSpec()
+		if err != nil {
+			return err
+		}
 		st, err := prepareWorkerFn(ctx, cluster.WorkerOptions{
 			Server: o.server, Token: token, CAHash: o.caHash, NodeIP: o.nodeIP, ConfigNodeIP: wcfg.NodeIP,
 			ServiceCIDR: o.serviceCIDR, PodCIDR: o.podCIDR, ClusterDomain: o.clusterDomain,
 			Profile: profileName, SELinuxOptOut: selinuxOptOut, DualStack: o.dual,
+			Node: node, ConfigNode: wcfg.Node,
 		})
 		if err != nil {
 			return cleanStopOr(err, ctx)
@@ -781,6 +797,8 @@ var unitConfigHint = "`sudo systemctl stop stratum`, then `sudo " + version.Stra
 // branch. A control plane takes its network from spec.network, so without
 // --worker each flag would be silently dropped, at first boot and at --join
 // alike, and the node would come up on a network its operator did not ask for.
+// --node-label, --node-taint and --runtime-handler are worker flags for the
+// same reason: a control plane reads spec.node from its config file.
 func upFlagConflict(o runUpOptions) error {
 	if !o.worker {
 		var bad []string
@@ -788,6 +806,9 @@ func upFlagConflict(o runUpOptions) error {
 			{"--pod-cidr", o.podCIDR, "spec.network.podCIDR"},
 			{"--service-cidr", o.serviceCIDR, "spec.network.serviceCIDR"},
 			{"--cluster-domain", o.clusterDomain, "spec.network.clusterDomain"},
+			{"--node-label", strings.Join(o.nodeLabels, ","), "spec.node.labels"},
+			{"--node-taint", strings.Join(o.nodeTaints, ","), "spec.node.taints"},
+			{"--runtime-handler", strings.Join(o.runtimeHandlers, ","), "spec.node.runtimeHandlers"},
 		} {
 			if f.value != "" {
 				bad = append(bad, fmt.Sprintf("%s %q (%s)", f.flag, f.value, f.field))
@@ -801,16 +822,16 @@ func upFlagConflict(o runUpOptions) error {
 		// is a workload-only node told to swap --worker in for --join: the
 		// line's token can read the shared cluster CA material, and a worker
 		// join keeps its token on disk, so a worker needs its own token.
-		advice := "A control plane reads its network from spec.network (podCIDR, serviceCIDR, clusterDomain) in its " +
-			"--config file, at the cluster's first boot only: move each value into the field named beside it, or " +
+		advice := "A control plane reads these from its --config file instead: move each value into the field named " +
+			"beside it (spec.network is read at the cluster's first boot only, spec.node at every start), or " +
 			"add --worker and --server to join a workload-only node"
 		if o.join != "" {
 			advice = "A control plane joining with --join takes its network from the cluster it joins, so remove these " +
 				"flags; to join a workload-only node instead, run the worker join line `stratum token create` prints " +
 				"(without --control-plane), not this line: its token can read the shared cluster CA material"
 		}
-		return fmt.Errorf("stratum up: %s without --worker: only a --worker node reads --pod-cidr, --service-cidr and "+
-			"--cluster-domain. %s. Nothing on this host was changed", strings.Join(bad, ", "), advice)
+		return fmt.Errorf("stratum up: %s without --worker: only a --worker node reads these flags. %s. Nothing on this host was changed",
+			strings.Join(bad, ", "), advice)
 	}
 	var bad []string
 	if o.join != "" {
@@ -1119,7 +1140,7 @@ func stageOptOut(o runUpOptions) bool {
 }
 
 // workerConfig is what a worker join reads from its config file:
-// spec.network.nodeIP and spec.selinux. The node IP is passed to
+// spec.network.nodeIP, spec.selinux and spec.node. The node IP is passed to
 // cluster.PrepareWorker apart from --node-ip, which outranks it there, so the
 // join names the source it took. The config is parsed even when --node-ip is
 // given, so a field a worker cannot honour is refused rather than dropped.
@@ -1185,4 +1206,22 @@ func checkProfileOperator(cfg *cluster.ClusterConfig, p profile.Profile) error {
 		"approver, and the profile makes kubelet serving certs bootstrap-issued. With spec.operator: false "+
 		"no kubelet would get a serving certificate, losing kubectl "+
 		"logs/exec/top cluster-wide. Remove spec.operator: false, or drop the profile", p.Name)
+}
+
+// nodeSpec is the spec.node the worker flags give. A flag not given leaves its
+// field nil, which a restart reads as "keep what the worker saved".
+func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
+	labels, err := cluster.ParseKeyValues("--node-label", o.nodeLabels)
+	if err != nil {
+		return cluster.NodeSpec{}, fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+	}
+	handlers, err := cluster.ParseKeyValues("--runtime-handler", o.runtimeHandlers)
+	if err != nil {
+		return cluster.NodeSpec{}, fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+	}
+	var taints []string
+	if len(o.nodeTaints) > 0 {
+		taints = o.nodeTaints
+	}
+	return cluster.NodeSpec{Labels: labels, Taints: taints, RuntimeHandlers: handlers}, nil
 }

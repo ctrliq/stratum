@@ -124,11 +124,14 @@ func PrepareControllerWithLease(ctx context.Context, cfg *ClusterConfig, nodeIPF
 	// filled in by the caller-owned hooks as the assembly resolves them.
 	st := &NodeState{
 		Role: "controller", Hostname: hostname,
-		EtcdName:  hostname,
-		EtcdState: "new",
-		Profile:   cfg.ProfileName(),
-		CIS:       cfg.Spec.CIS,
-		VIP:       cfg.Spec.VIP,
+		EtcdName:        hostname,
+		EtcdState:       "new",
+		Profile:         cfg.ProfileName(),
+		CIS:             cfg.Spec.CIS,
+		VIP:             cfg.Spec.VIP,
+		NodeLabels:      cfg.Spec.Node.Labels,
+		NodeTaints:      cfg.Spec.Node.Taints,
+		RuntimeHandlers: cfg.Spec.Node.RuntimeHandlers,
 	}
 	// A join can inherit its VIP from authenticated bundle metadata without
 	// changing the config file. An unspecified address keeps that recorded

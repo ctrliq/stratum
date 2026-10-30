@@ -88,6 +88,35 @@ func TestEtcdHasPeersIsOmittedUntilSet(t *testing.T) {
 	}
 }
 
+// The node facts round-trip through node.yaml and are omitted when unset, so
+// a node that declares none writes the file it always did.
+func TestNodeFactsRoundTrip(t *testing.T) {
+	withStateAndLockPaths(t)
+	b, err := yaml.Marshal(&NodeState{Role: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"nodeLabels", "nodeTaints", "runtimeHandlers"} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("unset %s written:\n%s", key, b)
+		}
+	}
+	want := &NodeState{Role: "worker", Hostname: "w1",
+		NodeLabels:      map[string]string{"topology.kubernetes.io/zone": "rack-1"},
+		NodeTaints:      []string{"stratum.ciq.com/unverified=true:NoSchedule"},
+		RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}}
+	if err := SaveState(want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.NodeLabels, want.NodeLabels) || !reflect.DeepEqual(got.NodeTaints, want.NodeTaints) || !reflect.DeepEqual(got.RuntimeHandlers, want.RuntimeHandlers) {
+		t.Errorf("node facts after a round trip = %v %v %v, want %v %v %v", got.NodeLabels, got.NodeTaints, got.RuntimeHandlers, want.NodeLabels, want.NodeTaints, want.RuntimeHandlers)
+	}
+}
+
 // From here down: the one mutation owner for node.yaml.
 // Every node.yaml writer records its change by load-modify-save on the one
 // shared file, so a writer that applies its change to a copy it loaded
