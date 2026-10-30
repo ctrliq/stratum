@@ -194,7 +194,7 @@ func MemberAdd(cpIPs []string, newName, newPeerURL string) (string, error) {
 	defer cli.Close()
 	resp, err := addSettling(os.Stdout, func(ctx context.Context) (*clientv3.MemberAddResponse, error) {
 		return cli.MemberAddAsLearner(ctx, []string{newPeerURL})
-	}, func(err error) bool { return isUnhealthyCluster(err) || isTooManyLearners(err) },
+	}, memberAddSettling,
 		"stratum HA join: etcd is not accepting a new member yet (the last one is still settling or catching up); retrying")
 	if err != nil {
 		return "", fmt.Errorf("etcd member add: %w", err)
@@ -747,6 +747,13 @@ func initialClusterFor(members []etcdMember, selfPeerURL, selfName string) strin
 	return strings.Join(parts, ",")
 }
 
+// memberAddSettling is the refusals a learner add retries until memberAddSettle
+// runs out: etcd's strict reconfiguration check and its one-learner-at-a-time
+// rule. Both mean nothing was added.
+func memberAddSettling(err error) bool {
+	return isUnhealthyCluster(err) || isTooManyLearners(err)
+}
+
 // isTooManyLearners is etcd refusing a second learner: it allows one at a
 // time, so it means another control plane's rejoin is still catching up.
 func isTooManyLearners(err error) bool {
@@ -771,7 +778,7 @@ func memberAddLearner(w io.Writer, cpIP, name, peerURL string) (uint64, string, 
 	defer cli.Close()
 	resp, err := addSettling(w, func(ctx context.Context) (*clientv3.MemberAddResponse, error) {
 		return cli.MemberAddAsLearner(ctx, []string{peerURL})
-	}, func(err error) bool { return isUnhealthyCluster(err) || isTooManyLearners(err) },
+	}, memberAddSettling,
 		"stratum snapshot rejoin: etcd is not accepting a new learner yet "+
 			"(a member is still settling, or another control plane's rejoin is still catching up); retrying")
 	if isTooManyLearners(err) {
