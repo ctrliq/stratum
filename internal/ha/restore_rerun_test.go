@@ -577,18 +577,17 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 		},
 		{
 			// A join's learner the controller had not promoted yet: the
-			// rejoin promotes it and clears the pending record, so the
-			// controller's learner task does not race it. The save changes
-			// no field etcd's manifest is rendered from, so the serving
-			// member is not restarted.
+			// rejoin promotes it and only then clears the pending record.
+			// The save changes no field etcd's manifest is rendered from, so
+			// the serving member is not restarted.
 			name: "a joined learner still pending, serving as itself", seed: seedWith(learner), st: joinedPending(),
 			local: runningAs(2, true),
-			want:  "save, start etcd, promote, start kube-apiserver",
+			want:  "start etcd, promote, save, start kube-apiserver",
 		},
 		{
 			name: "a joined learner still pending, never started", seed: seedWith(unstartedLearner), st: joinedPending(),
 			local: servingAfter(0, addedID, true),
-			want:  "remove 2, wipe, add-learner, save, start etcd, promote, start kube-apiserver",
+			want:  "remove 2, wipe, add-learner, save, start etcd, promote, save, start kube-apiserver",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -614,6 +613,30 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			}
 			if tc.st.EtcdPromotePending && f.saved == nil {
 				t.Error("the rejoin left the join's pending promote recorded")
+			}
+		})
+	}
+
+	// A rejoin that stops before its own promote lands must leave the join's
+	// pending promote recorded, so the controller's start still promotes the
+	// learner.
+	for name, tc := range map[string]struct {
+		seed  etcdMembership
+		local func(time.Duration) (localEtcdStatus, error)
+	}{
+		"resumed":  {seedWith(learner), runningAs(2, true)},
+		"replaced": {seedWith(unstartedLearner), servingAfter(0, addedID, true)},
+	} {
+		t.Run("a pending learner the rejoin could not promote stays pending, "+name, func(t *testing.T) {
+			f := newFakeRejoin(t, tc.seed, joinedPending())
+			f.local = tc.local
+			f.promote = func(time.Duration) error { return rpctypes.ErrGRPCLearnerNotReady }
+			err := RejoinEtcd(context.Background(), io.Discard, "10.0.0.1", false)
+			if err == nil || !strings.Contains(err.Error(), "had not finished joining") {
+				t.Fatalf("a learner that never caught up: %v", err)
+			}
+			if f.saved != nil && !f.saved.EtcdPromotePending {
+				t.Errorf("saved state = %+v; the rejoin cleared the pending promote before its own promote landed", f.saved)
 			}
 		})
 	}
