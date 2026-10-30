@@ -33,8 +33,8 @@ A captain needs:
 - Their public key recorded in the table above and in
   `.github/allowed_signers`, so anyone can verify a tag they did not cut.
 
-Nothing else. Registry credentials, signing keys for artifacts, and channel
-publishing all live in the pipeline, not on your laptop. If a step asks you for
+Nothing else. Registry credentials, signing keys for artifacts, and Depot
+credentials all live in the pipeline, not on your laptop. If a step asks you for
 a credential, something is wrong — stop and ask.
 
 ---
@@ -181,7 +181,8 @@ are attached to the draft long before the gate resolves.
 Every published RC and final is also delivered to Depot once the conformance
 guard succeeds: RCs to its `rc` channel, finals to `stable`. Depot is an
 additional target, not a replacement for the GitHub release assets or ghcr.io,
-and a failed Depot delivery holds back neither of them. Draft releases are never delivered.
+and a failed Depot delivery holds back neither of them. Draft releases are never
+delivered.
 
 The delivery workflows read bare hostnames from the GitHub Actions variables
 `DEPOT_DEV_HOSTNAME` and `DEPOT_PROD_HOSTNAME`. They pass the selected value to
@@ -315,7 +316,7 @@ would fix. Cut the next counter instead.
 | Conformance failed on an RC | that is the system working; fix and cut `-rc.M+1` |
 | Conformance failed on a final | do **not** publish; fix and cut `.N+1` |
 | Published a final without conformance | `release-publish` already un-published it; read the issue it opened |
-| Channel verification failed | the release is published but not being served — treat as an outage, see the job log for whether the write or the read failed |
+| Depot delivery failed | the GitHub release and ghcr.io are unaffected; re-run the failed `depot` leg of `release-publish` |
 | A signature does not verify | do not publish; this is a broken pipeline, not a release problem |
 
 **Never** hand-upload an artifact to a release. An asset that did not come from

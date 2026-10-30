@@ -5,7 +5,7 @@ name: release
 # pressing Publish. See RELEASE.md.
 #
 # The release is created as a DRAFT. Publishing is a separate, human act, and it
-# is what fires release-publish.yml (channels + the conformance guard).
+# is what fires release-publish.yml (the conformance guard + Depot delivery).
 on:
   push:
     tags: ['v*']
