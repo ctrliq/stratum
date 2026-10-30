@@ -74,10 +74,12 @@ func promoteLearner(ctx context.Context) {
 
 // promoteLearnerOnce is one look, and reports whether nothing is left to
 // promote. It reads node state under the etcd data lock, then releases the
-// lock for the etcd calls, which can take seconds and would otherwise refuse
-// a rejoin, repoint, restore or uninstall that needs the lock, and retakes it
+// lock for the promote, which can take seconds and would otherwise refuse a
+// rejoin, repoint, restore or uninstall that needs the lock, and retakes it
 // to clear EtcdPromotePending only if it is still recorded and this node's
-// etcd still answers as a voter. A snapshot rejoin holds that lock while it
+// etcd still answers as a voter. That check is the one etcd call made with
+// the lock held, a Status call bounded by its own timeout, and it runs only
+// once a promote has landed. A snapshot rejoin holds that lock while it
 // replaces this node's member, promotes its own learner and clears
 // EtcdPromotePending, so a held lock skips the look. One that ran while the
 // lock was released can have replaced the member this look promoted and
