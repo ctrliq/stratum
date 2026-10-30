@@ -1,10 +1,8 @@
 package ha
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // LearnerState is where PromoteLearner left this node's etcd member.
@@ -24,7 +22,7 @@ const (
 // driven without a cluster.
 var (
 	learnerLocalStatus = memberStatusAt
-	learnerPromote     = promoteThrough
+	learnerPromote     = memberPromote
 )
 
 // PromoteLearner makes this node's etcd member a voter once it has caught up
@@ -51,7 +49,7 @@ func PromoteLearner(nodeIP, initialCluster string) (LearnerState, error) {
 		return LearnerWaiting, fmt.Errorf("etcd member %x is a learner, but node state records no other member "+
 			"to promote it through (initial cluster %q)", st.MemberID, initialCluster)
 	}
-	perr := learnerPromote(voters, st.MemberID)
+	perr := learnerPromote(st.MemberID, voters...)
 	switch {
 	case perr == nil, isMemberNotLearner(perr):
 		return LearnerPromoted, nil
@@ -79,19 +77,4 @@ func otherMemberHosts(initialCluster, self string) []string {
 		hosts = append(hosts, h)
 	}
 	return hosts
-}
-
-// promoteThrough promotes member id through the etcd at voters. No endpoint
-// sync: the synced list would include the learner itself, which refuses the
-// promote.
-func promoteThrough(voters []string, id uint64) error {
-	cli, err := etcdClient(voters...)
-	if err != nil {
-		return err
-	}
-	defer cli.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_, err = cli.MemberPromote(ctx, id)
-	return err
 }

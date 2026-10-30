@@ -71,7 +71,7 @@ func newFakeRejoin(t *testing.T, seed etcdMembership, st *nodestate.NodeState) *
 		f.calls = append(f.calls, fmt.Sprintf("remove %x", id))
 		return nil
 	}
-	rejoinPromote = func(string, uint64) error {
+	rejoinPromote = func(uint64, ...string) error {
 		f.calls = append(f.calls, "promote")
 		return f.promote(f.now.Sub(f.started))
 	}

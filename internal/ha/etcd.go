@@ -799,9 +799,11 @@ func memberRemoveID(cpIP string, id uint64) error {
 	return nil
 }
 
-// memberPromote makes a learner a voter: one attempt, through the etcd at cpIP.
-func memberPromote(cpIP string, id uint64) error {
-	cli, err := etcdClient(cpIP)
+// memberPromote makes learner id a voter: one attempt, through the etcd at
+// cpIPs. No endpoint sync: the synced list would include the learner itself,
+// which refuses the promote.
+func memberPromote(id uint64, cpIPs ...string) error {
+	cli, err := etcdClient(cpIPs...)
 	if err != nil {
 		return err
 	}

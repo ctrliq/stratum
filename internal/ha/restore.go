@@ -672,7 +672,7 @@ func waitRejoined(ctx context.Context, w io.Writer, cp1IP, nodeIP string, cluste
 			}
 			if lastPromote.IsZero() || now.Sub(lastPromote) >= rejoinPromoteEvery {
 				lastPromote = now
-				perr := rejoinPromote(cp1IP, id)
+				perr := rejoinPromote(id, cp1IP)
 				switch {
 				case perr == nil, isMemberNotLearner(perr):
 					k8sutil.Step(w, fmt.Sprintf("rejoin: etcd member %x promoted to a voter", id))

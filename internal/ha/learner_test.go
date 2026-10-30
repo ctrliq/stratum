@@ -18,7 +18,7 @@ func stubLearner(t *testing.T, status localEtcdStatus, statusErr, promoteErr err
 	t.Cleanup(func() { learnerLocalStatus, learnerPromote = oldStatus, oldPromote })
 	var calls [][]string
 	learnerLocalStatus = func(string) (localEtcdStatus, error) { return status, statusErr }
-	learnerPromote = func(voters []string, id uint64) error {
+	learnerPromote = func(id uint64, voters ...string) error {
 		if id != status.MemberID {
 			t.Errorf("promoted member %x, want this node's member %x", id, status.MemberID)
 		}
