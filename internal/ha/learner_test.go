@@ -132,3 +132,32 @@ func TestIsTooManyLearnersIsARefusal(t *testing.T) {
 		t.Fatal("etcd's one-learner-at-a-time refusal must read as a refusal that added nothing")
 	}
 }
+
+// TestConfirmVoterAcceptsOnlyAVoterThatAnswers pins the check the controller
+// makes before it records a promote: this node's etcd must answer, as a voter.
+func TestConfirmVoterAcceptsOnlyAVoterThatAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    localEtcdStatus
+		statusErr error
+		wantErr   string
+	}{
+		{"a voter", localEtcdStatus{MemberID: 0xc2, Leader: 0xa1}, nil, ""},
+		{"a learner", localEtcdStatus{MemberID: 0xc4, Leader: 0xa1, IsLearner: true}, nil, "member c4 is a learner"},
+		{"an etcd that does not answer", localEtcdStatus{}, context.DeadlineExceeded, "does not answer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubLearner(t, tc.status, tc.statusErr, nil)
+			err := ConfirmVoter("10.0.0.2")
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ConfirmVoter = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ConfirmVoter = %v, want an error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}

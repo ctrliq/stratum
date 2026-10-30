@@ -69,6 +69,21 @@ func PromoteLearner(nodeIP, initialCluster string) (LearnerState, error) {
 	return LearnerWaiting, fmt.Errorf("promote etcd learner %x via %s: %w", st.MemberID, strings.Join(voters, ","), perr)
 }
 
+// ConfirmVoter reports an error unless this node's etcd answers as a voter.
+// The controller asks it under the etcd data lock before it records a promote
+// done: a snapshot rejoin can replace this node's member between a promote and
+// that record, and leave its own learner for the next start to promote.
+func ConfirmVoter(nodeIP string) error {
+	st, err := learnerLocalStatus(nodeIP)
+	if err != nil {
+		return fmt.Errorf("this node's etcd does not answer: %w", err)
+	}
+	if st.IsLearner {
+		return fmt.Errorf("this node's etcd member %x is a learner", st.MemberID)
+	}
+	return nil
+}
+
 // otherMemberHosts are the hosts of the members an ETCD_INITIAL_CLUSTER string
 // names, other than self, each once.
 func otherMemberHosts(initialCluster, self string) []string {

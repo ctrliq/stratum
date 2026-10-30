@@ -21,6 +21,7 @@ var learnerPromotePoll = 5 * time.Second
 // data dir.
 var (
 	promoteLocalLearner = ha.PromoteLearner
+	confirmLocalVoter   = ha.ConfirmVoter
 	lockEtcdData        = func() (func(), error) { return etcddata.Lock(version.EtcdDataDir) }
 )
 
@@ -75,9 +76,12 @@ func promoteLearner(ctx context.Context) {
 // promote. It reads node state under the etcd data lock, then releases the
 // lock for the etcd calls, which can take seconds and would otherwise refuse
 // a rejoin, repoint, restore or uninstall that needs the lock, and retakes it
-// to clear EtcdPromotePending only if it is still recorded. A snapshot rejoin
-// holds that lock while it replaces this node's member, promotes its own
-// learner and clears EtcdPromotePending, so a held lock skips the look.
+// to clear EtcdPromotePending only if it is still recorded and this node's
+// etcd still answers as a voter. A snapshot rejoin holds that lock while it
+// replaces this node's member, promotes its own learner and clears
+// EtcdPromotePending, so a held lock skips the look. One that ran while the
+// lock was released can have replaced the member this look promoted and
+// stopped before promoting its own learner, which the next look promotes.
 func promoteLearnerOnce(look *learnerLook) bool {
 	st, err := readPendingPromote()
 	if err != nil {
@@ -121,15 +125,25 @@ func promoteLearnerOnce(look *learnerLook) bool {
 		if !cur.EtcdPromotePending {
 			return nodestate.ErrUnchanged
 		}
+		if err := confirmLocalVoter(cur.NodeIP); err != nil {
+			return fmt.Errorf("%w: %v", errNotVoterYet, err)
+		}
 		cur.EtcdPromotePending = false
 		return nil
 	})
+	if errors.Is(err, errNotVoterYet) {
+		return false
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "stratum: WARN: record the etcd member's promotion: %v (retrying)\n", err)
 		return false
 	}
 	return true
 }
+
+// errNotVoterYet is a promote the look does not record, because this node's
+// etcd no longer answers as a voter once the etcd data lock is retaken.
+var errNotVoterYet = errors.New("this node's etcd member is not a voter")
 
 // readPendingPromote reads node state under the etcd data lock and releases
 // it. It returns no state and no error when the lock is held, and an error

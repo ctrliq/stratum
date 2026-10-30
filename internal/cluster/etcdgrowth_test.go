@@ -336,9 +336,10 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 			}
 		}},
 		{"promoteLearnerOnce", "etcdPromotePending", func(t *testing.T, _ *NodeState) {
-			old := promoteLocalLearner
-			t.Cleanup(func() { promoteLocalLearner = old })
+			old, oldConfirm := promoteLocalLearner, confirmLocalVoter
+			t.Cleanup(func() { promoteLocalLearner, confirmLocalVoter = old, oldConfirm })
 			promoteLocalLearner = func(string, string) (ha.LearnerState, error) { return ha.LearnerPromoted, nil }
+			confirmLocalVoter = func(string) error { return nil }
 			var look learnerLook
 			if !promoteLearnerOnce(&look) {
 				t.Fatal("promoteLearnerOnce recorded nothing")

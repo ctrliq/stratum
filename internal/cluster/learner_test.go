@@ -24,16 +24,17 @@ func joinedLearnerState() *NodeState {
 
 // stubLearnerPromotion saves st as this node's state and points the learner
 // task's seams at answer and a lock that is free unless held is set or the
-// task already holds it, and that answer must be asked without. It returns
-// the number of promote attempts made.
+// task already holds it, and that answer must be asked without. This node's
+// etcd answers as a voter, which must be asked under the lock. It returns the
+// number of promote attempts made.
 func stubLearnerPromotion(t *testing.T, st *NodeState, held *bool, answer func() (ha.LearnerState, error)) *int {
 	t.Helper()
 	redirectStateArea(t)
 	if err := SaveState(st); err != nil {
 		t.Fatal(err)
 	}
-	oldPromote, oldLock := promoteLocalLearner, lockEtcdData
-	t.Cleanup(func() { promoteLocalLearner, lockEtcdData = oldPromote, oldLock })
+	oldPromote, oldConfirm, oldLock := promoteLocalLearner, confirmLocalVoter, lockEtcdData
+	t.Cleanup(func() { promoteLocalLearner, confirmLocalVoter, lockEtcdData = oldPromote, oldConfirm, oldLock })
 	var locked bool
 	lockEtcdData = func() (func(), error) {
 		if locked || (held != nil && *held) {
@@ -52,6 +53,15 @@ func stubLearnerPromotion(t *testing.T, st *NodeState, held *bool, answer func()
 			t.Errorf("promote asked about %s in %q, want this node's %s in %q", nodeIP, initialCluster, st.NodeIP, st.EtcdInitialCluster)
 		}
 		return answer()
+	}
+	confirmLocalVoter = func(nodeIP string) error {
+		if !locked {
+			t.Error("the voter check ran without the etcd data lock, so a rejoin could replace the member after it")
+		}
+		if nodeIP != st.NodeIP {
+			t.Errorf("voter check asked about %s, want this node's %s", nodeIP, st.NodeIP)
+		}
+		return nil
 	}
 	return &attempts
 }
@@ -148,6 +158,57 @@ func TestPromoteLearnerOnceKeepsARejoinsRecord(t *testing.T) {
 	}
 	if st.EtcdPromotePending || st.EtcdInitialCluster != rejoined.EtcdInitialCluster {
 		t.Fatalf("saved state = %+v, want the rejoin's record untouched", st)
+	}
+}
+
+// TestPromoteLearnerOnceKeepsTheRecordOfAMemberARejoinReplaced: the promote
+// runs without the etcd data lock, so a snapshot rejoin can replace the member
+// it promoted and stop before promoting its own learner, leaving the pending
+// record for it. The look then must not clear that record on the old
+// member's answer: it records the promote only once this node's etcd answers
+// as a voter under the retaken lock, and the next look promotes the learner.
+func TestPromoteLearnerOnceKeepsTheRecordOfAMemberARejoinReplaced(t *testing.T) {
+	rejoined := joinedLearnerState()
+	rejoined.EtcdInitialCluster = grownThree + ",cp4=https://10.0.0.4:2380"
+	answers := []ha.LearnerState{ha.LearnerPromoted, ha.LearnerPromoted}
+	attempts := stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerWaiting, nil })
+	promoteLocalLearner = func(string, string) (ha.LearnerState, error) {
+		if *attempts == 0 {
+			if err := SaveState(rejoined); err != nil {
+				t.Fatal(err)
+			}
+		}
+		*attempts++
+		return answers[*attempts-1], nil
+	}
+	voter := false
+	confirmLocalVoter = func(string) error {
+		if release, err := lockEtcdData(); err == nil {
+			release()
+			t.Error("the voter check ran without the etcd data lock")
+		}
+		if !voter {
+			return errors.New("this node's etcd member c4 is a learner")
+		}
+		return nil
+	}
+	var look learnerLook
+	if promoteLearnerOnce(&look) {
+		t.Fatal("a look whose member a rejoin replaced with a learner is done")
+	}
+	st, err := LoadState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.EtcdPromotePending || st.EtcdInitialCluster != rejoined.EtcdInitialCluster {
+		t.Fatalf("saved state = %+v, want the rejoin's record, still pending", st)
+	}
+	voter = true
+	if !promoteLearnerOnce(&look) || pendingOnDisk(t) {
+		t.Fatalf("the next look must promote the rejoin's learner and clear the record: pending = %v", pendingOnDisk(t))
+	}
+	if *attempts != 2 {
+		t.Errorf("promote attempts = %d, want 2", *attempts)
 	}
 }
 
