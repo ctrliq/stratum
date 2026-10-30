@@ -3,11 +3,15 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/ha"
+	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
 // joinedLearnerState is a control plane a join just added as a learner.
@@ -80,8 +84,8 @@ func TestPromoteLearnerOnceClearsThePendingRecordOnlyOnceAVoter(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			attempts := stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return tc.state, tc.err })
-			var warned string
-			if done := promoteLearnerOnce(&warned); done != tc.wantDone {
+			var look learnerLook
+			if done := promoteLearnerOnce(&look); done != tc.wantDone {
 				t.Errorf("done = %v, want %v", done, tc.wantDone)
 			}
 			if *attempts != 1 {
@@ -90,8 +94,8 @@ func TestPromoteLearnerOnceClearsThePendingRecordOnlyOnceAVoter(t *testing.T) {
 			if got := pendingOnDisk(t); got != tc.wantPending {
 				t.Errorf("EtcdPromotePending on disk = %v, want %v", got, tc.wantPending)
 			}
-			if (warned != "") != (tc.err != nil) {
-				t.Errorf("warned = %q for error %v", warned, tc.err)
+			if (look.warned != "") != (tc.err != nil) {
+				t.Errorf("warned = %q for error %v", look.warned, tc.err)
 			}
 		})
 	}
@@ -105,8 +109,8 @@ func TestPromoteLearnerOnceLeavesARejoinsLearnerAlone(t *testing.T) {
 	t.Run("the data lock is held", func(t *testing.T) {
 		held := true
 		attempts := stubLearnerPromotion(t, joinedLearnerState(), &held, func() (ha.LearnerState, error) { return ha.LearnerPromoted, nil })
-		var warned string
-		if promoteLearnerOnce(&warned) || *attempts != 0 || !pendingOnDisk(t) {
+		var look learnerLook
+		if promoteLearnerOnce(&look) || *attempts != 0 || !pendingOnDisk(t) {
 			t.Fatalf("a held lock must skip the look: attempts = %d, pending = %v", *attempts, pendingOnDisk(t))
 		}
 	})
@@ -114,8 +118,8 @@ func TestPromoteLearnerOnceLeavesARejoinsLearnerAlone(t *testing.T) {
 		st := joinedLearnerState()
 		st.EtcdPromotePending = false
 		attempts := stubLearnerPromotion(t, st, nil, func() (ha.LearnerState, error) { return ha.LearnerPromoted, nil })
-		var warned string
-		if !promoteLearnerOnce(&warned) || *attempts != 0 {
+		var look learnerLook
+		if !promoteLearnerOnce(&look) || *attempts != 0 {
 			t.Fatalf("a member nothing records pending is not the task's: attempts = %d", *attempts)
 		}
 	})
@@ -134,8 +138,8 @@ func TestPromoteLearnerOnceKeepsARejoinsRecord(t *testing.T) {
 		}
 		return ha.LearnerPromoted, nil
 	})
-	var warned string
-	if !promoteLearnerOnce(&warned) {
+	var look learnerLook
+	if !promoteLearnerOnce(&look) {
 		t.Fatal("a look whose promote a rejoin overtook is not done")
 	}
 	st, err := LoadState()
@@ -210,6 +214,63 @@ func TestPromoteLearnerRetriesUntilPromoted(t *testing.T) {
 		cancel()
 		<-done
 	})
+}
+
+// TestPromoteLearnerWarnsOnceWhenALearnerKeepsWaiting: etcd allows one
+// learner at a time, so a learner that never catches up blocks every other
+// control-plane join. The task stays quiet through the ordinary catch-up, and
+// once the learner has waited learnerWarnAfter it says so, once, with etcd's
+// reason.
+func TestPromoteLearnerWarnsOnceWhenALearnerKeepsWaiting(t *testing.T) {
+	reason := fmt.Errorf("%w: this node's etcd does not answer: connection refused", ha.ErrLearnerWaiting)
+	stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerWaiting, reason })
+	run := func(d time.Duration) string {
+		return captureWorkerOutput(t, func() {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() { promoteLearner(ctx); close(done) }()
+				time.Sleep(d)
+				synctest.Wait()
+				cancel()
+				<-done
+			})
+		})
+	}
+	if out := run(learnerWarnAfter - 2*learnerPromotePoll); strings.Contains(out, "still a learner after") {
+		t.Errorf("warned before the learner had waited %v:\n%s", learnerWarnAfter, out)
+	}
+	out := run(3 * learnerWarnAfter)
+	if got := strings.Count(out, "still a learner after"); got != 1 {
+		t.Fatalf("printed %d still-a-learner warnings over %v, want 1:\n%s", got, 3*learnerWarnAfter, out)
+	}
+	if !strings.Contains(out, "connection refused") || !strings.Contains(out, "no other control plane can join") {
+		t.Errorf("the warning lacks etcd's reason or what it blocks:\n%s", out)
+	}
+}
+
+// TestPromoteLearnerWarnsWhenNodeStateCannotBeRead: a node state the task
+// cannot read leaves the learner unpromoted for as long as it lasts, so it is
+// printed, once.
+func TestPromoteLearnerWarnsWhenNodeStateCannotBeRead(t *testing.T) {
+	attempts := stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerPromoted, nil })
+	if err := os.WriteFile(nodestate.StatePath(), []byte("role: [\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var look learnerLook
+	out := captureWorkerOutput(t, func() {
+		for range 3 {
+			if promoteLearnerOnce(&look) {
+				t.Fatal("a look that could not read node state is done")
+			}
+		}
+	})
+	if *attempts != 0 {
+		t.Errorf("promote attempts = %d, want none without node state", *attempts)
+	}
+	if got := strings.Count(out, "read node state to promote this node's etcd learner"); got != 1 {
+		t.Errorf("printed the unreadable node state %d times over 3 looks, want 1:\n%s", got, out)
+	}
 }
 
 // TestPostStartPromotesOnlyARecordedLearner: the learner task runs on a

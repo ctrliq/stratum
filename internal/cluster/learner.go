@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -23,16 +24,42 @@ var (
 	lockEtcdData        = func() (func(), error) { return etcddata.Lock(version.EtcdDataDir) }
 )
 
+// learnerWarnAfter is how long the learner task waits on a learner that
+// cannot be promoted yet before it warns.
+var learnerWarnAfter = 5 * time.Minute
+
+// learnerLook is what the learner task carries from one look to the next:
+// warned is the last refusal printed, so a refusal that repeats is printed
+// once, and waitingSince is when the learner was first found waiting, so a
+// wait that lasts learnerWarnAfter is printed once (waitWarned).
+type learnerLook struct {
+	warned       string
+	waitingSince time.Time
+	waitWarned   bool
+}
+
+// warn prints msg unless it was the last refusal printed.
+func (l *learnerLook) warn(msg string) {
+	if msg != l.warned {
+		l.warned = msg
+		fmt.Fprintf(os.Stderr, "stratum: WARN: %s (retrying)\n", msg)
+	}
+}
+
 // promoteLearner promotes the learner a control-plane join added for this node
 // (ha.MemberAdd) once it has caught up, then holds until shutdown. Only a
 // running etcd can catch up, so the promote belongs to the controller's start,
 // and to every start while node state records it pending
 // (EtcdPromotePending): one that stopped before the promote landed leaves a
 // learner the next start promotes.
+//
+// etcd allows one learner at a time, so while this one waits no other control
+// plane can join. A learner still waiting after learnerWarnAfter is printed
+// once, with the reason etcd gave.
 func promoteLearner(ctx context.Context) {
-	var warned string
+	var look learnerLook
 	for {
-		if promoteLearnerOnce(&warned) {
+		if promoteLearnerOnce(&look) {
 			<-ctx.Done()
 			return
 		}
@@ -51,25 +78,35 @@ func promoteLearner(ctx context.Context) {
 // to clear EtcdPromotePending only if it is still recorded. A snapshot rejoin
 // holds that lock while it replaces this node's member, promotes its own
 // learner and clears EtcdPromotePending, so a held lock skips the look.
-// warned is the last warning printed, so a refusal that repeats is printed
-// once.
-func promoteLearnerOnce(warned *string) bool {
-	st, ok := readPendingPromote()
-	if !ok {
+func promoteLearnerOnce(look *learnerLook) bool {
+	st, err := readPendingPromote()
+	if err != nil {
+		look.warn(fmt.Sprintf("read node state to promote this node's etcd learner: %v", err))
+		return false
+	}
+	if st == nil {
 		return false
 	}
 	if !st.EtcdPromotePending {
 		return true
 	}
 	state, err := promoteLocalLearner(st.NodeIP, st.EtcdInitialCluster)
-	if err != nil {
-		if msg := err.Error(); msg != *warned {
-			*warned = msg
-			fmt.Fprintf(os.Stderr, "stratum: WARN: %v (retrying)\n", err)
+	if state == ha.LearnerWaiting {
+		if look.waitingSince.IsZero() {
+			look.waitingSince = time.Now()
+		}
+		switch {
+		case err != nil && !errors.Is(err, ha.ErrLearnerWaiting):
+			look.warn(err.Error())
+		case !look.waitWarned && time.Since(look.waitingSince) >= learnerWarnAfter:
+			look.waitWarned = true
+			fmt.Fprintf(os.Stderr, "stratum: WARN: this node's etcd member is still a learner after %v (%v); "+
+				"no other control plane can join until it is promoted (still retrying)\n", learnerWarnAfter, err)
 		}
 		return false
 	}
-	if state == ha.LearnerWaiting {
+	if err != nil {
+		look.warn(err.Error())
 		return false
 	}
 	if state == ha.LearnerPromoted {
@@ -95,16 +132,13 @@ func promoteLearnerOnce(warned *string) bool {
 }
 
 // readPendingPromote reads node state under the etcd data lock and releases
-// it, reporting false when the lock is held or the state cannot be read.
-func readPendingPromote() (*NodeState, bool) {
+// it. It returns no state and no error when the lock is held, and an error
+// when the state cannot be read.
+func readPendingPromote() (*NodeState, error) {
 	release, err := lockEtcdData()
 	if err != nil {
-		return nil, false
+		return nil, nil
 	}
 	defer release()
-	st, err := LoadState()
-	if err != nil {
-		return nil, false
-	}
-	return st, true
+	return LoadState()
 }

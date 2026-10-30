@@ -1,6 +1,7 @@
 package ha
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -18,6 +19,11 @@ const (
 	MemberIsVoter
 )
 
+// ErrLearnerWaiting is what PromoteLearner's error wraps when the learner
+// cannot be promoted yet but a later attempt can still land the promote. The
+// rest of the error says why it is waiting.
+var ErrLearnerWaiting = errors.New("etcd learner not promoted yet")
+
 // The etcd operations PromoteLearner runs, indirected so its decisions can be
 // driven without a cluster.
 var (
@@ -34,12 +40,16 @@ var (
 // A learner serves only Status and serializable reads, so the promote goes
 // through the other members recorded in initialCluster, never through this
 // node's own etcd. Every answer that a later attempt can still land
-// (isPromoteNotYet) is LearnerWaiting with no error; an error is a promote
-// etcd refused for another reason.
+// (isPromoteNotYet) is LearnerWaiting with an error wrapping ErrLearnerWaiting
+// that says why, so a caller can tell an operator what the learner is waiting
+// on; any other error is a promote etcd refused for another reason.
 func PromoteLearner(nodeIP, initialCluster string) (LearnerState, error) {
 	st, err := learnerLocalStatus(nodeIP)
-	if err != nil || st.Leader == 0 {
-		return LearnerWaiting, nil
+	if err != nil {
+		return LearnerWaiting, fmt.Errorf("%w: this node's etcd does not answer: %v", ErrLearnerWaiting, err)
+	}
+	if st.Leader == 0 {
+		return LearnerWaiting, fmt.Errorf("%w: this node's etcd member %x knows no leader", ErrLearnerWaiting, st.MemberID)
 	}
 	if !st.IsLearner {
 		return MemberIsVoter, nil
@@ -54,7 +64,7 @@ func PromoteLearner(nodeIP, initialCluster string) (LearnerState, error) {
 	case perr == nil, isMemberNotLearner(perr):
 		return LearnerPromoted, nil
 	case isPromoteNotYet(perr):
-		return LearnerWaiting, nil
+		return LearnerWaiting, fmt.Errorf("%w: etcd did not promote member %x yet: %v", ErrLearnerWaiting, st.MemberID, perr)
 	}
 	return LearnerWaiting, fmt.Errorf("promote etcd learner %x via %s: %w", st.MemberID, strings.Join(voters, ","), perr)
 }

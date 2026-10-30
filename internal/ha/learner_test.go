@@ -2,6 +2,7 @@ package ha
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -42,17 +43,18 @@ func TestPromoteLearnerPromotesOnlyACaughtUpLearner(t *testing.T) {
 		statusErr  error
 		promoteErr error
 		want       LearnerState
+		waiting    bool
 		wantErr    string
 		promotes   int
 	}{
-		{"a voter is left alone", localEtcdStatus{MemberID: 0xc2, Leader: 0xa1}, nil, nil, MemberIsVoter, "", 0},
-		{"an etcd that does not answer yet waits", localEtcdStatus{}, context.DeadlineExceeded, nil, LearnerWaiting, "", 0},
-		{"a learner with no leader yet waits", localEtcdStatus{MemberID: 0xc2, IsLearner: true}, nil, nil, LearnerWaiting, "", 0},
-		{"a caught-up learner is promoted", learner, nil, nil, LearnerPromoted, "", 1},
-		{"a promote whose reply was lost is a promote", learner, nil, rpctypes.ErrGRPCMemberNotLearner, LearnerPromoted, "", 1},
-		{"a learner still catching up waits", learner, nil, rpctypes.ErrGRPCLearnerNotReady, LearnerWaiting, "", 1},
-		{"a promote that timed out waits", learner, nil, context.DeadlineExceeded, LearnerWaiting, "", 1},
-		{"any other refusal is an error", learner, nil, rpctypes.ErrGRPCPermissionDenied, LearnerWaiting, "promote etcd learner c2", 1},
+		{"a voter is left alone", localEtcdStatus{MemberID: 0xc2, Leader: 0xa1}, nil, nil, MemberIsVoter, false, "", 0},
+		{"an etcd that does not answer yet waits", localEtcdStatus{}, context.DeadlineExceeded, nil, LearnerWaiting, true, "does not answer", 0},
+		{"a learner with no leader yet waits", localEtcdStatus{MemberID: 0xc2, IsLearner: true}, nil, nil, LearnerWaiting, true, "member c2 knows no leader", 0},
+		{"a caught-up learner is promoted", learner, nil, nil, LearnerPromoted, false, "", 1},
+		{"a promote whose reply was lost is a promote", learner, nil, rpctypes.ErrGRPCMemberNotLearner, LearnerPromoted, false, "", 1},
+		{"a learner still catching up waits", learner, nil, rpctypes.ErrGRPCLearnerNotReady, LearnerWaiting, true, "did not promote member c2 yet", 1},
+		{"a promote that timed out waits", learner, nil, context.DeadlineExceeded, LearnerWaiting, true, "did not promote member c2 yet", 1},
+		{"any other refusal is an error", learner, nil, rpctypes.ErrGRPCPermissionDenied, LearnerWaiting, false, "promote etcd learner c2", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := stubLearner(t, tc.status, tc.statusErr, tc.promoteErr)
@@ -65,6 +67,9 @@ func TestPromoteLearnerPromotesOnlyACaughtUpLearner(t *testing.T) {
 				t.Errorf("error = %v, want none", err)
 			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
 				t.Errorf("error = %v, want one containing %q", err, tc.wantErr)
+			}
+			if got := errors.Is(err, ErrLearnerWaiting); got != tc.waiting {
+				t.Errorf("error %v wraps ErrLearnerWaiting = %v, want %v", err, got, tc.waiting)
 			}
 			if len(*calls) != tc.promotes {
 				t.Fatalf("promotes = %d, want %d", len(*calls), tc.promotes)

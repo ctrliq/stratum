@@ -339,8 +339,8 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 			old := promoteLocalLearner
 			t.Cleanup(func() { promoteLocalLearner = old })
 			promoteLocalLearner = func(string, string) (ha.LearnerState, error) { return ha.LearnerPromoted, nil }
-			var warned string
-			if !promoteLearnerOnce(&warned) {
+			var look learnerLook
+			if !promoteLearnerOnce(&look) {
 				t.Fatal("promoteLearnerOnce recorded nothing")
 			}
 		}},
