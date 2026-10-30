@@ -165,7 +165,7 @@ func restoreSeams(t *testing.T, pkiFn func() error, reachFn func(string) error, 
 		return 0, "", errors.New("unexpected add")
 	}
 	rejoinRemoveMember = func(string, uint64) error { return errors.New("unexpected remove") }
-	rejoinPromote = func(string, uint64) error { return errors.New("unexpected promote") }
+	rejoinPromote = func(uint64, ...string) error { return errors.New("unexpected promote") }
 	rejoinSaveState = func(*nodestate.NodeState) error { return nil }
 	rejoinStartPod = func(string) error { return nil }
 	rejoinStopPod = func(string) error { return nil }

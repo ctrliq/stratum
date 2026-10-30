@@ -51,6 +51,7 @@ func TestPrepareKeepsFieldsAnotherWriterRecordedMidStart(t *testing.T) {
 	seed := seedState()
 	seed.EtcdState = "existing"
 	seed.EtcdHasPeers = true
+	seed.EtcdPromotePending = true
 	seed.Profile = "cis"
 	seed.CIS = true
 	seed.VIP = VIP{Address: "10.0.0.254", Interface: "eth9", BGP: true}
@@ -101,6 +102,7 @@ func TestPrepareKeepsFieldsAnotherWriterRecordedMidStart(t *testing.T) {
 		EtcdInitialCluster: "cp1=https://10.0.0.1:2380",
 		EtcdState:          "existing",
 		EtcdHasPeers:       true,
+		EtcdPromotePending: true,
 		PodCIDR:            "10.42.0.0/16", ServiceCIDR: "10.43.0.0/16",
 		// The established node keeps the domain its state records (netcfg.ResolveDomain).
 		ClusterDomain: "old.internal",

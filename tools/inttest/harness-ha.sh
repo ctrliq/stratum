@@ -68,8 +68,10 @@ api_via() {
 
 ready_nodes() { on "$1" "$K get nodes --no-headers 2>/dev/null" | awk '$2=="Ready"{n++} END{print n+0}'; }
 
-# etcd_started VIA — started etcd members, as the etcd on VIA reports them.
-etcd_started() { on "$1" "/dist/stratum etcdctl member list 2>/dev/null" | grep -c ', started, ' || true; }
+# etcd_started VIA — started etcd voters, as the etcd on VIA reports them
+# ("id, started|unstarted, name, peer, client, isLearner"). A join adds a
+# learner, so a member counts once its controller has promoted it.
+etcd_started() { on "$1" "/dist/stratum etcdctl member list 2>/dev/null" | grep ', started, ' | grep -c ', false$' || true; }
 
 # Predicates for wait_for, which runs them in this shell.
 etcd_at_least() { (( $(etcd_started "$1") >= $2 )); }
@@ -107,7 +109,7 @@ ha_bring_up() {
     node_up "$n" --join "https://$HA_VIP:6443" --token "$JOIN_TOKEN" \
       --discovery-token-ca-cert-hash "$JOIN_CAHASH" --certificate-key-file "$JOIN_KEY_FILE"
     wait_for "$n to join" 600 node_started "$n" || { node_log "$n"; return 1; }
-    wait_for "etcd to reach $i started members" 300 etcd_at_least cp1 "$i" || { node_log "$n"; return 1; }
+    wait_for "etcd to reach $i started voters" 300 etcd_at_least cp1 "$i" || { node_log "$n"; return 1; }
     pass "$n joined through the VIP (etcd: $i started)"
     i=$((i + 1))
   done

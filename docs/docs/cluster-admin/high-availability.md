@@ -92,7 +92,10 @@ for each join.
     ```
 
     The joining controller downloads the shared CA material over an encrypted
-    channel, generates its own certificates, and joins etcd as a new member.
+    channel, generates its own certificates, and joins etcd as a learner, a
+    member with no vote. Once its etcd has caught up, the controller promotes
+    it to a voter. Until then the cluster's quorum does not count it, so the
+    existing controllers keep serving while it starts.
 
 4. Check that the new controller is `Ready`:
 
@@ -100,7 +103,10 @@ for each join.
     $ kubectl get nodes
     ```
 
-5. Repeat steps 1 to 4 for the third controller.
+5. Repeat steps 1 to 4 for the third controller. etcd accepts one learner at
+    a time. A join started while the previous controller is still a learner
+    retries for up to 90 seconds, then stops without adding anything; re-run
+    it once the previous controller is `Ready`.
 
 A control-plane token can read the shared CA material, so it prints only the
 controller join command. Join workers with a separate token from
