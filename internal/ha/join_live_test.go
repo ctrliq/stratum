@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,45 +32,8 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 		t.Skip("set STRATUM_TEST_ETCD_BIN to run the live etcd recovery gate")
 	}
 	joinFixture(t)
-	oldPKI, oldData, oldKube := version.PKIDir, version.DataDir, version.KubeconfigDir
-	version.DataDir = t.TempDir()
-	version.PKIDir, version.KubeconfigDir = filepath.Join(version.DataDir, "pki"), filepath.Join(version.DataDir, "kubeconfig")
-	t.Cleanup(func() { version.PKIDir, version.DataDir, version.KubeconfigDir = oldPKI, oldData, oldKube })
-	if err := os.MkdirAll(version.KubeconfigDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := pki.EnsureDir(); err != nil {
-		t.Fatal(err)
-	}
 	const seedIP, joinIP = "127.77.0.1", "127.77.0.2"
-	var pin string
-	var etcdCA *pki.CA
-	for _, name := range []string{"ca", "front-proxy-ca", pki.EtcdCAName} {
-		ca, err := pki.NewCA(name, name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if name == "ca" {
-			pin = clusterinfo.PinFor(ca.Cert)
-		}
-		if name == pki.EtcdCAName {
-			etcdCA = ca
-		}
-	}
-	if err := pki.EnsureSAKeypair(); err != nil {
-		t.Fatal(err)
-	}
-	for _, spec := range []pki.CertSpec{
-		{Name: "live-etcd-server", CN: "live-etcd-server", IPs: []string{seedIP, joinIP, "127.0.0.1"}, ServerAuth: true, ClientAuth: true},
-		{Name: "apiserver-etcd-client", CN: "apiserver-etcd-client", ClientAuth: true},
-	} {
-		if err := etcdCA.Issue(spec); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := pki.WriteCABundle(pki.EtcdBundleBase, pki.EtcdCAName); err != nil {
-		t.Fatal(err)
-	}
+	pin := liveEtcdPKI(t, seedIP, joinIP)
 	seedPeer := fmt.Sprintf("https://%s:%d", seedIP, version.EtcdPeerPort)
 	joinPeer := fmt.Sprintf("https://%s:%d", joinIP, version.EtcdPeerPort)
 	startLiveJoinEtcd(t, bin, "seed", seedIP, "seed="+seedPeer, "new")
@@ -190,6 +154,123 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 		_, err = cli.Put(ctx, "join-compensation-gate", "quorum-retained")
 		return err
 	})
+}
+
+// liveEtcdPKI points the PKI and data dirs at a temporary directory and
+// writes the CAs and certificates the live etcd processes and their clients
+// use, for etcd at ips. It returns the cluster CA's pin.
+func liveEtcdPKI(t *testing.T, ips ...string) string {
+	t.Helper()
+	oldPKI, oldData, oldKube := version.PKIDir, version.DataDir, version.KubeconfigDir
+	version.DataDir = t.TempDir()
+	version.PKIDir, version.KubeconfigDir = filepath.Join(version.DataDir, "pki"), filepath.Join(version.DataDir, "kubeconfig")
+	t.Cleanup(func() { version.PKIDir, version.DataDir, version.KubeconfigDir = oldPKI, oldData, oldKube })
+	if err := os.MkdirAll(version.KubeconfigDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := pki.EnsureDir(); err != nil {
+		t.Fatal(err)
+	}
+	var pin string
+	var etcdCA *pki.CA
+	for _, name := range []string{"ca", "front-proxy-ca", pki.EtcdCAName} {
+		ca, err := pki.NewCA(name, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name == "ca" {
+			pin = clusterinfo.PinFor(ca.Cert)
+		}
+		if name == pki.EtcdCAName {
+			etcdCA = ca
+		}
+	}
+	if err := pki.EnsureSAKeypair(); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range []pki.CertSpec{
+		{Name: "live-etcd-server", CN: "live-etcd-server", IPs: append(slices.Clone(ips), "127.0.0.1"), ServerAuth: true, ClientAuth: true},
+		{Name: "apiserver-etcd-client", CN: "apiserver-etcd-client", ClientAuth: true},
+	} {
+		if err := etcdCA.Issue(spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pki.WriteCABundle(pki.EtcdBundleBase, pki.EtcdCAName); err != nil {
+		t.Fatal(err)
+	}
+	return pin
+}
+
+// TestLiveMemberAddAddsALearnerTheSeedCommitsWithout runs the join's member
+// add against real etcd. Production MemberAdd adds the joiner as a learner,
+// so a single seed keeps committing while the joiner's etcd has not started:
+// a voter add would need both for every write. Once the joiner's etcd starts
+// and catches up, PromoteLearner makes it a voter through the seed.
+func TestLiveMemberAddAddsALearnerTheSeedCommitsWithout(t *testing.T) {
+	bin := os.Getenv("STRATUM_TEST_ETCD_BIN")
+	if bin == "" {
+		t.Skip("set STRATUM_TEST_ETCD_BIN to run the live etcd learner gate")
+	}
+	joinFixture(t)
+	const seedIP, joinIP = "127.77.0.1", "127.77.0.2"
+	liveEtcdPKI(t, seedIP, joinIP)
+	seedPeer := fmt.Sprintf("https://%s:%d", seedIP, version.EtcdPeerPort)
+	joinPeer := fmt.Sprintf("https://%s:%d", joinIP, version.EtcdPeerPort)
+	startLiveJoinEtcd(t, bin, "seed", seedIP, "seed="+seedPeer, "new")
+	cli, err := etcdClient(seedIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+	waitLiveJoinQuorum(t, func(ctx context.Context) error { _, err := cli.MemberList(ctx); return err })
+
+	initial, err := MemberAdd([]string{seedIP}, "joiner", joinPeer)
+	if err != nil {
+		t.Fatalf("MemberAdd: %v", err)
+	}
+	joinerIsLearner := func() (bool, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		members, err := cli.MemberList(ctx)
+		if err != nil {
+			return false, err
+		}
+		for _, m := range members.Members {
+			if slices.Contains(m.PeerURLs, joinPeer) {
+				return m.IsLearner, nil
+			}
+		}
+		return false, fmt.Errorf("the member list has no member at %s", joinPeer)
+	}
+	if learner, err := joinerIsLearner(); err != nil || !learner {
+		t.Fatalf("after MemberAdd the joiner is a learner = %v (%v), want a learner", learner, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err = cli.Put(ctx, "learner-join-gate", "seed-commits")
+	cancel()
+	if err != nil {
+		t.Fatalf("the seed could not commit while the added joiner had not started: %v", err)
+	}
+
+	startLiveJoinEtcd(t, bin, "joiner", joinIP, initial, "existing")
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		state, err := PromoteLearner(joinIP, initial)
+		if err != nil && !errors.Is(err, ErrLearnerWaiting) {
+			t.Fatalf("PromoteLearner: %v", err)
+		}
+		if state == LearnerPromoted || state == MemberIsVoter {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the joiner was not promoted within 30s: %v", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if learner, err := joinerIsLearner(); err != nil || learner {
+		t.Fatalf("after PromoteLearner the joiner is a learner = %v (%v), want a voter", learner, err)
+	}
 }
 
 func startLiveJoinEtcd(t *testing.T, bin, name, ip, initial, state string) {
