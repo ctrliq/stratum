@@ -1869,6 +1869,7 @@ func renderFixture(t *testing.T) {
 	}
 
 	defaultTOML := `version = 3
+imports = ['/etc/containerd/conf.d/*.toml']
 root = '/var/lib/containerd'
 state = '/run/containerd'
 [plugins.'io.containerd.cri.v1.images']

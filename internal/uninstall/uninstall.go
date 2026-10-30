@@ -357,6 +357,7 @@ func dirsAndFiles() []string {
 		host.CNIDir,
 		version.CertsDir,
 		version.ContainerdConfD,
+		version.ContainerdRuntimeConfD,
 		host.SysctlConf,
 		host.SysctlCISConf,
 		host.ModulesLoadFile,

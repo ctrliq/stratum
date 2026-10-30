@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -199,7 +200,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			if runtime.CgroupDriver() == "systemd" {
 				driver = "SystemdCgroup = true"
 			}
-			if err := os.WriteFile(version.ContainerdConfig, []byte(driver+"\nsandbox_image = "+runtime.SandboxImage+"\nenable_selinux = false\n"), 0o600); err != nil {
+			if err := os.WriteFile(version.ContainerdConfig, []byte("imports = ['/etc/containerd/conf.d/*.toml']\n"+driver+"\nsandbox_image = '"+runtime.SandboxImage+"'\nenable_selinux = false\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -213,7 +214,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if *saved != tc.want {
+			if !reflect.DeepEqual(*saved, tc.want) {
 				t.Errorf("saved node state = %+v, want %+v", *saved, tc.want)
 			}
 			if !slices.Contains(trustedPodCIDRs, tc.want.PodCIDR) {

@@ -261,7 +261,7 @@ func ensureConfigWithWriter(w io.Writer) (bool, error) {
 	}
 	if prevErr == nil &&
 		strings.Contains(string(prev), want) && strings.Contains(string(prev), SandboxImage) &&
-		strings.Contains(string(prev), enableSELinuxAssign(confine)) {
+		strings.Contains(string(prev), enableSELinuxAssign(confine)) && importsConfD(string(prev)) {
 		if err := recordConfinement(confine, written); err != nil {
 			return false, err
 		}
@@ -278,6 +278,9 @@ func ensureConfigWithWriter(w io.Writer) (bool, error) {
 	// pause from the internet once shipped.
 	if !sandboxImageLine.MatchString(string(out)) {
 		return false, fmt.Errorf("containerd config default has no sandbox image setting stratum recognises; refusing to write a config that would pull pause from the internet instead of %s", SandboxImage)
+	}
+	if !importsConfD(string(out)) {
+		return false, fmt.Errorf("containerd config default does not import %s; refusing to write a config that would silently drop stratum's registry mirrors and runtime handlers", confdImportGlob)
 	}
 	if confine && !enableSELinuxLine.MatchString(string(out)) {
 		return false, errors.New("containerd config default has no enable_selinux setting stratum recognises; refusing to write a config that would leave containers unconfined on an SELinux host")

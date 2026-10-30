@@ -22,8 +22,8 @@ import (
 // three roots, and so the complete set host.Footprint() may declare: the
 // modules-load file, both sysctl files (99-stratum.conf always,
 // 99-stratum-cis.conf under --cis), the CNI dir, the kubelet dir, the audit
-// log dir, the systemd unit, and containerd's certs.d and registry conf.d
-// file. The paths version already declares are named through their variables,
+// log dir, the systemd unit, and containerd's certs.d and its registry and
+// runtime-handler conf.d files. The paths version already declares are named through their variables,
 // so a path's two mentions cannot drift apart; the /etc and /var drop-ins
 // have no version variable and are pinned as literals.
 var footprintWant = []string{
@@ -36,6 +36,7 @@ var footprintWant = []string{
 	version.SystemdUnitPath,
 	version.CertsDir,
 	version.ContainerdConfD,
+	version.ContainerdRuntimeConfD,
 }
 
 // coveredBy reports whether path is target itself or lies under a target

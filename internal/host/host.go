@@ -175,8 +175,9 @@ var (
 // the modules-load file, both sysctl files (the CIS one under --cis) and the
 // drop-in of every other registered profile that declares sysctls, the CNI
 // dir, the kubelet dir, the audit log dir, the systemd unit, and containerd's
-// certs.d and registry conf.d file. The paths version declares — the sysctl
-// and modules-load files among them — are named through their variables and
+// certs.d and its registry and runtime-handler conf.d files. The paths
+// version declares — the sysctl and modules-load files among them — are
+// named through their variables and
 // the /etc and /var drop-ins through the declarations above, so each path has
 // one home. Uninstall covers every path of this set —
 // the delete targets named from it, except the kubelet dir, which the
@@ -198,6 +199,7 @@ func Footprint() []string {
 		version.SystemdUnitPath,
 		version.CertsDir,
 		version.ContainerdConfD,
+		version.ContainerdRuntimeConfD,
 	}, ProfileSysctlFiles()...)
 }
 

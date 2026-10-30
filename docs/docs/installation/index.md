@@ -550,7 +550,7 @@ If `stratum uninstall --yes` still cannot finish, clean up by hand:
     ```console
     # rm -rf /var/lib/stratum /etc/stratum /run/stratum /var/log/stratum /var/lib/stratum-helm /etc/cni/net.d /etc/containerd/certs.d
 
-    # rm -f /etc/systemd/system/stratum.service /etc/containerd/conf.d/stratum-registry.toml /etc/sysctl.d/99-stratum*.conf /etc/modules-load.d/k8s.conf /usr/local/bin/stratum.bak-*
+    # rm -f /etc/systemd/system/stratum.service /etc/containerd/conf.d/stratum-registry.toml /etc/containerd/conf.d/stratum-runtime.toml /etc/sysctl.d/99-stratum*.conf /etc/modules-load.d/k8s.conf /usr/local/bin/stratum.bak-*
 
     # systemctl daemon-reload
     ```
