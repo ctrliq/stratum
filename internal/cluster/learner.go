@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/etcddata"
@@ -120,6 +121,9 @@ func promoteLearnerOnce(look *learnerLook) bool {
 	}
 	release, err := lockEtcdData()
 	if err != nil {
+		if !lockHeld(err) {
+			look.warn(fmt.Sprintf("record the etcd member's promotion: %v", err))
+		}
 		return false
 	}
 	defer release()
@@ -147,13 +151,23 @@ func promoteLearnerOnce(look *learnerLook) bool {
 // etcd no longer answers as a voter once the etcd data lock is retaken.
 var errNotVoterYet = errors.New("this node's etcd member is not a voter")
 
+// lockHeld reports whether err is the etcd data lock refusing because
+// another operation holds it, rather than a failure to take it at all.
+func lockHeld(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK)
+}
+
 // readPendingPromote reads node state under the etcd data lock and releases
-// it. It returns no state and no error when the lock is held, and an error
-// when the state cannot be read.
+// it. It returns no state and no error when another operation holds the lock,
+// and an error when the lock cannot be taken for any other reason or the
+// state cannot be read.
 func readPendingPromote() (*NodeState, error) {
 	release, err := lockEtcdData()
-	if err != nil {
+	if lockHeld(err) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 	defer release()
 	return LoadState()

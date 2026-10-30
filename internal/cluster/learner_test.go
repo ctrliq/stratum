@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -38,7 +39,7 @@ func stubLearnerPromotion(t *testing.T, st *NodeState, held *bool, answer func()
 	var locked bool
 	lockEtcdData = func() (func(), error) {
 		if locked || (held != nil && *held) {
-			return nil, errors.New("etcd data lock: another operation is changing the data dir")
+			return nil, fmt.Errorf("etcd data lock: another operation is changing the data dir: %w", syscall.EWOULDBLOCK)
 		}
 		locked = true
 		return func() { locked = false }, nil
@@ -209,6 +210,49 @@ func TestPromoteLearnerOnceKeepsTheRecordOfAMemberARejoinReplaced(t *testing.T) 
 	}
 	if *attempts != 2 {
 		t.Errorf("promote attempts = %d, want 2", *attempts)
+	}
+}
+
+// TestPromoteLearnerOnceWarnsWhenTheLockCannotBeTaken: only another
+// operation holding the etcd data lock is a quiet skip. A lock that cannot be
+// taken at all, such as a data dir the controller cannot write, would
+// otherwise retry every poll and never say why the learner is not promoted.
+// The warning is printed once, however often the look repeats.
+func TestPromoteLearnerOnceWarnsWhenTheLockCannotBeTaken(t *testing.T) {
+	broken := fmt.Errorf("etcd data lock: create parent: %w", os.ErrPermission)
+	for _, tc := range []struct {
+		name     string
+		failRead bool
+	}{
+		{"reading the pending promote", true},
+		{"recording the promote", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerPromoted, nil })
+			free := lockEtcdData
+			calls := 0
+			lockEtcdData = func() (func(), error) {
+				calls++
+				if tc.failRead || calls%2 == 0 {
+					return nil, broken
+				}
+				return free()
+			}
+			var look learnerLook
+			out := captureWorkerOutput(t, func() {
+				for range 3 {
+					if promoteLearnerOnce(&look) {
+						t.Fatal("a look that could not take the lock is done")
+					}
+				}
+			})
+			if n := strings.Count(out, "permission denied"); n != 1 {
+				t.Errorf("warned %d times about a lock that cannot be taken, want once:\n%s", n, out)
+			}
+			if !pendingOnDisk(t) {
+				t.Error("the pending record was cleared without the lock")
+			}
+		})
 	}
 }
 
