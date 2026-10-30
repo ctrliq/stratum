@@ -28,7 +28,6 @@ tools/gen-fences.sh --write
 
 echo
 echo "remaining checklist (things a script should not do for you):"
-echo "  - mark the release-$MINOR channel EOL (autopilot update channels)"
 echo "  - announce the EOL date"
 echo "  - remove release-$MINOR from branch protection"
 echo "  - the branch stays; it simply stops receiving bumps"
