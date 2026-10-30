@@ -63,7 +63,7 @@ jq          = "latest"   # release-notes.sh, dev-release.sh
 syft        = "latest"   # make sbom
 # Major-pinned: v3 ignores sign-blob's --output-signature/--output-certificate,
 # so `make sign` writes nothing. Matches the workflows' cosign-release.
-cosign      = "2"        # make sign, tools/gen-channel.sh
+cosign      = "2"        # make sign
 crane       = "latest"   # tools/mirror-images.sh --verify/--push
 shellcheck  = "latest"   # make lint-shell, tools/test-ostests-sweep.sh
 # "latest" for both, not $(node_version)/$(pnpm_version) — and that is not the

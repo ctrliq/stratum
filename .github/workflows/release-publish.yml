@@ -1,23 +1,17 @@
 name: release-publish
 
 # Publishing is the gate. Everything up to here produced a draft; pressing
-# Publish is the moment a release becomes something users can install, and it is
-# the moment two things have to be true and stay true:
-#
-#   1. A final carries its conformance evidence. If it does not, this puts the
-#      release back into draft. The gate in release.yml is advice; this is not.
-#   2. The update channel serves the new version. A public stable channel can
-#      end up serving a version years out of date — a silent failure nobody
-#      notices because nothing errors. So this writes the channel and then reads
-#      it back over the network, and fails loudly if the two disagree.
+# Publish is the moment a release becomes something users can install, so a
+# final must carry its conformance evidence. If it does not, this puts the
+# release back into draft. The gate in release.yml is advice; this is not.
+# A release that passes the gate is then delivered to Depot.
 on:
   release:
     types: [published]
 
 permissions:
-  contents: write     # channel branch, and un-publishing a bad release
+  contents: write     # un-publishing a bad release
   issues: write
-  id-token: write     # cosign keyless signing of the channel index
 
 concurrency:
   group: release-publish-${{ github.event.release.tag_name }}
@@ -25,11 +19,6 @@ concurrency:
 
 env:
   TAG: ${{ github.event.release.tag_name }}
-  # Where index.yaml is SERVED from. Override with a repo variable when the
-  # channel moves to object storage; the default is GitHub Pages off the
-  # channels branch, which is zero infrastructure and enough.
-  CHANNEL_URL_BASE: ${{ vars.CHANNEL_URL_BASE || 'https://ctrliq.github.io/stratum' }}
-  CHANNEL_BRANCH: ${{ vars.CHANNEL_BRANCH || 'gh-pages' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -152,111 +141,3 @@ jobs:
           go run ./tools/depotrelease --assets dist --release "$TAG" \
             --channel "$RELEASE_CHANNEL" --arches amd64,arm64 --source "$SOURCE_COMMIT" \
             --environment "$DEPOT_ENVIRONMENT" --publish
-
-  # ---------------------------------------------------------------------------
-  # The channel, written and then read back. RCs never touch it: an update
-  # channel that serves prereleases is an update channel that upgrades people
-  # into a prerelease.
-  channels:
-    needs: conformance-guard
-    if: needs.conformance-guard.outputs.final == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.event.release.tag_name }}
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          # v2: cosign v3, installer v4's default, ignores sign-blob's
-          # --output-signature/--output-certificate.
-          cosign-release: v2.6.5
-
-      - name: generate the channel indexes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # The hashes come from the release's own signed sums file, not from a
-          # rebuild: the channel must describe the bytes that were published.
-          gh release download "$TAG" --repo '${{ github.repository }}' -p sha256sums.txt
-          tools/gen-channel.sh \
-            --channel stable --version "$TAG" \
-            --url-base '${{ github.server_url }}/${{ github.repository }}/releases/download' \
-            --sums sha256sums.txt
-          find channels -type f -print -exec cat {} \;
-
-      - name: publish them
-        run: |
-          set -euo pipefail
-          git config --global user.name  'stratum-release[bot]'
-          git config --global user.email 'stratum-release@users.noreply.github.com'
-          # The token goes in the remote URL rather than a credential helper:
-          # one place to look when a push 403s, and it never reaches the
-          # committed history.
-          remote="https://x-access-token:$GITHUB_TOKEN@github.com/${{ github.repository }}.git"
-          tmp=$(mktemp -d)
-          if git ls-remote --exit-code --heads "$remote" "$CHANNEL_BRANCH" >/dev/null 2>&1; then
-            git clone --depth 1 --branch "$CHANNEL_BRANCH" "$remote" "$tmp"
-          else
-            # First release: the branch does not exist yet. An orphan, so the
-            # channel history is not the source history.
-            git clone --depth 1 "$remote" "$tmp"
-            git -C "$tmp" checkout --orphan "$CHANNEL_BRANCH"
-            git -C "$tmp" rm -rqf . || true
-            # GitHub Pages runs Jekyll by default and would eat the directory
-            # layout; .nojekyll turns that off.
-            touch "$tmp/.nojekyll"
-          fi
-          mkdir -p "$tmp/channels"
-          cp -R channels/. "$tmp/channels/"
-          cd "$tmp"
-          git add -Af
-          git commit -m "channels: $TAG" || { echo "no channel change for $TAG"; exit 0; }
-          git push "$remote" "HEAD:$CHANNEL_BRANCH"
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      - name: the live channel must serve this release
-        # The whole reason this job exists. A channel that was written but is not
-        # being served is indistinguishable, from a client, from a channel that
-        # was never updated — which is how a stable channel ends up years stale.
-        run: |
-          set -euo pipefail
-          minor=$(sed -E 's/^v([0-9]+\.[0-9]+).*/v\1/' <<<"$TAG")
-          fail=0
-          for ch in stable "stable/$minor"; do
-            url="$CHANNEL_URL_BASE/channels/$ch/index.yaml"
-            served=""
-            # Pages needs a minute or two to deploy. Ten tries at 30s is five
-            # minutes, which is "within minutes of publish" and not longer.
-            for i in $(seq 1 10); do
-              served=$(curl -fsSL --max-time 20 "$url" 2>/dev/null | sed -n 's/^version: *//p' || true)
-              [ "$served" = "$TAG" ] && break
-              echo "  attempt $i/10: $url serves '${served:-<unreachable>}', want '$TAG'"
-              sleep 30
-            done
-            if [ "$served" = "$TAG" ]; then
-              echo "  ok  $url serves $TAG"
-            else
-              echo "::error title=stale update channel::$url serves '${served:-<unreachable>}' but $TAG was just published. Users will not be offered this release."
-              fail=1
-            fi
-          done
-          exit $fail
-
-      - name: say the channel is broken, out loud
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh issue create --repo '${{ github.repository }}' \
-            --title "Update channel is not serving $TAG" \
-            --label release \
-            --body "$(printf '%s\n' \
-              "\`$TAG\` is published but \`$CHANNEL_URL_BASE/channels/stable/index.yaml\` is not serving it." \
-              "" \
-              "Users are not being offered this release, and nothing about that is visible to them — it looks exactly like there being no new release. Treat it as an outage." \
-              "" \
-              "Check the job log for whether the WRITE (push to \`$CHANNEL_BRANCH\`) or the READ (Pages deployment) failed." \
-              "" \
-              "[Workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})")"

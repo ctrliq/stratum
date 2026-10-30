@@ -2,8 +2,8 @@ name: dev-release
 
 # Throwaway artifacts from any ref, for developers to test with. This is NOT a
 # release and deliberately shares none of release.yml's guarantees: nothing is
-# signed, no SBOM is produced, the image mirror is not written, conformance does
-# not run, and no update channel is touched.
+# signed, no SBOM is produced, the image mirror is not written, and conformance
+# does not run.
 # See tools/dev-release.sh.
 #
 # Dispatch-only, on purpose. A dev build is something a person asks for; nothing
@@ -108,8 +108,8 @@ jobs:
   # Published as a PRERELEASE, not a draft, so a tester can fetch an asset
   # without a token. Publishing fires release-publish.yml, which is safe here:
   # it sets final=false for a prerelease, so its conformance guard does not
-  # apply and its `channels` job — the one that writes the update channel — is
-  # gated on final == 'true' and skips. The run is a no-op.
+  # apply, and its Depot delivery runs only for a v-prefixed tag, which a
+  # dev-... tag is not. The run is a no-op.
   release:
     needs: meta
     runs-on: ubuntu-latest
@@ -136,7 +136,7 @@ jobs:
               '' \
               'Built from `${{ inputs.ref }}` at `${{ needs.meta.outputs.sha }}` for testing.' \
               'It is **unsigned**, carries **no SBOM**, has **not** been through' \
-              'conformance, and is **not** on any update channel. Do not install it' \
+              'conformance, and is **not** delivered to Depot. Do not install it' \
               'anywhere that matters, and do not treat its version string as a release.' \
               '' \
               'It may be deleted at any time. For a real release see' \
