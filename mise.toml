@@ -60,7 +60,7 @@ jq          = "latest"   # release-notes.sh, dev-release.sh
 # skipping" and exits 0, so on a box without them the target passes while doing
 # nothing. That is what this file is mainly for.
 syft        = "latest"   # make sbom
-cosign      = "latest"   # make sign, tools/gen-channel.sh
+cosign      = "latest"   # make sign
 crane       = "latest"   # tools/mirror-images.sh --verify/--push
 shellcheck  = "latest"   # make lint-shell, tools/test-ostests-sweep.sh
 # "latest" for both, not $(node_version)/$(pnpm_version) — and that is not the
