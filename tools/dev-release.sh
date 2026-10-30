@@ -2,8 +2,7 @@
 # Builds a THROWAWAY artifact set from any ref, for developers to test with.
 #
 # This is not a release and must never be mistaken for one: nothing here is
-# signed, no SBOM is produced, conformance does not run, and no update channel
-# is touched.
+# signed, no SBOM is produced, and conformance does not run.
 #
 # Two modes:
 #   CI (default) dispatches .github/workflows/dev-release.yml, which builds both
