@@ -678,9 +678,11 @@ func observeListenerClosed(addr string, dial func(string, string, time.Duration)
 			if errors.As(err, &op) && errors.Is(op.Err, syscall.ECONNREFUSED) {
 				return nil
 			}
-			// A connect racing listener closure can be reset before subsequent
-			// probes are refused. Only refusal confirms the listener is closed.
-			if !errors.Is(err, syscall.ECONNRESET) {
+			// A connect racing listener closure can be reset, or time out on a
+			// loaded runner, before subsequent probes are refused. Only refusal
+			// confirms the listener is closed.
+			var ne net.Error
+			if !errors.Is(err, syscall.ECONNRESET) && !(errors.As(err, &ne) && ne.Timeout()) {
 				return fmt.Errorf("observe listener shutdown: %w", err)
 			}
 		} else {
@@ -706,6 +708,25 @@ func TestObserveListenerClosedRetriesConnectionReset(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("made %d probes, want a reset followed by confirmed refusal", calls)
+	}
+}
+
+func TestObserveListenerClosedRetriesDialTimeout(t *testing.T) {
+	calls := 0
+	err := observeListenerClosed("127.0.0.1:1", func(string, string, time.Duration) (net.Conn, error) {
+		calls++
+		if calls == 1 {
+			// What net.DialTimeout returns when its deadline passes.
+			_, err := (&net.Dialer{Deadline: time.Now().Add(-time.Second)}).Dial("tcp", "127.0.0.1:1")
+			return nil, err
+		}
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	})
+	if err != nil {
+		t.Fatalf("a dial timeout during listener closure must be retried: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("made %d probes, want a timeout followed by confirmed refusal", calls)
 	}
 }
 
