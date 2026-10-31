@@ -1469,6 +1469,10 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 					return netcfg.Config{}, err
 				}
 				*st = r.State
+				// The node facts are this run's spec.node, as on a fresh join: a
+				// journal an older build wrote has none, and the operator may have
+				// corrected them before retrying.
+				st.NodeLabels, st.NodeTaints, st.RuntimeHandlers = o.NodeLabels, o.NodeTaints, o.RuntimeHandlers
 				// A journal an older build wrote records the --join URL as the
 				// server. The current endpoint rule decides it instead, so the resumed
 				// join saves, and journals again, the endpoint its kubeconfigs

@@ -139,7 +139,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := o.Node.Validate(); err != nil {
 			return nil, fmt.Errorf("worker restart: %w; nothing was saved", err)
 		}
-		if o.Node.Taints != nil && !slices.Equal(o.Node.Taints, st.NodeTaints) {
+		if o.Node.Taints != nil && !sameTaints(o.Node.Taints, st.NodeTaints) {
 			return nil, fmt.Errorf("worker restart: --node-taint %s differs from the taints this worker joined with (%s), "+
 				"and a node registers its taints only when it joins; change them from a control plane with "+
 				"`stratum kubectl taint node %s`; nothing was saved",
@@ -283,11 +283,8 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 			return nil, fmt.Errorf("--cluster-domain: %w", err)
 		}
 	}
-	node := mergeNodeSpec(o.ConfigNode, o.Node)
-	if err := node.Validate(); err != nil {
-		return nil, fmt.Errorf("worker join: %w", err)
-	}
-	if err := node.CheckBinaries(); err != nil {
+	node, err := JoinNodeSpec(o.ConfigNode, o.Node)
+	if err != nil {
 		return nil, fmt.Errorf("worker join: %w", err)
 	}
 	hostname, err := hostHostname()

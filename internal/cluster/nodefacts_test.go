@@ -316,3 +316,24 @@ func TestWorkerSELinuxIgnoresSpecNode(t *testing.T) {
 		t.Error("a worker join accepted the engine-owned label")
 	}
 }
+
+func TestSameTaintsComparesTheSetNotTheSpelling(t *testing.T) {
+	joined := []string{"dedicated:NoSchedule", "stratum.ciq.com/unverified=true:NoSchedule"}
+	for _, same := range [][]string{
+		{"stratum.ciq.com/unverified=true:NoSchedule", "dedicated:NoSchedule"},
+		{"dedicated=:NoSchedule", "stratum.ciq.com/unverified=true:NoSchedule"},
+	} {
+		if !sameTaints(same, joined) {
+			t.Errorf("sameTaints(%v, %v) = false; they declare the same taints", same, joined)
+		}
+	}
+	for _, other := range [][]string{
+		{"dedicated:NoSchedule"},
+		{"dedicated:NoExecute", "stratum.ciq.com/unverified=true:NoSchedule"},
+		{"dedicated=gpu:NoSchedule", "stratum.ciq.com/unverified=true:NoSchedule"},
+	} {
+		if sameTaints(other, joined) {
+			t.Errorf("sameTaints(%v, %v) = true; they differ", other, joined)
+		}
+	}
+}

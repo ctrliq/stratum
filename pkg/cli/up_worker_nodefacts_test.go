@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,9 +13,13 @@ import (
 // A worker join hands PrepareWorker the spec.node flags apart from the config
 // file's, so the merge, and which source a refusal names, are PrepareWorker's.
 func TestRunUpWorkerJoinHandsOnTheNodeFacts(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "nvidia-container-runtime")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	join := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa",
 		nodeLabels: []string{"zone=rack-2"}, nodeTaints: []string{"stratum.ciq.com/unverified=true:NoSchedule"},
-		runtimeHandlers: []string{"nvidia=/usr/bin/nvidia-container-runtime"}}
+		runtimeHandlers: []string{"nvidia=" + bin}}
 	config := "spec:\n  node:\n    labels:\n      team: ml\n"
 	call, err := runUpWorker(t, join, config, nil)
 	if err != nil {
@@ -23,7 +28,7 @@ func TestRunUpWorkerJoinHandsOnTheNodeFacts(t *testing.T) {
 	wantFlags := cluster.NodeSpec{
 		Labels:          map[string]string{"zone": "rack-2"},
 		Taints:          []string{"stratum.ciq.com/unverified=true:NoSchedule"},
-		RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"},
+		RuntimeHandlers: map[string]string{"nvidia": bin},
 	}
 	if !reflect.DeepEqual(call.node, wantFlags) {
 		t.Errorf("flags reached PrepareWorker as %+v, want %+v", call.node, wantFlags)
@@ -110,5 +115,23 @@ func TestUpJoinRefusalPointsTheNodeFlagsAtSpecNode(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("network and node flags on a --join: %v; want it to say %q", err, want)
 		}
+	}
+}
+
+// A worker join whose config file declares a handler with no binary on the
+// host is refused before the run takes its start lock, so staging and the
+// SELinux relabel that follow it never touch the host.
+func TestRunUpRefusesAJoinsMissingHandlerBinaryBeforeAnything(t *testing.T) {
+	join := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa"}
+	config := "spec:\n  selinux: false\n  node:\n    runtimeHandlers:\n      nvidia: /nonexistent/nvidia-container-runtime\n"
+	call, err := runUpWorker(t, join, config, nil)
+	if err == nil || !strings.Contains(err.Error(), "Nothing on this host was changed") || !strings.Contains(err.Error(), "nvidia") {
+		t.Fatalf("runUp = %v, want the join refused naming the handler", err)
+	}
+	if call.called {
+		t.Error("the join reached PrepareWorker")
+	}
+	if _, err := os.Stat(startLockPath); !os.IsNotExist(err) {
+		t.Errorf("the join took the start lock before refusing its handler: %v", err)
 	}
 }
