@@ -233,6 +233,9 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 	if cfg.DashboardEnabled() {
 		stacks[dashboardFile] = addons.RenderDashboard(cfg.DashboardSettings())
 	}
+	if len(cfg.Spec.RuntimeClasses) > 0 {
+		stacks[runtimeClassFile] = addons.RenderRuntimeClasses(cfg.Spec.RuntimeClasses)
+	}
 	imported, err := renderImporterStacks(st)
 	if err != nil {
 		return err
@@ -273,8 +276,9 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 }
 
 const (
-	localPathFile = "local-path/local-path.yaml"
-	dashboardFile = addons.DashboardStack + "/dashboard.yaml"
+	localPathFile    = "local-path/local-path.yaml"
+	dashboardFile    = addons.DashboardStack + "/dashboard.yaml"
+	runtimeClassFile = addons.RuntimeClassStack + "/runtime-classes.yaml"
 )
 
 // refuseOrphaningTheDashboard refuses spec.operator: false while the dashboard

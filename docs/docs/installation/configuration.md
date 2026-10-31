@@ -134,6 +134,26 @@ A node cannot declare:
   region labels. Label a node with `stratum kubectl label node` from a control
   plane instead.
 
+## RuntimeClasses
+
+`spec.runtimeClasses` names the runtime handlers the cluster publishes a
+RuntimeClass for. A control plane reads it on every start. Each RuntimeClass
+carries the handler's name and schedules its pods onto the nodes labelled
+`runtime.stratum.ciq.com/<handler>=true`, which are the nodes that declare the
+handler in `spec.node.runtimeHandlers`. None is a default: a pod runs under a
+handler only when its `runtimeClassName` names it.
+
+```yaml
+# /etc/stratum/config.yaml on a control plane
+spec:
+  runtimeClasses:
+    - nvidia
+```
+
+Removing a name deletes its RuntimeClass, and an empty list deletes them all.
+`runc` is containerd's default handler and needs no RuntimeClass, so the list
+refuses it.
+
 ## Node IP
 
 A node takes its IP from the first of these that is set:
