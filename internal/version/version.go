@@ -177,6 +177,13 @@ var (
 	// and uninstall never restored it. A stratum-owned path leaves
 	// /etc/containerd alone and is removed automatically with DataDir.
 	ContainerdConfig string
+	// ContainerdRuntimeConfD declares the node's extra containerd runtime
+	// handlers (spec.node.runtimeHandlers). It is a config version 4 file, so
+	// it lives in a stratum-owned directory that only stratum's config
+	// imports, after /etc/containerd/conf.d: a distro containerd (<=v2.2)
+	// that also imports the shared directory would refuse it, and the later
+	// import wins over a handler nvidia-ctk declared there.
+	ContainerdRuntimeConfD string
 	// ContainerdRootDir / ContainerdStateDir are where stratum points containerd's
 	// root and state (away from the distro defaults, onto the stratum layout so a
 	// distro containerd on the same host does not collide). These are the SINGLE
@@ -218,12 +225,6 @@ var (
 	RegistriesConfig string
 	CertsDir         = "/etc/containerd/certs.d"
 	ContainerdConfD  = "/etc/containerd/conf.d/stratum-registry.toml"
-
-	// ContainerdRuntimeConfD declares the node's extra containerd runtime
-	// handlers (spec.node.runtimeHandlers) through the same conf.d import. It
-	// sorts after the 99-nvidia.toml that nvidia-ctk writes, so a handler both
-	// declare resolves to stratum's.
-	ContainerdRuntimeConfD = "/etc/containerd/conf.d/stratum-runtime.toml"
 
 	// NetConfigPath persists the cluster's effective pod/service CIDRs (chosen at
 	// cluster-init) so HA joins and cert rotation inherit the exact same values
@@ -293,6 +294,7 @@ func SetRoots(dataDir, confDir, runDir string) {
 	ManifestsDir = filepath.Join(DataDir, "manifests")
 	HelmCacheDir = filepath.Join(DataDir, "helm")
 	ContainerdConfig = filepath.Join(K8sConfDir, "containerd.toml")
+	ContainerdRuntimeConfD = filepath.Join(K8sConfDir, "containerd.d", "stratum-runtime.toml")
 	ContainerdRootDir = filepath.Join(DataDir, "containerd")
 	ContainerdStateDir = filepath.Join(RunDir, "containerd")
 	AuditPolicyPath = filepath.Join(K8sConfDir, "audit-policy.yaml")

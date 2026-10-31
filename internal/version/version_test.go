@@ -214,7 +214,6 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 		{"StratumInstallPath", StratumInstallPath, "/usr/local/bin/stratum"},
 		{"CertsDir", CertsDir, "/etc/containerd/certs.d"},
 		{"ContainerdConfD", ContainerdConfD, "/etc/containerd/conf.d/stratum-registry.toml"},
-		{"ContainerdRuntimeConfD", ContainerdRuntimeConfD, "/etc/containerd/conf.d/stratum-runtime.toml"},
 		{"SystemdUnitPath", SystemdUnitPath, "/etc/systemd/system/stratum.service"},
 		{"AuditLogDir", AuditLogDir, "/var/log/stratum"},
 		{"AuditLogPath", AuditLogPath, "/var/log/stratum/audit.log"},

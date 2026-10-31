@@ -201,7 +201,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			if runtime.CgroupDriver() == "systemd" {
 				driver = "SystemdCgroup = true"
 			}
-			if err := os.WriteFile(version.ContainerdConfig, []byte("imports = ['/etc/containerd/conf.d/*.toml']\n"+driver+"\nsandbox_image = '"+runtime.SandboxImage+"'\nenable_selinux = false\n"), 0o600); err != nil {
+			if err := os.WriteFile(version.ContainerdConfig, []byte("imports = ['/etc/containerd/conf.d/*.toml', '"+filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), "*.toml")+"']\n"+driver+"\nsandbox_image = '"+runtime.SandboxImage+"'\nenable_selinux = false\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 

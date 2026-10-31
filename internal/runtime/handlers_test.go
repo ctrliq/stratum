@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -226,14 +227,34 @@ func TestWriteHandlersRefusesAnInvalidHandler(t *testing.T) {
 }
 
 func TestTheCapturedDefaultImportsConfD(t *testing.T) {
-	if !importsConfDOK(containerdDefault(t)) {
-		t.Fatalf("the captured containerd default no longer imports %s; both stratum drop-ins depend on it", confdImportGlob)
+	imports, err := configImports(containerdDefault(t))
+	if err != nil || !slices.Contains(imports, confdImportGlob) {
+		t.Fatalf("the captured containerd default imports %v (%v); the registry drop-in depends on %s", imports, err, confdImportGlob)
+	}
+}
+
+// stratum's config imports the shared conf.d, then its own directory: the
+// handler drop-in is a config version 4 file a distro containerd importing
+// conf.d would refuse, and the later import wins over a handler nvidia-ctk
+// declared in conf.d.
+func TestTheRenderedConfigImportsTheHandlersDirAfterConfD(t *testing.T) {
+	got := rewriteContainerdConfig(containerdDefault(t), "SystemdCgroup = true", false)
+	imports, err := configImports(got)
+	want := []string{confdImportGlob, handlersImportGlob()}
+	if err != nil || !slices.Equal(imports, want) {
+		t.Errorf("rendered imports = %v (%v), want %v", imports, err, want)
+	}
+	if strings.HasPrefix(handlersImportGlob(), "/etc/containerd/") {
+		t.Errorf("the handler drop-in dir %s is shared with the host's containerd", handlersImportGlob())
+	}
+	if got := addHandlersImport("imports = []\n"); got != "imports = ['"+handlersImportGlob()+"']\n" {
+		t.Errorf("addHandlersImport on an empty list = %q", got)
 	}
 }
 
 // A containerd default without the conf.d import would silently drop the
-// registry mirrors and runtime handlers stratum writes there, so the render
-// refuses and writes nothing.
+// registry mirrors stratum writes there, so the render refuses and writes
+// nothing.
 func TestEnsureConfigRefusesADefaultWithoutTheConfDImport(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket := version.BinDir, version.ContainerdConfig, version.ControlSocket
@@ -243,7 +264,7 @@ func TestEnsureConfigRefusesADefaultWithoutTheConfDImport(t *testing.T) {
 	t.Cleanup(func() { version.BinDir, version.ContainerdConfig, version.ControlSocket = oldBin, oldConfig, oldSocket })
 
 	noImport := strings.Replace(containerdDefault(t), "imports = ['"+confdImportGlob+"']", "imports = []", 1)
-	if importsConfDOK(noImport) {
+	if imports, _ := configImports(noImport); slices.Contains(imports, confdImportGlob) {
 		t.Fatal("the fixture edit did not remove the import")
 	}
 	fixture := filepath.Join(dir, "default.toml")
@@ -254,17 +275,17 @@ func TestEnsureConfigRefusesADefaultWithoutTheConfDImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := ensureConfig()
-	if err == nil || !strings.Contains(err.Error(), "registry mirrors and runtime handlers") {
-		t.Fatalf("err = %v, want a refusal naming both drop-ins", err)
+	if err == nil || !strings.Contains(err.Error(), "registry mirrors") {
+		t.Fatalf("err = %v, want a refusal naming the registry drop-in", err)
 	}
 	if _, err := os.Stat(version.ContainerdConfig); !os.IsNotExist(err) {
 		t.Errorf("a config without the conf.d import was written: %v", err)
 	}
 }
 
-// A config stratum wrote before the import was asserted is regenerated, not
-// accepted, when it lacks the import.
-func TestEnsureConfigRegeneratesAnExistingConfigWithoutTheConfDImport(t *testing.T) {
+// A config an earlier stratum wrote, which imports only the shared conf.d, is
+// regenerated rather than accepted, so the node picks up its handler drop-in.
+func TestEnsureConfigRegeneratesAConfigWithoutTheHandlersImport(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket, oldLabelled := version.BinDir, version.ContainerdConfig, version.ControlSocket, selinuxLabelled
 	version.BinDir = dir
@@ -280,7 +301,10 @@ func TestEnsureConfigRegeneratesAnExistingConfigWithoutTheConfDImport(t *testing
 		cgroup = "SystemdCgroup = true"
 	}
 	current := rewriteContainerdConfig(containerdDefault(t), cgroup, false)
-	stale := strings.Replace(current, "imports = ['"+confdImportGlob+"']", "imports = []", 1)
+	stale := strings.Replace(current, ", '"+handlersImportGlob()+"'", "", 1)
+	if importsDropIns(stale) {
+		t.Fatal("the fixture edit did not remove the handlers import")
+	}
 	if err := os.MkdirAll(filepath.Dir(version.ContainerdConfig), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -302,8 +326,8 @@ func TestEnsureConfigRegeneratesAnExistingConfigWithoutTheConfDImport(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !importsConfDOK(string(b)) {
-		t.Errorf("the regenerated config still does not import %s", confdImportGlob)
+	if !importsDropIns(string(b)) {
+		t.Errorf("the regenerated config does not import %s after %s", handlersImportGlob(), confdImportGlob)
 	}
 }
 

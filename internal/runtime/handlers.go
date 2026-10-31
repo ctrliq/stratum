@@ -23,9 +23,15 @@ import (
 // handler deletes only a file stratum wrote.
 const handlersMarker = version.GeneratedMarker + " (source: spec.node.runtimeHandlers)\n"
 
-// confdImportGlob is the import containerd's default config carries and both
-// stratum drop-ins (registry mirrors, runtime handlers) depend on.
+// confdImportGlob is the import containerd's default config carries, which
+// the registry drop-in depends on.
 const confdImportGlob = "/etc/containerd/conf.d/*.toml"
+
+// handlersImportGlob is the stratum-owned import the runtime-handler drop-in
+// rides; stratum's config lists it after confdImportGlob, so its handlers win.
+func handlersImportGlob() string {
+	return filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), "*.toml")
+}
 
 // handlersConfigVersion is the containerd config version the drop-in is
 // written in. containerd migrates an import by its own version, and one
@@ -77,7 +83,7 @@ func CheckHandlerBinary(path string) error {
 	return nil
 }
 
-// renderHandlers renders the conf.d drop-in declaring each handler as a runc
+// renderHandlers renders the drop-in declaring each handler as a runc
 // v2 shim running its own binary in a pod sandbox like runc's, with the
 // cgroup driver kubelet and containerd share, and CDI on so device plugins can
 // inject devices.
@@ -192,21 +198,42 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	return true, nil
 }
 
-// importsConfD reports whether a containerd config imports conf.d, read as
-// containerd reads it, and the parse error when it cannot be read.
-func importsConfD(cfg string) (bool, error) {
+// configImports is a containerd config's imports, read as containerd reads
+// them, and the parse error when it cannot be read.
+func configImports(cfg string) ([]string, error) {
 	var c struct {
 		Imports []string `toml:"imports"`
 	}
 	if err := toml.Unmarshal([]byte(cfg), &c); err != nil {
-		return false, err
+		return nil, err
 	}
-	return slices.Contains(c.Imports, confdImportGlob), nil
+	return c.Imports, nil
 }
 
-// importsConfDOK is importsConfD for a config stratum already wrote: one that
+// importsDropIns reports whether a config stratum rendered imports both
+// drop-in directories, the stratum-owned one after the shared one. One that
 // does not parse is not current, and is rendered again.
-func importsConfDOK(cfg string) bool {
-	ok, err := importsConfD(cfg)
-	return err == nil && ok
+func importsDropIns(cfg string) bool {
+	imports, err := configImports(cfg)
+	if err != nil {
+		return false
+	}
+	shared, own := slices.Index(imports, confdImportGlob), slices.Index(imports, handlersImportGlob())
+	return shared >= 0 && own > shared
+}
+
+// importsLine matches the top-level imports array `containerd config default`
+// renders.
+var importsLine = regexp.MustCompile(`(?m)^imports = \[(.*)\]$`)
+
+// addHandlersImport appends the stratum-owned import to a config's imports.
+func addHandlersImport(cfg string) string {
+	return importsLine.ReplaceAllStringFunc(cfg, func(line string) string {
+		inner := importsLine.FindStringSubmatch(line)[1]
+		own := "'" + handlersImportGlob() + "'"
+		if strings.TrimSpace(inner) == "" {
+			return "imports = [" + own + "]"
+		}
+		return "imports = [" + inner + ", " + own + "]"
+	})
 }
