@@ -889,20 +889,22 @@ waitForRegistration:
 // registers. A first boot's kubelet starts before its Node exists, so the
 // kubelet-start hook finds nothing to label; this waits out that first
 // registration, within the node-registered task's budget, and labels once.
+// Its first check waits a tick, as the node-registered task's does, so its
+// kubectl is not forked while the supervisor scans for a legacy supervisor.
 func labelOwnNodeOnceRegistered(ctx context.Context, st *NodeState) {
 	ctx, cancel := context.WithTimeout(ctx, nodeRegistrationGiveUp)
 	defer cancel()
 	t := time.NewTicker(nodeRegistrationInterval)
 	defer t.Stop()
 	for {
-		if nodeRegistered(ctx, st.Hostname) {
-			labelOwnNode(ctx, st)
-			return
-		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if nodeRegistered(ctx, st.Hostname) {
+			labelOwnNode(ctx, st)
+			return
 		}
 	}
 }
