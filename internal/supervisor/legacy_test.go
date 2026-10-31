@@ -201,3 +201,26 @@ func TestLegacySupervisorAgreesWithUninstallOnUpDetection(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacySupervisorSkipsOwnChildren(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "124")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte("/usr/local/bin/stratum\x00up\x00"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte("124 (str) um (x)) R 123 124 1 0 -1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	read := func(string) (*debug.BuildInfo, error) {
+		return &debug.BuildInfo{Main: debug.Module{Path: "github.com/ctrliq/stratum"}}, nil
+	}
+	if pid, err := findLegacySupervisor(root, 123, read); err != nil || pid != 0 {
+		t.Fatalf("own child mid-exec blocked: pid=%d err=%v", pid, err)
+	}
+	if pid, err := findLegacySupervisor(root, 999, read); err != nil || pid != 124 {
+		t.Fatalf("another process's up was not refused: pid=%d err=%v", pid, err)
+	}
+}
