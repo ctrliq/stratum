@@ -75,6 +75,9 @@ type NodeState struct {
 	// the scheduled loops do. Empty on a node that has not restarted since it
 	// began recording it; readers then use the default path.
 	ConfigPath string `json:"configPath,omitempty"`
+	// RuntimeHandlers is spec.node.runtimeHandlers: extra containerd runtime
+	// handlers by name, each the absolute path of its OCI runtime binary.
+	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
 }
 
 // CISProfile is the name of the engine's CIS profile.

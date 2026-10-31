@@ -50,6 +50,7 @@ func TestNodeFileOwnersNameTheRuntimeConfigs(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(K8sConfDir, "kubelet.conf"),
 		ContainerdConfig,
+		ContainerdRuntimeConfD,
 		filepath.Join(K8sConfDir, "selinux-confined-since"),
 		filepath.Join(CoreDNSUpstreamDir, "resolv.conf"),
 	} {

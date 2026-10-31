@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -261,7 +262,7 @@ func ensureConfigWithWriter(w io.Writer) (bool, error) {
 	}
 	if prevErr == nil &&
 		strings.Contains(string(prev), want) && strings.Contains(string(prev), SandboxImage) &&
-		strings.Contains(string(prev), enableSELinuxAssign(confine)) {
+		strings.Contains(string(prev), enableSELinuxAssign(confine)) && importsDropIns(string(prev)) {
 		if err := recordConfinement(confine, written); err != nil {
 			return false, err
 		}
@@ -279,10 +280,18 @@ func ensureConfigWithWriter(w io.Writer) (bool, error) {
 	if !sandboxImageLine.MatchString(string(out)) {
 		return false, fmt.Errorf("containerd config default has no sandbox image setting stratum recognises; refusing to write a config that would pull pause from the internet instead of %s", SandboxImage)
 	}
+	if imports, err := configImports(string(out)); err != nil {
+		return false, fmt.Errorf("containerd config default does not parse: %w", err)
+	} else if !slices.Contains(imports, confdImportGlob) {
+		return false, fmt.Errorf("containerd config default does not import %s; refusing to write a config that would silently drop stratum's registry mirrors", confdImportGlob)
+	}
 	if confine && !enableSELinuxLine.MatchString(string(out)) {
 		return false, errors.New("containerd config default has no enable_selinux setting stratum recognises; refusing to write a config that would leave containers unconfined on an SELinux host")
 	}
 	s := rewriteContainerdConfig(string(out), want, confine)
+	if !importsDropIns(s) {
+		return false, fmt.Errorf("the containerd config stratum rendered does not import %s after %s; refusing to write a config that would silently drop this node's runtime handlers", handlersImportGlob(), confdImportGlob)
+	}
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {
 		return false, err
 	}
@@ -351,7 +360,7 @@ func rewriteContainerdConfig(defaultTOML, cgroup string, confine bool) string {
 		s = strings.ReplaceAll(s, `root = `+q+`/var/lib/containerd`+q, rootAssign())
 		s = strings.ReplaceAll(s, `state = `+q+`/run/containerd`+q, stateAssign())
 	}
-	return s
+	return addHandlersImport(s)
 }
 
 // legacyHostConfig is where earlier stratum builds wrote their containerd
