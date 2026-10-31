@@ -143,6 +143,7 @@ tlsCipherSuites: [%s]
 	if st.Role == "worker" {
 		b.WriteString("rotateCertificates: true\n")
 	}
+	b.WriteString(registerWithTaintsLine(st.NodeTaints))
 	fmt.Fprintf(&b, "staticPodPath: %s\n", staticpod.Dir())
 	if err := os.MkdirAll(staticpod.Dir(), 0o755); err != nil {
 		return err
@@ -246,4 +247,22 @@ func servingBootstrapped(p profile.Profile, pkiDir string) bool {
 func hasServingLeaf(pkiDir string) bool {
 	_, err := os.Stat(filepath.Join(pkiDir, "kubelet.crt"))
 	return err == nil
+}
+
+// registerWithTaintsLine renders the node's spec.node taints, each
+// key[=value]:Effect and already validated, as the kubelet's
+// registerWithTaints: the taints the Node is created with. The kubelet applies
+// them only when it registers the Node, which is what holds a new node's
+// workloads off until it is released; empty renders nothing.
+func registerWithTaintsLine(taints []string) string {
+	if len(taints) == 0 {
+		return ""
+	}
+	entries := make([]string, 0, len(taints))
+	for _, t := range taints {
+		kv, effect, _ := strings.Cut(t, ":")
+		key, value, _ := strings.Cut(kv, "=")
+		entries = append(entries, fmt.Sprintf("{key: %q, value: %q, effect: %s}", key, value, effect))
+	}
+	return "registerWithTaints: [" + strings.Join(entries, ", ") + "]\n"
 }
