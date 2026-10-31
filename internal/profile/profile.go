@@ -322,6 +322,7 @@ var engineKubeletKeys = map[string]bool{
 	"makeIPTablesUtilChains":                 true,
 	"preloadedImagesVerificationAllowlist":   true,
 	"readOnlyPort":                           true,
+	"registerWithTaints":                     true,
 	"rotateCertificates":                     true,
 	"serverTLSBootstrap":                     true,
 	"staticPodPath":                          true,

@@ -135,6 +135,7 @@ func TestTheEngineKubeletKeysAreReservedFromProfiles(t *testing.T) {
 			setServingLeaf(t, leaf)
 			st := controller("")
 			st.Role = role
+			st.NodeTaints = []string{"stratum.ciq.com/unverified=true:NoSchedule"}
 			var conf map[string]any
 			if err := yaml.Unmarshal([]byte(renderKubelet(t, st)), &conf); err != nil {
 				t.Fatal(err)

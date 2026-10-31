@@ -439,12 +439,13 @@ func TestPostStartKeepsRenewalAndSnapshotsThroughASlowApiserver(t *testing.T) {
 // registration check is its whole precondition.
 func stubNodeTask(t *testing.T, interval, giveUp time.Duration, wantHost string, registered func(context.Context, string) bool) (labels, stamps, checks func() int32) {
 	t.Helper()
-	oldStart := startEtcdGrowthRecorder
+	oldStart, oldLabelOwn := startEtcdGrowthRecorder, labelOwnNode
 	oldInterval, oldGiveUp, oldCheck, oldLabel, oldStamp := nodeRegistrationInterval, nodeRegistrationGiveUp, nodeRegistered, labelControlPlane, stampNode
 	t.Cleanup(func() {
-		startEtcdGrowthRecorder = oldStart
+		startEtcdGrowthRecorder, labelOwnNode = oldStart, oldLabelOwn
 		nodeRegistrationInterval, nodeRegistrationGiveUp, nodeRegistered, labelControlPlane, stampNode = oldInterval, oldGiveUp, oldCheck, oldLabel, oldStamp
 	})
+	labelOwnNode = func(context.Context, *NodeState) {}
 	startEtcdGrowthRecorder = func(ctx context.Context) { <-ctx.Done() }
 	nodeRegistrationInterval, nodeRegistrationGiveUp = interval, giveUp
 	var labelN, stampN, checkN atomic.Int32
