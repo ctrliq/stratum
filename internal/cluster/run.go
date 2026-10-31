@@ -616,11 +616,17 @@ var (
 	// ctx ends (retryUntilApplied), as the control-plane label is: a node
 	// without its handler labels takes none of its RuntimeClasses' pods, and
 	// nothing else would label it before the next kubelet start. Non-fatal,
-	// but logged.
+	// but logged. Each attempt labels from node.yaml as it is then, falling
+	// back to st: `stratum runtime apply` changes the handlers under a running
+	// supervisor, whose st predates the change.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
-		handlers := slices.Sorted(maps.Keys(st.RuntimeHandlers))
 		label := func(ctx context.Context) error {
-			return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, handlers)
+			cur := st
+			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
+				cur = saved
+			}
+			handlers := slices.Sorted(maps.Keys(cur.RuntimeHandlers))
+			return reconcileOwnNodeLabels(ctx, cur.Hostname, cur.NodeLabels, handlers)
 		}
 		err := label(ctx)
 		if err == nil || ctx.Err() != nil {

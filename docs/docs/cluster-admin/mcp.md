@@ -32,8 +32,8 @@ What the server exposes is decided when you start it, not per call.
 
 | Started with | Tools available | What they can do |
 |---|---|---|
-| no flags | 18 | read cluster and node state |
-| `--allow-write` | +8 | apply manifests, scale, snapshot, mint join tokens |
+| no flags | 19 | read cluster and node state |
+| `--allow-write` | +9 | apply manifests, scale, snapshot, mint join tokens, rewrite containerd configuration |
 | `--allow-destructive` | +11 | upgrade, roll back, rotate CAs, restore etcd, remove restore copies, uninstall |
 
 The flags are independent — `--allow-destructive` on its own does not enable the
@@ -68,8 +68,8 @@ capability is there and invite it to look for another way to the same effect.
 **Stratum's own state, from the node.** `cluster_status` reports the supervised
 process table — what the supervisor *intends* to be running versus what is,
 which is not visible from the Kubernetes API at all. `certs_check`,
-`snapshot_list`, `snapshot_restore_copies`, `token_list` and `registry_check`
-report the rest. `upgrade_plan` and `uninstall_preview` show what a change would do without
+`snapshot_list`, `snapshot_restore_copies`, `token_list`, `registry_check` and
+`runtime_check` report the rest. `upgrade_plan` and `uninstall_preview` show what a change would do without
 doing it.
 
 Every list is bounded and says so. A truncated result carries `truncated: true`

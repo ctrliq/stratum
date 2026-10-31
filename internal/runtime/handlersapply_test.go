@@ -1,0 +1,275 @@
+package runtime
+
+import (
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/ctrliq/stratum/internal/version"
+)
+
+// handlersHost redirects every path ApplyHandlers and CheckHandlers read to a
+// temp tree: containerd's config, importing both drop-in directories unless
+// withImport is false, the runtime-handler drop-in, the shared conf.d with the
+// registry drop-in in it, and the CDI spec directories. The supervisor socket
+// points at an absent path, so containerd reports not running until a test
+// starts a fakeSupervisor. It returns the shared conf.d directory.
+func handlersHost(t *testing.T, withImport bool) string {
+	t.Helper()
+	root := t.TempDir()
+	oldCfg, oldRuntime, oldConfd, oldSock, oldCDI := version.ContainerdConfig, version.ContainerdRuntimeConfD, version.ContainerdConfD, version.ControlSocket, cdiSpecDirs
+	t.Cleanup(func() {
+		version.ContainerdConfig, version.ContainerdRuntimeConfD, version.ContainerdConfD, version.ControlSocket, cdiSpecDirs = oldCfg, oldRuntime, oldConfd, oldSock, oldCDI
+	})
+	version.ContainerdConfig = filepath.Join(root, "containerd.toml")
+	version.ContainerdRuntimeConfD = filepath.Join(root, "containerd.d", "stratum-runtime.toml")
+	version.ContainerdConfD = filepath.Join(root, "conf.d", "stratum-registry.toml")
+	version.ControlSocket = filepath.Join(root, "absent.sock")
+	cdiSpecDirs = []string{filepath.Join(root, "cdi"), filepath.Join(root, "run-cdi")}
+	imports := "'" + confdImportGlob + "'"
+	if withImport {
+		imports += ", '" + handlersImportGlob() + "'"
+	}
+	if err := os.WriteFile(version.ContainerdConfig, []byte("version = 3\nimports = ["+imports+"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	confd := filepath.Dir(version.ContainerdConfD)
+	if err := os.MkdirAll(confd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return confd
+}
+
+// TestApplyHandlers_ReportsWhetherItRestarted pins ApplyHandlers' contract,
+// cloned from ApplyRegistry's: Restarted is true only when this call restarted
+// containerd, which takes a changed drop-in, a running containerd and a caller
+// that asked for the restart. Changed alone only means the drop-in changed.
+func TestApplyHandlers_ReportsWhetherItRestarted(t *testing.T) {
+	t.Run("changed_and_running_restarts_once", func(t *testing.T) {
+		handlersHost(t, true)
+		restarts := fakeSupervisor(t, false)
+		h := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+		res, err := ApplyHandlers(io.Discard, h, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Changed || !res.Restarted || restarts() != 1 {
+			t.Fatalf("first apply = %+v after %d restarts, want changed and restarted once", res, restarts())
+		}
+		res, err = ApplyHandlers(io.Discard, h, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Changed || res.Restarted || restarts() != 1 {
+			t.Errorf("unchanged apply = %+v after %d restarts, want nothing changed and no second restart", res, restarts())
+		}
+	})
+	t.Run("changed_but_not_running_reports_no_restart", func(t *testing.T) {
+		handlersHost(t, true)
+		res, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Changed || res.Restarted {
+			t.Errorf("apply with containerd stopped = %+v, want changed and not restarted", res)
+		}
+	})
+	t.Run("restart_not_asked_for", func(t *testing.T) {
+		handlersHost(t, true)
+		restarts := fakeSupervisor(t, false)
+		res, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Changed || res.Restarted || restarts() != 0 {
+			t.Errorf("apply without restart = %+v after %d restarts, want changed and no restart", res, restarts())
+		}
+	})
+	t.Run("refused_restart_is_an_error", func(t *testing.T) {
+		handlersHost(t, true)
+		fakeSupervisor(t, true)
+		res, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true)
+		if err == nil || res.Restarted || !res.Changed {
+			t.Errorf("apply with a refused restart = %+v, %v; want changed, not restarted, and an error", res, err)
+		}
+	})
+}
+
+// A containerd config rendered before runtime handlers existed never reads
+// the drop-in, so ApplyHandlers refuses it before writing anything rather
+// than report handlers containerd will never load.
+func TestApplyHandlersRefusesAConfigWithoutTheImport(t *testing.T) {
+	handlersHost(t, false)
+	restarts := fakeSupervisor(t, false)
+	_, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true)
+	if err == nil || !strings.Contains(err.Error(), "does not import") {
+		t.Fatalf("apply against a config without the import = %v, want the import refusal", err)
+	}
+	if _, err := os.Stat(version.ContainerdRuntimeConfD); !os.IsNotExist(err) {
+		t.Errorf("the drop-in was written despite the refusal (stat: %v)", err)
+	}
+	if restarts() != 0 {
+		t.Errorf("containerd was restarted %d times despite the refusal", restarts())
+	}
+}
+
+func TestRestartContainerd(t *testing.T) {
+	handlersHost(t, true)
+	if err := RestartContainerd(); err == nil || !strings.Contains(err.Error(), "not running") {
+		t.Errorf("restart with no supervisor = %v, want the not-running refusal", err)
+	}
+	restarts := fakeSupervisor(t, false)
+	if err := RestartContainerd(); err != nil {
+		t.Fatal(err)
+	}
+	if restarts() != 1 {
+		t.Errorf("restart served %d restart ops, want 1", restarts())
+	}
+}
+
+// findings is r's findings at severity s, joined for matching.
+func findings(r HandlerReport, s Severity) string {
+	var out []string
+	for _, f := range r.Findings {
+		if f.Severity == s {
+			out = append(out, f.Message)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+func TestCheckHandlers(t *testing.T) {
+	writeDropIn := func(t *testing.T, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(version.ContainerdRuntimeConfD), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(version.ContainerdRuntimeConfD, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCDISpec := func(t *testing.T) {
+		t.Helper()
+		if err := os.MkdirAll(cdiSpecDirs[1], 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cdiSpecDirs[1], "nvidia.yaml"), []byte("cdiVersion: 0.6.0\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("nothing_declared_without_the_import_only_warns", func(t *testing.T) {
+		handlersHost(t, false)
+		r := CheckHandlers(nil)
+		if r.Failed() || !strings.Contains(findings(r, SeverityWarn), "does not import") {
+			t.Errorf("a node with no handlers and an old config = %+v, want a warning and no error", r.Findings)
+		}
+	})
+	t.Run("nothing_declared", func(t *testing.T) {
+		handlersHost(t, true)
+		r := CheckHandlers(nil)
+		if r.Failed() || !strings.Contains(findings(r, SeverityOK), "no runtime handlers declared") {
+			t.Errorf("a node with no handlers = %+v, want only ok findings", r.Findings)
+		}
+	})
+	t.Run("in_sync", func(t *testing.T) {
+		handlersHost(t, true)
+		h := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+		writeDropIn(t, renderHandlers(h, CgroupDriver()))
+		writeCDISpec(t)
+		r := CheckHandlers(h)
+		if r.Failed() || findings(r, SeverityWarn) != "" {
+			t.Fatalf("an in-sync node = %+v, want only ok findings", r.Findings)
+		}
+		if !strings.Contains(findings(r, SeverityOK), "1 spec(s)") {
+			t.Errorf("ok findings %q do not count the CDI spec", findings(r, SeverityOK))
+		}
+	})
+	for _, tc := range []struct {
+		name    string
+		dropIn  func(h map[string]string) string
+		saved   bool
+		missing bool
+		noImp   bool
+		want    string
+	}{
+		{name: "drop_in_missing", saved: true, want: "is missing"},
+		{name: "drop_in_not_ours", dropIn: func(map[string]string) string { return "version = 3\n" }, saved: true, want: "was not written by stratum"},
+		{name: "drop_in_stale", dropIn: func(h map[string]string) string { return renderHandlers(h, CgroupDriver()) }, want: "no longer saves"},
+		{name: "drop_in_drifted", dropIn: func(h map[string]string) string {
+			return renderHandlers(map[string]string{"kata": h["gvisor"]}, CgroupDriver())
+		}, saved: true, want: "does not match"},
+		{name: "binary_missing", dropIn: func(h map[string]string) string { return renderHandlers(h, CgroupDriver()) }, saved: true, missing: true, want: "pods using it will not start"},
+		{name: "config_without_import", dropIn: func(h map[string]string) string { return renderHandlers(h, CgroupDriver()) }, saved: true, noImp: true, want: "does not import"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handlersHost(t, !tc.noImp)
+			bin := fakeBinary(t, "runsc")
+			h := map[string]string{"gvisor": bin}
+			if tc.dropIn != nil {
+				writeDropIn(t, tc.dropIn(h))
+			}
+			if tc.missing {
+				if err := os.Remove(bin); err != nil {
+					t.Fatal(err)
+				}
+			}
+			saved := h
+			if !tc.saved {
+				saved = nil
+			}
+			r := CheckHandlers(saved)
+			if !r.Failed() || !strings.Contains(findings(r, SeverityError), tc.want) {
+				t.Errorf("errors = %q, want one containing %q", findings(r, SeverityError), tc.want)
+			}
+		})
+	}
+	t.Run("no_cdi_specs_warns", func(t *testing.T) {
+		handlersHost(t, true)
+		h := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+		writeDropIn(t, renderHandlers(h, CgroupDriver()))
+		r := CheckHandlers(h)
+		if r.Failed() || !strings.Contains(findings(r, SeverityWarn), "no CDI specs") {
+			t.Errorf("a node without CDI specs = %+v, want a warning and no error", r.Findings)
+		}
+	})
+	t.Run("shared_conf_d_contends", func(t *testing.T) {
+		confd := handlersHost(t, true)
+		h := map[string]string{"nvidia": fakeBinary(t, "nvidia-container-runtime")}
+		writeDropIn(t, renderHandlers(h, CgroupDriver()))
+		writeCDISpec(t)
+		nvidiaCtk := `version = 3
+[plugins."io.containerd.cri.v1.runtime".containerd]
+  default_runtime_name = "nvidia"
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia]
+  runtime_type = "io.containerd.runc.v2"
+`
+		for name, content := range map[string]string{
+			"99-nvidia.toml":         nvidiaCtk,
+			"broken.toml":            "[plugins\n",
+			"stratum-registry.toml":  "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia]\n",
+			"unrelated-runtime.toml": "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]\n",
+		} {
+			if err := os.WriteFile(filepath.Join(confd, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r := CheckHandlers(h)
+		warns := findings(r, SeverityWarn)
+		if r.Failed() {
+			t.Errorf("contending conf.d files failed the check: %q", findings(r, SeverityError))
+		}
+		for _, want := range []string{"99-nvidia.toml also defines runtime nvidia", "stratum's definition wins", "default runtime to nvidia", "broken.toml does not parse"} {
+			if !strings.Contains(warns, want) {
+				t.Errorf("warnings %q lack %q", warns, want)
+			}
+		}
+		for _, notWant := range []string{"stratum-registry.toml", "unrelated-runtime.toml"} {
+			if strings.Contains(warns, notWant) {
+				t.Errorf("warnings %q name %s, which does not contend", warns, notWant)
+			}
+		}
+	})
+}

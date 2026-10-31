@@ -69,6 +69,7 @@ func TestNodeRegisteredTaskLabelsNothingWhenTheNodeNeverRegisters(t *testing.T) 
 // call's arguments, and paces retries every millisecond.
 func stubOwnLabels(t *testing.T, warnAfter time.Duration, fail func(call int32) error) *atomic.Int32 {
 	t.Helper()
+	workerScratchHost(t)
 	oldReconcile, oldInterval, oldWarn := reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter
 	t.Cleanup(func() {
 		reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter = oldReconcile, oldInterval, oldWarn
@@ -318,5 +319,37 @@ func TestWorkerKubeletStartChecksAJoinsTaints(t *testing.T) {
 	labelOwnNode = func(context.Context, *NodeState) {}
 	if out := captureWorkerOutput(t, func() { workerKubeletStart(context.Background(), st)("w1") }); !strings.Contains(out, "registered without its declared taints") {
 		t.Errorf("the kubelet start did not check the join's taints: %s", out)
+	}
+}
+
+// The kubelet hook labels from node.yaml as it is now: `stratum runtime apply`
+// changes the handlers under a running supervisor, and labelling from the
+// state the supervisor started with would take the new handler's label back
+// off at the next kubelet start.
+func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
+	workerScratchHost(t)
+	old := reconcileOwnNodeLabels
+	t.Cleanup(func() { reconcileOwnNodeLabels = old })
+	var got []string
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+		got = handlers
+		return nil
+	}
+	started := &NodeState{Role: "worker", Hostname: "w1"}
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}}); err != nil {
+		t.Fatal(err)
+	}
+	labelOwnNode(context.Background(), started)
+	if !slices.Equal(got, []string{"nvidia"}) {
+		t.Errorf("labelled handlers %v, want [nvidia] from node.yaml", got)
+	}
+
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	started.RuntimeHandlers = map[string]string{"gvisor": "/opt/runsc"}
+	labelOwnNode(context.Background(), started)
+	if !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("labelled handlers %v from another node's state, want [gvisor] from the started state", got)
 	}
 }
