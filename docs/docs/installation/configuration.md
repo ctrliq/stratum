@@ -151,6 +151,33 @@ A node cannot declare:
   region labels. Label a node with `stratum kubectl label node` from a control
   plane instead.
 
+### Releasing a node
+
+A node that joins with the `stratum.ciq.com/unverified=true:NoSchedule` taint
+takes no workloads until you release it, for example after a burn-in job that
+tolerates the taint has passed. Release it from a control plane:
+
+```bash
+sudo stratum node release gpu-worker-1
+```
+
+That removes every `stratum.ciq.com/unverified` taint from the Node and records
+who released it, and when, in its `stratum.ciq.com/verified` annotation, as
+`<who>@<time>`. `--by` names who, and defaults to the user who ran `sudo`.
+`release` refuses a node without the taint; `--force` records it as verified
+anyway.
+
+To take a node out of service again, for a repair or a reimage, hold it:
+
+```bash
+sudo stratum node hold gpu-worker-1 --reason "replacing a failed GPU"
+```
+
+That adds the taint back, removes `stratum.ciq.com/verified`, and records who
+held it, when and why in `stratum.ciq.com/held`. Pods already running on the
+node stay; run `stratum kubectl drain gpu-worker-1 --ignore-daemonsets` to move
+them. Neither command changes any other taint or annotation.
+
 ## RuntimeClasses
 
 `spec.runtimeClasses` names the runtime handlers the cluster publishes a
