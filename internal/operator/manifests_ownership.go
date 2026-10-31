@@ -14,7 +14,7 @@ import (
 // Client-writable labels carry no ownership authority: only staged manifests
 // and the administrator-protected inventory can grant deletion permission.
 func (d *manifestDeployer) recordBundledOwnership(ctx context.Context, stack string, ref objRef) error {
-	if stack != addons.DashboardStack && stack != "local-path" {
+	if stack != addons.DashboardStack && stack != "local-path" && stack != addons.RuntimeClassStack {
 		return nil
 	}
 	legacy, err := readMigrationRecord(filepath.Join(d.dir, appliedRecordName))
