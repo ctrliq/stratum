@@ -224,6 +224,9 @@ func runUp(parent context.Context, o runUpOptions) error {
 		return err
 	}
 	o.configPath = configPath
+	if err := preflightWorkerJoinNode(o); err != nil {
+		return err
+	}
 	// The run owns its signals from here, before the first preflight call:
 	// one interrupt context — SIGINT, SIGTERM and SIGHUP, where the first
 	// signal cancels and restores the default action so a second one kills
@@ -1239,4 +1242,26 @@ func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
 		return cluster.NodeSpec{}, fmt.Errorf("stratum up: --node-label, --node-taint or --runtime-handler: %w. Nothing on this host was changed", err)
 	}
 	return node, nil
+}
+
+// preflightWorkerJoinNode refuses a worker join whose spec.node, from its
+// config file and flags together, the join would refuse, before staging or
+// SELinux relabelling touch the host. A restart is not checked here: it only
+// warns about a missing handler binary.
+func preflightWorkerJoinNode(o runUpOptions) error {
+	if !o.worker || o.server == "" {
+		return nil
+	}
+	wcfg, err := workerConfig(o.configPath)
+	if err != nil {
+		return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+	}
+	flags, err := o.nodeSpec()
+	if err != nil {
+		return err
+	}
+	if _, err := cluster.JoinNodeSpec(wcfg.Node, flags); err != nil {
+		return fmt.Errorf("stratum up: worker join: %w. Nothing on this host was changed", err)
+	}
+	return nil
 }

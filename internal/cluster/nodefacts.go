@@ -164,6 +164,21 @@ func ParseKeyValues(flag string, values []string) (map[string]string, error) {
 	return out, nil
 }
 
+// JoinNodeSpec is the spec.node a worker join saves: its flags laid over its
+// config file's, validated, with every runtime handler's binary installed. It
+// reads only the host's handler binaries, so a caller can run it before
+// anything on the host is changed.
+func JoinNodeSpec(file, flags NodeSpec) (NodeSpec, error) {
+	node := mergeNodeSpec(file, flags)
+	if err := node.Validate(); err != nil {
+		return NodeSpec{}, err
+	}
+	if err := node.CheckBinaries(); err != nil {
+		return NodeSpec{}, err
+	}
+	return node, nil
+}
+
 // mergeNodeSpec lays a join's flags over its config file's spec.node: a flag
 // label or handler replaces the file's of the same name, and a flag taint the
 // file's with the same key and effect.
@@ -216,4 +231,24 @@ func validateRuntimeClasses(names []string) error {
 		seen[n] = true
 	}
 	return nil
+}
+
+// sameTaints reports whether two taint lists declare the same taints,
+// whatever their order or spelling of an empty value. A taint that does not
+// parse compares by its spelling.
+func sameTaints(a, b []string) bool {
+	canon := func(ts []string) []string {
+		out := make([]string, 0, len(ts))
+		for _, t := range ts {
+			key, value, effect, err := parseTaint(t)
+			if err != nil {
+				out = append(out, t)
+				continue
+			}
+			out = append(out, key+"="+value+":"+effect)
+		}
+		slices.Sort(out)
+		return slices.Compact(out)
+	}
+	return slices.Equal(canon(a), canon(b))
 }
