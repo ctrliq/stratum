@@ -139,7 +139,13 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := o.Node.Validate(); err != nil {
 			return nil, fmt.Errorf("worker restart: %w; nothing was saved", err)
 		}
-		facts := restartNodeFacts(st, o.Node)
+		if o.Node.Taints != nil && !slices.Equal(o.Node.Taints, st.NodeTaints) {
+			return nil, fmt.Errorf("worker restart: --node-taint %s differs from the taints this worker joined with (%s), "+
+				"and a node registers its taints only when it joins; change them from a control plane with "+
+				"`stratum kubectl taint node %s`; nothing was saved",
+				strings.Join(o.Node.Taints, ","), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname)
+		}
+		labels, handlers, replaced := restartNodeFacts(st, o.Node)
 		// A restart keeps the address this worker registered with unless
 		// --node-ip moves it, by the rule every controller start uses: the
 		// saved address outranks $NODE_IP, which says only what the
@@ -205,14 +211,17 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if facts.changed {
+		if len(replaced) > 0 {
 			if err := nodestate.Mutate(func(cur *NodeState) error {
-				cur.NodeLabels, cur.NodeTaints, cur.RuntimeHandlers = facts.Labels, facts.Taints, facts.RuntimeHandlers
+				cur.NodeLabels, cur.RuntimeHandlers = labels, handlers
 				return nil
 			}); err != nil {
 				return nil, fmt.Errorf("save worker node facts: %w", err)
 			}
-			st.NodeLabels, st.NodeTaints, st.RuntimeHandlers = facts.Labels, facts.Taints, facts.RuntimeHandlers
+			st.NodeLabels, st.RuntimeHandlers = labels, handlers
+			for _, line := range replaced {
+				fmt.Printf("stratum: %s\n", line)
+			}
 		}
 		if recordPodCIDR {
 			if err := nodestate.Mutate(func(cur *NodeState) error { cur.PodCIDR = o.PodCIDR; return nil }); err != nil {
@@ -390,24 +399,30 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	return st, nil
 }
 
-// nodeFacts is what a worker restart saves of spec.node.
-type nodeFacts struct {
-	NodeSpec
-	changed bool
+// restartNodeFacts is the saved labels and runtime handlers, each replaced by
+// the restart's flag when one was given, and a line for every field that
+// changes what the worker saved.
+func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
+	labels, handlers = st.NodeLabels, st.RuntimeHandlers
+	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", formatKeyValues(labels), formatKeyValues(flags.Labels)))
+		labels = flags.Labels
+	}
+	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, handlers) {
+		replaced = append(replaced, fmt.Sprintf("--runtime-handler replaces the runtime handlers this worker saved (%s -> %s)", formatKeyValues(handlers), formatKeyValues(flags.RuntimeHandlers)))
+		handlers = flags.RuntimeHandlers
+	}
+	return labels, handlers, replaced
 }
 
-// restartNodeFacts is the saved spec.node with each field a restart's flags
-// gave replacing it, and whether that changes what the worker saved.
-func restartNodeFacts(st *NodeState, flags NodeSpec) nodeFacts {
-	f := nodeFacts{NodeSpec: NodeSpec{Labels: st.NodeLabels, Taints: st.NodeTaints, RuntimeHandlers: st.RuntimeHandlers}}
-	if flags.Labels != nil && !maps.Equal(flags.Labels, f.Labels) {
-		f.Labels, f.changed = flags.Labels, true
+// formatKeyValues renders a map as sorted name=value pairs, "none" when empty.
+func formatKeyValues(m map[string]string) string {
+	if len(m) == 0 {
+		return "none"
 	}
-	if flags.Taints != nil && !slices.Equal(flags.Taints, f.Taints) {
-		f.Taints, f.changed = flags.Taints, true
+	out := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
 	}
-	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, f.RuntimeHandlers) {
-		f.RuntimeHandlers, f.changed = flags.RuntimeHandlers, true
-	}
-	return f
+	return strings.Join(out, ",")
 }

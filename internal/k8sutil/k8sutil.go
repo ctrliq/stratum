@@ -61,6 +61,11 @@ const (
 	UpgradeCordonAnnotation = "stratum.ciq.com/upgrade-cordoned"
 )
 
+// RuntimeHandlerLabelPrefix prefixes the label stratum sets on a node for
+// each containerd runtime handler it declares, <prefix><handler>="true",
+// which the handler's RuntimeClass selects nodes by.
+const RuntimeHandlerLabelPrefix = "runtime.stratum.ciq.com/"
+
 // OperatorLeaseName is the Lease the operator campaigns for under leader
 // election (kube-system/<name>): only the holder reconciles, so several
 // control-plane hosts can all run the operator. The dashboard's SPA reads the

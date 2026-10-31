@@ -84,7 +84,8 @@ It keeps the saved setting when the file does not set it or cannot be read.
   effect is `NoSchedule`, `PreferNoSchedule` or `NoExecute`.
 - `runtimeHandlers`: extra containerd runtime handlers, by name, each the
   absolute path of an OCI runtime binary. Stratum declares them to containerd
-  in `/etc/containerd/conf.d/stratum-runtime.toml`.
+  in `/var/lib/stratum/config/containerd.d/stratum-runtime.toml`, which only
+  Stratum's containerd imports.
 
 ```yaml
 # /etc/stratum/config.yaml on a GPU worker
@@ -100,17 +101,30 @@ spec:
       nvidia: /usr/bin/nvidia-container-runtime
 ```
 
-A control plane reads `spec.node` on every start. A worker reads it at its
-join, where the repeatable `--node-label key=value`, `--node-taint
-key[=value]:Effect` and `--runtime-handler name=/path` flags add to it, a flag
-replacing the file's entry of the same name. A worker restart reads no
-`spec.node`: it keeps what the join saved, and each of the three flags given
-on a restart replaces that whole field.
+A control plane reads `spec.node` at its first boot or `--join`, and on every
+start after. A worker reads it at its join, where the repeatable `--node-label
+key=value`, `--node-taint key[=value]:Effect` and `--runtime-handler
+name=/path` flags add to it: a flag replaces the file's label or handler of the
+same name, and its taint with the same key and effect. A worker restart reads
+no `spec.node`. It keeps what the join saved, and `--node-label` or
+`--runtime-handler` given on a restart replaces that whole field. A node
+registers its taints once, when it joins, so a restart refuses a `--node-taint`
+that changes them; change a joined node's taints from a control plane with
+`stratum kubectl taint node`.
 
-A join refuses a runtime handler whose binary is not an executable file on the
-host. A restart only warns, so the node's other pods keep running. Stratum sets
-the `stratum.ciq.com/control-plane` label and the `runtime.stratum.ciq.com/`
-labels itself, so a node cannot declare them.
+A worker join refuses a runtime handler whose binary is not an executable file
+on the host. Every other start only warns, so the node's other pods keep
+running.
+
+A node cannot declare:
+
+- the `stratum.ciq.com/control-plane` key or keys under
+  `runtime.stratum.ciq.com/`, as a label or a taint: Stratum sets them itself.
+- labels in the `kubernetes.io` and `k8s.io` namespaces, which the API server
+  does not let a node set on itself, other than those under
+  `node.kubernetes.io/` and `kubelet.kubernetes.io/` and the topology zone and
+  region labels. Label a node with `stratum kubectl label node` from a control
+  plane instead.
 
 ## Node IP
 

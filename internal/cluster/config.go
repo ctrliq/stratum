@@ -277,6 +277,12 @@ func LoadConfig(path string) (*ClusterConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := c.validateNode(); err != nil {
+		return nil, err
+	}
+	if err := validateRuntimeClasses(c.Spec.RuntimeClasses); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	c.defaults()
 	if err := c.resolveProfile(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -371,6 +377,9 @@ func LoadWorkerConfig(path string) (WorkerConfig, error) {
 		return WorkerConfig{}, fmt.Errorf("%s: %s set, but a --worker reads only spec.network.nodeIP, spec.selinux and spec.node from it; remove them from this node's file (pod and service CIDRs, the cluster domain and --profile are worker flags)",
 			path, strings.Join(set, ", "))
 	}
+	if err := c.validateNode(); err != nil {
+		return WorkerConfig{}, err
+	}
 	return WorkerConfig{NodeIP: c.Spec.Network.NodeIP, SELinuxOptOut: c.SELinuxOptOut(), Node: c.Spec.Node}, nil
 }
 
@@ -389,6 +398,16 @@ func presentFields(v any, path string) []string {
 	default:
 		return []string{path}
 	}
+}
+
+// validateNode reports a spec.node the node cannot declare. It is checked
+// where spec.node is read, not in parseConfig: a worker restart, which reads
+// only spec.selinux, must not lose that setting to a field it ignores.
+func (c *ClusterConfig) validateNode() error {
+	if err := c.Spec.Node.Validate(); err != nil {
+		return fmt.Errorf("%s: spec.node: %w", c.path, err)
+	}
+	return nil
 }
 
 // parseConfig reads and strictly parses path without applying defaults, and
@@ -420,12 +439,6 @@ func parseConfig(path string) (*ClusterConfig, []byte, error) {
 	}
 	if err := c.Spec.Dashboard.validate(c.OperatorEnabled()); err != nil {
 		return nil, nil, fmt.Errorf("%s: spec.dashboard.%w", path, err)
-	}
-	if err := c.Spec.Node.Validate(); err != nil {
-		return nil, nil, fmt.Errorf("%s: spec.node: %w", path, err)
-	}
-	if err := validateRuntimeClasses(c.Spec.RuntimeClasses); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	// Refused here, as an error like every other bad value in this file,
 	// rather than passed through to the scheduled snapshot loop: its ticker

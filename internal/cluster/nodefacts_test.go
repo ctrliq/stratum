@@ -35,10 +35,21 @@ func TestNodeSpecValidate(t *testing.T) {
 		"handler named runc":     {RuntimeHandlers: map[string]string{"runc": "/usr/bin/runc"}},
 		"handler relative path":  {RuntimeHandlers: map[string]string{"nvidia": "nvidia-container-runtime"}},
 		"handler metacharacters": {RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/$(id)"}},
+		"node-role label":        {Labels: map[string]string{"node-role.kubernetes.io/worker": ""}},
+		"node-restriction label": {Labels: map[string]string{"node-restriction.kubernetes.io/tenant": "a"}},
+		"kubelet-owned hostname": {Labels: map[string]string{"kubernetes.io/hostname": "other"}},
+		"k8s.io namespace":       {Labels: map[string]string{"example.k8s.io/x": "y"}},
 	} {
 		if err := n.Validate(); err == nil {
 			t.Errorf("%s: %+v was accepted", name, n)
 		}
+	}
+	selfLabels := NodeSpec{Labels: map[string]string{
+		"topology.kubernetes.io/region": "eu", "foo.node.kubernetes.io/pool": "gpu", "kubelet.kubernetes.io/x": "y",
+		"node.kubernetes.io/instance-type": "h200", "example.com/team": "ml",
+	}}
+	if err := selfLabels.Validate(); err != nil {
+		t.Errorf("labels NodeRestriction lets a node set on itself were refused: %v", err)
 	}
 	same := NodeSpec{Taints: []string{"dedicated=a:NoSchedule", "dedicated=a:NoExecute"}}
 	if err := same.Validate(); err != nil {
@@ -213,6 +224,47 @@ func TestWorkerRestartNodeFacts(t *testing.T) {
 		}
 	})
 
+	t.Run("a restart's --node-label replaces the saved labels", func(t *testing.T) {
+		workerScratchHost(t)
+		stubWorkerStartHost(t)
+		if err := SaveState(saved); err != nil {
+			t.Fatal(err)
+		}
+		moved := map[string]string{"zone": "rack-2"}
+		st, err := PrepareWorker(context.Background(), WorkerOptions{Node: NodeSpec{Labels: moved}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []*NodeState{st, mustLoadState(t)} {
+			if !reflect.DeepEqual(s.NodeLabels, moved) || !reflect.DeepEqual(s.RuntimeHandlers, saved.RuntimeHandlers) {
+				t.Errorf("labels %v, handlers %v; want the restart's labels and the saved handlers", s.NodeLabels, s.RuntimeHandlers)
+			}
+		}
+	})
+
+	t.Run("a restart refuses taints other than those it joined with", func(t *testing.T) {
+		workerScratchHost(t)
+		stubWorkerStartHost(t)
+		if err := SaveState(saved); err != nil {
+			t.Fatal(err)
+		}
+		hostPrereqs = func(host.PrereqOptions) error {
+			t.Fatal("the restart prepared the host before refusing --node-taint")
+			return nil
+		}
+		_, err := PrepareWorker(context.Background(), WorkerOptions{Node: NodeSpec{Taints: []string{"dedicated=gpu:NoSchedule"}}})
+		if err == nil || !strings.Contains(err.Error(), "stratum kubectl taint node w1") {
+			t.Fatalf("PrepareWorker = %v, want a refusal pointing at kubectl taint", err)
+		}
+		if got := mustLoadState(t); !reflect.DeepEqual(got.NodeTaints, saved.NodeTaints) {
+			t.Errorf("taints = %v, want the joined ones untouched", got.NodeTaints)
+		}
+		stubWorkerStartHost(t)
+		if _, err := PrepareWorker(context.Background(), WorkerOptions{Node: NodeSpec{Taints: saved.NodeTaints}}); err != nil {
+			t.Errorf("repeating the joined taints was refused: %v", err)
+		}
+	})
+
 	t.Run("a bad value refuses before the host and saves nothing", func(t *testing.T) {
 		workerScratchHost(t)
 		stubWorkerStartHost(t)
@@ -246,4 +298,21 @@ func TestWorkerRestartNodeFacts(t *testing.T) {
 			t.Errorf("runtime handlers = %v, want %v saved", got.RuntimeHandlers, gone)
 		}
 	})
+}
+
+// A worker restart reads only spec.selinux from its file; a spec.node it
+// ignores, valid or not, must not cost it that setting.
+func TestWorkerSELinuxIgnoresSpecNode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "spec:\n  selinux: false\n  node:\n    labels:\n      stratum.ciq.com/control-plane: \"true\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	optOut, set, err := WorkerSELinux(path)
+	if err != nil || !set || !optOut {
+		t.Errorf("WorkerSELinux = %v, %v, %v; want spec.selinux: false read despite a spec.node the restart ignores", optOut, set, err)
+	}
+	if _, err := LoadWorkerConfig(path); err == nil {
+		t.Error("a worker join accepted the engine-owned label")
+	}
 }

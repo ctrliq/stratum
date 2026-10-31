@@ -9,15 +9,16 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/runtime"
 )
 
 // NodeSpec is spec.node: what this node declares about itself to the
 // scheduler and to containerd. Labels and taints are its Node object's;
 // runtimeHandlers are extra containerd runtime handlers, by name, each the
-// absolute path of its OCI runtime binary. A control plane reads it on every
-// start; a worker reads it at its join, and a restart changes it only through
-// its flags.
+// absolute path of its OCI runtime binary. A control plane reads it at its
+// first boot or join and on every start after; a worker reads it at its join,
+// and a restart changes its labels and handlers only through its flags.
 type NodeSpec struct {
 	Labels          map[string]string `json:"labels,omitempty"`
 	Taints          []string          `json:"taints,omitempty"` // key[=value]:Effect
@@ -28,7 +29,38 @@ type NodeSpec struct {
 // which a node must not declare: the control-plane mark, and the per-handler labels
 // a RuntimeClass selects nodes by.
 func engineOwnedKey(key string) bool {
-	return key == "stratum.ciq.com/control-plane" || strings.HasPrefix(key, "runtime.stratum.ciq.com/")
+	return key == k8sutil.ControlPlaneLabel || strings.HasPrefix(key, k8sutil.RuntimeHandlerLabelPrefix)
+}
+
+// kubeletLabels are the kubernetes.io labels outside the kubelet.kubernetes.io
+// and node.kubernetes.io namespaces that NodeRestriction lets a node set on
+// itself and the kubelet does not set to its own values.
+var kubeletLabels = []string{
+	"topology.kubernetes.io/zone", "topology.kubernetes.io/region",
+	"failure-domain.beta.kubernetes.io/zone", "failure-domain.beta.kubernetes.io/region",
+	"beta.kubernetes.io/instance-type",
+}
+
+// nodeMaySetLabel reports whether a node may declare key on its own Node.
+// Its kubelet applies the labels, and NodeRestriction refuses a node the
+// kubernetes.io and k8s.io namespaces outside the labels the kubelet may set,
+// and node-restriction.kubernetes.io always; the kubelet also overwrites the
+// hostname, os and arch labels with its own.
+func nodeMaySetLabel(key string) bool {
+	ns, _, ok := strings.Cut(key, "/")
+	if !ok {
+		return true
+	}
+	under := func(domain string) bool { return ns == domain || strings.HasSuffix(ns, "."+domain) }
+	switch {
+	case under("node-restriction.kubernetes.io"):
+		return false
+	case under("kubelet.kubernetes.io"), under("node.kubernetes.io"):
+		return true
+	case under("kubernetes.io"), under("k8s.io"):
+		return slices.Contains(kubeletLabels, key)
+	}
+	return true
 }
 
 var taintEffects = []string{"NoSchedule", "PreferNoSchedule", "NoExecute"}
@@ -80,6 +112,10 @@ func validateLabel(key, value string) error {
 	}
 	if engineOwnedKey(key) {
 		return fmt.Errorf("node label %s is set by stratum itself and cannot be declared", key)
+	}
+	if !nodeMaySetLabel(key) {
+		return fmt.Errorf("node label %s is in a namespace a node may not label itself with (the API server's NodeRestriction); "+
+			"label the Node from a control plane with `stratum kubectl label node` instead", key)
 	}
 	return nil
 }

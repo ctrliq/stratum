@@ -71,6 +71,12 @@ type JoinOptions struct {
 	// cluster's, which rides in with the shared certs: a different one refuses
 	// the join (checkJoinCilium).
 	Cilium addons.CiliumSettings
+	// NodeLabels, NodeTaints and RuntimeHandlers are this control plane's
+	// spec.node, saved with its state so the join run itself renders its
+	// runtime handlers and registers its Node with them.
+	NodeLabels      map[string]string
+	NodeTaints      []string
+	RuntimeHandlers map[string]string
 }
 
 // checkJoinCilium refuses a join whose spec.network.cilium differs from the
@@ -1307,6 +1313,10 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		Profile:   o.Profile,
 		CIS:       o.CIS,
 		VIP:       o.VIP,
+
+		NodeLabels:      o.NodeLabels,
+		NodeTaints:      o.NodeTaints,
+		RuntimeHandlers: o.RuntimeHandlers,
 	}
 
 	// The facts the hooks resolve, captured for the prepared value the

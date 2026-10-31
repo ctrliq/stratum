@@ -163,6 +163,26 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 				EtcdState: "existing", EtcdHasPeers: true,
 				PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12", ClusterDomain: "cluster.local"},
 			false},
+		{"a restart takes spec.node from its config, over what it saved", &ClusterConfig{Spec: Spec{Node: NodeSpec{
+			Labels:          map[string]string{"topology.kubernetes.io/zone": "rack-2"},
+			Taints:          []string{"dedicated=gpu:NoSchedule"},
+			RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"},
+		}}}, func() {
+			saved := *restart
+			saved.NodeLabels = map[string]string{"topology.kubernetes.io/zone": "rack-1"}
+			if err := SaveState(&saved); err != nil {
+				t.Fatal(err)
+			}
+		},
+			NodeState{Role: "controller", Hostname: "cp1", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11",
+				Server:   fmt.Sprintf("https://127.0.0.1:%d", version.APIServerPort),
+				EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380,cp2=https://10.0.0.12:2380",
+				EtcdState: "existing", EtcdHasPeers: true,
+				PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12", ClusterDomain: "cluster.local",
+				NodeLabels:      map[string]string{"topology.kubernetes.io/zone": "rack-2"},
+				NodeTaints:      []string{"dedicated=gpu:NoSchedule"},
+				RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}},
+			false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			trustedPodCIDRs = nil
