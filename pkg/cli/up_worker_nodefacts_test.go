@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -53,24 +53,27 @@ func TestRunUpWorkerRestartHandsOnOnlyTheGivenNodeFlags(t *testing.T) {
 	}
 }
 
-// A malformed flag is refused as the first thing runUp does, before staging
-// or any other host write.
-func TestRunUpRefusesAMalformedNodeFlagBeforePrepareWorker(t *testing.T) {
+// A malformed or refused flag stops runUp before anything else: the start
+// lock it takes next is never created.
+func TestRunUpRefusesABadNodeFlagBeforeAnything(t *testing.T) {
 	for _, o := range []runUpOptions{
 		{nodeLabels: []string{"zone"}},
 		{runtimeHandlers: []string{"nvidia"}},
 		{nodeLabels: []string{"zone=a", "zone=b"}},
+		{nodeTaints: []string{"dedicated"}},
+		{nodeLabels: []string{"stratum.ciq.com/control-plane=true"}},
+		{nodeLabels: []string{"node-role.kubernetes.io/worker="}},
+		{runtimeHandlers: []string{"runc=/usr/bin/runc"}},
 	} {
-		o.worker = true
-		if err := runUp(context.Background(), o); err == nil || !strings.Contains(err.Error(), "Nothing on this host was changed") {
-			t.Errorf("runUp(%+v) = %v, want a refusal before anything else runs", o, err)
-		}
 		call, err := runUpWorker(t, o, "", &cluster.NodeState{Role: "worker", Hostname: "w1", NodeIP: "10.50.0.4"})
 		if err == nil || !strings.Contains(err.Error(), "Nothing on this host was changed") {
 			t.Errorf("runUp(%+v) = %v, want a refusal", o, err)
 		}
 		if call.called {
 			t.Errorf("runUp(%+v) reached PrepareWorker", o)
+		}
+		if _, err := os.Stat(startLockPath); !os.IsNotExist(err) {
+			t.Errorf("runUp(%+v) took the start lock before refusing the flag: %v", o, err)
 		}
 	}
 }
@@ -89,5 +92,23 @@ func TestUpRefusesTheNodeFlagsWithoutWorker(t *testing.T) {
 	}
 	if err := upFlagConflict(runUpOptions{worker: true, nodeLabels: []string{"zone=a"}}); err != nil {
 		t.Errorf("a worker given --node-label was refused: %v", err)
+	}
+}
+
+// A control-plane --join reads spec.node, so the refusal of the node flags
+// points there rather than telling the operator to drop them; the network
+// flags beside them are still to be removed.
+func TestUpJoinRefusalPointsTheNodeFlagsAtSpecNode(t *testing.T) {
+	join := runUpOptions{join: "https://10.0.0.11:6443", nodeLabels: []string{"zone=a"}}
+	err := upFlagConflict(join)
+	if err == nil || !strings.Contains(err.Error(), "spec.node field named beside it") || strings.Contains(err.Error(), "remove these flags") {
+		t.Errorf("node flags on a --join: %v; want them pointed at spec.node, not removed", err)
+	}
+	join.podCIDR = "10.50.0.0/16"
+	err = upFlagConflict(join)
+	for _, want := range []string{"remove the network flags", "spec.node field named beside it"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("network and node flags on a --join: %v; want it to say %q", err, want)
+		}
 	}
 }

@@ -85,7 +85,7 @@ func newUpCommand(cfg rootConfig) *cobra.Command {
 	fs.StringVar(&o.clusterDomain, "cluster-domain", "", "--worker join: the cluster's DNS domain, when not cluster.local (stratum token create prints it)")
 	fs.StringVar(&o.podCIDR, "pod-cidr", "", "--worker join or legacy-worker migration: the cluster's pod CIDR (stratum token create prints a non-default range)")
 	fs.StringArrayVar(&o.nodeLabels, "node-label", nil, "--worker: a label for this node's Node object, key=value (repeatable); on a join it adds to spec.node.labels, on a restart the labels given replace the saved ones")
-	fs.StringArrayVar(&o.nodeTaints, "node-taint", nil, "--worker: a taint this node registers with, key[=value]:Effect (repeatable); on a join it adds to spec.node.taints, on a restart the taints given replace the saved ones")
+	fs.StringArrayVar(&o.nodeTaints, "node-taint", nil, "--worker: a taint this node registers with, key[=value]:Effect (repeatable); on a join it adds to spec.node.taints; a node registers its taints only at its join, so a restart refuses a different set")
 	fs.StringArrayVar(&o.runtimeHandlers, "runtime-handler", nil, "--worker: an extra containerd runtime handler, name=/absolute/path/to/runtime (repeatable); on a join it adds to spec.node.runtimeHandlers, on a restart the handlers given replace the saved ones")
 	return cmd
 }
@@ -419,6 +419,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 			PodCIDR: cfg.Spec.Network.PodCIDR, ServiceCIDR: cfg.Spec.Network.ServiceCIDR,
 			ClusterDomain: cfg.Spec.Network.ClusterDomain,
 			Cilium:        cfg.Spec.Network.Cilium.Settings(),
+			NodeLabels:    cfg.Spec.Node.Labels, NodeTaints: cfg.Spec.Node.Taints, RuntimeHandlers: cfg.Spec.Node.RuntimeHandlers,
 		})
 		if err != nil {
 			return cleanStopOr(err, ctx)
@@ -826,8 +827,20 @@ func upFlagConflict(o runUpOptions) error {
 			"beside it (spec.network is read at the cluster's first boot only, spec.node at every start), or " +
 			"add --worker and --server to join a workload-only node"
 		if o.join != "" {
-			advice = "A control plane joining with --join takes its network from the cluster it joins, so remove these " +
-				"flags; to join a workload-only node instead, run the worker join line `stratum token create` prints " +
+			network := o.podCIDR != "" || o.serviceCIDR != "" || o.clusterDomain != ""
+			node := len(o.nodeLabels)+len(o.nodeTaints)+len(o.runtimeHandlers) > 0
+			const takesNetwork = "A control plane joining with --join takes its network from the cluster it joins, so remove "
+			const toSpecNode = "each node flag into the spec.node field named beside it in this node's --config file, " +
+				"which a control plane reads at its join and every start"
+			switch {
+			case network && node:
+				advice = takesNetwork + "the network flags, and move " + toSpecNode
+			case network:
+				advice = takesNetwork + "these flags"
+			default:
+				advice = "Move " + toSpecNode
+			}
+			advice += "; to join a workload-only node instead, run the worker join line `stratum token create` prints " +
 				"(without --control-plane), not this line: its token can read the shared cluster CA material"
 		}
 		return fmt.Errorf("stratum up: %s without --worker: only a --worker node reads these flags. %s. Nothing on this host was changed",
@@ -1208,8 +1221,10 @@ func checkProfileOperator(cfg *cluster.ClusterConfig, p profile.Profile) error {
 		"logs/exec/top cluster-wide. Remove spec.operator: false, or drop the profile", p.Name)
 }
 
-// nodeSpec is the spec.node the worker flags give. A flag not given leaves its
-// field nil, which a restart reads as "keep what the worker saved".
+// nodeSpec is the spec.node the worker flags give, validated as the API
+// server would, so a bad flag is refused before anything on the host is
+// touched. A flag not given leaves its field nil, which a restart reads as
+// "keep what the worker saved".
 func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
 	labels, err := cluster.ParseKeyValues("--node-label", o.nodeLabels)
 	if err != nil {
@@ -1219,9 +1234,9 @@ func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
 	if err != nil {
 		return cluster.NodeSpec{}, fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
 	}
-	var taints []string
-	if len(o.nodeTaints) > 0 {
-		taints = o.nodeTaints
+	node := cluster.NodeSpec{Labels: labels, Taints: o.nodeTaints, RuntimeHandlers: handlers}
+	if err := node.Validate(); err != nil {
+		return cluster.NodeSpec{}, fmt.Errorf("stratum up: --node-label, --node-taint or --runtime-handler: %w. Nothing on this host was changed", err)
 	}
-	return cluster.NodeSpec{Labels: labels, Taints: taints, RuntimeHandlers: handlers}, nil
+	return node, nil
 }
