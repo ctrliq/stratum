@@ -1,12 +1,14 @@
 package supervisor
 
 import (
+	"bytes"
 	"debug/buildinfo"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/ctrliq/stratum/internal/procid"
 )
@@ -33,13 +35,15 @@ func refuseLegacySupervisor() error {
 // findLegacySupervisor walks procRoot through procid and returns the pid of
 // the top-level `stratum up` process — identity by subcommand plus build
 // information: the candidate must run the up subcommand, and its executable
-// must be built from the Stratum module. self is never reported. A candidate
+// must be built from the Stratum module. self is never reported, nor is a
+// child of self: a child forked to exec another program reads as self, argv
+// and executable alike, until its exec completes. A candidate
 // that exits mid-scan is skipped; a candidate whose binary cannot be inspected
 // fails the scan, so a start never proceeds on an unverified handoff.
 func findLegacySupervisor(procRoot string, self int, readInfo func(string) (*buildinfo.BuildInfo, error)) (int, error) {
 	var found int
 	err := procid.Walk(procRoot, func(p procid.Process) (bool, error) {
-		if p.PID == self || !procid.IsUpCommand(p.Argv) {
+		if p.PID == self || !procid.IsUpCommand(p.Argv) || parentPID(procRoot, p.PID) == self {
 			return true, nil
 		}
 		info, err := readInfo(filepath.Join(procRoot, strconv.Itoa(p.PID), "exe"))
@@ -59,4 +63,23 @@ func findLegacySupervisor(procRoot string, self int, readInfo func(string) (*bui
 		return 0, err
 	}
 	return found, nil
+}
+
+// parentPID reads pid's parent from procRoot/<pid>/stat, or 0 when it cannot.
+// The fields after the command name are scanned from its closing parenthesis,
+// since the name itself may hold spaces and parentheses.
+func parentPID(procRoot string, pid int) int {
+	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0
+	}
+	f := strings.Fields(string(b[bytes.LastIndexByte(b, ')')+1:]))
+	if len(f) < 2 {
+		return 0
+	}
+	ppid, err := strconv.Atoi(f[1])
+	if err != nil {
+		return 0
+	}
+	return ppid
 }
