@@ -384,6 +384,7 @@ func nodeFileOwners() map[string]string {
 		// confining containers and the resolv.conf CoreDNS forwards through.
 		K8sConfDir + "/kubelet.conf":           "internal/runtime",
 		ContainerdConfig:                       "internal/runtime",
+		ContainerdRuntimeConfD:                 "internal/runtime",
 		K8sConfDir + "/selinux-confined-since": "internal/runtime",
 		CoreDNSUpstreamDir + "/resolv.conf":    "internal/runtime",
 
