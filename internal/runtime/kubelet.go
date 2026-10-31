@@ -33,13 +33,28 @@ import (
 // running to restart and the supervisor brings containerd up on the config
 // just written.
 func PrepareNodeConfigs(st *nodestate.NodeState) error {
-	if _, err := EnsureConfig(); err != nil {
-		return fmt.Errorf("containerd config: %w", err)
-	}
-	if _, err := writeHandlers(os.Stdout, st.RuntimeHandlers); err != nil {
-		return fmt.Errorf("containerd runtime handlers: %w", err)
+	if _, err := EnsureContainerdConfigs(os.Stdout, st); err != nil {
+		return err
 	}
 	return writeKubeletConfig(st)
+}
+
+// EnsureContainerdConfigs is EnsureConfig plus the node's runtime-handler
+// drop-in: what containerd reads at its next start, on every node that runs
+// it. Every start path goes through it, so a node's declared handlers are on
+// disk before the supervisor launches containerd, and a drop-in removed by
+// hand is restored. Like EnsureConfig it restarts nothing, and changed reports
+// either file changing.
+func EnsureContainerdConfigs(w io.Writer, st *nodestate.NodeState) (bool, error) {
+	changed, err := EnsureConfig()
+	if err != nil {
+		return changed, fmt.Errorf("containerd config: %w", err)
+	}
+	handlersChanged, err := writeHandlers(w, st.RuntimeHandlers)
+	if err != nil {
+		return changed || handlersChanged, fmt.Errorf("containerd runtime handlers: %w", err)
+	}
+	return changed || handlersChanged, nil
 }
 
 // WriteNodeConfigs is PrepareNodeConfigs without the legacy-config heal

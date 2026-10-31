@@ -63,9 +63,9 @@ func ValidateHandler(name, path string) error {
 }
 
 // CheckHandlerBinary reports whether path is an executable regular file on
-// this host. A join refuses a handler that fails it; a restart only warns,
-// since the binary may be mid-reinstall and the node's other pods must keep
-// running.
+// this host. writeHandlers only warns when it fails, since the binary may be
+// mid-reinstall and the node's other pods must keep running; a caller that
+// can still refuse the node, before it joins, checks it itself.
 func CheckHandlerBinary(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -151,8 +151,7 @@ func verifyHandlers(rendered string, handlers map[string]string, cgroup string) 
 // changed the file, which only takes effect when containerd restarts. With no
 // handlers it removes a drop-in stratum wrote and leaves any other file at
 // that path alone. A handler whose binary is missing is written anyway and
-// reported to w: the node's other pods must keep running, and a join has
-// already refused it.
+// reported to w: the node's other pods must keep running.
 func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	path := version.ContainerdRuntimeConfD
 	prev, prevErr := os.ReadFile(path)
@@ -194,13 +193,20 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 }
 
 // importsConfD reports whether a containerd config imports conf.d, read as
-// containerd reads it.
-func importsConfD(cfg string) bool {
+// containerd reads it, and the parse error when it cannot be read.
+func importsConfD(cfg string) (bool, error) {
 	var c struct {
 		Imports []string `toml:"imports"`
 	}
 	if err := toml.Unmarshal([]byte(cfg), &c); err != nil {
-		return false
+		return false, err
 	}
-	return slices.Contains(c.Imports, confdImportGlob)
+	return slices.Contains(c.Imports, confdImportGlob), nil
+}
+
+// importsConfDOK is importsConfD for a config stratum already wrote: one that
+// does not parse is not current, and is rendered again.
+func importsConfDOK(cfg string) bool {
+	ok, err := importsConfD(cfg)
+	return err == nil && ok
 }

@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -224,7 +226,7 @@ func TestWriteHandlersRefusesAnInvalidHandler(t *testing.T) {
 }
 
 func TestTheCapturedDefaultImportsConfD(t *testing.T) {
-	if !importsConfD(containerdDefault(t)) {
+	if !importsConfDOK(containerdDefault(t)) {
 		t.Fatalf("the captured containerd default no longer imports %s; both stratum drop-ins depend on it", confdImportGlob)
 	}
 }
@@ -241,7 +243,7 @@ func TestEnsureConfigRefusesADefaultWithoutTheConfDImport(t *testing.T) {
 	t.Cleanup(func() { version.BinDir, version.ContainerdConfig, version.ControlSocket = oldBin, oldConfig, oldSocket })
 
 	noImport := strings.Replace(containerdDefault(t), "imports = ['"+confdImportGlob+"']", "imports = []", 1)
-	if importsConfD(noImport) {
+	if importsConfDOK(noImport) {
 		t.Fatal("the fixture edit did not remove the import")
 	}
 	fixture := filepath.Join(dir, "default.toml")
@@ -300,7 +302,82 @@ func TestEnsureConfigRegeneratesAnExistingConfigWithoutTheConfDImport(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !importsConfD(string(b)) {
+	if !importsConfDOK(string(b)) {
 		t.Errorf("the regenerated config still does not import %s", confdImportGlob)
+	}
+}
+
+// Every node-config entry point writes the handler drop-in, and a change to it
+// alone is reported as a change, which is what makes an in-place upgrade
+// reload containerd for it.
+func TestNodeConfigEntryPointsWriteTheHandlerDropIn(t *testing.T) {
+	nodeConfigsFixture(t)
+	bin := fakeBinary(t, "fake-runtime")
+	st := &nodestate.NodeState{Role: "worker", Hostname: "w1", ServiceCIDR: "10.96.0.0/12"}
+	if _, err := WriteNodeConfigsWithWriter(io.Discard, st); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := WriteNodeConfigsWithWriter(io.Discard, st); err != nil || changed {
+		t.Fatalf("a settled node reported changed=%v err=%v; the cases below need a quiet baseline", changed, err)
+	}
+
+	st.RuntimeHandlers = map[string]string{"fake": bin}
+	changed, err := WriteNodeConfigsWithWriter(io.Discard, st)
+	if err != nil || !changed {
+		t.Errorf("adding a handler: changed=%v err=%v, want the change reported so the upgrade reloads containerd", changed, err)
+	}
+	if _, err := os.Stat(version.ContainerdRuntimeConfD); err != nil {
+		t.Errorf("WriteNodeConfigs wrote no drop-in for a declared handler: %v", err)
+	}
+
+	st.RuntimeHandlers = nil
+	changed, err = WriteNodeConfigsWithWriter(io.Discard, st)
+	if err != nil || !changed {
+		t.Errorf("removing the last handler: changed=%v err=%v, want the change reported", changed, err)
+	}
+	if _, err := os.Stat(version.ContainerdRuntimeConfD); !os.IsNotExist(err) {
+		t.Errorf("the drop-in survived removing the last handler: %v", err)
+	}
+
+	st.RuntimeHandlers = map[string]string{"fake": bin}
+	if err := PrepareNodeConfigs(st); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(version.ContainerdRuntimeConfD); err != nil {
+		t.Errorf("PrepareNodeConfigs wrote no drop-in for a declared handler: %v", err)
+	}
+
+	if err := os.Remove(version.ContainerdRuntimeConfD); err != nil {
+		t.Fatal(err)
+	}
+	changed, err = EnsureContainerdConfigs(io.Discard, st)
+	if err != nil || !changed {
+		t.Errorf("EnsureContainerdConfigs, the worker start's entry point, did not restore a removed drop-in: changed=%v err=%v", changed, err)
+	}
+	if _, err := os.Stat(version.ContainerdRuntimeConfD); err != nil {
+		t.Errorf("the drop-in was not restored: %v", err)
+	}
+}
+
+// A default the TOML parser cannot read is reported as unparseable, not as a
+// missing import it may well carry.
+func TestEnsureConfigReportsAnUnparseableDefault(t *testing.T) {
+	dir := t.TempDir()
+	oldBin, oldConfig, oldSocket := version.BinDir, version.ContainerdConfig, version.ControlSocket
+	version.BinDir = dir
+	version.ContainerdConfig = filepath.Join(dir, "config", "containerd.toml")
+	version.ControlSocket = filepath.Join(dir, "supervisor.sock")
+	t.Cleanup(func() { version.BinDir, version.ContainerdConfig, version.ControlSocket = oldBin, oldConfig, oldSocket })
+
+	fixture := filepath.Join(dir, "default.toml")
+	if err := os.WriteFile(fixture, []byte(containerdDefault(t)+"\n[broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "containerd"), []byte("#!/bin/sh\ncat '"+fixture+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ensureConfig()
+	if err == nil || !strings.Contains(err.Error(), "does not parse") || strings.Contains(err.Error(), "does not import") {
+		t.Fatalf("err = %v, want the parse failure named rather than a missing import", err)
 	}
 }

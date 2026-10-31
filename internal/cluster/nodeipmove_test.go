@@ -102,14 +102,14 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 	origConf, origPKI, origKubeconfig, origAdmin := version.K8sConfDir, version.PKIDir, version.KubeconfigDir, version.AdminConf
 	origEnc, origNet, origAudit, origAdmission := version.EncryptionConfigPath, version.NetConfigPath, version.AuditPolicyPath, version.AdmissionConfigPath
 	origContainerd, origK8sVersion, origBinDir := version.ContainerdConfig, version.K8sVersion, version.BinDir
-	origRegistries, origCerts, origConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD
+	origRegistries, origCerts, origConfD, origRuntimeConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD
 	origRoot, origState := version.ContainerdRootDir, version.ContainerdStateDir
 	origData, origDataRoot := version.EtcdDataDir, version.DataDir
 	t.Cleanup(func() {
 		version.K8sConfDir, version.PKIDir, version.KubeconfigDir, version.AdminConf = origConf, origPKI, origKubeconfig, origAdmin
 		version.EncryptionConfigPath, version.NetConfigPath, version.AuditPolicyPath, version.AdmissionConfigPath = origEnc, origNet, origAudit, origAdmission
 		version.ContainerdConfig, version.K8sVersion, version.BinDir = origContainerd, origK8sVersion, origBinDir
-		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD = origRegistries, origCerts, origConfD
+		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD = origRegistries, origCerts, origConfD, origRuntimeConfD
 		version.ContainerdRootDir, version.ContainerdStateDir = origRoot, origState
 		version.EtcdDataDir, version.DataDir = origData, origDataRoot
 	})
@@ -183,6 +183,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			version.RegistriesConfig = filepath.Join(version.K8sConfDir, "registries.yaml")
 			version.CertsDir = filepath.Join(version.K8sConfDir, "certs.d")
 			version.ContainerdConfD = filepath.Join(version.K8sConfDir, "conf.d", "registry.toml")
+			version.ContainerdRuntimeConfD = filepath.Join(version.K8sConfDir, "conf.d", "runtime.toml")
 			version.ContainerdRootDir = filepath.Join(version.K8sConfDir, "containerd-root")
 			version.ContainerdStateDir = filepath.Join(version.K8sConfDir, "containerd-state")
 			// A payload marker (never executed: the rendered config below

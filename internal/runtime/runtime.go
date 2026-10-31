@@ -261,7 +261,7 @@ func ensureConfigWithWriter(w io.Writer) (bool, error) {
 	}
 	if prevErr == nil &&
 		strings.Contains(string(prev), want) && strings.Contains(string(prev), SandboxImage) &&
-		strings.Contains(string(prev), enableSELinuxAssign(confine)) && importsConfD(string(prev)) {
+		strings.Contains(string(prev), enableSELinuxAssign(confine)) && importsConfDOK(string(prev)) {
 		if err := recordConfinement(confine, written); err != nil {
 			return false, err
 		}
@@ -279,7 +279,9 @@ func ensureConfigWithWriter(w io.Writer) (bool, error) {
 	if !sandboxImageLine.MatchString(string(out)) {
 		return false, fmt.Errorf("containerd config default has no sandbox image setting stratum recognises; refusing to write a config that would pull pause from the internet instead of %s", SandboxImage)
 	}
-	if !importsConfD(string(out)) {
+	if ok, err := importsConfD(string(out)); err != nil {
+		return false, fmt.Errorf("containerd config default does not parse: %w", err)
+	} else if !ok {
 		return false, fmt.Errorf("containerd config default does not import %s; refusing to write a config that would silently drop stratum's registry mirrors and runtime handlers", confdImportGlob)
 	}
 	if confine && !enableSELinuxLine.MatchString(string(out)) {
