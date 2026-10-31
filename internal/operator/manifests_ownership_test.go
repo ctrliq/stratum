@@ -14,6 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clienttesting "k8s.io/client-go/testing"
+
+	"github.com/ctrliq/stratum/internal/addons"
 )
 
 func labelled(apiVersion, kind, ns, name, stack string) *unstructured.Unstructured {
@@ -56,13 +58,16 @@ func TestUnrecordedStackLabelsDoNotAuthorizeDeletion(t *testing.T) {
 }
 
 func TestBundledApplyRequiresDurableOwnership(t *testing.T) {
-	for _, cluster := range []bool{false, true} {
-		t.Run(fmt.Sprintf("inventory-exists=%t", cluster), func(t *testing.T) {
+	for _, tc := range []struct {
+		stack   string
+		cluster bool
+	}{{"dashboard", false}, {"dashboard", true}, {addons.RuntimeClassStack, true}} {
+		t.Run(fmt.Sprintf("%s/inventory-exists=%t", tc.stack, tc.cluster), func(t *testing.T) {
 			r := deployFixture(t)
-			if cluster {
+			if tc.cluster {
 				seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
 			}
-			writeManifest(t, filepath.Join(r.dir, "dashboard", "bundle.yaml"), configMap("dashboard", "kube-system"))
+			writeManifest(t, filepath.Join(r.dir, tc.stack, "bundle.yaml"), configMap("bundled", "kube-system"))
 			r.fakeCs.PrependReactor("create", "configmaps", func(clienttesting.Action) (bool, runtime.Object, error) {
 				return true, nil, apierrors.NewServiceUnavailable("cannot persist ownership")
 			})
@@ -323,5 +328,23 @@ func TestBundledCleanupUsesTrustedHistory(t *testing.T) {
 				t.Errorf("ConfigMap deletes %v, want orphan and not keep", got)
 			}
 		})
+	}
+}
+
+func TestRuntimeClassStackIsPrunedWhenRemoved(t *testing.T) {
+	ctx := context.Background()
+	r := deployFixture(t, cp("cp1", "10.0.0.11"))
+	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
+	stack := filepath.Join(r.dir, addons.RuntimeClassStack)
+	writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), configMap("nvidia", "kube-system"))
+	writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	r.reset()
+	if err := os.RemoveAll(stack); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.deleteNames(); !slices.Equal(got, []string{"nvidia"}) {
+		t.Fatalf("deletes %v, want nvidia once spec.runtimeClasses is emptied", got)
 	}
 }
