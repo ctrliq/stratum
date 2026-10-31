@@ -116,6 +116,14 @@ A worker join refuses a runtime handler whose binary is not an executable file
 on the host. Every other start only warns, so the node's other pods keep
 running.
 
+The node registers with its taints when it first joins. On every start, Stratum
+gives the Node its `spec.node` labels and a
+`runtime.stratum.ciq.com/<handler>=true` label for each runtime handler, which
+that handler's RuntimeClass selects nodes by. It removes the label of a handler
+the node no longer declares. It leaves every other label alone, so a label you
+remove from `spec.node` stays on the Node until you remove it with
+`stratum kubectl label node <node> <key>-`.
+
 A node cannot declare:
 
 - the `stratum.ciq.com/control-plane` key or keys under

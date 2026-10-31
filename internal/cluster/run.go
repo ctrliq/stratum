@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +85,12 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState) error
 	if configPath == "" {
 		configPath = DefaultConfigPath
 	}
-	onStart := managedKubeletOnStart(tasks, st.Hostname, restampWhenRegistered)
+	onStart := managedKubeletOnStart(tasks, st.Hostname, func(ctx context.Context, hostname string) {
+		restampWhenRegistered(ctx, hostname)
+		if nodeRegistered(ctx, hostname) {
+			labelOwnNode(ctx, st)
+		}
+	})
 	err := runSupervisor(ctx, procs, supervisor.Options{
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
@@ -189,8 +195,12 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
 		// No admin.conf here: the kubelet stamps its own Node.
-		OnStart: kubeletOnStart(st.Hostname, restampOwnNodeWhenRegistered),
-		ReExec:  UpArgv(version.StratumInstallPath, true, "", ""),
+		OnStart: kubeletOnStart(st.Hostname, func(hostname string) {
+			if restampOwnNodeWhenRegistered(hostname) {
+				labelOwnNode(context.Background(), st)
+			}
+		}),
+		ReExec: UpArgv(version.StratumInstallPath, true, "", ""),
 	})
 }
 
@@ -534,6 +544,16 @@ var (
 			fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
 		}
 	}
+
+	// labelOwnNode gives this node's Node its spec.node labels and the label
+	// of each runtime handler it declares, as its kubelet, on every kubelet
+	// start of both roles; non-fatal, but logged.
+	labelOwnNode = func(ctx context.Context, st *NodeState) {
+		handlers := slices.Sorted(maps.Keys(st.RuntimeHandlers))
+		if err := k8sutil.ReconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, handlers); err != nil {
+			fmt.Fprintf(os.Stderr, "stratum: label %s: %v (non-fatal)\n", st.Hostname, err)
+		}
+	}
 )
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a
@@ -604,16 +624,19 @@ func restampWhenRegistered(ctx context.Context, hostname string) {
 	}
 }
 
-func restampOwnNodeWhenRegistered(hostname string) {
+// restampOwnNodeWhenRegistered stamps a worker's own Node and reports
+// whether the Node is registered, so its labels can follow.
+func restampOwnNodeWhenRegistered(hostname string) bool {
 	// A first start waits out TLS bootstrap, which writes the kubeconfig this
 	// reads, and registration.
 	if err := k8sutil.WaitOwnNodeRegistered(hostname, 5*time.Minute); err != nil {
 		fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
-		return
+		return false
 	}
 	if err := k8sutil.StampOwnNode(hostname); err != nil {
 		fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
 	}
+	return true
 }
 
 // postStart starts the controller's post-start housekeeping: the etcd growth
@@ -634,6 +657,7 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// the node's registration itself, per tick, so a slow apiserver delays
 	// its ticks, never the loops beside it.
 	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st.Hostname, dashboardHint(cfg, st.NodeIP)) })
+	g.add("node labels", func(ctx context.Context) { labelOwnNodeOnceRegistered(ctx, st) })
 	if cfg.CertRenewEnabled() {
 		g.add("cert renewal", func(ctx context.Context) { certRenewLoop(ctx, st.Hostname) })
 	}
@@ -859,6 +883,40 @@ waitForRegistration:
 		"run `stratum kubectl label node %s %s=true` or `stratum upgrade --cluster` will treat it as a worker\n",
 		hostname, nodeRegistrationGiveUp, hostname, k8sutil.ControlPlaneLabel)
 	<-ctx.Done()
+}
+
+// labelOwnNodeOnceRegistered labels a control plane's Node once it first
+// registers. A first boot's kubelet starts before its Node exists, so the
+// kubelet-start hook finds nothing to label; this waits out that first
+// registration, within the node-registered task's budget, and labels once.
+// It then holds until shutdown, labelled or not, as the node-registered task
+// does: the run group restarts a task that returns, which would relabel the
+// Node on every backoff and give a never-registered node a fresh budget.
+func labelOwnNodeOnceRegistered(ctx context.Context, st *NodeState) {
+	labelOwnNodeWhenRegistered(ctx, st)
+	<-ctx.Done()
+}
+
+// labelOwnNodeWhenRegistered is labelOwnNodeOnceRegistered's wait and label,
+// returning once the Node is labelled or the budget is spent. Its first check
+// waits a tick, as the node-registered task's does, so its kubectl is not
+// forked while the supervisor scans for a legacy supervisor.
+func labelOwnNodeWhenRegistered(ctx context.Context, st *NodeState) {
+	ctx, cancel := context.WithTimeout(ctx, nodeRegistrationGiveUp)
+	defer cancel()
+	t := time.NewTicker(nodeRegistrationInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		if nodeRegistered(ctx, st.Hostname) {
+			labelOwnNode(ctx, st)
+			return
+		}
+	}
 }
 
 // labelUntilApplied retries the control-plane label that first failed with
