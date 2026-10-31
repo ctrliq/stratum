@@ -1842,11 +1842,11 @@ func renderFixture(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSock := version.BinDir, version.ContainerdConfig, version.ControlSocket
-	oldReg, oldCerts, oldConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD
+	oldReg, oldCerts, oldConfD, oldRuntimeConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD
 	oldConf, oldPKI := version.K8sConfDir, version.PKIDir
 	t.Cleanup(func() {
 		version.BinDir, version.ContainerdConfig, version.ControlSocket = oldBin, oldConfig, oldSock
-		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD = oldReg, oldCerts, oldConfD
+		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD = oldReg, oldCerts, oldConfD, oldRuntimeConfD
 		version.K8sConfDir, version.PKIDir = oldConf, oldPKI
 	})
 	version.BinDir = dir
@@ -1856,6 +1856,7 @@ func renderFixture(t *testing.T) {
 	version.RegistriesConfig = filepath.Join(dir, "registries.yaml")
 	version.CertsDir = filepath.Join(dir, "certs.d")
 	version.ContainerdConfD = filepath.Join(dir, "conf.d", "stratum-registry.toml")
+	version.ContainerdRuntimeConfD = filepath.Join(dir, "conf.d", "stratum-runtime.toml")
 	version.K8sConfDir = filepath.Join(dir, "kubelet")
 	// A joined node's PKI: the trust bundle writeKubeletConfig syncs the
 	// kubelet client bundle from.
@@ -1869,6 +1870,7 @@ func renderFixture(t *testing.T) {
 	}
 
 	defaultTOML := `version = 3
+imports = ['/etc/containerd/conf.d/*.toml']
 root = '/var/lib/containerd'
 state = '/run/containerd'
 [plugins.'io.containerd.cri.v1.images']

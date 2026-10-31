@@ -3,16 +3,18 @@ package cluster
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-// A --worker honours spec.network.nodeIP and spec.selinux and refuses every
+// A --worker honours spec.network.nodeIP, spec.selinux and spec.node and refuses every
 // other set field, naming it, rather than dropping it.
 func TestLoadWorkerConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml, wantIP string
 		wantOptOut         bool
+		wantNode           NodeSpec
 		wantErr            []string
 	}{
 		{name: "empty file", yaml: ""},
@@ -34,6 +36,10 @@ func TestLoadWorkerConfig(t *testing.T) {
 		{name: "wrong kind", yaml: "kind: Other\n", wantErr: []string{"not ClusterConfig"}},
 		{name: "selinux off", yaml: "spec:\n  network:\n    nodeIP: 10.50.0.4\n  selinux: false\n", wantIP: "10.50.0.4", wantOptOut: true},
 		{name: "selinux on", yaml: "spec:\n  selinux: true\n"},
+		{name: "node facts", yaml: "spec:\n  node:\n    labels:\n      topology.kubernetes.io/zone: rack-1\n    taints:\n      - stratum.ciq.com/unverified=true:NoSchedule\n    runtimeHandlers:\n      nvidia: /usr/bin/nvidia-container-runtime\n",
+			wantNode: NodeSpec{Labels: map[string]string{"topology.kubernetes.io/zone": "rack-1"}, Taints: []string{"stratum.ciq.com/unverified=true:NoSchedule"}, RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}}},
+		{name: "runtimeClasses are a control plane's", yaml: "spec:\n  runtimeClasses: [nvidia]\n", wantErr: []string{"spec.runtimeClasses"}},
+		{name: "an engine-owned label", yaml: "spec:\n  node:\n    labels:\n      runtime.stratum.ciq.com/nvidia: \"true\"\n", wantErr: []string{"runtime.stratum.ciq.com/nvidia", "set by stratum itself"}},
 		{name: "selinux off with another field", yaml: "spec:\n  selinux: false\n  cis: true\n", wantErr: []string{"spec.cis"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -43,8 +49,8 @@ func TestLoadWorkerConfig(t *testing.T) {
 			}
 			got, err := LoadWorkerConfig(path)
 			if len(tc.wantErr) == 0 {
-				want := WorkerConfig{NodeIP: tc.wantIP, SELinuxOptOut: tc.wantOptOut}
-				if err != nil || got != want {
+				want := WorkerConfig{NodeIP: tc.wantIP, SELinuxOptOut: tc.wantOptOut, Node: tc.wantNode}
+				if err != nil || !reflect.DeepEqual(got, want) {
 					t.Fatalf("LoadWorkerConfig = %+v, %v; want %+v, nil", got, err, want)
 				}
 				return
@@ -63,7 +69,7 @@ func TestLoadWorkerConfig(t *testing.T) {
 
 func TestLoadWorkerConfigMissingFile(t *testing.T) {
 	got, err := LoadWorkerConfig(filepath.Join(t.TempDir(), "absent.yaml"))
-	if err != nil || got != (WorkerConfig{}) {
+	if err != nil || !reflect.DeepEqual(got, WorkerConfig{}) {
 		t.Fatalf("LoadWorkerConfig(missing) = %+v, %v; want the zero config, nil", got, err)
 	}
 }

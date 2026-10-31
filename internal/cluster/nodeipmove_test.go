@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -101,14 +102,14 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 	origConf, origPKI, origKubeconfig, origAdmin := version.K8sConfDir, version.PKIDir, version.KubeconfigDir, version.AdminConf
 	origEnc, origNet, origAudit, origAdmission := version.EncryptionConfigPath, version.NetConfigPath, version.AuditPolicyPath, version.AdmissionConfigPath
 	origContainerd, origK8sVersion, origBinDir := version.ContainerdConfig, version.K8sVersion, version.BinDir
-	origRegistries, origCerts, origConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD
+	origRegistries, origCerts, origConfD, origRuntimeConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD
 	origRoot, origState := version.ContainerdRootDir, version.ContainerdStateDir
 	origData, origDataRoot := version.EtcdDataDir, version.DataDir
 	t.Cleanup(func() {
 		version.K8sConfDir, version.PKIDir, version.KubeconfigDir, version.AdminConf = origConf, origPKI, origKubeconfig, origAdmin
 		version.EncryptionConfigPath, version.NetConfigPath, version.AuditPolicyPath, version.AdmissionConfigPath = origEnc, origNet, origAudit, origAdmission
 		version.ContainerdConfig, version.K8sVersion, version.BinDir = origContainerd, origK8sVersion, origBinDir
-		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD = origRegistries, origCerts, origConfD
+		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD = origRegistries, origCerts, origConfD, origRuntimeConfD
 		version.ContainerdRootDir, version.ContainerdStateDir = origRoot, origState
 		version.EtcdDataDir, version.DataDir = origData, origDataRoot
 	})
@@ -162,6 +163,26 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 				EtcdState: "existing", EtcdHasPeers: true,
 				PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12", ClusterDomain: "cluster.local"},
 			false},
+		{"a restart takes spec.node from its config, over what it saved", &ClusterConfig{Spec: Spec{Node: NodeSpec{
+			Labels:          map[string]string{"topology.kubernetes.io/zone": "rack-2"},
+			Taints:          []string{"dedicated=gpu:NoSchedule"},
+			RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"},
+		}}}, func() {
+			saved := *restart
+			saved.NodeLabels = map[string]string{"topology.kubernetes.io/zone": "rack-1"}
+			if err := SaveState(&saved); err != nil {
+				t.Fatal(err)
+			}
+		},
+			NodeState{Role: "controller", Hostname: "cp1", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11",
+				Server:   fmt.Sprintf("https://127.0.0.1:%d", version.APIServerPort),
+				EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380,cp2=https://10.0.0.12:2380",
+				EtcdState: "existing", EtcdHasPeers: true,
+				PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12", ClusterDomain: "cluster.local",
+				NodeLabels:      map[string]string{"topology.kubernetes.io/zone": "rack-2"},
+				NodeTaints:      []string{"dedicated=gpu:NoSchedule"},
+				RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}},
+			false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			trustedPodCIDRs = nil
@@ -182,6 +203,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			version.RegistriesConfig = filepath.Join(version.K8sConfDir, "registries.yaml")
 			version.CertsDir = filepath.Join(version.K8sConfDir, "certs.d")
 			version.ContainerdConfD = filepath.Join(version.K8sConfDir, "conf.d", "registry.toml")
+			version.ContainerdRuntimeConfD = filepath.Join(version.K8sConfDir, "conf.d", "runtime.toml")
 			version.ContainerdRootDir = filepath.Join(version.K8sConfDir, "containerd-root")
 			version.ContainerdStateDir = filepath.Join(version.K8sConfDir, "containerd-state")
 			// A payload marker (never executed: the rendered config below
@@ -199,7 +221,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			if runtime.CgroupDriver() == "systemd" {
 				driver = "SystemdCgroup = true"
 			}
-			if err := os.WriteFile(version.ContainerdConfig, []byte(driver+"\nsandbox_image = "+runtime.SandboxImage+"\nenable_selinux = false\n"), 0o600); err != nil {
+			if err := os.WriteFile(version.ContainerdConfig, []byte("imports = ['/etc/containerd/conf.d/*.toml', '"+filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), "*.toml")+"']\n"+driver+"\nsandbox_image = '"+runtime.SandboxImage+"'\nenable_selinux = false\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -213,7 +235,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if *saved != tc.want {
+			if !reflect.DeepEqual(*saved, tc.want) {
 				t.Errorf("saved node state = %+v, want %+v", *saved, tc.want)
 			}
 			if !slices.Contains(trustedPodCIDRs, tc.want.PodCIDR) {

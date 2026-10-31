@@ -3774,3 +3774,29 @@ func TestSettleJoinSecretsBeforeTheBundleIsWritten(t *testing.T) {
 		t.Errorf("the leftover key is still at %s: %v", key, err)
 	}
 }
+
+// A control plane's spec.node rides its join: the state the join saves and
+// returns, which its runtime-config write and first run render from, carries
+// the labels, taints and runtime handlers, not only its first restart.
+func TestControlPlaneJoinCarriesItsNodeFacts(t *testing.T) {
+	joinFixture(t)
+	r := &recordedJoin{listMembers: listedMembers()}
+	fx := fakeJoinEffects(r)
+	fx.downloadGrant = vipGrant([]string{"10.0.0.11"}, "10.0.0.10")
+	opts := freshJoinOpts()
+	opts.NodeLabels = map[string]string{"topology.kubernetes.io/zone": "rack-1"}
+	opts.NodeTaints = []string{"stratum.ciq.com/unverified=true:NoSchedule"}
+	opts.RuntimeHandlers = map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
+	st, err := prepareControlPlaneJoin(context.Background(), opts, t.TempDir(), fx)
+	if err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	for name, s := range map[string]*nodestate.NodeState{"returned": st, "saved": r.saved} {
+		if s == nil {
+			t.Fatalf("no %s node state", name)
+		}
+		if !reflect.DeepEqual(s.NodeLabels, opts.NodeLabels) || !reflect.DeepEqual(s.NodeTaints, opts.NodeTaints) || !reflect.DeepEqual(s.RuntimeHandlers, opts.RuntimeHandlers) {
+			t.Errorf("%s node state carries labels %v, taints %v, handlers %v; want the join's spec.node", name, s.NodeLabels, s.NodeTaints, s.RuntimeHandlers)
+		}
+	}
+}

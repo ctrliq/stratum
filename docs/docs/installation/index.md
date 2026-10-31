@@ -397,7 +397,7 @@ On a cluster with a non-default pod CIDR, service CIDR or cluster domain,
 `stratum token create` adds `--pod-cidr`, `--service-cidr` or
 `--cluster-domain` to the command. Run the command it prints as it is.
 
-A worker reads only its node IP and `spec.selinux` from
+A worker reads only its node IP, `spec.selinux` and `spec.node` from
 `/etc/stratum/config.yaml`. Do not copy a control plane's file to a worker; see
 [On a worker](configuration.md#on-a-worker).
 

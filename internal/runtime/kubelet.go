@@ -23,7 +23,8 @@ import (
 )
 
 // PrepareNodeConfigs writes what kubelet+containerd need: the kubelet config
-// (driver-matched to containerd) and containerd's config.toml. Lives here (not
+// (driver-matched to containerd), containerd's config.toml and its
+// runtime-handler drop-in. Lives here (not
 // in internal/cluster) so the HA join path can call it without an import cycle
 // through certs — every node runs kubelet.
 //
@@ -32,10 +33,28 @@ import (
 // running to restart and the supervisor brings containerd up on the config
 // just written.
 func PrepareNodeConfigs(st *nodestate.NodeState) error {
-	if _, err := EnsureConfig(); err != nil {
-		return fmt.Errorf("containerd config: %w", err)
+	if _, err := EnsureContainerdConfigs(os.Stdout, st); err != nil {
+		return err
 	}
 	return writeKubeletConfig(st)
+}
+
+// EnsureContainerdConfigs is EnsureConfig plus the node's runtime-handler
+// drop-in: what containerd reads at its next start, on every node that runs
+// it. Every start path goes through it, so a node's declared handlers are on
+// disk before the supervisor launches containerd, and a drop-in removed by
+// hand is restored. Like EnsureConfig it restarts nothing, and changed reports
+// either file changing.
+func EnsureContainerdConfigs(w io.Writer, st *nodestate.NodeState) (bool, error) {
+	changed, err := EnsureConfig()
+	if err != nil {
+		return changed, fmt.Errorf("containerd config: %w", err)
+	}
+	handlersChanged, err := writeHandlers(w, st.RuntimeHandlers)
+	if err != nil {
+		return changed || handlersChanged, fmt.Errorf("containerd runtime handlers: %w", err)
+	}
+	return changed || handlersChanged, nil
 }
 
 // WriteNodeConfigs is PrepareNodeConfigs without the legacy-config heal
@@ -55,6 +74,11 @@ func WriteNodeConfigsWithWriter(w io.Writer, st *nodestate.NodeState) (bool, err
 	changed, err := WriteConfigWithWriter(w)
 	if err != nil {
 		return changed, fmt.Errorf("containerd config: %w", err)
+	}
+	handlersChanged, err := writeHandlers(w, st.RuntimeHandlers)
+	changed = changed || handlersChanged
+	if err != nil {
+		return changed, fmt.Errorf("containerd runtime handlers: %w", err)
 	}
 	if err := writeKubeletConfig(st); err != nil {
 		return changed, err

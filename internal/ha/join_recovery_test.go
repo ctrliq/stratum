@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -700,5 +701,37 @@ func TestStaleJoinRefreshRefusedByTheVIPCheckKeepsTheJournal(t *testing.T) {
 	retained, err := os.ReadFile(joinIntentPath)
 	if err != nil || string(retained) != string(original) {
 		t.Fatalf("the refused refresh replaced the recovery journal (%v): got %s, want %s", err, retained, original)
+	}
+}
+
+// A resumed join takes its node facts from this run's spec.node, not from the
+// journal: a journal an older build wrote has none, and the operator may have
+// corrected them before retrying.
+func TestResumedJoinTakesThisRunsNodeFacts(t *testing.T) {
+	joinFixture(t)
+	etcdDir := t.TempDir()
+	r1 := &recordedJoin{listMembers: listedMembers(), failSaveState: errors.New("disk full"),
+		quorumHeldErr: errors.New("one running voter out of two")}
+	first := freshJoinOpts()
+	first.RuntimeHandlers = map[string]string{"nvidia": "/usr/bin/old-runtime"}
+	if _, err := prepareControlPlaneJoin(context.Background(), first, etcdDir, fakeJoinEffects(r1)); err == nil {
+		t.Fatal("the first join must fail after adding its member")
+	}
+	r2 := &recordedJoin{listMembers: listedMembers()}
+	retry := freshJoinOpts()
+	retry.NodeLabels = map[string]string{"topology.kubernetes.io/zone": "rack-1"}
+	retry.NodeTaints = []string{"stratum.ciq.com/unverified=true:NoSchedule"}
+	retry.RuntimeHandlers = map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
+	st, err := prepareControlPlaneJoin(context.Background(), retry, etcdDir, fakeJoinEffects(r2))
+	if err != nil {
+		t.Fatalf("resume refused: %v", err)
+	}
+	for name, s := range map[string]*nodestate.NodeState{"returned": st, "saved": r2.saved} {
+		if s == nil {
+			t.Fatalf("no %s node state", name)
+		}
+		if !reflect.DeepEqual(s.NodeLabels, retry.NodeLabels) || !reflect.DeepEqual(s.NodeTaints, retry.NodeTaints) || !reflect.DeepEqual(s.RuntimeHandlers, retry.RuntimeHandlers) {
+			t.Errorf("%s node state carries %v %v %v; want the retry's spec.node", name, s.NodeLabels, s.NodeTaints, s.RuntimeHandlers)
+		}
 	}
 }
