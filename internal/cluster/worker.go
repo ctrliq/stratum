@@ -213,12 +213,17 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		}
 		if len(replaced) > 0 {
 			if err := nodestate.Mutate(func(cur *NodeState) error {
-				cur.NodeLabels, cur.RuntimeHandlers = labels, handlers
+				if o.Node.Labels != nil {
+					cur.NodeLabels = labels
+				}
+				if o.Node.RuntimeHandlers != nil {
+					cur.RuntimeHandlers = handlers
+				}
+				st.NodeLabels, st.RuntimeHandlers = cur.NodeLabels, cur.RuntimeHandlers
 				return nil
 			}); err != nil {
 				return nil, fmt.Errorf("save worker node facts: %w", err)
 			}
-			st.NodeLabels, st.RuntimeHandlers = labels, handlers
 			for _, line := range replaced {
 				fmt.Printf("stratum: %s\n", line)
 			}

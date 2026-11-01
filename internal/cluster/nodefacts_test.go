@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/host"
+	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
 func TestNodeSpecValidate(t *testing.T) {
@@ -238,6 +239,28 @@ func TestWorkerRestartNodeFacts(t *testing.T) {
 		for _, s := range []*NodeState{st, mustLoadState(t)} {
 			if !reflect.DeepEqual(s.NodeLabels, moved) || !reflect.DeepEqual(s.RuntimeHandlers, saved.RuntimeHandlers) {
 				t.Errorf("labels %v, handlers %v; want the restart's labels and the saved handlers", s.NodeLabels, s.RuntimeHandlers)
+			}
+		}
+	})
+
+	t.Run("a restart's --node-label keeps the handlers saved while it started", func(t *testing.T) {
+		workerScratchHost(t)
+		stubWorkerStartHost(t)
+		if err := SaveState(saved); err != nil {
+			t.Fatal(err)
+		}
+		applied := map[string]string{"gvisor": bin}
+		hostPrereqs = func(host.PrereqOptions) error {
+			return nodestate.Mutate(func(cur *NodeState) error { cur.RuntimeHandlers = applied; return nil })
+		}
+		moved := map[string]string{"zone": "rack-2"}
+		st, err := PrepareWorker(context.Background(), WorkerOptions{Node: NodeSpec{Labels: moved}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []*NodeState{st, mustLoadState(t)} {
+			if !reflect.DeepEqual(s.NodeLabels, moved) || !reflect.DeepEqual(s.RuntimeHandlers, applied) {
+				t.Errorf("labels %v, handlers %v; want the restart's labels and the handlers saved meanwhile", s.NodeLabels, s.RuntimeHandlers)
 			}
 		}
 	})
