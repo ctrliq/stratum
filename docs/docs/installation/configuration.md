@@ -157,8 +157,8 @@ A node that joins with the `stratum.ciq.com/unverified=true:NoSchedule` taint
 takes no workloads until you release it, for example after a burn-in job that
 tolerates the taint has passed. Release it from a control plane:
 
-```bash
-sudo stratum node release gpu-worker-1
+```console
+# /usr/local/bin/stratum node release gpu-worker-1
 ```
 
 That removes every `stratum.ciq.com/unverified` taint from the Node, records
@@ -171,8 +171,8 @@ anyway.
 
 To take a node out of service again, for a repair or a reimage, hold it:
 
-```bash
-sudo stratum node hold gpu-worker-1 --reason "replacing a failed GPU"
+```console
+# /usr/local/bin/stratum node hold gpu-worker-1 --reason "replacing a failed GPU"
 ```
 
 That adds the taint back, removes `stratum.ciq.com/verified`, records who held
