@@ -23,7 +23,7 @@ func TestManagedRestampCoalescesAndJoinsAtShutdown(t *testing.T) {
 			}
 			<-taskCtx.Done()
 			<-release // prove the join waits for the callback, not merely cancellation
-		})
+		}, nil)
 		onStart("containerd", 1)
 		onStart("operator", 2)
 		synctest.Wait()
@@ -68,7 +68,7 @@ func TestManagedRestampRecoversPanicAndHandlesLaterStarts(t *testing.T) {
 			if calls == 1 {
 				panic("restamp failure")
 			}
-		})
+		}, nil)
 		onStart("kubelet", 1)
 		synctest.Wait()
 		time.Sleep(runGroupMinBackoff)
@@ -91,7 +91,7 @@ func TestKubeletOnStartRestampsOnKubeletOnly(t *testing.T) {
 	onStart := kubeletOnStart("n1", func(h string) {
 		calls.Add(1)
 		hostnames <- h
-	})
+	}, nil)
 
 	// Non-kubelet starts go first, with nothing in flight: the single-flight
 	// guard would otherwise absorb a wrongly restamping one.
@@ -129,7 +129,7 @@ func TestKubeletOnStartSingleFlight(t *testing.T) {
 		mu.Unlock()
 		started <- struct{}{}
 		<-release
-	})
+	}, nil)
 	wait := func(what string) {
 		t.Helper()
 		select {
@@ -168,5 +168,60 @@ func TestKubeletOnStartSingleFlight(t *testing.T) {
 	release <- struct{}{}
 	if n := count(); n != 2 {
 		t.Errorf("restamp ran %d times, want 2", n)
+	}
+}
+
+// A containerd that restarts without its kubelet may load a runtime handler
+// an apply wrote without restarting it, so every containerd start relabels,
+// and only a containerd start does.
+func TestContainerdStartsRelabelInBothRoles(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g := newRunGroup(ctx)
+		var restamps, relabels int
+		onStart := managedKubeletOnStart(g, "cp1",
+			func(context.Context, string) { restamps++ },
+			func(_ context.Context, hostname string) {
+				relabels++
+				if hostname != "cp1" {
+					t.Errorf("relabelled %q, want cp1", hostname)
+				}
+			})
+		onStart("kubelet", 1)
+		onStart("operator", 2)
+		synctest.Wait()
+		if restamps != 1 || relabels != 0 {
+			t.Fatalf("kubelet and operator starts: %d restamps, %d relabels; want 1 and 0", restamps, relabels)
+		}
+		onStart("containerd", 3)
+		synctest.Wait()
+		if restamps != 1 || relabels != 1 {
+			t.Fatalf("a containerd start: %d restamps, %d relabels; want 1 and 1", restamps, relabels)
+		}
+		cancel()
+		g.wait()
+	})
+
+	relabelled := make(chan string, 1)
+	var restamps atomic.Int32
+	onStart := kubeletOnStart("w1", func(string) { restamps.Add(1) }, func(h string) { relabelled <- h })
+	onStart("kubelet", 1)
+	select {
+	case h := <-relabelled:
+		t.Fatalf("a kubelet start relabelled %q", h)
+	case <-time.After(50 * time.Millisecond):
+	}
+	onStart("containerd", 2)
+	select {
+	case h := <-relabelled:
+		if h != "w1" {
+			t.Errorf("relabelled %q, want w1", h)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a worker's containerd start did not relabel")
+	}
+	if restamps.Load() != 1 {
+		t.Errorf("restamped %d times, want once for the kubelet start", restamps.Load())
 	}
 }
