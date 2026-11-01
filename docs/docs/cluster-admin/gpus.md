@@ -21,10 +21,6 @@ Rocky Linux from CIQ Pro AI 9.8 with SELinux enforcing, NVIDIA driver
   `nvidia-ctk runtime configure`. The toolkit's package also writes a CDI spec
   to `/var/run/cdi`, which `stratum runtime check` reports; the steps on this
   page do not use it.
-- A `runc` on the host's `PATH`, such as `/usr/bin/runc`.
-  `nvidia-container-runtime` adds the GPU to the container and then runs it
-  with the first `runc` it finds there; Stratum's own `runc` is not on the
-  `PATH`.
 
 ## 1. Declare the handler and its RuntimeClass
 
@@ -46,26 +42,26 @@ spec:
 A control plane reads both on every start, so restart it after editing the
 file:
 
-```bash
-sudo systemctl restart stratum
+```console
+# systemctl restart stratum
 ```
 
 A worker reads `spec.node` only when it joins. Join a GPU worker with
 `--runtime-handler nvidia=/usr/bin/nvidia-container-runtime`, or give an
 already-joined worker the handler without restarting it:
 
-```bash
-sudo stratum runtime apply --runtime-handler nvidia=/usr/bin/nvidia-container-runtime
+```console
+# /usr/local/bin/stratum runtime apply --runtime-handler nvidia=/usr/bin/nvidia-container-runtime
 ```
 
 If `apply` reports that containerd has not loaded the handlers, run
-`sudo stratum runtime restart`. Running containers keep running while
+`sudo /usr/local/bin/stratum runtime restart`. Running containers keep running while
 containerd restarts.
 
 Then check the node:
 
-```bash
-sudo stratum runtime check
+```console
+# /usr/local/bin/stratum runtime check
 ```
 
 It exits 1 if containerd will not run the handler. Once containerd has loaded
@@ -77,24 +73,34 @@ for what `apply`, `check` and `restart` do.
 
 ## 2. Install the device plugin
 
-```bash
-sudo stratum kubectl apply -f \
+```console
+# /usr/local/bin/stratum kubectl apply -f \
   https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.4/deployments/static/nvidia-device-plugin.yml
 ```
 
-NVIDIA's static manifest assumes `nvidia` is containerd's default runtime. It
-is not, so the plugin's pod needs `runtimeClassName: nvidia`, or it cannot load
-NVML and logs `No devices found`. On an SELinux node it also needs to run as
-`spc_t`, or it cannot register with the kubelet. Patch the DaemonSet for both:
+NVIDIA's static manifest assumes `nvidia` is containerd's default runtime and
+that every node it runs on has a GPU. Patch its DaemonSet for Stratum:
 
-```bash
-sudo stratum kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
-  --type merge -p '{"spec":{"template":{"spec":{"runtimeClassName":"nvidia","securityContext":{"seLinuxOptions":{"type":"spc_t"}}}}}}'
+- `runtimeClassName: nvidia`, or the plugin cannot load NVML and logs
+  `No devices found`.
+- A `nodeSelector` on the handler's label, so the DaemonSet runs only on the
+  GPU nodes. The RuntimeClass's node selector reaches each pod, not the
+  DaemonSet's choice of nodes, so without it every node without a GPU gets a
+  plugin pod that stays Pending.
+- A toleration for `stratum.ciq.com/unverified`, so the plugin runs on a GPU
+  worker that joined with the startup taint and has not been
+  [released](../installation/configuration.md#releasing-a-node) yet. Without
+  it the node never advertises its GPU, and a burn-in job that asks for one
+  never schedules. A merge patch replaces the whole list, so the patch keeps
+  NVIDIA's own `nvidia.com/gpu` toleration too.
+- On an SELinux node, `spc_t`, or the plugin cannot register with the kubelet.
+
+```console
+# /usr/local/bin/stratum kubectl patch daemonset nvidia-device-plugin-daemonset -n kube-system \
+  --type merge -p '{"spec":{"template":{"spec":{"runtimeClassName":"nvidia","nodeSelector":{"runtime.stratum.ciq.com/nvidia":"true"},"tolerations":[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"},{"key":"stratum.ciq.com/unverified","operator":"Exists","effect":"NoSchedule"}],"securityContext":{"seLinuxOptions":{"type":"spc_t"}}}}}}'
 ```
 
-The RuntimeClass also limits the DaemonSet to the GPU nodes, so its pods do
-not run on the nodes that have no GPU. A pod that runs as `spc_t` has the
-host's full access; see
+A pod that runs as `spc_t` has the host's full access; see
 [Pods that use the kubelet's sockets](hardening.md#pods-that-use-the-kubelets-sockets).
 
 Use v0.17.4 or newer. On GPUs with unified memory, such as the DGX Spark's
@@ -104,8 +110,8 @@ Older plugins treat that as fatal and crash-loop with
 
 Confirm that the node advertises its GPU:
 
-```bash
-sudo stratum kubectl get node <gpu-node> \
+```console
+# /usr/local/bin/stratum kubectl get node <gpu-node> \
   -o jsonpath='{.status.allocatable.nvidia\.com/gpu}{"\n"}'
 ```
 
@@ -113,8 +119,8 @@ A number above `0` means the scheduler can place GPU pods on the node.
 
 ## 3. Verify with a pod
 
-```bash
-cat <<'MANIFEST' | sudo stratum kubectl apply -f -
+```console
+# cat <<'MANIFEST' | /usr/local/bin/stratum kubectl apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
@@ -122,6 +128,10 @@ metadata:
 spec:
   runtimeClassName: nvidia
   restartPolicy: Never
+  tolerations:
+  - key: stratum.ciq.com/unverified
+    operator: Exists
+    effect: NoSchedule
   containers:
   - name: smi
     image: nvidia/cuda:12.6.3-base-ubuntu24.04
@@ -130,8 +140,18 @@ spec:
       limits:
         nvidia.com/gpu: 1
 MANIFEST
-sudo stratum kubectl logs gpu-check
+
+# /usr/local/bin/stratum kubectl wait pod/gpu-check --for=jsonpath='{.status.phase}'=Succeeded --timeout=5m
+
+# /usr/local/bin/stratum kubectl logs gpu-check
+name, driver_version, compute_cap
+NVIDIA GB10, 580.173.02, 12.1
+
+# /usr/local/bin/stratum kubectl delete pod gpu-check
 ```
+
+The first run waits for the image to pull. The toleration lets the pod run on
+a node that has not been released yet, as a burn-in job does.
 
 A GPU pod needs both fields. `runtimeClassName: nvidia` runs it under NVIDIA's
 runtime, which gives it the driver libraries; `nvidia.com/gpu: 1` gives it a
@@ -208,9 +228,9 @@ from the roughly 121 GiB the GB10 reports as GPU memory.
 ## Moving from `nvidia-ctk`
 
 A node set up by hand, with `nvidia-ctk runtime configure` and a RuntimeClass
-you applied yourself, keeps working, and `stratum runtime check` warns that
-`/etc/containerd/conf.d/99-nvidia.toml` defines the `nvidia` runtime too. To
-move it to the steps above:
+you applied yourself, keeps working. Once you declare the handler in step 1,
+`stratum runtime check` warns that `/etc/containerd/conf.d/99-nvidia.toml`
+defines the `nvidia` runtime too. To move it to the steps above:
 
 1. Declare the handler and the RuntimeClass as in
    [step 1](#1-declare-the-handler-and-its-runtimeclass). Stratum takes over a
@@ -219,7 +239,8 @@ move it to the steps above:
    RuntimeClass's handler cannot change, so if yours names a handler other
    than `nvidia`, delete it first.
 2. Remove `/etc/containerd/conf.d/99-nvidia.toml`, then run
-   `sudo stratum runtime restart` and `sudo stratum runtime check`.
+   `sudo /usr/local/bin/stratum runtime restart` and
+   `sudo /usr/local/bin/stratum runtime check`.
 
 `stratum uninstall` removes Stratum's runtime-handler file with the rest of
 `/var/lib/stratum`. It does not remove a file in `/etc/containerd/conf.d` that
