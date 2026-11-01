@@ -25,8 +25,8 @@ func RenderRuntimeClasses(names []string) []byte {
 		docs = append(docs, fmt.Sprintf(`apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
-  name: %[1]s
-handler: %[1]s
+  name: "%[1]s"
+handler: "%[1]s"
 scheduling:
   nodeSelector:
     %[2]s%[1]s: "true"

@@ -40,3 +40,20 @@ func TestNoRuntimeClassesRenderNoStack(t *testing.T) {
 		t.Errorf("no handlers rendered %q, want nothing", got)
 	}
 }
+
+// The operator decodes manifests without a schema, so a handler name YAML
+// reads as a bool, null or number would not reach the API as a string.
+func TestRuntimeClassNamesStayStringsWithoutASchema(t *testing.T) {
+	names := []string{"123", "null", "true"}
+	docs := bytes.Split(RenderRuntimeClasses(names), []byte("---\n"))
+	for i, want := range names {
+		var rc map[string]any
+		if err := yaml.Unmarshal(docs[i], &rc); err != nil {
+			t.Fatal(err)
+		}
+		meta, _ := rc["metadata"].(map[string]any)
+		if meta["name"] != want || rc["handler"] != want {
+			t.Errorf("document %d: name %#v handler %#v, want both the string %q", i, meta["name"], rc["handler"], want)
+		}
+	}
+}
