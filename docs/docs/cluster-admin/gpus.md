@@ -26,8 +26,10 @@ Rocky Linux from CIQ Pro AI 9.8 with SELinux enforcing, NVIDIA driver
 
 On a GPU node, declare `nvidia` as a runtime handler in
 [`spec.node.runtimeHandlers`](../installation/configuration.md#node-labels-taints-and-runtime-handlers).
-On a control plane, publish a RuntimeClass for it with
-[`spec.runtimeClasses`](../installation/configuration.md#runtimeclasses):
+On every control plane, with a GPU or not, publish a RuntimeClass for it with
+[`spec.runtimeClasses`](../installation/configuration.md#runtimeclasses). The
+list must be the same on every control plane, or the operator stops applying
+the cluster's add-ons until it is:
 
 ```yaml
 # /etc/stratum/config.yaml on a control plane that has a GPU
@@ -39,8 +41,8 @@ spec:
     - nvidia
 ```
 
-A control plane reads both on every start, so restart it after editing the
-file:
+A control plane reads both on every start, so restart each control plane
+after editing its file:
 
 ```console
 # systemctl restart stratum
@@ -55,8 +57,8 @@ already-joined worker the handler without restarting it:
 ```
 
 If `apply` reports that containerd has not loaded the handlers, run
-`sudo /usr/local/bin/stratum runtime restart`. Running containers keep running while
-containerd restarts.
+`sudo /usr/local/bin/stratum runtime restart`. Running containers keep running
+while containerd restarts.
 
 Then check the node:
 
@@ -241,6 +243,11 @@ defines the `nvidia` runtime too. To move it to the steps above:
 2. Remove `/etc/containerd/conf.d/99-nvidia.toml`, then run
    `sudo /usr/local/bin/stratum runtime restart` and
    `sudo /usr/local/bin/stratum runtime check`.
+3. Once `check` passes, the node carries `runtime.stratum.ciq.com/nvidia=true`.
+   Patch your device plugin's DaemonSet as in
+   [step 2](#2-install-the-device-plugin). Patching before the label is there
+   takes the plugin off the node, because its new node selector does not
+   match yet. Running the patch again is harmless.
 
 `stratum uninstall` removes Stratum's runtime-handler file with the rest of
 `/var/lib/stratum`. It does not remove a file in `/etc/containerd/conf.d` that
