@@ -48,6 +48,10 @@ EOF
 running() { [[ $($K get pod "$1" -o jsonpath='{.status.phase}' 2>/dev/null) == Running ]]; }
 container_id() { $K get pod "$1" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's|^containerd://||'; }
 ran_through_fake() { grep -q -- "$(container_id "$1")" "$LOG" 2>/dev/null; }
+task_running() {
+  [[ $("$ROOT/bin/ctr" --address /run/stratum/containerd/containerd.sock -n k8s.io tasks ls 2>/dev/null |
+    awk -v id="$1" '$1 == id {print $3}') == RUNNING ]]
+}
 
 config "{fake: $FAKE}" "[fake]"
 start_cluster
@@ -84,7 +88,8 @@ assert_contains "the RuntimeClass put its node selector on the pod" "runtime.str
 # --- stratum runtime restart ----------------------------------------------------
 before=$(container_id rh-fake)
 out=$("$STRATUM" runtime restart 2>&1) || fail "stratum runtime restart failed: $out"
-wait_for "rh-fake to run after containerd restarts" 120 running rh-fake || true
+wait_for "rh-fake's container to run in the restarted containerd" 120 task_running "$before" ||
+  fail "containerd has no running task $before after its restart"
 assert_eq "the pod's container outlived containerd's restart" "$before" "$(container_id rh-fake)"
 if has_label fake; then pass "the label survives the restart"; else fail "the restart removed the fake label: $(labels)"; fi
 if out=$(runtime_check); then pass "stratum runtime check passes after the restart"; else fail "check after restart: $out"; fi
@@ -105,6 +110,8 @@ ready
 assert_contains "the drop-in survives a second start" "containerd.runtimes.fake2]" "$(cat "$DROPIN" 2>/dev/null)"
 both() { has_label fake && has_label fake2; }
 wait_for "both handler labels after a second start" 120 both || fail "labels after a second start: $(labels)"
+wait_for "rh-fake's container to run after the second start" 120 task_running "$before" ||
+  fail "containerd has no running task $before after the second start"
 assert_eq "rh-fake kept running through the second start" "$before" "$(container_id rh-fake)"
 wait_for "the fake2 RuntimeClass" 180 sh -c "$K get runtimeclass fake2 >/dev/null 2>&1" || fail "no fake2 RuntimeClass"
 pod rh-fake2 fake2

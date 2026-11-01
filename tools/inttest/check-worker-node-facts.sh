@@ -87,11 +87,17 @@ out=$(on cp1 "/dist/stratum node release cp2 --by inttest" 2>&1) || fail "releas
 assert_eq "release cleared the hold" " " "$(annotation held) $(annotation held-reason)"
 
 # --- a restarted worker does not taint itself again -----------------------------
+renewed() { on cp1 "$K -n kube-node-lease get lease cp2 -o jsonpath='{.spec.renewTime}'" 2>/dev/null; }
 docker stop -t 5 "$HA_PREFIX-cp2" >/dev/null
+# Read after the stop: the old kubelet can renew while it shuts down, so only a
+# renewal after this one is the restarted kubelet's.
+lease_before=$(renewed)
 docker start "$HA_PREFIX-cp2" >/dev/null
 on cp2 ": > /tmp/stratum.log"
 node_up cp2 --worker
 wait_for "the worker to restart" 600 node_started cp2 || { node_log cp2; exit 1; }
+lease_moved() { local now; now=$(renewed); [[ -n $now && $now != "$lease_before" ]]; }
+wait_for "the restarted kubelet to renew its Lease" 300 lease_moved || { node_log cp2; exit 1; }
 wait_for "2 nodes Ready again" 600 ready_at_least cp1 2 || { on cp1 "$K get nodes -o wide" || true; exit 1; }
 if tainted; then fail "the restarted worker put its startup taint back: $(taints)"; else pass "a restart does not re-arm the startup taint"; fi
 assert_contains "the restarted worker keeps its zone label" '"topology.kubernetes.io/zone":"rack-1"' "$(labels)"
