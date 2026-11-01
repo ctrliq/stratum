@@ -216,7 +216,8 @@ func runUp(parent context.Context, o runUpOptions) error {
 	if err := upFlagConflict(o); err != nil {
 		return err
 	}
-	if _, err := o.nodeSpec(); err != nil {
+	node, err := o.nodeSpec()
+	if err != nil {
 		return err
 	}
 	configPath, err := upConfigPath(o.configPath, o.worker)
@@ -224,7 +225,8 @@ func runUp(parent context.Context, o runUpOptions) error {
 		return err
 	}
 	o.configPath = configPath
-	if err := preflightWorkerJoinNode(o); err != nil {
+	joinCfg, err := preflightWorkerJoinNode(o, node)
+	if err != nil {
 		return err
 	}
 	// The run owns its signals from here, before the first preflight call:
@@ -323,16 +325,10 @@ func runUp(parent context.Context, o runUpOptions) error {
 			// reads just spec.selinux, above, and passes --node-ip, which can
 			// move the address saved in node.yaml; PrepareWorker's fast path
 			// keeps the rest of the settings node.yaml saved.
-			if wcfg, err = workerConfig(o.configPath); err != nil {
-				return err
-			}
+			wcfg = joinCfg
 			selinuxOptOut = &wcfg.SELinuxOptOut
 		}
 		profileName, err := o.profileName()
-		if err != nil {
-			return err
-		}
-		node, err := o.nodeSpec()
 		if err != nil {
 			return err
 		}
@@ -1246,22 +1242,19 @@ func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
 
 // preflightWorkerJoinNode refuses a worker join whose spec.node, from its
 // config file and flags together, the join would refuse, before staging or
-// SELinux relabelling touch the host. A restart is not checked here: it only
-// warns about a missing handler binary.
-func preflightWorkerJoinNode(o runUpOptions) error {
+// SELinux relabelling touch the host, and returns the worker config it read
+// for the join to use. A restart is not checked here: it only warns about a
+// missing handler binary.
+func preflightWorkerJoinNode(o runUpOptions, flags cluster.NodeSpec) (cluster.WorkerConfig, error) {
 	if !o.worker || o.server == "" {
-		return nil
+		return cluster.WorkerConfig{}, nil
 	}
 	wcfg, err := workerConfig(o.configPath)
 	if err != nil {
-		return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
-	}
-	flags, err := o.nodeSpec()
-	if err != nil {
-		return err
+		return cluster.WorkerConfig{}, fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
 	}
 	if _, err := cluster.JoinNodeSpec(wcfg.Node, flags); err != nil {
-		return fmt.Errorf("stratum up: worker join: %w. Nothing on this host was changed", err)
+		return cluster.WorkerConfig{}, fmt.Errorf("stratum up: worker join: %w. Nothing on this host was changed", err)
 	}
-	return nil
+	return wcfg, nil
 }
