@@ -1,11 +1,13 @@
 package cluster
 
 import (
+	"context"
 	"errors"
 	"io"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,10 +23,10 @@ func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 		t.Fatal(err)
 	}
 	var written []map[string]string
-	old, oldLabels, oldImport := applyHandlers, reconcileHandlerLabels, requireHandlersImport
-	t.Cleanup(func() { applyHandlers, reconcileHandlerLabels, requireHandlersImport = old, oldLabels, oldImport })
+	old, oldLabels, oldImport := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport
+	t.Cleanup(func() { applyHandlers, reconcileOwnNodeLabels, requireHandlersImport = old, oldLabels, oldImport })
 	requireHandlersImport = func() error { return nil }
-	reconcileHandlerLabels = func(*NodeState, map[string]string) error { return nil }
+	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string) error { return nil }
 	applyHandlers = func(_ io.Writer, h map[string]string, _ bool) (runtime.ApplyHandlersResult, error) {
 		written = append(written, h)
 		return runtime.ApplyHandlersResult{Changed: true}, nil
@@ -185,22 +187,22 @@ func TestCheckRuntimeHandlersReportsAControlPlaneConfigDrift(t *testing.T) {
 func TestApplyRuntimeHandlersRelabelsTheNode(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", NodeLabels: map[string]string{"zone": "a"}})
 	want := map[string]string{"nvidia": executable(t)}
-	var labelled []map[string]string
-	reconcileHandlerLabels = func(st *NodeState, h map[string]string) error {
-		if st.Hostname != "w1" || st.NodeLabels["zone"] != "a" {
-			t.Errorf("relabelled with %+v, want the node's own state", st)
+	var labelled [][]string
+	reconcileOwnNodeLabels = func(_ context.Context, host string, labels map[string]string, handlers []string) error {
+		if host != "w1" || labels["zone"] != "a" {
+			t.Errorf("relabelled %s with %v, want the node's own state", host, labels)
 		}
-		labelled = append(labelled, h)
+		labelled = append(labelled, handlers)
 		return errors.New("apiserver unreachable")
 	}
 	var w strings.Builder
 	if _, err := ApplyRuntimeHandlers(&w, RuntimeApplyOptions{Handlers: want}); err != nil {
 		t.Fatalf("an unreachable API server failed the apply: %v", err)
 	}
-	if len(labelled) != 1 || !maps.Equal(labelled[0], want) {
-		t.Errorf("relabelled with %v, want %v once", labelled, want)
+	if len(labelled) != 1 || !slices.Equal(labelled[0], []string{"nvidia"}) {
+		t.Errorf("relabelled with %v, want [nvidia] once", labelled)
 	}
-	if !strings.Contains(w.String(), "could not update this node's runtime handler labels") {
+	if !strings.Contains(w.String(), "could not update this node's runtime-handler labels") {
 		t.Errorf("progress %q does not warn about the labels", w.String())
 	}
 }
@@ -226,10 +228,10 @@ func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	oldRestart := restartContainerd
 	t.Cleanup(func() { restartContainerd = oldRestart })
 	var order []string
-	restartContainerd = func() error { order = append(order, "restart"); return nil }
-	reconcileHandlerLabels = func(st *NodeState, h map[string]string) error {
-		if !maps.Equal(h, saved) {
-			t.Errorf("relabelled with %v, want %v", h, saved)
+	restartContainerd = func(io.Writer) error { order = append(order, "restart"); return nil }
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+		if !slices.Equal(handlers, []string{"nvidia"}) {
+			t.Errorf("relabelled with %v, want [nvidia]", handlers)
 		}
 		order = append(order, "label")
 		return nil
@@ -242,8 +244,42 @@ func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	}
 
 	order = nil
-	restartContainerd = func() error { return errors.New("containerd is not running") }
+	restartContainerd = func(io.Writer) error { return errors.New("containerd is not running") }
 	if err := RestartRuntime(io.Discard); err == nil || len(order) != 0 {
 		t.Errorf("a failed restart returned %v and did %v, want the error and no relabel", err, order)
+	}
+}
+
+// A node is labelled for a runtime handler only once its containerd has
+// loaded it, on every path that labels: an apply that left containerd running
+// without the new handler, a restart, and a kubelet start.
+func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
+	oldLoaded, oldRestart := loadedHandlers, restartContainerd
+	t.Cleanup(func() { loadedHandlers, restartContainerd = oldLoaded, oldRestart })
+	loadedHandlers = func(names []string) []string {
+		return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n != "gvisor" })
+	}
+	restartContainerd = func(io.Writer) error { return nil }
+	var labelled [][]string
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+		labelled = append(labelled, handlers)
+		return nil
+	}
+	declared := map[string]string{"gvisor": executable(t), "kata": executable(t)}
+	if _, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: declared}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestartRuntime(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	labelOwnNode(context.Background(), &NodeState{Hostname: "w1"})
+	if len(labelled) != 3 {
+		t.Fatalf("labelled %d times, want once per path", len(labelled))
+	}
+	for i, got := range labelled {
+		if !slices.Equal(got, []string{"gvisor"}) {
+			t.Errorf("path %d labelled for %v, want only the loaded [gvisor]", i, got)
+		}
 	}
 }

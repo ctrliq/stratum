@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"slices"
 
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/runtime"
@@ -36,13 +35,6 @@ var (
 	requireHandlersImport = runtime.RequireHandlersImport
 	restartContainerd     = runtime.RestartContainerd
 )
-
-// reconcileHandlerLabels gives this node's Node the runtime-handler labels of
-// the handlers its containerd has loaded, which its RuntimeClasses select
-// nodes by, and removes the rest.
-var reconcileHandlerLabels = func(st *NodeState, handlers map[string]string) error {
-	return reconcileOwnNodeLabels(context.Background(), st.Hostname, st.NodeLabels, runtime.LoadedHandlers(slices.Sorted(maps.Keys(handlers))))
-}
 
 // ApplyRuntimeHandlers resolves the runtime handlers this node declares,
 // saves them to node.yaml when they changed, and writes containerd's drop-in.
@@ -90,8 +82,8 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 	if err != nil {
 		return out, err
 	}
-	if err := reconcileHandlerLabels(st, want); err != nil {
-		fmt.Fprintf(w, "WARN: could not update this node's runtime handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
+	if err := reconcileNodeLabels(context.Background(), st); err != nil {
+		fmt.Fprintf(w, "WARN: could not update this node's runtime-handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
 	}
 	return out, nil
 }
@@ -100,16 +92,16 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 // for the runtime handlers the restart loaded. A label update that fails only
 // warns.
 func RestartRuntime(w io.Writer) error {
-	if err := restartContainerd(); err != nil {
+	if err := restartContainerd(w); err != nil {
 		return err
 	}
 	st, err := LoadState()
 	if err != nil {
-		fmt.Fprintf(w, "WARN: could not read the node state (%v); this node's runtime handler labels update at its next start\n", err)
+		fmt.Fprintf(w, "WARN: could not read the node state (%v); this node's runtime-handler labels update at its next start\n", err)
 		return nil
 	}
-	if err := reconcileHandlerLabels(st, st.RuntimeHandlers); err != nil {
-		fmt.Fprintf(w, "WARN: could not update this node's runtime handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
+	if err := reconcileNodeLabels(context.Background(), st); err != nil {
+		fmt.Fprintf(w, "WARN: could not update this node's runtime-handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
 	}
 	return nil
 }

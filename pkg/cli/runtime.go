@@ -90,7 +90,7 @@ func newRuntimeCheckCommand() *cobra.Command {
 func newRuntimeRestartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
-		Short: "Restart containerd and update this node's runtime handler labels; running containers keep running",
+		Short: "Restart containerd and update this node's runtime-handler labels; running containers keep running",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := cluster.RestartRuntime(cmd.ErrOrStderr()); err != nil {

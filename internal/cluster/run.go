@@ -610,25 +610,15 @@ var (
 
 	reconcileOwnNodeLabels = k8sutil.ReconcileOwnNodeLabels
 
-	// labelOwnNode gives this node's Node its spec.node labels and the label
-	// of each runtime handler it declares and its containerd has loaded, as
-	// its kubelet, on every kubelet start of both roles. A label that fails is
+	// labelOwnNode labels this node's Node by reconcileNodeLabels, as its
+	// kubelet, on every kubelet start of both roles. A label that fails is
 	// retried until it lands or ctx ends (retryUntilApplied), as the
 	// control-plane label is: a node without its handler labels takes none of
 	// its RuntimeClasses' pods, and nothing else would label it before the
-	// next kubelet start. Non-fatal, but logged. Each attempt labels from
-	// node.yaml as it is then, falling back to st: `stratum runtime apply`
-	// changes the handlers under a running supervisor, whose st predates the
-	// change.
+	// next kubelet start. Each attempt reads node.yaml afresh. Non-fatal, but
+	// logged.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
-		label := func(ctx context.Context) error {
-			cur := st
-			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
-				cur = saved
-			}
-			handlers := runtime.LoadedHandlers(slices.Sorted(maps.Keys(cur.RuntimeHandlers)))
-			return reconcileOwnNodeLabels(ctx, cur.Hostname, cur.NodeLabels, handlers)
-		}
+		label := func(ctx context.Context) error { return reconcileNodeLabels(ctx, st) }
 		err := label(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
@@ -643,6 +633,10 @@ var (
 		}
 	}
 
+	// loadedHandlers narrows a node's declared runtime handlers to those its
+	// running containerd has loaded.
+	loadedHandlers = runtime.LoadedHandlers
+
 	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
 	// register, giving up after timeout.
 	waitOwnNodeRegistered = k8sutil.WaitOwnNodeRegistered
@@ -653,6 +647,20 @@ var (
 	// runs no node-registered task, so this is its one registration wait.
 	ownNodeRegistrationWarnAfter = 5 * time.Minute
 )
+
+// reconcileNodeLabels gives this node's Node its spec.node labels and the
+// label of each runtime handler its containerd has loaded, which its
+// RuntimeClasses select nodes by, and removes the rest. It reads node.yaml as
+// it is now, falling back to st: `stratum runtime apply` changes the handlers
+// under a running supervisor, whose st predates the change. It is the one
+// labelling rule for a kubelet start, `stratum runtime apply` and
+// `stratum runtime restart`.
+func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
+	if cur, err := LoadState(); err == nil && cur.Hostname == st.Hostname {
+		st = cur
+	}
+	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(slices.Sorted(maps.Keys(st.RuntimeHandlers))))
+}
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a
 // worker alike: every kubelet start, including the restart `stratum upgrade`

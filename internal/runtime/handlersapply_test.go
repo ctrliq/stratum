@@ -98,31 +98,13 @@ func TestApplyHandlers_ReportsWhetherItRestarted(t *testing.T) {
 	})
 }
 
-// A containerd config rendered before runtime handlers existed never reads
-// the drop-in, so ApplyHandlers refuses it before writing anything rather
-// than report handlers containerd will never load.
-func TestApplyHandlersRefusesAConfigWithoutTheImport(t *testing.T) {
-	handlersHost(t, false)
-	restarts := fakeSupervisor(t, false)
-	_, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true)
-	if err == nil || !strings.Contains(err.Error(), "does not import") {
-		t.Fatalf("apply against a config without the import = %v, want the import refusal", err)
-	}
-	if _, err := os.Stat(version.ContainerdRuntimeConfD); !os.IsNotExist(err) {
-		t.Errorf("the drop-in was written despite the refusal (stat: %v)", err)
-	}
-	if restarts() != 0 {
-		t.Errorf("containerd was restarted %d times despite the refusal", restarts())
-	}
-}
-
 func TestRestartContainerd(t *testing.T) {
 	handlersHost(t, true)
-	if err := RestartContainerd(); err == nil || !strings.Contains(err.Error(), "not running") {
+	if err := RestartContainerd(io.Discard); err == nil || !strings.Contains(err.Error(), "not running") {
 		t.Errorf("restart with no supervisor = %v, want the not-running refusal", err)
 	}
 	restarts := fakeSupervisor(t, false)
-	if err := RestartContainerd(); err != nil {
+	if err := RestartContainerd(io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if restarts() != 1 {
@@ -359,16 +341,54 @@ func TestLoadedHandlersIgnoresARecordForAnEarlierContainerd(t *testing.T) {
 	}
 }
 
+// A reboot or a container restart can hand the new containerd the PID the
+// record names; a record whose start does not match that containerd's was
+// written for an earlier one, and narrows nothing.
+func TestLoadedHandlersIgnoresARecordWhoseContainerdReusedThePID(t *testing.T) {
+	handlersHost(t, true)
+	fakeSupervisor(t, false)
+	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unloadedPath(), []byte("100 boot/100\nrunc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadedHandlers([]string{"gvisor"}); len(got) != 0 {
+		t.Fatalf("LoadedHandlers with a record for this containerd = %v, want none", got)
+	}
+	processStart = func(int) string { return "another-boot/100" }
+	if got := LoadedHandlers([]string{"gvisor"}); !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("LoadedHandlers with a record for an earlier containerd on the same PID = %v, want [gvisor]", got)
+	}
+}
+
 func TestRestartContainerdClearsTheUnloadedRecord(t *testing.T) {
 	handlersHost(t, true)
 	fakeSupervisor(t, false)
 	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := RestartContainerd(); err != nil {
+	if err := RestartContainerd(io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(unloadedPath()); !os.IsNotExist(err) {
 		t.Errorf("the unloaded record survived a restart (stat: %v)", err)
+	}
+}
+
+func TestProcessStartNamesTheBootAndTheStart(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc on this host")
+	}
+	got := processStart(os.Getpid())
+	boot, start, ok := strings.Cut(got, "/")
+	if !ok || boot == "" || start == "" || strings.ContainsAny(got, " \n") {
+		t.Fatalf("processStart(self) = %q, want <boot id>/<start ticks>", got)
+	}
+	if again := processStart(os.Getpid()); again != got {
+		t.Errorf("processStart(self) changed from %q to %q", got, again)
+	}
+	if processStart(1<<30) != "" {
+		t.Error("processStart of a PID that does not exist is not empty")
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1156,9 +1157,10 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := version.ControlSocket
+	old, oldStart := version.ControlSocket, processStart
 	version.ControlSocket = socket
-	t.Cleanup(func() { version.ControlSocket = old; ln.Close() })
+	processStart = func(pid int) string { return "boot/" + strconv.Itoa(pid) }
+	t.Cleanup(func() { version.ControlSocket, processStart = old, oldStart; ln.Close() })
 
 	var mu sync.Mutex
 	served := 0
