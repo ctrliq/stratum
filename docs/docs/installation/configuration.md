@@ -168,6 +168,17 @@ Removing a name deletes its RuntimeClass, and an empty list deletes them all.
 `runc` is containerd's default handler and needs no RuntimeClass, so the list
 refuses it.
 
+!!! warning "Every control plane must carry the same list"
+    The RuntimeClasses are cluster-wide, but each control plane renders them
+    from its own config file, and each `stratum up` records its render as the
+    cluster's desired add-ons. The operator's leader applies add-ons only while
+    its own render matches that record. A control plane started with a
+    different list therefore stops the leader applying every bundled add-on,
+    Cilium and CoreDNS among them, until the lists match again; the operator
+    logs `staged tree digest ... does not match the recorded desired
+    generation` meanwhile. To change the list, edit it on every control plane,
+    then restart `stratum up` on each. A worker's config file cannot set it.
+
 ## Node IP
 
 A node takes its IP from the first of these that is set:
