@@ -123,9 +123,10 @@ new ones when containerd next restarts.
 On a worker, the handlers you give replace the ones it saved, and `--clear`
 removes them all:
 
-```bash
-sudo stratum runtime apply --runtime-handler nvidia=/usr/bin/nvidia-container-runtime
-sudo stratum runtime apply --clear
+```console
+# /usr/local/bin/stratum runtime apply --runtime-handler nvidia=/usr/bin/nvidia-container-runtime
+
+# /usr/local/bin/stratum runtime apply --clear
 ```
 
 A control plane reads `spec.node.runtimeHandlers` from its configuration file on
