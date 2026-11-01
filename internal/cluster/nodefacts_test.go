@@ -337,3 +337,31 @@ func TestSameTaintsComparesTheSetNotTheSpelling(t *testing.T) {
 		}
 	}
 }
+
+func TestControlPlaneRestartWarnsOnceWhenItsTaintsChange(t *testing.T) {
+	cases := []struct {
+		name string
+		prev *NodeState
+		cfg  []string
+		warn bool
+	}{
+		{"first boot registers the file's taints", nil, []string{"stratum.ciq.com/unverified=true:NoSchedule"}, false},
+		{"a changed list warns", &NodeState{NodeTaints: []string{"dedicated=gpu:NoSchedule"}}, []string{"stratum.ciq.com/unverified=true:NoSchedule"}, true},
+		{"an added taint warns", &NodeState{}, []string{"stratum.ciq.com/unverified=true:NoSchedule"}, true},
+		{"the same set in another order and spelling does not warn",
+			&NodeState{NodeTaints: []string{"b:NoExecute", "dedicated=:NoSchedule"}}, []string{"dedicated:NoSchedule", "b:NoExecute"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &NodeState{Hostname: "cp1", NodeTaints: tc.cfg}
+			var w strings.Builder
+			warnChangedTaints(&w, st, tc.prev)
+			if got := strings.Contains(w.String(), "stratum kubectl taint node cp1"); got != tc.warn {
+				t.Errorf("warned %v (%q), want %v", got, w.String(), tc.warn)
+			}
+			if !reflect.DeepEqual(st.NodeTaints, tc.cfg) {
+				t.Errorf("NodeTaints = %q, want the file's %q: a Node that registers again takes it", st.NodeTaints, tc.cfg)
+			}
+		})
+	}
+}

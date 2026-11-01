@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/ha"
@@ -133,6 +135,7 @@ func PrepareControllerWithLease(ctx context.Context, cfg *ClusterConfig, nodeIPF
 		NodeTaints:      cfg.Spec.Node.Taints,
 		RuntimeHandlers: cfg.Spec.Node.RuntimeHandlers,
 	}
+	warnChangedTaints(os.Stderr, st, prev)
 	// A join can inherit its VIP from authenticated bundle metadata without
 	// changing the config file. An unspecified address keeps that recorded
 	// address on restart; explicit addresses and local interface/BGP settings
@@ -471,6 +474,22 @@ func journalPartialPreparation(prev *NodeState) {
 // reason the write is.
 func clearPartialPreparationJournal() {
 	_ = os.Remove(partialPreparationPath())
+}
+
+// warnChangedTaints tells a restarted control plane's operator that a
+// changed spec.node.taints does not reach its Node. The kubelet applies
+// registerWithTaints only when it creates the Node, so the new list is what a
+// Node that registers later gets, and the existing Node keeps its taints until
+// they are changed through the API. It warns once per change: the start saves
+// the new list, so the next start finds it unchanged.
+func warnChangedTaints(w io.Writer, st, prev *NodeState) {
+	if prev == nil || sameTaints(st.NodeTaints, prev.NodeTaints) {
+		return
+	}
+	fmt.Fprintf(w, "stratum: WARN: spec.node.taints changed from %s to %s, and the kubelet applies taints only when it "+
+		"registers the Node: node %s keeps its taints until you change them with `stratum kubectl taint node %s`. "+
+		"A Node that registers again takes the new list\n",
+		cmp.Or(strings.Join(prev.NodeTaints, ","), "none"), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname, st.Hostname)
 }
 
 // savedControllerIP only treats a missing state file as first boot. A state

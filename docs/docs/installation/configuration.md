@@ -102,7 +102,12 @@ spec:
 ```
 
 A control plane reads `spec.node` at its first boot or `--join`, and on every
-start after. A worker reads it at its join, where the repeatable `--node-label
+start after. The kubelet applies taints only when it registers the Node, so a
+changed `spec.node.taints` reaches a Node that registers later but not the one
+that exists: the restart warns once, and you change that Node's taints with
+`stratum kubectl taint node`.
+
+A worker reads `spec.node` at its join, where the repeatable `--node-label
 key=value`, `--node-taint key[=value]:Effect` and `--runtime-handler
 name=/path` flags add to it: a flag replaces the file's label or handler of the
 same name, and its taint with the same key and effect. A worker restart reads
