@@ -96,6 +96,7 @@ nav:
       - Certificates: cluster-admin/certificates.md
       - Hardening: cluster-admin/hardening.md
       - MCP Server: cluster-admin/mcp.md
+      - GPUs: cluster-admin/gpus.md
   - Container Runtime: runtime/index.md
   - Networking & Storage: networking-storage/index.md
   - Stratum PRO: pro/index.md
