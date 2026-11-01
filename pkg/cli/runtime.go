@@ -2,14 +2,11 @@ package cli
 
 import (
 	"fmt"
-	"maps"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ctrliq/stratum/internal/cluster"
-	"github.com/ctrliq/stratum/internal/runtime"
 )
 
 func newRuntimeCommand() *cobra.Command {
@@ -25,7 +22,8 @@ func newRuntimeApplyCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apply",
 		Short: "Write containerd's runtime handlers and restart it when they changed",
-		Long: "Writes the containerd drop-in for this node's runtime handlers and restarts containerd when the drop-in changed.\n\n" +
+		Long: "Writes the containerd drop-in for this node's runtime handlers and restarts containerd when the drop-in changed\n" +
+			"or the running containerd has not loaded it.\n\n" +
 			"On a worker, --runtime-handler replaces the handlers it saved and --clear removes them; with neither, the saved\n" +
 			"handlers are written again. A control plane reads spec.node.runtimeHandlers from the config file it was started\n" +
 			"with, so edit that file and run apply with no flags.",
@@ -44,14 +42,12 @@ func newRuntimeApplyCommand() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			if len(res.Handlers) == 0 {
-				fmt.Fprintf(out, "no runtime handlers declared (%s)\n", res.Source)
-			} else {
-				fmt.Fprintf(out, "runtime handlers from %s: %s\n", res.Source, formatHandlers(res.Handlers))
-			}
+			fmt.Fprintf(out, "runtime handlers from %s: %s\n", res.Source, cluster.FormatKeyValues(res.Handlers))
 			switch {
 			case res.Restarted:
 				fmt.Fprintln(out, "containerd restarted to load the runtime handlers")
+			case res.Unloaded:
+				fmt.Fprintln(out, "containerd has not loaded the runtime handlers; run `stratum runtime restart`")
 			case res.Changed:
 				fmt.Fprintln(out, "containerd is not running; it loads the runtime handlers when it next starts")
 			default:
@@ -89,27 +85,19 @@ func newRuntimeCheckCommand() *cobra.Command {
 	}
 }
 
-// newRuntimeRestartCommand restarts the supervisor's containerd.
+// newRuntimeRestartCommand restarts the supervisor's containerd and relabels
+// the node for the runtime handlers it loaded.
 func newRuntimeRestartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",
-		Short: "Restart containerd; running containers keep running",
+		Short: "Restart containerd and update this node's runtime handler labels; running containers keep running",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runtime.RestartContainerd(); err != nil {
+			if err := cluster.RestartRuntime(cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "containerd restarted")
 			return nil
 		},
 	}
-}
-
-// formatHandlers renders handlers as sorted name=path pairs.
-func formatHandlers(h map[string]string) string {
-	out := make([]string, 0, len(h))
-	for _, name := range slices.Sorted(maps.Keys(h)) {
-		out = append(out, name+"="+h[name])
-	}
-	return strings.Join(out, ", ")
 }

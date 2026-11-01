@@ -49,6 +49,9 @@ func TestApplyRuntimeHandlersOnAWorker(t *testing.T) {
 		if err == nil {
 			t.Fatalf("applied %+v though the saved handler's binary is missing", res)
 		}
+		if msg := err.Error(); !strings.Contains(msg, "run `stratum runtime apply` again") || strings.Contains(msg, "joins") {
+			t.Errorf("refusal %q, want the apply hint and not the join one", msg)
+		}
 		if len(*written) != 0 {
 			t.Errorf("the drop-in was written for a handler whose binary is missing")
 		}
@@ -212,5 +215,35 @@ func TestApplyRuntimeHandlersRefusesAConfigWithoutTheImportBeforeSaving(t *testi
 	}
 	if len(savedHandlers(t)) != 0 || len(*written) != 0 {
 		t.Errorf("a refused apply saved %v and wrote %v", savedHandlers(t), *written)
+	}
+}
+
+// `stratum runtime restart` relabels the node from node.yaml once containerd
+// is back, since the restart is what loads a handler written without one.
+func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
+	saved := map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+	oldRestart := restartContainerd
+	t.Cleanup(func() { restartContainerd = oldRestart })
+	var order []string
+	restartContainerd = func() error { order = append(order, "restart"); return nil }
+	reconcileHandlerLabels = func(st *NodeState, h map[string]string) error {
+		if !maps.Equal(h, saved) {
+			t.Errorf("relabelled with %v, want %v", h, saved)
+		}
+		order = append(order, "label")
+		return nil
+	}
+	if err := RestartRuntime(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "restart,label" {
+		t.Errorf("RestartRuntime did %v, want the restart then the labels", order)
+	}
+
+	order = nil
+	restartContainerd = func() error { return errors.New("containerd is not running") }
+	if err := RestartRuntime(io.Discard); err == nil || len(order) != 0 {
+		t.Errorf("a failed restart returned %v and did %v, want the error and no relabel", err, order)
 	}
 }

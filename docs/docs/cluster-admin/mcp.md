@@ -57,7 +57,9 @@ capability is there and invite it to look for another way to the same effect.
     `super-admin.conf`, and for them the tier flag and running the server as root are
     the only controls. The table under [The destructive tier](#the-destructive-tier)
     lists the destructive ones, and [Choosing a cluster](#choosing-a-cluster)
-    names the read-tier exceptions (`token_list`, `upgrade_plan`).
+    names the read-tier exceptions (`token_list`, `upgrade_plan`). `runtime_apply`
+    updates this node's own runtime-handler labels with the node's kubelet
+    credential.
 
 ## What it exposes
 

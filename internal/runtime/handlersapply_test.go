@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -248,7 +249,6 @@ func TestCheckHandlers(t *testing.T) {
 `
 		for name, content := range map[string]string{
 			"99-nvidia.toml":         nvidiaCtk,
-			"broken.toml":            "[plugins\n",
 			"stratum-registry.toml":  "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia]\n",
 			"unrelated-runtime.toml": "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]\n",
 		} {
@@ -261,7 +261,7 @@ func TestCheckHandlers(t *testing.T) {
 		if r.Failed() {
 			t.Errorf("contending conf.d files failed the check: %q", findings(r, SeverityError))
 		}
-		for _, want := range []string{"99-nvidia.toml also defines runtime nvidia", "stratum's definition wins", "default runtime to nvidia", "broken.toml does not parse"} {
+		for _, want := range []string{"99-nvidia.toml also defines runtime nvidia", "stratum's definition wins", "default runtime to nvidia"} {
 			if !strings.Contains(warns, want) {
 				t.Errorf("warnings %q lack %q", warns, want)
 			}
@@ -272,4 +272,103 @@ func TestCheckHandlers(t *testing.T) {
 			}
 		}
 	})
+	t.Run("unparseable_conf_d_fails", func(t *testing.T) {
+		confd := handlersHost(t, true)
+		h := map[string]string{"nvidia": fakeBinary(t, "nvidia-container-runtime")}
+		writeDropIn(t, renderHandlers(h, CgroupDriver()))
+		writeCDISpec(t)
+		if err := os.WriteFile(filepath.Join(confd, "broken.toml"), []byte("[plugins\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := CheckHandlers(h)
+		if !r.Failed() || !strings.Contains(findings(r, SeverityError), "broken.toml does not parse") {
+			t.Errorf("a conf.d file containerd refuses to start with = %+v, want an error naming it", r.Findings)
+		}
+	})
+}
+
+// A drop-in written without restarting containerd stays pending until a
+// restart: a later apply restarts even though the file no longer changes, and
+// the node is labelled only for the handlers the running containerd loaded.
+func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T) {
+	handlersHost(t, true)
+	restarts := fakeSupervisor(t, false)
+	gvisor := fakeBinary(t, "runsc")
+	kata := fakeBinary(t, "kata-runtime")
+	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": gvisor}, true); err != nil {
+		t.Fatal(err)
+	}
+	both := map[string]string{"gvisor": gvisor, "kata": kata}
+	res, err := ApplyHandlers(io.Discard, both, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || !res.Unloaded || res.Restarted {
+		t.Fatalf("apply without a restart = %+v, want changed and unloaded", res)
+	}
+	if got := LoadedHandlers([]string{"gvisor", "kata"}); !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("LoadedHandlers before the restart = %v, want [gvisor]", got)
+	}
+	if r := CheckHandlers(both); !strings.Contains(findings(r, SeverityError), "runtime restart") {
+		t.Errorf("check before the restart = %+v, want an error naming the restart", r.Findings)
+	}
+	res, err = ApplyHandlers(io.Discard, both, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || !res.Restarted || res.Unloaded || restarts() != 2 {
+		t.Fatalf("retried apply = %+v after %d restarts, want the pending restart done", res, restarts())
+	}
+	if got := LoadedHandlers([]string{"gvisor", "kata"}); !slices.Equal(got, []string{"gvisor", "kata"}) {
+		t.Errorf("LoadedHandlers after the restart = %v, want both", got)
+	}
+	if _, err := os.Stat(unloadedPath()); !os.IsNotExist(err) {
+		t.Errorf("the unloaded record survived the restart (stat: %v)", err)
+	}
+}
+
+// A containerd that falls further behind keeps the handlers it loaded, not
+// the ones of the drop-in it never read.
+func TestApplyHandlersKeepsWhatABehindContainerdLoaded(t *testing.T) {
+	handlersHost(t, true)
+	fakeSupervisor(t, false)
+	a, b, c := fakeBinary(t, "a"), fakeBinary(t, "b"), fakeBinary(t, "c")
+	for _, h := range []map[string]string{{"a": a, "b": b}, {"a": a, "b": b, "c": c}} {
+		if _, err := ApplyHandlers(io.Discard, h, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := LoadedHandlers([]string{"a", "b", "c"}); len(got) != 0 {
+		t.Errorf("LoadedHandlers = %v, want none: containerd started before any drop-in", got)
+	}
+}
+
+// Any containerd restart loads the drop-in on disk, so a record naming an
+// earlier containerd no longer narrows anything.
+func TestLoadedHandlersIgnoresARecordForAnEarlierContainerd(t *testing.T) {
+	handlersHost(t, true)
+	fakeSupervisor(t, false)
+	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unloadedPath(), []byte("99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadedHandlers([]string{"gvisor"}); !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("LoadedHandlers with a stale record = %v, want [gvisor]", got)
+	}
+}
+
+func TestRestartContainerdClearsTheUnloadedRecord(t *testing.T) {
+	handlersHost(t, true)
+	fakeSupervisor(t, false)
+	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestartContainerd(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unloadedPath()); !os.IsNotExist(err) {
+		t.Errorf("the unloaded record survived a restart (stat: %v)", err)
+	}
 }

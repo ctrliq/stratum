@@ -428,7 +428,8 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			Name: "runtime_apply",
 			Description: "Rewrite containerd's runtime-handler drop-in from the handlers this node declares (a worker's " +
 				"saved handlers, a control plane's config file). Takes no handlers itself. Reports whether " +
-				"containerd needs restarting.",
+				"containerd needs restarting. Updates this node's runtime-handler Node labels with the node's own " +
+				"kubelet credential, for the handlers containerd has loaded.",
 			Tier:       TierWrite,
 			Credential: CredentialNone,
 			Add: func(srv *sdk.Server, t *sdk.Tool) {

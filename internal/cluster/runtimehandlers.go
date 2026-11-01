@@ -34,12 +34,14 @@ type RuntimeApplyResult struct {
 var (
 	applyHandlers         = runtime.ApplyHandlers
 	requireHandlersImport = runtime.RequireHandlersImport
+	restartContainerd     = runtime.RestartContainerd
 )
 
 // reconcileHandlerLabels gives this node's Node the runtime-handler labels of
-// handlers, which its RuntimeClasses select nodes by.
+// the handlers its containerd has loaded, which its RuntimeClasses select
+// nodes by, and removes the rest.
 var reconcileHandlerLabels = func(st *NodeState, handlers map[string]string) error {
-	return reconcileOwnNodeLabels(context.Background(), st.Hostname, st.NodeLabels, slices.Sorted(maps.Keys(handlers)))
+	return reconcileOwnNodeLabels(context.Background(), st.Hostname, st.NodeLabels, runtime.LoadedHandlers(slices.Sorted(maps.Keys(handlers))))
 }
 
 // ApplyRuntimeHandlers resolves the runtime handlers this node declares,
@@ -50,9 +52,10 @@ var reconcileHandlerLabels = func(st *NodeState, handlers map[string]string) err
 // and refuses o.Handlers and o.Clear: saving them to node.yaml alone would be
 // undone by its next start. Every handler is validated, its binary checked,
 // and containerd's config checked to import the drop-in before anything is
-// written. The Node's runtime-handler labels follow, so a
-// RuntimeClass schedules onto the node without waiting for its next start;
-// an API server that cannot be reached only warns.
+// written. The Node's runtime-handler labels follow for the handlers its
+// containerd has loaded, so a RuntimeClass schedules onto the node without
+// waiting for its next start but not before containerd can run the handler;
+// a label update that fails only warns.
 func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResult, error) {
 	if o.Clear && o.Handlers != nil {
 		return RuntimeApplyResult{}, errors.New("--clear and --runtime-handler cannot be combined")
@@ -70,7 +73,7 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 		return RuntimeApplyResult{}, err
 	}
 	if err := node.CheckBinaries(); err != nil {
-		return RuntimeApplyResult{}, err
+		return RuntimeApplyResult{}, fmt.Errorf("%w; install it and run `stratum runtime apply` again", err)
 	}
 	if err := requireHandlersImport(); err != nil {
 		return RuntimeApplyResult{}, err
@@ -91,6 +94,24 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 		fmt.Fprintf(w, "WARN: could not update this node's runtime handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
 	}
 	return out, nil
+}
+
+// RestartRuntime restarts the supervisor's containerd, then labels this node
+// for the runtime handlers the restart loaded. A label update that fails only
+// warns.
+func RestartRuntime(w io.Writer) error {
+	if err := restartContainerd(); err != nil {
+		return err
+	}
+	st, err := LoadState()
+	if err != nil {
+		fmt.Fprintf(w, "WARN: could not read the node state (%v); this node's runtime handler labels update at its next start\n", err)
+		return nil
+	}
+	if err := reconcileHandlerLabels(st, st.RuntimeHandlers); err != nil {
+		fmt.Fprintf(w, "WARN: could not update this node's runtime handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
+	}
+	return nil
 }
 
 // declaredRuntimeHandlers is the handler set ApplyRuntimeHandlers applies and

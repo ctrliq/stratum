@@ -110,8 +110,15 @@ name, Stratum's definition wins.
 
 To change a node's handlers without restarting the node, run
 `stratum runtime apply` on it. It writes the file, restarts containerd when the
-file changed, and updates the node's `runtime.stratum.ciq.com/<handler>` labels.
-Running containers keep running while containerd restarts.
+file changed or when the running containerd has not loaded an earlier change,
+and updates the node's `runtime.stratum.ciq.com/<handler>` labels. Running
+containers keep running while containerd restarts.
+
+The node carries a handler's label only once its containerd has loaded the
+handler, so a RuntimeClass never schedules a pod onto a node that cannot run
+it. A change written without a restart, such as by the MCP `runtime_apply`
+tool, removes the labels of handlers the node no longer declares and adds the
+new ones when containerd next restarts.
 
 On a worker, the handlers you give replace the ones it saved, and `--clear`
 removes them all:
@@ -129,16 +136,19 @@ removed. `apply` refuses a handler whose binary is not an executable file on the
 node, and changes nothing.
 
 `stratum runtime check` reports whether containerd will run the node's handlers.
-It exits 1 when the file does not match the handlers the node saved, when a
-handler's binary is missing, when containerd's configuration does not import
-the file, or, on a control plane, when its configuration file declares other
-handlers than the ones it saved. It warns when there are no CDI specs in `/etc/cdi` or
+It exits 1 when the file does not match the handlers the node saved, when the
+running containerd has not loaded the file, when a handler's binary is missing,
+when containerd's configuration does not import the file, when another file in
+`/etc/containerd/conf.d` does not parse, which containerd refuses to start with,
+or, on a control plane, when its configuration file declares other handlers than
+the ones it saved. It warns when there are no CDI specs in `/etc/cdi` or
 `/var/run/cdi`, when another file in `/etc/containerd/conf.d` defines one of the
 node's runtimes, and when one changes containerd's default runtime, which would
 run every pod without a `runtimeClassName` under it.
 
 `stratum runtime restart` restarts containerd on its own, for example after you
-reinstall a handler's binary.
+reinstall a handler's binary or after `runtime_apply`, and then updates the
+node's handler labels.
 
 ## A containerd Stratum did not start
 

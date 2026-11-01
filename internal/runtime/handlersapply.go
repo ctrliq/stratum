@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/comps"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -21,14 +23,13 @@ import (
 // ApplyHandlersResult is ApplyHandlers' outcome. Changed means the drop-in
 // changed on disk; Restarted is true only when this call restarted a running
 // containerd, so a caller reports the restart from Restarted, never Changed.
+// Unloaded means the running containerd started before the drop-in's latest
+// change, by this call or an earlier one that did not restart it.
 type ApplyHandlersResult struct {
 	Changed   bool
 	Restarted bool
+	Unloaded  bool
 }
-
-// containerdRestartWait is how long ApplyHandlers and RestartContainerd wait
-// for a restarted containerd to report active.
-const containerdRestartWait = 10 * time.Second
 
 // ApplyHandlers writes the runtime-handler drop-in for handlers and, with
 // restart, restarts a running containerd when the drop-in changed. It refuses,
@@ -40,21 +41,123 @@ func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (Apply
 	if err := RequireHandlersImport(); err != nil {
 		return out, err
 	}
+	behind := loadedHandlerNames()
+	loaded := behind.names
+	if behind.pid == 0 {
+		loaded = dropInHandlerNames()
+	}
 	changed, err := writeHandlers(w, handlers)
 	out.Changed = changed
 	if err != nil {
 		return out, err
 	}
-	if out.Changed && restart && Active() {
-		if err := comps.Restart("containerd"); err != nil {
-			return out, fmt.Errorf("restart containerd after a runtime handler change: %w", err)
+	if (!changed && behind.pid == 0) || !Active() {
+		return out, nil
+	}
+	if restart {
+		restarted, err := restartContainerd(" after a runtime handler change")
+		out.Restarted = restarted
+		if restarted {
+			clearUnloaded()
 		}
-		out.Restarted = true
-		if err := waitActive(containerdRestartWait); err != nil {
+		if err != nil {
+			if !restarted {
+				out.Unloaded = true
+				recordUnloaded(loaded)
+			}
 			return out, err
 		}
+		return out, nil
 	}
+	out.Unloaded = true
+	recordUnloaded(loaded)
 	return out, nil
+}
+
+// unloadedPath records which runtime handlers the running containerd loaded
+// when the drop-in changed without restarting it: that containerd's PID, then
+// one handler name per line. containerd imports only *.toml from the
+// drop-in's directory, so it never reads the record as config.
+func unloadedPath() string { return version.ContainerdRuntimeConfD + ".unloaded" }
+
+// loadedHandlers is the runtime handlers a running containerd loaded. A zero
+// pid means it loaded the drop-in on disk, or that no containerd runs.
+type loadedHandlers struct {
+	pid   int
+	names []string
+}
+
+// containerdPID is the PID of the containerd the supervisor runs, or 0.
+func containerdPID() int {
+	st, err := comps.Status()
+	if err != nil {
+		return 0
+	}
+	if p := st[comps.Normalize("containerd")]; p.Running && !p.Foreign {
+		return p.Pid
+	}
+	return 0
+}
+
+// loadedHandlerNames reads the unloaded record. It counts only while the
+// containerd it names still runs: any restart since, by `stratum runtime
+// restart`, `stratum registry apply`, an upgrade or the supervisor, loaded
+// the drop-in on disk.
+func loadedHandlerNames() loadedHandlers {
+	b, err := os.ReadFile(unloadedPath())
+	if err != nil {
+		return loadedHandlers{}
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	pid, err := strconv.Atoi(lines[0])
+	if err != nil || pid == 0 || pid != containerdPID() {
+		return loadedHandlers{}
+	}
+	return loadedHandlers{pid: pid, names: slices.DeleteFunc(lines[1:], func(n string) bool { return n == "" })}
+}
+
+// dropInHandlerNames is the runtime handlers the drop-in on disk declares.
+func dropInHandlerNames() []string {
+	var c sharedConfD
+	if _, err := toml.DecodeFile(version.ContainerdRuntimeConfD, &c); err != nil {
+		return nil
+	}
+	var names []string
+	for _, p := range c.Plugins {
+		names = append(names, slices.Collect(maps.Keys(p.Containerd.Runtimes))...)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// recordUnloaded notes that the running containerd has not loaded the drop-in
+// on disk, only the runtime handlers names.
+func recordUnloaded(names []string) {
+	pid := containerdPID()
+	if pid == 0 {
+		return
+	}
+	body := strconv.Itoa(pid) + "\n" + strings.Join(names, "\n") + "\n"
+	if err := atomicfile.WriteFileWith(unloadedPath(), []byte(body), 0o644, atomicfileSeams()); err != nil {
+		fmt.Fprintf(os.Stderr, "WARN: record that containerd has not loaded the runtime handlers: %v\n", err)
+	}
+}
+
+func clearUnloaded() {
+	if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "WARN: remove %s: %v\n", unloadedPath(), err)
+	}
+}
+
+// LoadedHandlers narrows names to the runtime handlers the running containerd
+// has loaded, so a node is labelled for a handler only once its containerd
+// can run it.
+func LoadedHandlers(names []string) []string {
+	loaded := loadedHandlerNames()
+	if loaded.pid == 0 {
+		return names
+	}
+	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return !slices.Contains(loaded.names, n) })
 }
 
 // RequireHandlersImport reports whether containerd's config imports the
@@ -78,10 +181,11 @@ func RestartContainerd() error {
 	if !Active() {
 		return errors.New("containerd is not running under the stratum supervisor; start the node with `stratum up`")
 	}
-	if err := comps.Restart("containerd"); err != nil {
-		return fmt.Errorf("restart containerd: %w", err)
+	restarted, err := restartContainerd("")
+	if restarted {
+		clearUnloaded()
 	}
-	return waitActive(containerdRestartWait)
+	return err
 }
 
 // Severity grades a HandlerFinding.
@@ -121,6 +225,10 @@ func (r *HandlerReport) add(s Severity, format string, args ...any) {
 func CheckHandlers(saved map[string]string) HandlerReport {
 	r := HandlerReport{Handlers: saved}
 	checkDropIn(&r, saved)
+	if loaded := loadedHandlerNames(); loaded.pid != 0 {
+		r.add(SeverityError, "containerd (pid %d) started before %s last changed and runs only the handlers %s; run `stratum runtime restart`",
+			loaded.pid, version.ContainerdRuntimeConfD, cmp.Or(strings.Join(loaded.names, ", "), "runc"))
+	}
 	if err := RequireHandlersImport(); err != nil {
 		severity := SeverityError
 		if len(saved) == 0 {
@@ -220,7 +328,7 @@ func checkSharedConfD(r *HandlerReport, saved map[string]string) {
 		}
 		var c sharedConfD
 		if _, err := toml.DecodeFile(f, &c); err != nil {
-			r.add(SeverityWarn, "%s does not parse (%v); containerd will refuse to start with it", f, err)
+			r.add(SeverityError, "%s does not parse (%v); containerd will refuse to start with it", f, err)
 			continue
 		}
 		for _, plugin := range slices.Sorted(maps.Keys(c.Plugins)) {

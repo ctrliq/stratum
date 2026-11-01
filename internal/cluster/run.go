@@ -611,21 +611,22 @@ var (
 	reconcileOwnNodeLabels = k8sutil.ReconcileOwnNodeLabels
 
 	// labelOwnNode gives this node's Node its spec.node labels and the label
-	// of each runtime handler it declares, as its kubelet, on every kubelet
-	// start of both roles. A label that fails is retried until it lands or
-	// ctx ends (retryUntilApplied), as the control-plane label is: a node
-	// without its handler labels takes none of its RuntimeClasses' pods, and
-	// nothing else would label it before the next kubelet start. Non-fatal,
-	// but logged. Each attempt labels from node.yaml as it is then, falling
-	// back to st: `stratum runtime apply` changes the handlers under a running
-	// supervisor, whose st predates the change.
+	// of each runtime handler it declares and its containerd has loaded, as
+	// its kubelet, on every kubelet start of both roles. A label that fails is
+	// retried until it lands or ctx ends (retryUntilApplied), as the
+	// control-plane label is: a node without its handler labels takes none of
+	// its RuntimeClasses' pods, and nothing else would label it before the
+	// next kubelet start. Non-fatal, but logged. Each attempt labels from
+	// node.yaml as it is then, falling back to st: `stratum runtime apply`
+	// changes the handlers under a running supervisor, whose st predates the
+	// change.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
 		label := func(ctx context.Context) error {
 			cur := st
 			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
 				cur = saved
 			}
-			handlers := slices.Sorted(maps.Keys(cur.RuntimeHandlers))
+			handlers := runtime.LoadedHandlers(slices.Sorted(maps.Keys(cur.RuntimeHandlers)))
 			return reconcileOwnNodeLabels(ctx, cur.Hostname, cur.NodeLabels, handlers)
 		}
 		err := label(ctx)
