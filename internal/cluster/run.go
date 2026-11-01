@@ -86,8 +86,7 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState) error
 		configPath = DefaultConfigPath
 	}
 	onStart := managedKubeletOnStart(tasks, st.Hostname, func(ctx context.Context, hostname string) {
-		restampWhenRegistered(ctx, hostname)
-		if nodeRegistered(ctx, hostname) {
+		if restampWhenRegistered(ctx, hostname) {
 			labelOwnNode(ctx, st)
 		}
 	})
@@ -617,11 +616,14 @@ func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Co
 // already there. The wait for a first registration — with the control-plane
 // label that rides with it — belongs to the node-registered task on the run
 // group. A first-boot kubelet that has not registered yet therefore leaves
-// the stamp to the task and stamps nothing itself.
-func restampWhenRegistered(ctx context.Context, hostname string) {
-	if nodeRegistered(ctx, hostname) {
-		stampNode(ctx, hostname)
+// the stamp to the task and stamps nothing itself. It reports whether the node
+// is registered, so the node's own labels can follow without a second check.
+func restampWhenRegistered(ctx context.Context, hostname string) bool {
+	if !nodeRegistered(ctx, hostname) {
+		return false
 	}
+	stampNode(ctx, hostname)
+	return true
 }
 
 // restampOwnNodeWhenRegistered stamps a worker's own Node and reports
@@ -659,8 +661,7 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// The node-registered task is the one cluster-facing piece: it waits out
 	// the node's registration itself, per tick, so a slow apiserver delays
 	// its ticks, never the loops beside it.
-	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st.Hostname, dashboardHint(cfg, st.NodeIP)) })
-	g.add("node labels", func(ctx context.Context) { labelOwnNodeOnceRegistered(ctx, st) })
+	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st, dashboardHint(cfg, st.NodeIP)) })
 	if cfg.CertRenewEnabled() {
 		g.add("cert renewal", func(ctx context.Context) { certRenewLoop(ctx, st.Hostname) })
 	}
@@ -818,8 +819,8 @@ func reconcileTask(what string, retry, resync time.Duration, apply func(context.
 }
 
 // nodeRegisteredTask is the controller's ONE node-registered task: it owns
-// the wait for this node's kubelet to register, and the control-plane label
-// and version stamp that ride with it. It is the single waiter: a wait of
+// the wait for this node's kubelet to register, and the control-plane label,
+// version stamp and the node's own spec.node labels that ride with it. It is the single waiter: a wait of
 // its own in the kubelet-start restamp, in postStart, or in a joined-member
 // labelling pkg/cli fires beside the controller (ha.LabelJoinedControlPlane)
 // would each give up on its own schedule. This one waits on one cadence
@@ -837,7 +838,8 @@ func reconcileTask(what string, retry, resync time.Duration, apply func(context.
 // — an unlabeled control plane is classified a worker by `stratum upgrade
 // --cluster` — and holds until shutdown too: giving up is final for this
 // run, and a late auto-label would contradict the instruction it printed.
-func nodeRegisteredTask(ctx context.Context, hostname string, hint []string) {
+func nodeRegisteredTask(ctx context.Context, st *NodeState, hint []string) {
+	hostname := st.Hostname
 	fmt.Fprintf(os.Stderr, "stratum: waiting up to %v for node %s to register\n", nodeRegistrationGiveUp, hostname)
 	start := time.Now()
 	// The budget covers each API request as well as the waits between them:
@@ -866,6 +868,7 @@ waitForRegistration:
 			fmt.Fprintf(os.Stderr, "stratum: node %s registered after %v; labeling it control-plane and stamping its version\n", hostname, time.Since(start))
 			labelErr := labelControlPlane(ctx, hostname)
 			stampNode(ctx, hostname)
+			labelOwnNode(ctx, st)
 			for _, line := range hint {
 				fmt.Fprintf(os.Stderr, "stratum: %s\n", line)
 			}
@@ -886,40 +889,6 @@ waitForRegistration:
 		"run `stratum kubectl label node %s %s=true` or `stratum upgrade --cluster` will treat it as a worker\n",
 		hostname, nodeRegistrationGiveUp, hostname, k8sutil.ControlPlaneLabel)
 	<-ctx.Done()
-}
-
-// labelOwnNodeOnceRegistered labels a control plane's Node once it first
-// registers. A first boot's kubelet starts before its Node exists, so the
-// kubelet-start hook finds nothing to label; this waits out that first
-// registration, within the node-registered task's budget, and labels once.
-// It then holds until shutdown, labelled or not, as the node-registered task
-// does: the run group restarts a task that returns, which would relabel the
-// Node on every backoff and give a never-registered node a fresh budget.
-func labelOwnNodeOnceRegistered(ctx context.Context, st *NodeState) {
-	labelOwnNodeWhenRegistered(ctx, st)
-	<-ctx.Done()
-}
-
-// labelOwnNodeWhenRegistered is labelOwnNodeOnceRegistered's wait and label,
-// returning once the Node is labelled or the budget is spent. Its first check
-// waits a tick, as the node-registered task's does, so its kubectl is not
-// forked while the supervisor scans for a legacy supervisor.
-func labelOwnNodeWhenRegistered(ctx context.Context, st *NodeState) {
-	ctx, cancel := context.WithTimeout(ctx, nodeRegistrationGiveUp)
-	defer cancel()
-	t := time.NewTicker(nodeRegistrationInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
-		if nodeRegistered(ctx, st.Hostname) {
-			labelOwnNode(ctx, st)
-			return
-		}
-	}
 }
 
 // labelUntilApplied retries the control-plane label that first failed with

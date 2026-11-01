@@ -37,8 +37,7 @@ func nodeLabelChanges(current, declared map[string]string, handlers []string) ma
 	changes := map[string]*string{}
 	for _, k := range slices.Sorted(maps.Keys(want)) {
 		if v, ok := current[k]; !ok || v != want[k] {
-			changes[k] = new(string)
-			*changes[k] = want[k]
+			changes[k] = new(want[k])
 		}
 	}
 	for k := range current {

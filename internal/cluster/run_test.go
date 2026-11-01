@@ -714,7 +714,7 @@ func TestNodeRegistrationBudgetBoundsStalledProbe(t *testing.T) {
 				g := newRunGroup(ctx)
 				defer func() { cancel(); g.wait() }()
 				startedAt := time.Now()
-				g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, "cp1", nil) })
+				g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, &NodeState{Hostname: "cp1"}, nil) })
 				synctest.Wait()
 				time.Sleep(budget)
 				synctest.Wait()

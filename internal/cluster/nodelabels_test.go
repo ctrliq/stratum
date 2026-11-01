@@ -8,61 +8,33 @@ import (
 )
 
 // A first boot's kubelet starts before its Node registers, so the kubelet
-// hook finds nothing to label: the control plane's labelling task waits out
-// the registration and labels once, with the node's own state.
-func TestLabelOwnNodeOnceRegisteredWaitsForTheNode(t *testing.T) {
-	oldInterval, oldGiveUp, oldCheck, oldLabel := nodeRegistrationInterval, nodeRegistrationGiveUp, nodeRegistered, labelOwnNode
-	t.Cleanup(func() {
-		nodeRegistrationInterval, nodeRegistrationGiveUp, nodeRegistered, labelOwnNode = oldInterval, oldGiveUp, oldCheck, oldLabel
-	})
-	nodeRegistrationInterval, nodeRegistrationGiveUp = time.Millisecond, time.Second
-	var checks, labels atomic.Int32
-	nodeRegistered = func(context.Context, string) bool { return checks.Add(1) >= 3 }
+// hook finds nothing to label: the node-registered task labels the node with
+// its own state on the tick that finds it registered, once, and holds.
+func TestNodeRegisteredTaskLabelsTheOwnNodeOnceItRegisters(t *testing.T) {
+	var checks atomic.Int32
+	stubNodeTask(t, time.Millisecond, time.Second, "cp1", func(context.Context, string) bool { return checks.Add(1) >= 3 })
 	st := &NodeState{Hostname: "cp1", NodeLabels: map[string]string{"zone": "a"}}
-	labelOwnNode = func(_ context.Context, got *NodeState) {
+	labelled := make(chan *NodeState, 8)
+	labelOwnNode = func(_ context.Context, got *NodeState) { labelled <- got }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		nodeRegisteredTask(ctx, st, nil)
+		close(done)
+	}()
+	select {
+	case got := <-labelled:
 		if got != st {
 			t.Errorf("labelled with %+v, want the node's own state", got)
 		}
-		labels.Add(1)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the registered node was never labelled")
 	}
-	labelOwnNodeWhenRegistered(context.Background(), st)
-	if labels.Load() != 1 || checks.Load() < 3 {
-		t.Errorf("labelled %d times after %d registration checks, want once, after the node registered", labels.Load(), checks.Load())
+	if checks.Load() < 3 {
+		t.Errorf("labelled after %d registration checks, want after the node registered", checks.Load())
 	}
-
-	labels.Store(0)
-	nodeRegistered = func(context.Context, string) bool { return false }
-	nodeRegistrationGiveUp = 20 * time.Millisecond
-	labelOwnNodeWhenRegistered(context.Background(), st)
-	if labels.Load() != 0 {
-		t.Error("a node that never registered was labelled")
-	}
-}
-
-// The run group restarts a task that returns before shutdown, so the
-// labelling task holds once it has labelled: returning would relabel the Node
-// on every backoff for the life of the controller.
-func TestLabelOwnNodeOnceRegisteredHoldsUntilShutdown(t *testing.T) {
-	oldInterval, oldCheck, oldLabel := nodeRegistrationInterval, nodeRegistered, labelOwnNode
-	t.Cleanup(func() { nodeRegistrationInterval, nodeRegistered, labelOwnNode = oldInterval, oldCheck, oldLabel })
-	nodeRegistrationInterval = time.Millisecond
-	nodeRegistered = func(context.Context, string) bool { return true }
-	labelled := make(chan struct{}, 8)
-	labelOwnNode = func(context.Context, *NodeState) { labelled <- struct{}{} }
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		labelOwnNodeOnceRegistered(ctx, &NodeState{Hostname: "cp1"})
-		close(done)
-	}()
-	<-labelled
-	select {
-	case <-done:
-		t.Fatal("the labelling task returned after labelling; the run group would restart it")
-	case <-time.After(50 * time.Millisecond):
-	}
+	time.Sleep(50 * time.Millisecond)
 	if n := len(labelled); n != 0 {
 		t.Errorf("labelled %d more times, want once", n)
 	}
@@ -70,6 +42,20 @@ func TestLabelOwnNodeOnceRegisteredHoldsUntilShutdown(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the labelling task did not return at shutdown")
+		t.Fatal("the node-registered task did not return at shutdown")
+	}
+}
+
+// A node that never registers is never labelled: the give-up is final for
+// the run.
+func TestNodeRegisteredTaskLabelsNothingWhenTheNodeNeverRegisters(t *testing.T) {
+	stubNodeTask(t, time.Millisecond, 20*time.Millisecond, "cp1", func(context.Context, string) bool { return false })
+	var labels atomic.Int32
+	labelOwnNode = func(context.Context, *NodeState) { labels.Add(1) }
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	nodeRegisteredTask(ctx, &NodeState{Hostname: "cp1"}, nil)
+	if labels.Load() != 0 {
+		t.Error("a node that never registered was labelled")
 	}
 }
