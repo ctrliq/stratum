@@ -416,3 +416,16 @@ func TestApplyHandlersThatCouldNotSyncTheDropInLeavesTheRestartPending(t *testin
 		t.Fatalf("retried apply = %+v after %d restarts, want the pending restart done", res, restarts())
 	}
 }
+
+// A conf.d file that does not parse stops containerd whether or not this node
+// declares handlers, so check reports it with none declared too.
+func TestCheckHandlersReadsTheSharedConfDWithNoHandlers(t *testing.T) {
+	confd := handlersHost(t, true)
+	if err := os.WriteFile(filepath.Join(confd, "99-broken.toml"), []byte("version = [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckHandlers(nil)
+	if !r.Failed() || !strings.Contains(findings(r, SeverityError), "does not parse") {
+		t.Errorf("check with no handlers = %+v, want an error for the conf.d file that does not parse", r.Findings)
+	}
+}

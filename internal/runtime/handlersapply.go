@@ -250,7 +250,10 @@ func (r *HandlerReport) add(s Severity, format string, args ...any) {
 // CheckHandlers reports whether containerd will run the handlers this node
 // saved: the drop-in matches them, each binary is executable, containerd's
 // config imports the drop-in, CDI has specs to resolve, and which other
-// conf.d files define the same runtime names. It changes nothing.
+// conf.d files define the same runtime names. The shared conf.d is checked
+// with no handlers declared too: a file there that does not parse stops
+// containerd, and one that changes its default runtime changes every pod's.
+// It changes nothing.
 func CheckHandlers(saved map[string]string) HandlerReport {
 	r := HandlerReport{Handlers: saved}
 	checkDropIn(&r, saved)
@@ -267,6 +270,7 @@ func CheckHandlers(saved map[string]string) HandlerReport {
 	} else {
 		r.add(SeverityOK, "%s imports %s after %s", version.ContainerdConfig, handlersImportGlob(), confdImportGlob)
 	}
+	checkSharedConfD(&r, saved)
 	if len(saved) == 0 {
 		return r
 	}
@@ -278,7 +282,6 @@ func CheckHandlers(saved map[string]string) HandlerReport {
 		}
 	}
 	checkCDISpecs(&r)
-	checkSharedConfD(&r, saved)
 	return r
 }
 
