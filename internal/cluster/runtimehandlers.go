@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 
+	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/runtime"
 )
@@ -47,11 +48,19 @@ var (
 // written. The Node's runtime-handler labels follow for the handlers its
 // containerd has loaded, so a RuntimeClass schedules onto the node without
 // waiting for its next start but not before containerd can run the handler;
-// a label update that fails only warns.
+// a label update that fails only warns. It holds the node maintenance lock
+// from the read of node.yaml to the labels, so a second apply, a restart or
+// an upgrade refuses rather than interleaving its save and its drop-in with
+// this one's.
 func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResult, error) {
 	if o.Clear && o.Handlers != nil {
 		return RuntimeApplyResult{}, errors.New("--clear and --runtime-handler cannot be combined")
 	}
+	release, err := nodelock.Acquire("runtime apply")
+	if err != nil {
+		return RuntimeApplyResult{}, err
+	}
+	defer release()
 	st, err := LoadState()
 	if err != nil {
 		return RuntimeApplyResult{}, fmt.Errorf("read the node state (has this node run `stratum up`?): %w", err)
@@ -92,8 +101,13 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 
 // RestartRuntime restarts the supervisor's containerd, then labels this node
 // for the runtime handlers the restart loaded. A label update that fails only
-// warns.
+// warns. It holds the node maintenance lock, as ApplyRuntimeHandlers does.
 func RestartRuntime(w io.Writer) error {
+	release, err := nodelock.Acquire("runtime restart")
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := restartContainerd(w); err != nil {
 		return err
 	}

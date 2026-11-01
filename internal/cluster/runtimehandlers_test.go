@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/runtime"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 // runtimeApplyHost saves st as this node's state on a scratch host and stubs
@@ -19,6 +21,7 @@ import (
 func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 	t.Helper()
 	workerScratchHost(t)
+	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
 	if err := SaveState(st); err != nil {
 		t.Fatal(err)
 	}
@@ -281,5 +284,38 @@ func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
 		if !slices.Equal(got, []string{"gvisor"}) {
 			t.Errorf("path %d labelled for %v, want only the loaded [gvisor]", i, got)
 		}
+	}
+}
+
+// Two applies at once could save one handler set and leave containerd and
+// the labels on the other, so an apply or a restart refuses while another
+// node operation holds the maintenance lock, before it reads or writes
+// anything.
+func TestRuntimeApplyAndRestartRefuseWhileTheNodeIsLocked(t *testing.T) {
+	saved := map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
+	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+	oldRestart := restartContainerd
+	t.Cleanup(func() { restartContainerd = oldRestart })
+	restarts := 0
+	restartContainerd = func(io.Writer) error { restarts++; return nil }
+	release, err := nodelock.Acquire("runtime apply")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Clear: true}); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Errorf("apply under the lock = %v, want a refusal naming the holder", err)
+	}
+	if err := RestartRuntime(io.Discard); err == nil {
+		t.Error("restart under the lock succeeded")
+	}
+	if len(*written) != 0 || restarts != 0 || !maps.Equal(savedHandlers(t), saved) {
+		t.Errorf("under the lock: wrote %v, restarted %d times, saved %v; want nothing touched", *written, restarts, savedHandlers(t))
+	}
+	release()
+	if _, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Clear: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestartRuntime(io.Discard); err != nil {
+		t.Fatal(err)
 	}
 }
