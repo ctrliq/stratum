@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -390,5 +392,27 @@ func TestProcessStartNamesTheBootAndTheStart(t *testing.T) {
 	}
 	if processStart(1<<30) != "" {
 		t.Error("processStart of a PID that does not exist is not empty")
+	}
+}
+
+// A drop-in renamed into place whose directory sync failed is on disk, so a
+// retry finds nothing to write: the failed apply records the containerd that
+// has not loaded it, and the retry restarts it.
+func TestApplyHandlersThatCouldNotSyncTheDropInLeavesTheRestartPending(t *testing.T) {
+	handlersHost(t, true)
+	restarts := fakeSupervisor(t, false)
+	gvisor := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+	failDirSync(t)
+	res, err := ApplyHandlers(io.Discard, gvisor, true)
+	if !errors.Is(err, atomicfile.ErrNotDurable) || !res.Changed || !res.Unloaded || res.Restarted {
+		t.Fatalf("apply = %+v, %v; want a changed, unloaded drop-in and the write's ErrNotDurable", res, err)
+	}
+	syncDir = atomicfile.SyncDir
+	res, err = ApplyHandlers(io.Discard, gvisor, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || !res.Restarted || restarts() != 1 {
+		t.Fatalf("retried apply = %+v after %d restarts, want the pending restart done", res, restarts())
 	}
 }

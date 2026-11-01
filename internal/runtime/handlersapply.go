@@ -33,7 +33,9 @@ type ApplyHandlersResult struct {
 
 // ApplyHandlers writes the runtime-handler drop-in for handlers and, with
 // restart, restarts a running containerd when the drop-in changed, or when an
-// earlier apply left it running without the drop-in on disk. Its caller runs
+// earlier apply left it running without the drop-in on disk. A drop-in that
+// changed on disk but could not be made durable is still recorded as
+// unloaded, so a retry restarts containerd. Its caller runs
 // RequireHandlersImport first, before anything it saves: a config rendered
 // before runtime handlers existed would never read the file.
 func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (ApplyHandlersResult, error) {
@@ -46,6 +48,10 @@ func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (Apply
 	changed, err := writeHandlers(w, handlers)
 	out.Changed = changed
 	if err != nil {
+		if changed && Active() {
+			out.Unloaded = true
+			recordUnloaded(w, loaded)
+		}
 		return out, err
 	}
 	if (!changed && behind.pid == 0) || !Active() {
