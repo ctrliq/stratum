@@ -31,3 +31,22 @@ func TestRegisterWithTaintsLine(t *testing.T) {
 		t.Errorf("registerWithTaints read back as %+v", conf.RegisterWithTaints)
 	}
 }
+
+func TestSplitTaint(t *testing.T) {
+	for _, tc := range []struct {
+		in                 string
+		key, value, effect string
+		ok                 bool
+	}{
+		{"stratum.ciq.com/unverified=true:NoSchedule", "stratum.ciq.com/unverified", "true", "NoSchedule", true},
+		{"dedicated:NoExecute", "dedicated", "", "NoExecute", true},
+		{"a=b=c:NoSchedule", "a", "b=c", "NoSchedule", true},
+		{"dedicated", "", "", "", false},
+		{"a:NoSchedule:extra", "", "", "", false},
+	} {
+		key, value, effect, ok := SplitTaint(tc.in)
+		if key != tc.key || value != tc.value || effect != tc.effect || ok != tc.ok {
+			t.Errorf("SplitTaint(%q) = %q, %q, %q, %v; want %q, %q, %q, %v", tc.in, key, value, effect, ok, tc.key, tc.value, tc.effect, tc.ok)
+		}
+	}
+}

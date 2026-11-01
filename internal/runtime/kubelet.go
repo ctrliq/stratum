@@ -249,6 +249,19 @@ func hasServingLeaf(pkiDir string) bool {
 	return err == nil
 }
 
+// SplitTaint splits a key[=value]:Effect taint into its parts, without
+// validating them; ok is false when t has no effect or a second ":". It is
+// the one reading of the spelling, for the validation, the flag-over-file
+// merge and the kubelet.conf rendering alike.
+func SplitTaint(t string) (key, value, effect string, ok bool) {
+	kv, effect, ok := strings.Cut(t, ":")
+	if !ok || strings.Contains(effect, ":") {
+		return "", "", "", false
+	}
+	key, value, _ = strings.Cut(kv, "=")
+	return key, value, effect, true
+}
+
 // registerWithTaintsLine renders the node's spec.node taints, each
 // key[=value]:Effect and already validated, as the kubelet's
 // registerWithTaints: the taints the Node is created with. The kubelet applies
@@ -260,8 +273,7 @@ func registerWithTaintsLine(taints []string) string {
 	}
 	entries := make([]string, 0, len(taints))
 	for _, t := range taints {
-		kv, effect, _ := strings.Cut(t, ":")
-		key, value, _ := strings.Cut(kv, "=")
+		key, value, effect, _ := SplitTaint(t)
 		entries = append(entries, fmt.Sprintf("{key: %q, value: %q, effect: %s}", key, value, effect))
 	}
 	return "registerWithTaints: [" + strings.Join(entries, ", ") + "]\n"

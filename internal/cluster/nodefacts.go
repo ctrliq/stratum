@@ -123,14 +123,13 @@ func validateLabel(key, value string) error {
 // parseTaint splits key[=value]:Effect and validates each part as the API
 // server would.
 func parseTaint(t string) (key, value, effect string, err error) {
-	kv, effect, ok := strings.Cut(t, ":")
-	if !ok || strings.Contains(effect, ":") {
+	key, value, effect, ok := runtime.SplitTaint(t)
+	if !ok {
 		return "", "", "", fmt.Errorf("node taint %q is not key[=value]:Effect", t)
 	}
 	if !slices.Contains(taintEffects, effect) {
 		return "", "", "", fmt.Errorf("node taint %q: effect %q is not one of %s", t, effect, strings.Join(taintEffects, ", "))
 	}
-	key, value, _ = strings.Cut(kv, "=")
 	if errs := validation.IsQualifiedName(key); len(errs) > 0 {
 		return "", "", "", fmt.Errorf("node taint %q: key: %s", t, strings.Join(errs, "; "))
 	}
@@ -185,8 +184,7 @@ func JoinNodeSpec(file, flags NodeSpec) (NodeSpec, error) {
 func mergeNodeSpec(file, flags NodeSpec) NodeSpec {
 	out := NodeSpec{Labels: mergeMaps(file.Labels, flags.Labels), RuntimeHandlers: mergeMaps(file.RuntimeHandlers, flags.RuntimeHandlers)}
 	keyEffect := func(t string) string {
-		kv, effect, _ := strings.Cut(t, ":")
-		key, _, _ := strings.Cut(kv, "=")
+		key, _, effect, _ := runtime.SplitTaint(t)
 		return key + ":" + effect
 	}
 	overridden := map[string]bool{}
