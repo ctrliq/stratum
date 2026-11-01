@@ -82,7 +82,9 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 	if err != nil {
 		return out, err
 	}
-	if err := reconcileNodeLabels(context.Background(), st); err != nil {
+	applied := *st
+	applied.RuntimeHandlers = want
+	if err := reconcileNodeLabels(context.Background(), &applied); err != nil {
 		fmt.Fprintf(w, "WARN: could not update this node's runtime-handler labels (%v); RuntimeClass pods may not schedule here until its next start\n", err)
 	}
 	return out, nil

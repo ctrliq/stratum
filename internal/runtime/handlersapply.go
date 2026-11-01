@@ -159,16 +159,16 @@ func recordUnloaded(w io.Writer, names []string) {
 	}
 	body := strconv.Itoa(pid) + " " + processStart(pid) + "\n" + strings.Join(names, "\n") + "\n"
 	if err := atomicfile.WriteFileWith(unloadedPath(), []byte(body), 0o644, atomicfileSeams()); err != nil {
-		fmt.Fprintf(w, "  WARN: could not record that containerd has not loaded the runtime handlers (%v); this node may be labelled for them before containerd can run them. Run `stratum runtime restart` to load them\n", err)
+		fmt.Fprintf(w, "WARN: could not record that containerd has not loaded the runtime handlers (%v); this node may be labelled for them before containerd can run them. Run `stratum runtime restart` to load them\n", err)
 	}
 }
 
-// clearUnloaded removes the record once containerd has loaded the drop-in. A
-// record it cannot remove outlives only that containerd, since it names its
-// PID.
+// clearUnloaded removes the record once a restart has loaded the drop-in. A
+// record it cannot remove names the containerd the restart replaced, so
+// loadedHandlerNames already ignores it.
 func clearUnloaded(w io.Writer) {
 	if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(w, "  WARN: could not remove %s (%v); it is ignored once this containerd restarts\n", unloadedPath(), err)
+		fmt.Fprintf(w, "WARN: could not remove %s (%v); it names the containerd this restart replaced, so it is already ignored\n", unloadedPath(), err)
 	}
 }
 

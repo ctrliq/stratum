@@ -615,10 +615,18 @@ var (
 	// retried until it lands or ctx ends (retryUntilApplied), as the
 	// control-plane label is: a node without its handler labels takes none of
 	// its RuntimeClasses' pods, and nothing else would label it before the
-	// next kubelet start. Each attempt reads node.yaml afresh. Non-fatal, but
-	// logged.
+	// next kubelet start. Non-fatal, but logged. Each attempt labels from
+	// node.yaml as it is then, falling back to st: `stratum runtime apply`
+	// changes the handlers under a running supervisor, whose st predates the
+	// change.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
-		label := func(ctx context.Context) error { return reconcileNodeLabels(ctx, st) }
+		label := func(ctx context.Context) error {
+			cur := st
+			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
+				cur = saved
+			}
+			return reconcileNodeLabels(ctx, cur)
+		}
 		err := label(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
@@ -650,15 +658,10 @@ var (
 
 // reconcileNodeLabels gives this node's Node its spec.node labels and the
 // label of each runtime handler its containerd has loaded, which its
-// RuntimeClasses select nodes by, and removes the rest. It reads node.yaml as
-// it is now, falling back to st: `stratum runtime apply` changes the handlers
-// under a running supervisor, whose st predates the change. It is the one
-// labelling rule for a kubelet start, `stratum runtime apply` and
-// `stratum runtime restart`.
+// RuntimeClasses select nodes by, and removes the rest, from st as its caller
+// has it. It is the one labelling rule for a kubelet start, `stratum runtime
+// apply` and `stratum runtime restart`.
 func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
-	if cur, err := LoadState(); err == nil && cur.Hostname == st.Hostname {
-		st = cur
-	}
 	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(slices.Sorted(maps.Keys(st.RuntimeHandlers))))
 }
 
