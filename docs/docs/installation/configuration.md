@@ -161,9 +161,11 @@ tolerates the taint has passed. Release it from a control plane:
 sudo stratum node release gpu-worker-1
 ```
 
-That removes every `stratum.ciq.com/unverified` taint from the Node and records
+That removes every `stratum.ciq.com/unverified` taint from the Node, records
 who released it, and when, in its `stratum.ciq.com/verified` annotation, as
-`<who>@<time>`. `--by` names who, and defaults to the user who ran `sudo`.
+`<who>@<time>`, and removes the `stratum.ciq.com/held` and
+`stratum.ciq.com/held-reason` annotations a hold left. `--by` names who, and
+defaults to the user who ran `sudo`.
 `release` refuses a node without the taint; `--force` records it as verified
 anyway.
 
@@ -173,10 +175,11 @@ To take a node out of service again, for a repair or a reimage, hold it:
 sudo stratum node hold gpu-worker-1 --reason "replacing a failed GPU"
 ```
 
-That adds the taint back, removes `stratum.ciq.com/verified`, and records who
-held it, when and why in `stratum.ciq.com/held`. Pods already running on the
-node stay; run `stratum kubectl drain gpu-worker-1 --ignore-daemonsets` to move
-them. Neither command changes any other taint or annotation.
+That adds the taint back, removes `stratum.ciq.com/verified`, records who held
+it and when in `stratum.ciq.com/held`, as `<who>@<time>`, and records the
+reason in `stratum.ciq.com/held-reason`. Pods already running on the node stay;
+run `stratum kubectl drain gpu-worker-1 --ignore-daemonsets` to move them.
+Neither command changes any other taint or annotation.
 
 ## RuntimeClasses
 

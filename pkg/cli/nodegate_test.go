@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -53,8 +54,8 @@ func TestNodeHoldThenRelease(t *testing.T) {
 		t.Errorf("after release the node is %+v", n)
 	}
 
-	if out, err = runNode(t, "release", "gpu1", "--by", "alice"); err == nil {
-		t.Errorf("a second release succeeded on an untainted node:\n%s", out)
+	if out, err = runNode(t, "release", "gpu1", "--by", "alice"); !errors.Is(err, k8sutil.ErrNotHeld) || !strings.Contains(err.Error(), "--force") {
+		t.Errorf("a second release on an untainted node = %v, want ErrNotHeld with the --force hint:\n%s", err, out)
 	}
 
 	out, err = runNode(t, "hold", "gpu1", "--by", "bob", "--reason", "fan failure")
@@ -65,7 +66,7 @@ func TestNodeHoldThenRelease(t *testing.T) {
 		t.Errorf("hold printed:\n%s\nwant the drain hint", out)
 	}
 	n, _ = cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{})
-	if len(n.Spec.Taints) != 1 || n.Annotations[k8sutil.HeldAnnotation] != "bob@2026-10-31T16:00:00Z: fan failure" {
+	if len(n.Spec.Taints) != 1 || n.Annotations[k8sutil.HeldAnnotation] != "bob@2026-10-31T16:00:00Z" || n.Annotations[k8sutil.HeldReasonAnnotation] != "fan failure" {
 		t.Errorf("after hold the node is %+v", n)
 	}
 }
@@ -73,15 +74,21 @@ func TestNodeHoldThenRelease(t *testing.T) {
 // Usage errors refuse before the command reaches the API server.
 func TestNodeGateRefusesBadInvocationsBeforeConnecting(t *testing.T) {
 	_, dials := stubNodeGate(t)
-	for name, args := range map[string][]string{
-		"release without a node": {"release"},
-		"two nodes":              {"release", "gpu1", "gpu2"},
-		"hold without a reason":  {"hold", "gpu1", "--by", "bob"},
-		"an empty actor":         {"release", "gpu1", "--by", ""},
-		"a spaced actor":         {"hold", "gpu1", "--by", "bob smith", "--reason", "x"},
+	for name, c := range map[string]struct {
+		args []string
+		flag string
+	}{
+		"release without a node": {args: []string{"release"}},
+		"two nodes":              {args: []string{"release", "gpu1", "gpu2"}},
+		"hold without a reason":  {args: []string{"hold", "gpu1", "--by", "bob"}, flag: "--reason"},
+		"an empty actor":         {args: []string{"release", "gpu1", "--by", ""}, flag: "--by"},
+		"a spaced actor":         {args: []string{"hold", "gpu1", "--by", "bob smith", "--reason", "x"}, flag: "--by"},
 	} {
-		if _, err := runNode(t, args...); err == nil {
-			t.Errorf("%s: %v succeeded", name, args)
+		_, err := runNode(t, c.args...)
+		if err == nil {
+			t.Errorf("%s: %v succeeded", name, c.args)
+		} else if !strings.Contains(err.Error(), c.flag) {
+			t.Errorf("%s: %v, want the refusal to name %s", name, err, c.flag)
 		}
 	}
 	if *dials != 0 {

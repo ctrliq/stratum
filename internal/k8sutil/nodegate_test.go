@@ -42,7 +42,7 @@ func TestReleaseNode(t *testing.T) {
 		foreignTaint,
 		{Key: UnverifiedTaint, Effect: corev1.TaintEffectNoExecute},
 	}
-	cs := fake.NewClientset(gateNode(unverified, map[string]string{HeldAnnotation: "ops@then: reimage", "keep": "me"}))
+	cs := fake.NewClientset(gateNode(unverified, map[string]string{HeldAnnotation: "ops@then", HeldReasonAnnotation: "reimage", "keep": "me"}))
 	if err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
 		t.Fatal(err)
 	}
@@ -53,8 +53,10 @@ func TestReleaseNode(t *testing.T) {
 	if got := n.Annotations[VerifiedAnnotation]; got != "alice@2026-10-31T16:00:00Z" {
 		t.Errorf("verified = %q, want alice@2026-10-31T16:00:00Z", got)
 	}
-	if _, ok := n.Annotations[HeldAnnotation]; ok || n.Annotations["keep"] != "me" {
-		t.Errorf("annotations after release = %v, want the hold record gone and every other annotation kept", n.Annotations)
+	_, held := n.Annotations[HeldAnnotation]
+	_, reason := n.Annotations[HeldReasonAnnotation]
+	if held || reason || n.Annotations["keep"] != "me" {
+		t.Errorf("annotations after release = %v, want the hold record and reason gone and every other annotation kept", n.Annotations)
 	}
 }
 
@@ -77,13 +79,24 @@ func TestReleaseNodeRefusesANodeThatIsNotHeld(t *testing.T) {
 }
 
 // A writer that changes the Node between the read and the update makes the
-// update conflict; the gate reads again and applies to the newer Node.
+// update conflict; the gate reads again and applies to the newer Node, so the
+// other writer's change survives.
 func TestNodeGateRetriesAConflict(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil))
 	updates := 0
 	cs.PrependReactor("update", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
 		updates++
 		if updates == 1 {
+			nodes := corev1.SchemeGroupVersion.WithResource("nodes")
+			obj, err := cs.Tracker().Get(nodes, "", "gpu1")
+			if err != nil {
+				return true, nil, err
+			}
+			n := obj.(*corev1.Node)
+			n.Spec.Taints = append(n.Spec.Taints, foreignTaint)
+			if err := cs.Tracker().Update(nodes, n, ""); err != nil {
+				return true, nil, err
+			}
 			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, "gpu1", errors.New("the object has been modified"))
 		}
 		return false, nil, nil
@@ -94,14 +107,14 @@ func TestNodeGateRetriesAConflict(t *testing.T) {
 	if updates != 2 {
 		t.Errorf("updates = %d, want the conflicting one and a retry", updates)
 	}
-	if n := getNode(t, cs); len(n.Spec.Taints) != 0 || n.Annotations[VerifiedAnnotation] == "" {
-		t.Errorf("after the retried release the node is %+v", n)
+	if n := getNode(t, cs); len(n.Spec.Taints) != 1 || n.Spec.Taints[0] != foreignTaint || n.Annotations[VerifiedAnnotation] == "" {
+		t.Errorf("after the retried release the node is %+v, want only the other writer's taint and the verified record", n)
 	}
 }
 
 func TestHoldNode(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{foreignTaint}, map[string]string{VerifiedAnnotation: "alice@then", "keep": "me"}))
-	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "  reimaged spare ", gateTime); err != nil {
+	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "  RMA with ops@vendor.example ", gateTime); err != nil {
 		t.Fatal(err)
 	}
 	n := getNode(t, cs)
@@ -109,8 +122,11 @@ func TestHoldNode(t *testing.T) {
 	if len(n.Spec.Taints) != 2 || n.Spec.Taints[0] != foreignTaint || n.Spec.Taints[1] != want {
 		t.Errorf("taints after hold = %+v, want the foreign taint and %+v", n.Spec.Taints, want)
 	}
-	if got := n.Annotations[HeldAnnotation]; got != "bob@2026-10-31T16:00:00Z: reimaged spare" {
-		t.Errorf("held = %q", got)
+	if got := n.Annotations[HeldAnnotation]; got != "bob@2026-10-31T16:00:00Z" {
+		t.Errorf("held = %q, want only the stamp, which readers split at its last '@'", got)
+	}
+	if got := n.Annotations[HeldReasonAnnotation]; got != "RMA with ops@vendor.example" {
+		t.Errorf("held-reason = %q", got)
 	}
 	if _, ok := n.Annotations[VerifiedAnnotation]; ok || n.Annotations["keep"] != "me" {
 		t.Errorf("annotations after hold = %v, want verified gone and every other annotation kept", n.Annotations)
@@ -120,8 +136,8 @@ func TestHoldNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	n = getNode(t, cs)
-	if len(n.Spec.Taints) != 2 || n.Annotations[HeldAnnotation] != "carol@2026-10-31T16:00:00Z: still broken" {
-		t.Errorf("a second hold left %+v and %q, want one startup taint and the new record", n.Spec.Taints, n.Annotations[HeldAnnotation])
+	if len(n.Spec.Taints) != 2 || n.Annotations[HeldAnnotation] != "carol@2026-10-31T16:00:00Z" || n.Annotations[HeldReasonAnnotation] != "still broken" {
+		t.Errorf("a second hold left %+v and %v, want one startup taint and the new record", n.Spec.Taints, n.Annotations)
 	}
 }
 
