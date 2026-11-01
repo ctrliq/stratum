@@ -226,7 +226,7 @@ func TestApplyRuntimeHandlersRefusesAConfigWithoutTheImportBeforeSaving(t *testi
 // `stratum runtime restart` relabels the node from node.yaml once containerd
 // is back, since the restart is what loads a handler written without one.
 func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
-	saved := map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
+	saved := map[string]string{"nvidia": executable(t)}
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
 	oldRestart := restartContainerd
 	t.Cleanup(func() { restartContainerd = oldRestart })
@@ -317,5 +317,22 @@ func TestRuntimeApplyAndRestartRefuseWhileTheNodeIsLocked(t *testing.T) {
 	}
 	if err := RestartRuntime(io.Discard); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A drop-in that could not be written leaves node.yaml as it was, so no later
+// start labels the node for handlers containerd was never given.
+func TestApplyRuntimeHandlersSavesNothingWhenTheDropInWriteFails(t *testing.T) {
+	saved := map[string]string{"gvisor": executable(t)}
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+	applyHandlers = func(io.Writer, map[string]string, bool) (runtime.ApplyHandlersResult, error) {
+		return runtime.ApplyHandlersResult{}, errors.New("disk full")
+	}
+	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: map[string]string{"kata": executable(t)}})
+	if err == nil || res.Saved {
+		t.Fatalf("apply = %+v, %v; want the write's error and nothing saved", res, err)
+	}
+	if got := savedHandlers(t); !maps.Equal(got, saved) {
+		t.Errorf("node.yaml declares %v after the failed write, want the earlier %v", got, saved)
 	}
 }
