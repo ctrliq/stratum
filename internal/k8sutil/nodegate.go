@@ -88,10 +88,11 @@ func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string,
 
 // HoldNode keeps new workloads off a node until it is released again: it
 // adds stratum.ciq.com/unverified=true:NoSchedule unless the node already
-// carries the taint, removes the verified record, and records who held it
-// and when in stratum.ciq.com/held and why in stratum.ciq.com/held-reason, in
-// one update against the resourceVersion it read, retried on a conflict. NoSchedule leaves running
-// pods where they are. Every other taint and annotation is left as it was.
+// carries the taint with that effect, removes the verified record, and
+// records who held it and when in stratum.ciq.com/held and why in
+// stratum.ciq.com/held-reason, in one update against the resourceVersion it
+// read, retried on a conflict. NoSchedule leaves running pods where they are.
+// Every other taint and annotation is left as it was.
 func HoldNode(ctx context.Context, cs kubernetes.Interface, name, who, reason string, now time.Time) error {
 	if err := ValidateNodeGateActor(who); err != nil {
 		return err
@@ -100,8 +101,9 @@ func HoldNode(ctx context.Context, cs kubernetes.Interface, name, who, reason st
 		return err
 	}
 	return updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
-		if !hasUnverifiedTaint(n) {
-			n.Spec.Taints = append(n.Spec.Taints, corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule})
+		hold := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}
+		if !slices.ContainsFunc(n.Spec.Taints, func(t corev1.Taint) bool { return hold.MatchTaint(&t) }) {
+			n.Spec.Taints = append(n.Spec.Taints, hold)
 		}
 		if n.Annotations == nil {
 			n.Annotations = map[string]string{}

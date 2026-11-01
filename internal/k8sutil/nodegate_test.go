@@ -158,3 +158,23 @@ func TestNodeGateRefusals(t *testing.T) {
 		t.Errorf("refused calls changed the node: %+v", n)
 	}
 }
+
+// A PreferNoSchedule startup taint only discourages scheduling, so a hold
+// adds the NoSchedule one beside it, and a release removes both.
+func TestHoldNodeAddsNoScheduleBesideASofterStartupTaint(t *testing.T) {
+	soft := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectPreferNoSchedule}
+	cs := fake.NewClientset(gateNode([]corev1.Taint{soft}, nil))
+	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "burn-in", gateTime); err != nil {
+		t.Fatal(err)
+	}
+	hold := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}
+	if n := getNode(t, cs); len(n.Spec.Taints) != 2 || n.Spec.Taints[0] != soft || n.Spec.Taints[1] != hold {
+		t.Errorf("taints after hold = %+v, want %+v and %+v", n.Spec.Taints, soft, hold)
+	}
+	if err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
+		t.Fatal(err)
+	}
+	if n := getNode(t, cs); len(n.Spec.Taints) != 0 {
+		t.Errorf("taints after release = %+v, want none", n.Spec.Taints)
+	}
+}
