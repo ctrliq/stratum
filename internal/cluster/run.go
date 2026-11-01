@@ -663,6 +663,10 @@ var (
 	// runs no node-registered task, so this is its one registration wait.
 	ownNodeRegistrationWarnAfter = 5 * time.Minute
 
+	// checkHandlerBinary reports whether a runtime handler's binary is an
+	// executable file.
+	checkHandlerBinary = runtime.CheckHandlerBinary
+
 	// ownNodeRegistered reports, as the kubelet, whether a worker's Node is
 	// registered. It waits briefly: a first join's containerd starts before
 	// the kubelet has a credential or a Node.
@@ -672,12 +676,17 @@ var (
 )
 
 // reconcileNodeLabels gives this node's Node its spec.node labels and the
-// label of each runtime handler its containerd has loaded, which its
-// RuntimeClasses select nodes by, and removes the rest, from st as its caller
-// has it. It is the one labelling rule for a kubelet start, `stratum runtime
-// apply` and `stratum runtime restart`.
+// label of each runtime handler its containerd has loaded and whose binary is
+// executable, which its RuntimeClasses select nodes by, and removes the rest,
+// from st as its caller has it. A worker restart only warns about a missing
+// binary, so its handler stays unlabelled until a relabel after the binary is
+// installed. It is the one labelling rule for a kubelet or containerd start,
+// `stratum runtime apply` and `stratum runtime restart`.
 func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
-	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(slices.Sorted(maps.Keys(st.RuntimeHandlers))))
+	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
+		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
+	})
+	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
 }
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a

@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -70,11 +71,12 @@ func TestNodeRegisteredTaskLabelsNothingWhenTheNodeNeverRegisters(t *testing.T) 
 func stubOwnLabels(t *testing.T, warnAfter time.Duration, fail func(call int32) error) *atomic.Int32 {
 	t.Helper()
 	workerScratchHost(t)
-	oldReconcile, oldInterval, oldWarn := reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter
+	oldReconcile, oldInterval, oldWarn, oldBinary := reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter, checkHandlerBinary
 	t.Cleanup(func() {
-		reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter = oldReconcile, oldInterval, oldWarn
+		reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter, checkHandlerBinary = oldReconcile, oldInterval, oldWarn, oldBinary
 	})
 	nodeRegistrationInterval, bindingWarnAfter = time.Millisecond, warnAfter
+	checkHandlerBinary = func(string) error { return nil }
 	var calls atomic.Int32
 	reconcileOwnNodeLabels = func(_ context.Context, node string, declared map[string]string, handlers []string) error {
 		if node != "w1" || declared["zone"] != "a" || !slices.Equal(handlers, []string{"gpu", "kata"}) {
@@ -336,7 +338,7 @@ func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
 		return nil
 	}
 	started := &NodeState{Role: "worker", Hostname: "w1"}
-	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}}); err != nil {
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"nvidia": executable(t)}}); err != nil {
 		t.Fatal(err)
 	}
 	labelOwnNode(context.Background(), started)
@@ -347,9 +349,31 @@ func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
 	if err := SaveState(&NodeState{Role: "worker", Hostname: "other"}); err != nil {
 		t.Fatal(err)
 	}
-	started.RuntimeHandlers = map[string]string{"gvisor": "/opt/runsc"}
+	started.RuntimeHandlers = map[string]string{"gvisor": executable(t)}
 	labelOwnNode(context.Background(), started)
 	if !slices.Equal(got, []string{"gvisor"}) {
 		t.Errorf("labelled handlers %v from another node's state, want [gvisor] from the started state", got)
+	}
+}
+
+// A worker restart only warns about a handler whose binary is missing, so the
+// labels leave that handler out: its RuntimeClass would schedule pods onto a
+// node that cannot start them.
+func TestNodeLabelsLeaveOutAHandlerWhoseBinaryIsMissing(t *testing.T) {
+	workerScratchHost(t)
+	old := reconcileOwnNodeLabels
+	t.Cleanup(func() { reconcileOwnNodeLabels = old })
+	var got []string
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+		got = handlers
+		return nil
+	}
+	handlers := map[string]string{"gvisor": executable(t), "nvidia": filepath.Join(t.TempDir(), "nvidia-container-runtime")}
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: handlers}); err != nil {
+		t.Fatal(err)
+	}
+	labelOwnNode(context.Background(), &NodeState{Hostname: "w1"})
+	if !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("labelled handlers %v, want only [gvisor], whose binary exists", got)
 	}
 }
