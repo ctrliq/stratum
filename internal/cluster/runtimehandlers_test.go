@@ -149,6 +149,21 @@ func TestApplyRuntimeHandlersOnAControlPlane(t *testing.T) {
 			t.Errorf("source %q does not name %s", res.Source, path)
 		}
 	})
+	t.Run("refuses_a_recorded_config_that_is_gone", func(t *testing.T) {
+		st, path := writeControlPlaneConfig(t, want)
+		st.RuntimeHandlers = want
+		written := runtimeApplyHost(t, st)
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		_, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{})
+		if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "no longer exists") {
+			t.Fatalf("apply with the recorded config gone = %v, want a refusal naming %s", err, path)
+		}
+		if !maps.Equal(savedHandlers(t), want) || len(*written) != 0 {
+			t.Errorf("a refused apply saved %v and wrote %v, want the saved handlers kept and nothing written", savedHandlers(t), *written)
+		}
+	})
 	for name, o := range map[string]RuntimeApplyOptions{
 		"handlers": {Handlers: want},
 		"clear":    {Clear: true},

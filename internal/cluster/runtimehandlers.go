@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
+	"os"
 
 	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/nodestate"
@@ -125,7 +127,10 @@ func RestartRuntime(w io.Writer) error {
 }
 
 // declaredRuntimeHandlers is the handler set ApplyRuntimeHandlers applies and
-// a description of its source.
+// a description of its source. A control plane's recorded config file that
+// has gone is refused rather than read as one declaring no handlers, which
+// would remove them all; only the default path may be absent, as at `stratum
+// up`.
 func declaredRuntimeHandlers(st *NodeState, o RuntimeApplyOptions, w io.Writer) (map[string]string, string, error) {
 	if st.Role == "worker" {
 		switch {
@@ -139,6 +144,12 @@ func declaredRuntimeHandlers(st *NodeState, o RuntimeApplyOptions, w io.Writer) 
 	path, _ := activeConfigPath(func() (*NodeState, error) { return st, nil }, w)
 	if o.Clear || o.Handlers != nil {
 		return nil, "", fmt.Errorf("a control plane takes its runtime handlers from spec.node.runtimeHandlers in %s at every start; edit them there and run `stratum runtime apply` with no flags", path)
+	}
+	if path != DefaultConfigPath {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			return nil, "", fmt.Errorf("%s, the config file this control plane was started with, no longer exists; restore it, "+
+				"or start this node again with `stratum up --config` naming the intended one. Nothing was changed", path)
+		}
 	}
 	cfg, err := LoadConfig(path)
 	if err != nil {
