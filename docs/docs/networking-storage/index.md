@@ -258,7 +258,7 @@ an error.
 
 A control plane that joins with `--join` takes the domain from the cluster. A
 worker gets it from the `--cluster-domain` flag. A worker's config file may set
-only `spec.network.nodeIP` and `spec.selinux`, so a worker join refuses a file
+only `spec.network.nodeIP`, `spec.selinux` and `spec.node`, so a worker join refuses a file
 that sets `clusterDomain`. On a cluster with a non-default domain,
 `stratum token create` adds the flag to the worker join command it prints:
 
