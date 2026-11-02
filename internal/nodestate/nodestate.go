@@ -87,6 +87,12 @@ type NodeState struct {
 	// what this node declares on its Node object. A taint is key[=value]:Effect.
 	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
 	NodeTaints []string          `json:"nodeTaints,omitempty"`
+	// NodeTaintsCheckPending records that a worker joined with taints and
+	// has not yet checked that its Node carries them. The kubelet applies
+	// them only when it creates the Node, so a join that re-registers onto a
+	// Node already there leaves them off; the worker's first start that finds
+	// its Node registered checks, warns, and clears this.
+	NodeTaintsCheckPending bool `json:"nodeTaintsCheckPending,omitzero"`
 }
 
 // CISProfile is the name of the engine's CIS profile.

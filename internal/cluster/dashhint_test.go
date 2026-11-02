@@ -76,7 +76,7 @@ func TestNodeRegisteredTaskPrintsTheHintOnceRegistered(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			g := newRunGroup(ctx)
 			g.add("node registration", func(ctx context.Context) {
-				nodeRegisteredTask(ctx, "cp1", []string{"dashboard: https://10.0.0.5:30443"})
+				nodeRegisteredTask(ctx, &NodeState{Hostname: "cp1"}, []string{"dashboard: https://10.0.0.5:30443"})
 			})
 			time.Sleep(3 * budget)
 			synctest.Wait()

@@ -388,6 +388,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		ServiceCIDR: o.ServiceCIDR, PodCIDR: o.PodCIDR,
 		ClusterDomain: o.ClusterDomain,
 		NodeLabels:    node.Labels, NodeTaints: node.Taints, RuntimeHandlers: node.RuntimeHandlers,
+		NodeTaintsCheckPending: len(node.Taints) > 0,
 	}
 	// containerd and kubelet configs are RunWorker's, on this start as on
 	// every other.
