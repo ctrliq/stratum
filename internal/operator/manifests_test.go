@@ -86,6 +86,7 @@ func deployFixture(t *testing.T, objs ...runtime.Object) *manifestReactor {
 			{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}:        "ClusterRoleList",
 			{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}: "ClusterRoleBindingList",
 			{Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"}:                 "StorageClassList",
+			{Group: "node.k8s.io", Version: "v1", Resource: "runtimeclasses"}:                    "RuntimeClassList",
 			{Group: "example.com", Version: "v1", Resource: "widgets"}:                           "WidgetList",
 		}, objs...)
 	fakeDyn.PrependReactor("patch", "configmaps", func(a clienttesting.Action) (bool, runtime.Object, error) {
@@ -130,6 +131,19 @@ func deployFixture(t *testing.T, objs ...runtime.Object) *manifestReactor {
 		}
 		return true, obj, nil
 	})
+	fakeDyn.PrependReactor("patch", "runtimeclasses", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		pa := a.(clienttesting.PatchActionImpl)
+		r.patches = append(r.patches, pa)
+		obj := &unstructured.Unstructured{}
+		if err := json.Unmarshal(pa.GetPatch(), obj); err != nil {
+			return true, nil, err
+		}
+		return true, obj, nil
+	})
+	fakeDyn.PrependReactor("delete", "runtimeclasses", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		r.deletes = append(r.deletes, a.(clienttesting.DeleteAction))
+		return true, nil, nil
+	})
 	fakeDyn.PrependReactor("delete", "configmaps", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		da := a.(clienttesting.DeleteAction)
 		r.deletes = append(r.deletes, da)
@@ -164,6 +178,7 @@ func deployFixture(t *testing.T, objs ...runtime.Object) *manifestReactor {
 	mapper.Add(schema.GroupVersionKind{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding"}, meta.RESTScopeRoot)
 	mapper.Add(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: "Deployment"}, meta.RESTScopeNamespace)
 	mapper.Add(schema.GroupVersionKind{Group: "storage.k8s.io", Version: "v1", Kind: "StorageClass"}, meta.RESTScopeRoot)
+	mapper.Add(schema.GroupVersionKind{Group: "node.k8s.io", Version: "v1", Kind: "RuntimeClass"}, meta.RESTScopeRoot)
 	r.dir = t.TempDir()
 	fakeCs := k8sfake.NewSimpleClientset()
 	r.d = &manifestDeployer{
