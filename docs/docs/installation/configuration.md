@@ -166,7 +166,20 @@ spec:
 
 Removing a name deletes its RuntimeClass, and an empty list deletes them all.
 `runc` is containerd's default handler and needs no RuntimeClass, so the list
-refuses it.
+refuses it. The operator publishes them, so the list refuses `spec.operator:
+false`, and a control plane refuses to turn the operator off while any are
+published.
+
+A RuntimeClass the cluster already has under a listed name, such as one a GPU
+operator installed, is left as it is: Stratum neither changes it nor deletes it
+when the name leaves the list, and the operator logs `RuntimeClass <name>
+already exists and is not Stratum's`. Pods naming it run under that class.
+Delete it to have Stratum publish its own.
+
+Stratum stages the RuntimeClasses in the `runtime-classes` directory under the
+operator's manifests directory. A control plane refuses to start while that
+directory holds a manifest Stratum did not stage there, naming it: move your
+own manifests to a directory of their own.
 
 !!! warning "Every control plane must carry the same list"
     The RuntimeClasses are cluster-wide, but each control plane renders them
@@ -178,6 +191,9 @@ refuses it.
     logs `staged tree digest ... does not match the recorded desired
     generation` meanwhile. To change the list, edit it on every control plane,
     then restart `stratum up` on each. A worker's config file cannot set it.
+    A rolling upgrade with the list set pauses them the same way until every
+    control plane runs a release that renders RuntimeClasses: an older one
+    renders none.
 
 ## Node IP
 

@@ -205,6 +205,12 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 	if err := refuseOrphaningTheDashboard(cfg); err != nil {
 		return err
 	}
+	if err := refuseRuntimeClassesWithoutTheOperator(cfg); err != nil {
+		return err
+	}
+	if err := refuseForeignRuntimeClassFiles(); err != nil {
+		return err
+	}
 	// Cilium's apiserver address is left as a sentinel: the operator fills it
 	// in at apply time from the cluster's control planes, so every control
 	// plane stages the same bytes and a leader change re-applies nothing
@@ -287,6 +293,66 @@ func refuseOrphaningTheDashboard(cfg *ClusterConfig) error {
 	return errors.New("spec.operator: false would leave the dashboard running with nothing to prune it or renew its certificate. " +
 		"Set spec.dashboard.enabled: false and restart Stratum with the operator still on, wait until " +
 		"`stratum kubectl get ns " + addons.DashboardNamespace + "` reports NotFound, then turn the operator off")
+}
+
+// refuseRuntimeClassesWithoutTheOperator refuses spec.runtimeClasses with
+// spec.operator: false, which nothing would publish, and spec.operator: false
+// while RuntimeClasses are still staged, which nothing would prune.
+func refuseRuntimeClassesWithoutTheOperator(cfg *ClusterConfig) error {
+	if cfg.OperatorEnabled() {
+		return nil
+	}
+	if len(cfg.Spec.RuntimeClasses) > 0 {
+		return errors.New("spec.runtimeClasses needs the operator, which publishes them: with spec.operator: false nothing would. " +
+			"Remove spec.runtimeClasses, or leave the operator on")
+	}
+	if _, err := os.Stat(filepath.Join(version.ManifestsDir, runtimeClassFile)); err != nil {
+		return nil
+	}
+	return errors.New("spec.operator: false would leave the RuntimeClasses spec.runtimeClasses published with nothing to remove them. " +
+		"Restart Stratum with spec.runtimeClasses removed and the operator still on, wait until " +
+		"`stratum kubectl get runtimeclass` no longer lists them, then turn the operator off")
+}
+
+// refuseForeignRuntimeClassFiles refuses a start while the runtime-classes
+// stack directory holds a manifest Stratum did not stage there: one other than
+// its runtime-classes.yaml, or one without RuntimeClassHeader. Earlier releases
+// staged nothing there, so an administrator may have dropped their own
+// RuntimeClasses in it, and this start would overwrite that file or remove it,
+// and the operator would then delete what it declares.
+func refuseForeignRuntimeClassFiles() error {
+	dir := filepath.Join(version.ManifestsDir, addons.RuntimeClassStack)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var foreign []string
+	for _, e := range entries {
+		if e.IsDir() || (filepath.Ext(e.Name()) != ".yaml" && filepath.Ext(e.Name()) != ".yml") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if path == filepath.Join(version.ManifestsDir, runtimeClassFile) {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.HasPrefix(string(b), addons.RuntimeClassHeader) {
+				continue
+			}
+		}
+		foreign = append(foreign, path)
+	}
+	if len(foreign) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s holds %s, which Stratum did not stage: Stratum now stages spec.runtimeClasses in that directory, "+
+		"and would overwrite or remove what is there, and the operator would then delete the objects it declares. "+
+		"Move them to a directory of their own under %s, which the operator applies as a stack of that name, and start again",
+		dir, strings.Join(foreign, ", "), version.ManifestsDir)
 }
 
 // removeStaleBundledFiles deletes files an earlier start staged under the

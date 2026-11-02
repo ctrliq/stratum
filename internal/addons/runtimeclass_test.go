@@ -11,7 +11,11 @@ import (
 )
 
 func TestRuntimeClassesSelectTheNodesCarryingTheirHandler(t *testing.T) {
-	docs := bytes.Split(RenderRuntimeClasses([]string{"nvidia", "kata"}), []byte("---\n"))
+	rendered := RenderRuntimeClasses([]string{"nvidia", "kata"})
+	if !bytes.HasPrefix(rendered, []byte(RuntimeClassHeader)) {
+		t.Errorf("the render does not open with its header:\n%s", rendered)
+	}
+	docs := bytes.Split(rendered, []byte("---\n"))
 	if len(docs) != 2 {
 		t.Fatalf("rendered %d documents, want one RuntimeClass per handler", len(docs))
 	}
