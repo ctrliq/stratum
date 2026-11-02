@@ -178,3 +178,17 @@ func TestHoldNodeAddsNoScheduleBesideASofterStartupTaint(t *testing.T) {
 		t.Errorf("taints after release = %+v, want none", n.Spec.Taints)
 	}
 }
+
+// A NoSchedule startup taint with another value still holds pods off, but a
+// burn-in job tolerates the value the startup gate gives, so a hold sets it to
+// true rather than leaving it.
+func TestHoldNodeSetsTheStartupTaintsValue(t *testing.T) {
+	cs := fake.NewClientset(gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "false", Effect: corev1.TaintEffectNoSchedule}}, nil))
+	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "burn-in", gateTime); err != nil {
+		t.Fatal(err)
+	}
+	hold := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}
+	if n := getNode(t, cs); len(n.Spec.Taints) != 1 || n.Spec.Taints[0] != hold {
+		t.Errorf("taints after hold = %+v, want only %+v", n.Spec.Taints, hold)
+	}
+}

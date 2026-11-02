@@ -87,8 +87,10 @@ func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string,
 }
 
 // HoldNode keeps new workloads off a node until it is released again: it
-// adds stratum.ciq.com/unverified=true:NoSchedule unless the node already
-// carries the taint with that effect, removes the verified record, and
+// adds stratum.ciq.com/unverified=true:NoSchedule, or sets the value of a
+// NoSchedule taint the node already carries under that key to true, since a
+// burn-in job tolerates the value the startup gate gives, removes the verified
+// record, and
 // records who held it and when in stratum.ciq.com/held and why in
 // stratum.ciq.com/held-reason, in one update against the resourceVersion it
 // read, retried on a conflict. NoSchedule leaves running pods where they are.
@@ -102,7 +104,9 @@ func HoldNode(ctx context.Context, cs kubernetes.Interface, name, who, reason st
 	}
 	return updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
 		hold := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}
-		if !slices.ContainsFunc(n.Spec.Taints, func(t corev1.Taint) bool { return hold.MatchTaint(&t) }) {
+		if i := slices.IndexFunc(n.Spec.Taints, func(t corev1.Taint) bool { return hold.MatchTaint(&t) }); i >= 0 {
+			n.Spec.Taints[i].Value = hold.Value
+		} else {
 			n.Spec.Taints = append(n.Spec.Taints, hold)
 		}
 		if n.Annotations == nil {

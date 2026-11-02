@@ -62,12 +62,35 @@ func TestNodeHoldThenRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hold: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "stratum kubectl drain gpu1") {
-		t.Errorf("hold printed:\n%s\nwant the drain hint", out)
+	for _, want := range []string{"stratum kubectl drain gpu1", "stratum kubectl uncordon gpu1", "without a toleration"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hold printed:\n%s\nwant %q", out, want)
+		}
 	}
 	n, _ = cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{})
 	if len(n.Spec.Taints) != 1 || n.Annotations[k8sutil.HeldAnnotation] != "bob@2026-10-31T16:00:00Z" || n.Annotations[k8sutil.HeldReasonAnnotation] != "fan failure" {
 		t.Errorf("after hold the node is %+v", n)
+	}
+}
+
+// A node drained during its hold stays cordoned after the release, which
+// removes only the taint, so release says so instead of promising workloads.
+func TestNodeReleaseOfACordonedNodeSaysToUncordonIt(t *testing.T) {
+	cs, _ := stubNodeGate(t)
+	n, _ := cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{})
+	n.Spec.Unschedulable = true
+	if _, err := cs.CoreV1().Nodes().Update(context.Background(), n, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runNode(t, "release", "gpu1", "--by", "alice")
+	if err != nil {
+		t.Fatalf("release: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "still cordoned") || !strings.Contains(out, "stratum kubectl uncordon gpu1") || strings.Contains(out, "can now schedule") {
+		t.Errorf("release of a cordoned node printed:\n%s\nwant the uncordon hint", out)
+	}
+	if n, _ := cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{}); !n.Spec.Unschedulable {
+		t.Error("release uncordoned the node; a cordon is the operator's to clear")
 	}
 }
 

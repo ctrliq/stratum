@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
@@ -68,7 +69,13 @@ func newNodeReleaseCommand() *cobra.Command {
 				}
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "released %s: workloads can now schedule onto it (verified by %s)\n", args[0], by)
+			out := cmd.OutOrStdout()
+			n, err := cs.CoreV1().Nodes().Get(cmd.Context(), args[0], metav1.GetOptions{})
+			if err == nil && n.Spec.Unschedulable {
+				fmt.Fprintf(out, "released %s (verified by %s), but it is still cordoned, as a drain leaves it: run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], by, args[0])
+				return nil
+			}
+			fmt.Fprintf(out, "released %s: workloads can now schedule onto it (verified by %s)\n", args[0], by)
 			return nil
 		},
 	}
@@ -81,11 +88,11 @@ func newNodeHoldCommand() *cobra.Command {
 	var by, reason string
 	cmd := &cobra.Command{
 		Use:   "hold <node>",
-		Short: "Add the " + k8sutil.UnverifiedTaint + " taint so no new workloads schedule onto the node",
+		Short: "Add the " + k8sutil.UnverifiedTaint + " taint so new pods that do not tolerate it stay off the node",
 		Long: "Adds the " + k8sutil.UnverifiedTaint + "=true:NoSchedule taint to a node, removes its " + k8sutil.VerifiedAnnotation + " annotation,\n" +
 			"and records who held it and when in the " + k8sutil.HeldAnnotation + " annotation and why in the\n" +
 			k8sutil.HeldReasonAnnotation + " annotation, in one update. Pods already running stay; drain the node to move\n" +
-			"them. Run it on a control plane.",
+			"them, and uncordon it after `stratum node release`, which does not. Run it on a control plane.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := k8sutil.ValidateNodeGateActor(by); err != nil {
@@ -102,8 +109,9 @@ func newNodeHoldCommand() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "held %s: no new workloads schedule onto it until `stratum node release %s`\n", args[0], args[0])
-			fmt.Fprintf(out, "pods already running stay; run `stratum kubectl drain %s --ignore-daemonsets` to move them\n", args[0])
+			fmt.Fprintf(out, "held %s: new pods without a toleration for %s no longer schedule onto it, until `stratum node release %s`\n", args[0], k8sutil.UnverifiedTaint, args[0])
+			fmt.Fprintf(out, "pods already running stay; run `stratum kubectl drain %s --ignore-daemonsets` to move them, "+
+				"which also cordons it: uncordon it with `stratum kubectl uncordon %s` after the release\n", args[0], args[0])
 			return nil
 		},
 	}
