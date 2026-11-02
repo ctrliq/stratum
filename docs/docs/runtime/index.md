@@ -19,8 +19,8 @@ the Container Runtime Interface (CRI) socket.
 | cgroups | v2 only. `stratum up` refuses to start without the cgroup v2 hierarchy at `/sys/fs/cgroup` |
 | Sandbox image | served from the payload, never pulled |
 
-Every pod runs under runc. Stratum configures no other runtime handler and no
-RuntimeClass.
+A pod runs under runc unless its `runtimeClassName` names a RuntimeClass from
+[`spec.runtimeClasses`](../installation/configuration.md#runtimeclasses).
 
 ## Paths
 

@@ -28,6 +28,7 @@ page that explains them.
 | `/var/lib/stratum/images/` | the payload's image archives |
 | `/var/lib/stratum/pki/` | certificates and keys, and any secret the node's profile shares between control planes |
 | `/var/lib/stratum/config/node.yaml` | the persisted NodeState |
+| `/var/lib/stratum/config/containerd.d/stratum-runtime.toml` | the containerd drop-in declaring the node's runtime handlers, when it has any; see [Node labels, taints and runtime handlers](../installation/configuration.md#node-labels-taints-and-runtime-handlers) |
 | `/var/lib/stratum/config/manifests/*.yaml` | the rendered control-plane static pod manifests; see [Overview](../overview/index.md) |
 | `/var/lib/stratum/kubeconfig/admin.conf` | the admin kubeconfig, on control planes; revocable, see [admin.conf and super-admin.conf](../cluster-admin/hardening.md#adminconf-and-super-adminconf) |
 | `/var/lib/stratum/kubeconfig/super-admin.conf` | the `system:masters` kubeconfig Stratum itself uses, on control planes |
@@ -74,6 +75,7 @@ Under `spec` in `/etc/stratum/config.yaml`:
 | Name | Kind | See |
 |---|---|---|
 | `stratum.ciq.com/control-plane=true` | Node label | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
+| `runtime.stratum.ciq.com/<handler>=true` | Node label, one per runtime handler the node declares | [Node labels, taints and runtime handlers](../installation/configuration.md#node-labels-taints-and-runtime-handlers) |
 | `stratum.ciq.com/k8s-version` | Node annotation | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
 | `stratum.ciq.com/version` | Node annotation | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
 | `stratum.ciq.com/upgrade-in-progress` | Node annotation | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
@@ -82,6 +84,7 @@ Under `spec` in `/etc/stratum/config.yaml`:
 | `stratum-upgrade-<node>` | Job, in `kube-system` | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
 | `stratum.ciq.com/upgrade=<node>` | Job label | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
 | `stratum.ciq.com/stack=<stack>` | label on objects applied from a manifest stack | [Deploying manifests](../cluster-admin/index.md#deploying-manifests) |
+| `<handler>`, one per `spec.runtimeClasses` name | RuntimeClass | [RuntimeClasses](../installation/configuration.md#runtimeclasses) |
 | `stratum-dashboard` | Namespace, Deployment and Service | [The dashboard](../cluster-admin/index.md#the-dashboard) |
 | `stratum-dashboard/stratum-dashboard-tls` | Secret | [The dashboard](../cluster-admin/index.md#the-dashboard) |
 | `stratum-dashboard/stratum-dashboard-session` | Secret | [The dashboard](../cluster-admin/index.md#the-dashboard) |
