@@ -166,7 +166,7 @@ func TestWriteBundlesKeepsBundledFilesAnIndexNames(t *testing.T) {
 
 func TestBundledStacksNamesEveryStackWriteBundlesStages(t *testing.T) {
 	withImporterStacks(t, nil)
-	cfg := &ClusterConfig{Spec: Spec{Storage: Storage{Default: addons.StorageLocalPath}}}
+	cfg := &ClusterConfig{Spec: Spec{Storage: Storage{Default: addons.StorageLocalPath}, RuntimeClasses: []string{"nvidia"}}}
 	if err := writeBundles(cfg, &NodeState{Role: "controller", NodeIP: "10.0.0.11"}); err != nil {
 		t.Fatal(err)
 	}
