@@ -117,6 +117,14 @@ registers its taints once, when it joins, so a restart refuses a `--node-taint`
 that changes them; change a joined node's taints from a control plane with
 `stratum kubectl taint node`.
 
+The kubelet applies a node's taints only when it creates the Node. A worker
+reinstalled and joined again while its old Node is still in the cluster
+registers onto that Node without them, so nothing holds workloads off it. Its
+first start warns when that happens. Taint it from a control plane with
+`stratum kubectl taint node <node> <taint>`, or delete the old Node with
+`stratum kubectl delete node <node>` before the join, or after it and then
+restart the worker, so it registers again with its taints.
+
 A worker join refuses a runtime handler whose binary is not an executable file
 on the host. Every other start only warns, so the node's other pods keep
 running.

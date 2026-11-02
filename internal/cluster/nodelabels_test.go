@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // A first boot's kubelet starts before its Node registers, so the kubelet
@@ -211,5 +213,110 @@ func TestControllerKubeletStartLabelsTheRegisteredOwnNode(t *testing.T) {
 		if want := map[bool]int32{true: 1, false: 0}[registered]; labelled.Load() != want {
 			t.Errorf("registered=%v: labelled %d times, want %d", registered, labelled.Load(), want)
 		}
+	}
+}
+
+// stubOwnTaints saves st as this node's state and answers the Node's taints
+// with have, or err.
+func stubOwnTaints(t *testing.T, st *NodeState, have []corev1.Taint, err error) {
+	t.Helper()
+	redirectJoinDirs(t)
+	if err := SaveState(st); err != nil {
+		t.Fatal(err)
+	}
+	old := ownNodeTaints
+	t.Cleanup(func() { ownNodeTaints = old })
+	ownNodeTaints = func(_ context.Context, node string) ([]corev1.Taint, error) {
+		if node != st.Hostname {
+			t.Errorf("read %s's taints, want %s's", node, st.Hostname)
+		}
+		return have, err
+	}
+}
+
+func joinedWithTaints() *NodeState {
+	return &NodeState{Role: "worker", Hostname: "w1", NodeTaintsCheckPending: true,
+		NodeTaints: []string{"stratum.ciq.com/unverified=true:NoSchedule", "dedicated=gpu:NoExecute"}}
+}
+
+// A join that registers onto a Node already there finds it without the
+// taints the kubelet would have created it with: the worker warns, naming
+// the missing taint and the control-plane fixes, once.
+func TestCheckJoinedTaintsWarnsWhenTheNodeLacksADeclaredTaint(t *testing.T) {
+	st := joinedWithTaints()
+	stubOwnTaints(t, st, []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoExecute}}, nil)
+	out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) })
+	for _, want := range []string{"WARN: node w1 registered without its declared taints stratum.ciq.com/unverified=true:NoSchedule:", "stratum kubectl taint node w1", "stratum kubectl delete node w1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "dedicated=gpu:NoExecute") {
+		t.Errorf("warned about a taint the Node carries:\n%s", out)
+	}
+	if st.NodeTaintsCheckPending || mustLoadState(t).NodeTaintsCheckPending {
+		t.Error("the check stayed pending after it ran")
+	}
+	if out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) }); out != "" {
+		t.Errorf("a second start checked again: %s", out)
+	}
+}
+
+// A Node created with its taints is quiet and clears the check, and a value
+// changed by hand counts as missing.
+func TestCheckJoinedTaintsIsQuietWhenTheNodeCarriesThem(t *testing.T) {
+	st := joinedWithTaints()
+	stubOwnTaints(t, st, []corev1.Taint{
+		{Key: "stratum.ciq.com/unverified", Value: "true", Effect: corev1.TaintEffectNoSchedule},
+		{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoExecute},
+		{Key: "node.kubernetes.io/not-ready", Effect: corev1.TaintEffectNoSchedule},
+	}, nil)
+	if out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) }); out != "" {
+		t.Errorf("a Node with its taints warned: %s", out)
+	}
+	if mustLoadState(t).NodeTaintsCheckPending {
+		t.Error("the check stayed pending after it ran")
+	}
+
+	st = joinedWithTaints()
+	stubOwnTaints(t, st, []corev1.Taint{
+		{Key: "stratum.ciq.com/unverified", Value: "true", Effect: corev1.TaintEffectNoSchedule},
+		{Key: "dedicated", Value: "cpu", Effect: corev1.TaintEffectNoExecute},
+	}, nil)
+	if out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) }); !strings.Contains(out, "dedicated=gpu:NoExecute") {
+		t.Errorf("a changed value did not warn: %s", out)
+	}
+}
+
+// A Node the worker cannot read leaves the check for the next start, and a
+// restart, which saves no pending check, never reads the Node.
+func TestCheckJoinedTaintsWaitsForANodeItCanRead(t *testing.T) {
+	st := joinedWithTaints()
+	stubOwnTaints(t, st, nil, errors.New("connection refused"))
+	if out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) }); !strings.Contains(out, "checking again on the next start") {
+		t.Errorf("an unreadable Node printed %q", out)
+	}
+	if !st.NodeTaintsCheckPending || !mustLoadState(t).NodeTaintsCheckPending {
+		t.Error("an unreadable Node cleared the pending check")
+	}
+
+	st.NodeTaintsCheckPending = false
+	ownNodeTaints = func(context.Context, string) ([]corev1.Taint, error) {
+		t.Error("a start with no pending check read the Node")
+		return nil, nil
+	}
+	checkJoinedTaints(context.Background(), st)
+}
+
+// The worker's kubelet start checks a join's taints once its Node registers.
+func TestWorkerKubeletStartChecksAJoinsTaints(t *testing.T) {
+	stubOwnRegistration(t, 1)
+	st := joinedWithTaints()
+	stubOwnTaints(t, st, nil, nil)
+	old := labelOwnNode
+	t.Cleanup(func() { labelOwnNode = old })
+	labelOwnNode = func(context.Context, *NodeState) {}
+	if out := captureWorkerOutput(t, func() { workerKubeletStart(context.Background(), st)("w1") }); !strings.Contains(out, "registered without its declared taints") {
+		t.Errorf("the kubelet start did not check the join's taints: %s", out)
 	}
 }

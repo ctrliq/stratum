@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/ctrliq/stratum/internal/addons"
 	"github.com/ctrliq/stratum/internal/assets"
 	"github.com/ctrliq/stratum/internal/atomicfile"
@@ -568,6 +570,7 @@ var (
 	// register, giving up after timeout.
 	waitOwnNodeRegistered = k8sutil.WaitOwnNodeRegistered
 	stampOwnNode          = k8sutil.StampOwnNode
+	ownNodeTaints         = k8sutil.OwnNodeTaints
 	// ownNodeRegistrationWarnAfter is how long a worker waits for its own
 	// Node before it says it is still waiting; it waits on after. A worker
 	// runs no node-registered task, so this is its one registration wait.
@@ -638,14 +641,53 @@ func controllerKubeletStart(st *NodeState) func(context.Context, string) {
 }
 
 // workerKubeletStart is a worker's kubelet-start restamp: once its Node is
-// registered, its version stamp and then its own labels, under the worker's
-// run context.
+// registered, its version stamp, the check of a join's taints, and then its
+// own labels, under the worker's run context.
 func workerKubeletStart(ctx context.Context, st *NodeState) func(string) {
 	return func(hostname string) {
 		if restampOwnNodeWhenRegistered(ctx, hostname) {
+			checkJoinedTaints(ctx, st)
 			labelOwnNode(ctx, st)
 		}
 	}
+}
+
+// checkJoinedTaints warns when a worker that joined with taints finds its
+// registered Node without one of them, once per join
+// (NodeTaintsCheckPending). The kubelet applies registerWithTaints only when
+// it creates the Node, so a node reinstalled and joined again while its old
+// Node is still there re-registers onto that Node untainted, and takes
+// workloads its taints were to hold off. The kubelet may not taint its own
+// Node, so the warning names the fixes a control plane has. A check that
+// cannot read the Node stays pending for the next start.
+func checkJoinedTaints(ctx context.Context, st *NodeState) {
+	if !st.NodeTaintsCheckPending {
+		return
+	}
+	have, err := ownNodeTaints(ctx, st.Hostname)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stratum: check %s carries its declared taints: %v; checking again on the next start\n", st.Hostname, err)
+		return
+	}
+	var missing []string
+	for _, t := range st.NodeTaints {
+		key, value, effect, _ := runtime.SplitTaint(t)
+		want := corev1.Taint{Key: key, Value: value, Effect: corev1.TaintEffect(effect)}
+		if !slices.ContainsFunc(have, func(h corev1.Taint) bool { return want.MatchTaint(&h) && h.Value == want.Value }) {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "stratum: WARN: node %[1]s registered without its declared taints %[2]s: the kubelet applies them only when it creates "+
+			"the Node, and this join registered onto a Node that was already there, so nothing holds workloads off it. From a control plane, "+
+			"taint it with `stratum kubectl taint node %[1]s <taint>`, or delete the Node with `stratum kubectl delete node %[1]s` and restart "+
+			"this worker so it registers again with them\n", st.Hostname, strings.Join(missing, ", "))
+	}
+	if err := nodestate.MutateSave(func(cur *NodeState) error { cur.NodeTaintsCheckPending = false; return nil }, saveState); err != nil {
+		fmt.Fprintf(os.Stderr, "stratum: record that %s checked its taints: %v (non-fatal)\n", st.Hostname, err)
+		return
+	}
+	st.NodeTaintsCheckPending = false
 }
 
 // restampWhenRegistered is the controller's kubelet-start restamp: it
