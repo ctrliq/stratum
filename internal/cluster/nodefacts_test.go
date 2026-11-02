@@ -153,6 +153,9 @@ func TestWorkerJoinSavesItsNodeFacts(t *testing.T) {
 		!reflect.DeepEqual(st.RuntimeHandlers, map[string]string{"nvidia": bin}) {
 		t.Errorf("saved node facts = labels %v, taints %v, handlers %v; want the file's and the flags'", st.NodeLabels, st.NodeTaints, st.RuntimeHandlers)
 	}
+	if !st.NodeTaintsCheckPending {
+		t.Error("a join with taints saved no pending check that its Node carries them")
+	}
 }
 
 // A join refuses a bad or uninstalled spec.node before it touches the host:
