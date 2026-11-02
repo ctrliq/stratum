@@ -413,3 +413,39 @@ func TestRuntimeClassStackReappliesItsOwnClass(t *testing.T) {
 		t.Errorf("patches %v, want Stratum's own nvidia applied", got)
 	}
 }
+
+// A foreign class the inventory already records as the runtime-classes
+// stack's, from a class Stratum once published under that name or an apply it
+// recorded but never made, is neither pruned in the pass that finds it foreign
+// nor left recorded: its ownership is released as a loose file's is, so
+// removing the name later deletes nothing.
+func TestRuntimeClassStackReleasesAForeignClassItHadRecorded(t *testing.T) {
+	ctx := context.Background()
+	nvidia := objRef{GVK: "node.k8s.io/v1,RuntimeClass", Name: "nvidia"}
+	r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", "nvidia", map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"}))
+	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {addons.RuntimeClassStack: {nvidia}}}})
+	stack := filepath.Join(r.dir, addons.RuntimeClassStack)
+	writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"gvisor", "nvidia"})))
+	writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.deleteNames(); slices.Contains(got, "nvidia") {
+		t.Fatalf("deletes %v: the foreign nvidia RuntimeClass was pruned", got)
+	}
+	inv := clusterInventory(t, r.fakeCs)
+	for _, ref := range inv.Nodes["cp1"][addons.RuntimeClassStack] {
+		if ref.Name == "nvidia" {
+			t.Errorf("the inventory still records the foreign nvidia as Stratum's: %+v", inv.Nodes["cp1"])
+		}
+	}
+	if !slices.ContainsFunc(inv.Unowned, func(o inventoryObject) bool { return o.Name == "nvidia" }) {
+		t.Errorf("unowned = %+v, want the foreign nvidia released", inv.Unowned)
+	}
+	r.reset()
+	if err := os.RemoveAll(stack); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.deleteNames(); !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("deletes %v once the stack is removed, want only Stratum's gvisor", got)
+	}
+}

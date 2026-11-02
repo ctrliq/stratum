@@ -135,8 +135,10 @@ type manifestDeployer struct {
 	yielded   bool
 	lastYield string
 	// foreignClasses names the RuntimeClasses spec.runtimeClasses declares
-	// that the cluster already has and are not Stratum's (foreignRuntimeClass).
+	// that the cluster already has and are not Stratum's (foreignRuntimeClass);
+	// foreignRefs are the ones the file being applied declared.
 	foreignClasses map[string]bool
+	foreignRefs    []objRef
 }
 
 type manifestFileState struct {
@@ -310,7 +312,9 @@ func (d *manifestDeployer) reconcileManifests(ctx context.Context, vip, selfIP s
 		prev, seen := d.state[path]
 		unchanged := seen && prev.sum == sum && now.Sub(prev.lastApply) < manifestResync
 		d.yielded = false
+		d.foreignRefs = nil
 		refs, n, err := d.applyManifestFile(ctx, data, stack, !unchanged)
+		loose = append(loose, d.foreignRefs...)
 		if err != nil {
 			log.Printf("manifests: apply %s: %v", path, err)
 			pruneReady = false // never prune on a pass that failed to read intent
@@ -479,6 +483,7 @@ func (d *manifestDeployer) applyManifestFile(ctx context.Context, data []byte, s
 				}
 			}
 			if foreign {
+				d.foreignRefs = append(d.foreignRefs, refOf(obj))
 				count++
 				continue
 			}
@@ -507,8 +512,11 @@ func (d *manifestDeployer) applyManifestFile(ctx context.Context, data []byte, s
 // apply: applying over it would take it over and delete it when the name
 // leaves the list, and one with another handler, which a RuntimeClass cannot
 // change, would fail every pass and stop pruning everywhere. The class counts
-// as declared but is never in the pass's refs, so the stack still prunes and
-// the class is never recorded as Stratum's.
+// as declared, so the stack still prunes, and joins the pass's loose refs
+// (foreignRefs) rather than the stack's: it is kept out of the prune, and an
+// ownership the inventory already records for it, from a class Stratum once
+// published under that name or an apply it recorded but never made, is
+// released as a loose file's is.
 func (d *manifestDeployer) foreignRuntimeClass(ctx context.Context, obj *unstructured.Unstructured) (bool, error) {
 	ri, err := d.manifestResourceFor(obj)
 	if err != nil {
