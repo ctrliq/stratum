@@ -360,3 +360,63 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	}
 	return st, nil
 }
+<<<<<<< HEAD
+||||||| parent of 49ea78c (feat(cli): add stratum runtime apply, check and restart (#115))
+
+// restartNodeFacts is the saved labels and runtime handlers, each replaced by
+// the restart's flag when one was given, and a line for every field that
+// changes what the worker saved.
+func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
+	labels, handlers = st.NodeLabels, st.RuntimeHandlers
+	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", formatKeyValues(labels), formatKeyValues(flags.Labels)))
+		labels = flags.Labels
+	}
+	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, handlers) {
+		replaced = append(replaced, fmt.Sprintf("--runtime-handler replaces the runtime handlers this worker saved (%s -> %s)", formatKeyValues(handlers), formatKeyValues(flags.RuntimeHandlers)))
+		handlers = flags.RuntimeHandlers
+	}
+	return labels, handlers, replaced
+}
+
+// formatKeyValues renders a map as sorted name=value pairs, "none" when empty.
+func formatKeyValues(m map[string]string) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
+	}
+	return strings.Join(out, ",")
+}
+=======
+
+// restartNodeFacts is the saved labels and runtime handlers, each replaced by
+// the restart's flag when one was given, and a line for every field that
+// changes what the worker saved.
+func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
+	labels, handlers = st.NodeLabels, st.RuntimeHandlers
+	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", FormatKeyValues(labels), FormatKeyValues(flags.Labels)))
+		labels = flags.Labels
+	}
+	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, handlers) {
+		replaced = append(replaced, fmt.Sprintf("--runtime-handler replaces the runtime handlers this worker saved (%s -> %s)", FormatKeyValues(handlers), FormatKeyValues(flags.RuntimeHandlers)))
+		handlers = flags.RuntimeHandlers
+	}
+	return labels, handlers, replaced
+}
+
+// FormatKeyValues renders a map as sorted name=value pairs, "none" when empty.
+func FormatKeyValues(m map[string]string) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
+	}
+	return strings.Join(out, ",")
+}
+>>>>>>> 49ea78c (feat(cli): add stratum runtime apply, check and restart (#115))

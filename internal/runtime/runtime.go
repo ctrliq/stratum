@@ -50,17 +50,28 @@ func ApplyRegistry() (ApplyRegistryResult, error) {
 		return out, err
 	}
 	if out.Changed && Active() {
-		if err := comps.Restart("containerd"); err != nil {
-			return out, fmt.Errorf("restart containerd after registry config change: %w", err)
-		}
-		// comps.Restart has already waited for the replacement PID, so the
-		// restart happened; the waitActive check below reports it coming back.
-		out.Restarted = true
-		if err := waitActive(10 * time.Second); err != nil {
+		restarted, err := restartContainerd(" after registry config change")
+		out.Restarted = restarted
+		if err != nil {
 			return out, err
 		}
 	}
 	return out, nil
+}
+
+// containerdRestartWait is how long a restarted containerd has to report
+// active again.
+const containerdRestartWait = 10 * time.Second
+
+// restartContainerd restarts the supervisor's containerd and waits for it to
+// report active. comps.Restart waits for the replacement PID, so restarted is
+// true once it returns, even when containerd then fails to come back. cause
+// follows "restart containerd" in the error.
+func restartContainerd(cause string) (restarted bool, err error) {
+	if err := comps.Restart("containerd"); err != nil {
+		return false, fmt.Errorf("restart containerd%s: %w", cause, err)
+	}
+	return true, waitActive(containerdRestartWait)
 }
 
 // waitActive polls until containerd reports active (everything downstream —

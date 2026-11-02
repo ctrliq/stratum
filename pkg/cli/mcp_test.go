@@ -40,6 +40,7 @@ var engineReadTools = []string{
 	"pod_list",
 	"pod_logs",
 	"registry_check",
+	"runtime_check",
 	"resource_get",
 	"resource_list",
 	"snapshot_list",
@@ -54,6 +55,7 @@ var engineReadTools = []string{
 // Absent entirely without --allow-write.
 var engineWriteTools = []string{
 	"registry_apply",
+	"runtime_apply",
 	"resource_apply",
 	"resource_delete",
 	"resource_scale",
@@ -924,6 +926,8 @@ var (
 		"registry_apply",
 		"registry_check",
 		"rollback",
+		"runtime_apply",
+		"runtime_check",
 		"snapshot_list",
 		"snapshot_prune",
 		"snapshot_prune_restores",
