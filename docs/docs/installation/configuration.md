@@ -75,6 +75,139 @@ A worker restart (`stratum up --worker` without `--server`, which is what
 `stratum.service` runs after a reboot) reads only `spec.selinux` from the file.
 It keeps the saved setting when the file does not set it or cannot be read.
 
+<<<<<<< HEAD
+||||||| parent of 72bb486 (feat(cluster): register node taints and keep node labels on the Node (#112))
+## Node labels, taints and runtime handlers
+
+`spec.node` declares what a node says about itself:
+
+- `labels`: labels for its Node object.
+- `taints`: taints it registers with, as `key[=value]:Effect`, where the
+  effect is `NoSchedule`, `PreferNoSchedule` or `NoExecute`.
+- `runtimeHandlers`: extra containerd runtime handlers, by name, each the
+  absolute path of an OCI runtime binary. Stratum declares them to containerd
+  in `/var/lib/stratum/config/containerd.d/stratum-runtime.toml`, which only
+  Stratum's containerd imports.
+
+```yaml
+# /etc/stratum/config.yaml on a GPU worker
+spec:
+  network:
+    nodeIP: 192.168.1.32
+  node:
+    labels:
+      topology.kubernetes.io/zone: rack-1
+    taints:
+      - stratum.ciq.com/unverified=true:NoSchedule
+    runtimeHandlers:
+      nvidia: /usr/bin/nvidia-container-runtime
+```
+
+A control plane reads `spec.node` at its first boot or `--join`, and on every
+start after. The kubelet applies taints only when it registers the Node, so a
+changed `spec.node.taints` reaches a Node that registers later but not the one
+that exists: the restart warns once, and you change that Node's taints with
+`stratum kubectl taint node`.
+
+A worker reads `spec.node` at its join, where the repeatable `--node-label
+key=value`, `--node-taint key[=value]:Effect` and `--runtime-handler
+name=/path` flags add to it: a flag replaces the file's label or handler of the
+same name, and its taint with the same key and effect. A worker restart reads
+no `spec.node`. It keeps what the join saved, and `--node-label` or
+`--runtime-handler` given on a restart replaces that whole field. A node
+registers its taints once, when it joins, so a restart refuses a `--node-taint`
+that changes them; change a joined node's taints from a control plane with
+`stratum kubectl taint node`.
+
+A worker join refuses a runtime handler whose binary is not an executable file
+on the host. Every other start only warns, so the node's other pods keep
+running.
+
+A node cannot declare:
+
+- the `stratum.ciq.com/control-plane` key or keys under
+  `runtime.stratum.ciq.com/`, as a label or a taint: Stratum sets them itself.
+- labels in the `kubernetes.io` and `k8s.io` namespaces, which the API server
+  does not let a node set on itself, other than those under
+  `node.kubernetes.io/` and `kubelet.kubernetes.io/` and the topology zone and
+  region labels. Label a node with `stratum kubectl label node` from a control
+  plane instead.
+
+=======
+## Node labels, taints and runtime handlers
+
+`spec.node` declares what a node says about itself:
+
+- `labels`: labels for its Node object.
+- `taints`: taints it registers with, as `key[=value]:Effect`, where the
+  effect is `NoSchedule`, `PreferNoSchedule` or `NoExecute`.
+- `runtimeHandlers`: extra containerd runtime handlers, by name, each the
+  absolute path of an OCI runtime binary. Stratum declares them to containerd
+  in `/var/lib/stratum/config/containerd.d/stratum-runtime.toml`, which only
+  Stratum's containerd imports.
+
+```yaml
+# /etc/stratum/config.yaml on a GPU worker
+spec:
+  network:
+    nodeIP: 192.168.1.32
+  node:
+    labels:
+      topology.kubernetes.io/zone: rack-1
+    taints:
+      - stratum.ciq.com/unverified=true:NoSchedule
+    runtimeHandlers:
+      nvidia: /usr/bin/nvidia-container-runtime
+```
+
+A control plane reads `spec.node` at its first boot or `--join`, and on every
+start after. The kubelet applies taints only when it registers the Node, so a
+changed `spec.node.taints` reaches a Node that registers later but not the one
+that exists: the restart warns once, and you change that Node's taints with
+`stratum kubectl taint node`.
+
+A worker reads `spec.node` at its join, where the repeatable `--node-label
+key=value`, `--node-taint key[=value]:Effect` and `--runtime-handler
+name=/path` flags add to it: a flag replaces the file's label or handler of the
+same name, and its taint with the same key and effect. A worker restart reads
+no `spec.node`. It keeps what the join saved, and `--node-label` or
+`--runtime-handler` given on a restart replaces that whole field. A node
+registers its taints once, when it joins, so a restart refuses a `--node-taint`
+that changes them; change a joined node's taints from a control plane with
+`stratum kubectl taint node`.
+
+The kubelet applies a node's taints only when it creates the Node. A worker
+reinstalled and joined again while its old Node is still in the cluster
+registers onto that Node without them, so nothing holds workloads off it. Its
+first start warns when that happens. Taint it from a control plane with
+`stratum kubectl taint node <node> <taint>`, or delete the old Node with
+`stratum kubectl delete node <node>` before the join, or after it and then
+restart the worker, so it registers again with its taints.
+
+A worker join refuses a runtime handler whose binary is not an executable file
+on the host. Every other start only warns, so the node's other pods keep
+running.
+
+The node registers with its taints when it first joins. On every start, Stratum
+gives the Node its `spec.node` labels and a
+`runtime.stratum.ciq.com/<handler>=true` label for each runtime handler, which
+that handler's RuntimeClass selects nodes by. Stratum owns every label under
+`runtime.stratum.ciq.com/`: it removes any there that is not one of the node's
+handlers, including a label set by hand. It leaves every other label alone, so
+a label you remove from `spec.node` stays on the Node until you remove it with
+`stratum kubectl label node <node> <key>-`.
+
+A node cannot declare:
+
+- the `stratum.ciq.com/control-plane` key or keys under
+  `runtime.stratum.ciq.com/`, as a label or a taint: Stratum sets them itself.
+- labels in the `kubernetes.io` and `k8s.io` namespaces, which the API server
+  does not let a node set on itself, other than those under
+  `node.kubernetes.io/` and `kubelet.kubernetes.io/` and the topology zone and
+  region labels. Label a node with `stratum kubectl label node` from a control
+  plane instead.
+
+>>>>>>> 72bb486 (feat(cluster): register node taints and keep node labels on the Node (#112))
 ## Node IP
 
 A node takes its IP from the first of these that is set:
