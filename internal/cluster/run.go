@@ -87,7 +87,11 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState) error
 	if configPath == "" {
 		configPath = DefaultConfigPath
 	}
-	onStart := managedKubeletOnStart(tasks, st.Hostname, controllerKubeletStart(st))
+	onStart := managedKubeletOnStart(tasks, st.Hostname, controllerKubeletStart(st), func(ctx context.Context, hostname string) {
+		if nodeRegistered(ctx, hostname) {
+			labelOwnNode(ctx, st)
+		}
+	})
 	err := runSupervisor(ctx, procs, supervisor.Options{
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
@@ -192,8 +196,12 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
 		// No admin.conf here: the kubelet stamps its own Node.
-		OnStart: kubeletOnStart(st.Hostname, workerKubeletStart(ctx, st)),
-		ReExec:  UpArgv(version.StratumInstallPath, true, "", ""),
+		OnStart: kubeletOnStart(st.Hostname, workerKubeletStart(ctx, st), func(hostname string) {
+			if ownNodeRegistered(hostname) {
+				labelOwnNode(ctx, st)
+			}
+		}),
+		ReExec: UpArgv(version.StratumInstallPath, true, "", ""),
 	})
 }
 
@@ -610,17 +618,22 @@ var (
 
 	reconcileOwnNodeLabels = k8sutil.ReconcileOwnNodeLabels
 
-	// labelOwnNode gives this node's Node its spec.node labels and the label
-	// of each runtime handler it declares, as its kubelet, on every kubelet
-	// start of both roles. A label that fails is retried until it lands or
-	// ctx ends (retryUntilApplied), as the control-plane label is: a node
-	// without its handler labels takes none of its RuntimeClasses' pods, and
-	// nothing else would label it before the next kubelet start. Non-fatal,
-	// but logged.
+	// labelOwnNode labels this node's Node by reconcileNodeLabels, as its
+	// kubelet, on every kubelet start of both roles. A label that fails is
+	// retried until it lands or ctx ends (retryUntilApplied), as the
+	// control-plane label is: a node without its handler labels takes none of
+	// its RuntimeClasses' pods, and nothing else would label it before the
+	// next kubelet start. Non-fatal, but logged. Each attempt labels from
+	// node.yaml as it is then, falling back to st: `stratum runtime apply`
+	// changes the handlers under a running supervisor, whose st predates the
+	// change.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
-		handlers := slices.Sorted(maps.Keys(st.RuntimeHandlers))
 		label := func(ctx context.Context) error {
-			return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, handlers)
+			cur := st
+			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
+				cur = saved
+			}
+			return reconcileNodeLabels(ctx, cur)
 		}
 		err := label(ctx)
 		if err == nil || ctx.Err() != nil {
@@ -636,6 +649,10 @@ var (
 		}
 	}
 
+	// loadedHandlers narrows a node's declared runtime handlers to those its
+	// running containerd has loaded.
+	loadedHandlers = runtime.LoadedHandlers
+
 	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
 	// register, giving up after timeout.
 	waitOwnNodeRegistered = k8sutil.WaitOwnNodeRegistered
@@ -645,7 +662,32 @@ var (
 	// Node before it says it is still waiting; it waits on after. A worker
 	// runs no node-registered task, so this is its one registration wait.
 	ownNodeRegistrationWarnAfter = 5 * time.Minute
+
+	// checkHandlerBinary reports whether a runtime handler's binary is an
+	// executable file.
+	checkHandlerBinary = runtime.CheckHandlerBinary
+
+	// ownNodeRegistered reports, as the kubelet, whether a worker's Node is
+	// registered. It waits briefly: a first join's containerd starts before
+	// the kubelet has a credential or a Node.
+	ownNodeRegistered = func(hostname string) bool {
+		return k8sutil.WaitOwnNodeRegistered(hostname, 10*time.Second) == nil
+	}
 )
+
+// reconcileNodeLabels gives this node's Node its spec.node labels and the
+// label of each runtime handler its containerd has loaded and whose binary is
+// executable, which its RuntimeClasses select nodes by, and removes the rest,
+// from st as its caller has it. A worker restart only warns about a missing
+// binary, so its handler stays unlabelled until a relabel after the binary is
+// installed. It is the one labelling rule for a kubelet or containerd start,
+// `stratum runtime apply` and `stratum runtime restart`.
+func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
+	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
+		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
+	})
+	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
+}
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a
 // worker alike: every kubelet start, including the restart `stratum upgrade`
@@ -658,26 +700,69 @@ var (
 // restamp runs at a time: a crash-looping kubelet would otherwise stack up
 // overlapping restamps, so a start during one drops out and the one in flight
 // stamps.
-func kubeletOnStart(hostname string, restamp func(hostname string)) func(string, int) {
-	var running atomic.Bool
+//
+// Every containerd start calls relabel the same way, apart from restamp. A
+// containerd that restarts without its kubelet, by `stratum registry apply`
+// or the supervisor, loads the runtime-handler drop-in on disk, which may
+// name a handler an apply wrote without restarting, and no kubelet start
+// follows to label the node for it. A nil relabel is never called.
+func kubeletOnStart(hostname string, restamp, relabel func(hostname string)) func(string, int) {
+	onKubelet, onContainerd := singleFlight(hostname, restamp), singleFlight(hostname, relabel)
 	return func(name string, pid int) {
 		fmt.Printf("stratum: started %s (pid %d)\n", name, pid)
-		if name == "kubelet" && running.CompareAndSwap(false, true) {
+		switch name {
+		case "kubelet":
+			onKubelet()
+		case "containerd":
+			onContainerd()
+		}
+	}
+}
+
+// singleFlight runs fn(hostname) in the background each time the returned func
+// is called, unless a run is still in flight. A nil fn never runs.
+func singleFlight(hostname string, fn func(string)) func() {
+	if fn == nil {
+		return func() {}
+	}
+	var running atomic.Bool
+	return func() {
+		if running.CompareAndSwap(false, true) {
 			go func() {
 				defer running.Store(false)
-				restamp(hostname)
+				fn(hostname)
 			}()
 		}
 	}
 }
 
-// managedKubeletOnStart keeps controller restamps under the run group's panic
-// recovery and shutdown join. Starts while a restamp is queued or in progress
-// are coalesced; the supervisor hook itself never waits for the API.
-func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Context, string)) func(string, int) {
+// managedKubeletOnStart is kubeletOnStart for a controller, with its restamps
+// and relabels under the run group's panic recovery and shutdown join. Starts
+// while a run is queued or in progress are coalesced; the supervisor hook
+// itself never waits for the API.
+func managedKubeletOnStart(g *runGroup, hostname string, restamp, relabel func(context.Context, string)) func(string, int) {
+	onKubelet := managedSingleFlight(g, "kubelet restamp", hostname, restamp)
+	onContainerd := managedSingleFlight(g, "containerd relabel", hostname, relabel)
+	return func(name string, pid int) {
+		fmt.Printf("stratum: started %s (pid %d)\n", name, pid)
+		switch name {
+		case "kubelet":
+			onKubelet()
+		case "containerd":
+			onContainerd()
+		}
+	}
+}
+
+// managedSingleFlight is singleFlight as the run-group task named task. A nil
+// fn adds no task.
+func managedSingleFlight(g *runGroup, task, hostname string, fn func(context.Context, string)) func() {
+	if fn == nil {
+		return func() {}
+	}
 	starts := make(chan struct{}, 1)
 	var running atomic.Bool
-	g.add("kubelet restamp", func(ctx context.Context) {
+	g.add(task, func(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
@@ -686,15 +771,14 @@ func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Co
 				func() {
 					defer running.Store(false)
 					if ctx.Err() == nil {
-						restamp(ctx, hostname)
+						fn(ctx, hostname)
 					}
 				}()
 			}
 		}
 	})
-	return func(name string, pid int) {
-		fmt.Printf("stratum: started %s (pid %d)\n", name, pid)
-		if name == "kubelet" && g.ctx.Err() == nil && running.CompareAndSwap(false, true) {
+	return func() {
+		if g.ctx.Err() == nil && running.CompareAndSwap(false, true) {
 			starts <- struct{}{}
 		}
 	}

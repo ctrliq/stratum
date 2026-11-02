@@ -17,10 +17,12 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ctrliq/stratum/internal/certs"
+	clustercfg "github.com/ctrliq/stratum/internal/cluster"
 	"github.com/ctrliq/stratum/internal/comps"
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 	"github.com/ctrliq/stratum/internal/registry"
+	"github.com/ctrliq/stratum/internal/runtime"
 	"github.com/ctrliq/stratum/internal/supervisor"
 	"github.com/ctrliq/stratum/internal/token"
 	"github.com/ctrliq/stratum/internal/uninstall"
@@ -523,6 +525,37 @@ func RegistryCheckHandler() sdk.ToolHandlerFor[RegistryCheckIn, RegistryCheckOut
 		}
 		out.Note = strings.Join(notes, " ")
 		return nil, out, nil
+	}
+}
+
+// ----------------------------------------------------------- runtime_check
+
+// RuntimeCheckIn is runtime_check's (empty) input.
+type RuntimeCheckIn struct{}
+
+// RuntimeCheckOut is runtime_check's result.
+type RuntimeCheckOut struct {
+	Handlers map[string]string        `json:"handlers,omitempty" jsonschema:"the runtime handlers this node saved, by name, each the path of its OCI runtime binary"`
+	Findings []runtime.HandlerFinding `json:"findings" jsonschema:"each check's severity (ok, warn or error) and what it found"`
+	Failed   bool                     `json:"failed" jsonschema:"true when any finding is an error, so containerd will not run every handler this node declares"`
+}
+
+// RuntimeCheckHandler reports whether containerd will run this node's
+// runtime handlers.
+func RuntimeCheckHandler() sdk.ToolHandlerFor[RuntimeCheckIn, RuntimeCheckOut] {
+	return func(context.Context, *sdk.CallToolRequest, RuntimeCheckIn) (*sdk.CallToolResult, RuntimeCheckOut, error) {
+		if err := requireStratumHost(); err != nil {
+			return nil, RuntimeCheckOut{}, err
+		}
+		var warn strings.Builder
+		r, err := clustercfg.CheckRuntimeHandlers(&warn)
+		if err != nil {
+			return nil, RuntimeCheckOut{}, err
+		}
+		if line := strings.TrimSpace(warn.String()); line != "" {
+			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: line})
+		}
+		return nil, RuntimeCheckOut{Handlers: r.Handlers, Findings: r.Findings, Failed: r.Failed()}, nil
 	}
 }
 

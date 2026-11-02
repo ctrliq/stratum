@@ -129,6 +129,9 @@ A worker join refuses a runtime handler whose binary is not an executable file
 on the host. Every other start only warns, so the node's other pods keep
 running.
 
+To change a running node's runtime handlers, use `stratum runtime apply`; see
+[Runtime handlers](../runtime/index.md#runtime-handlers).
+
 The node registers with its taints when it first joins. On every start, Stratum
 gives the Node its `spec.node` labels and a
 `runtime.stratum.ciq.com/<handler>=true` label for each runtime handler, which
