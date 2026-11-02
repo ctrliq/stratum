@@ -14,6 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clienttesting "k8s.io/client-go/testing"
+
+	"github.com/ctrliq/stratum/internal/addons"
 )
 
 func labelled(apiVersion, kind, ns, name, stack string) *unstructured.Unstructured {
@@ -27,7 +29,7 @@ func labelled(apiVersion, kind, ns, name, stack string) *unstructured.Unstructur
 }
 
 func TestUnrecordedStackLabelsDoNotAuthorizeDeletion(t *testing.T) {
-	for _, stack := range []string{"dashboard", "local-path"} {
+	for _, stack := range []string{"dashboard", "local-path", addons.RuntimeClassStack} {
 		t.Run(stack, func(t *testing.T) {
 			r := deployFixture(t,
 				labelled("v1", "Namespace", "", "unrelated-tenant", stack),
@@ -56,13 +58,16 @@ func TestUnrecordedStackLabelsDoNotAuthorizeDeletion(t *testing.T) {
 }
 
 func TestBundledApplyRequiresDurableOwnership(t *testing.T) {
-	for _, cluster := range []bool{false, true} {
-		t.Run(fmt.Sprintf("inventory-exists=%t", cluster), func(t *testing.T) {
+	for _, tc := range []struct {
+		stack   string
+		cluster bool
+	}{{"dashboard", false}, {"dashboard", true}, {addons.RuntimeClassStack, true}} {
+		t.Run(fmt.Sprintf("%s/inventory-exists=%t", tc.stack, tc.cluster), func(t *testing.T) {
 			r := deployFixture(t)
-			if cluster {
+			if tc.cluster {
 				seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
 			}
-			writeManifest(t, filepath.Join(r.dir, "dashboard", "bundle.yaml"), configMap("dashboard", "kube-system"))
+			writeManifest(t, filepath.Join(r.dir, tc.stack, "bundle.yaml"), configMap("bundled", "kube-system"))
 			r.fakeCs.PrependReactor("create", "configmaps", func(clienttesting.Action) (bool, runtime.Object, error) {
 				return true, nil, apierrors.NewServiceUnavailable("cannot persist ownership")
 			})
@@ -323,5 +328,124 @@ func TestBundledCleanupUsesTrustedHistory(t *testing.T) {
 				t.Errorf("ConfigMap deletes %v, want orphan and not keep", got)
 			}
 		})
+	}
+}
+
+// A RuntimeClass the runtime-classes stack applied is deleted once the stack
+// is removed, as spec.runtimeClasses emptied removes it, and the other
+// stacks' objects stay.
+func TestRuntimeClassStackIsPrunedWhenRemoved(t *testing.T) {
+	ctx := context.Background()
+	r := deployFixture(t, cp("cp1", "10.0.0.11"))
+	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
+	stack := filepath.Join(r.dir, addons.RuntimeClassStack)
+	writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"nvidia"})))
+	writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.patchNames(); !slices.Contains(got, "nvidia") {
+		t.Fatalf("patches %v, want the nvidia RuntimeClass applied", got)
+	}
+	r.reset()
+	if err := os.RemoveAll(stack); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.deleteNames(); !slices.Equal(got, []string{"nvidia"}) {
+		t.Fatalf("deletes %v, want nvidia once spec.runtimeClasses is emptied", got)
+	}
+}
+
+func runtimeClass(name, handler string, labels map[string]string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]any{"handler": handler}}
+	u.SetAPIVersion("node.k8s.io/v1")
+	u.SetKind("RuntimeClass")
+	u.SetName(name)
+	u.SetLabels(labels)
+	return u
+}
+
+// A RuntimeClass the cluster already has under a declared name, without the
+// runtime-classes stack label, is another installer's, such as a GPU
+// operator's: Stratum neither applies over it nor records it, so removing
+// the name never deletes it. One with another handler, which an apply could
+// not change, does not stop the pass from pruning either.
+func TestRuntimeClassStackLeavesAClassItDidNotCreate(t *testing.T) {
+	for _, handler := range []string{"nvidia", "nvidia-cdi"} {
+		t.Run(handler, func(t *testing.T) {
+			ctx := context.Background()
+			r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", handler, map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"}))
+			seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {"coredns": {kubeCM("orphan")}}}})
+			stack := filepath.Join(r.dir, addons.RuntimeClassStack)
+			writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"gvisor", "nvidia"})))
+			writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
+			r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+			if got := r.patchNames(); slices.Contains(got, "nvidia") || !slices.Contains(got, "gvisor") {
+				t.Errorf("patches %v, want gvisor applied and the existing nvidia left alone", got)
+			}
+			if got := r.deleteNames(); !slices.Equal(got, []string{"orphan"}) {
+				t.Errorf("deletes %v, want the pass to prune the orphan as usual", got)
+			}
+			for _, ref := range clusterInventory(t, r.fakeCs).Nodes["cp1"][addons.RuntimeClassStack] {
+				if ref.Name == "nvidia" {
+					t.Errorf("recorded the existing nvidia RuntimeClass as Stratum's: %+v", ref)
+				}
+			}
+			r.reset()
+			if err := os.RemoveAll(stack); err != nil {
+				t.Fatal(err)
+			}
+			r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+			if got := r.deleteNames(); !slices.Equal(got, []string{"gvisor"}) {
+				t.Errorf("deletes %v, want only Stratum's gvisor once the stack is removed", got)
+			}
+		})
+	}
+}
+
+// A class Stratum applied carries the stack label, so a later pass applies
+// it again rather than taking it for another installer's.
+func TestRuntimeClassStackReappliesItsOwnClass(t *testing.T) {
+	r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", "nvidia", map[string]string{group + "/stack": addons.RuntimeClassStack}))
+	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
+	writeManifest(t, filepath.Join(r.dir, addons.RuntimeClassStack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"nvidia"})))
+	r.reconcile(context.Background(), "10.0.0.1", "10.0.0.11")
+	if got := r.patchNames(); !slices.Contains(got, "nvidia") {
+		t.Errorf("patches %v, want Stratum's own nvidia applied", got)
+	}
+}
+
+// A foreign class the inventory already records as the runtime-classes
+// stack's, from a class Stratum once published under that name or an apply it
+// recorded but never made, is neither pruned in the pass that finds it foreign
+// nor left recorded: its ownership is released as a loose file's is, so
+// removing the name later deletes nothing.
+func TestRuntimeClassStackReleasesAForeignClassItHadRecorded(t *testing.T) {
+	ctx := context.Background()
+	nvidia := objRef{GVK: "node.k8s.io/v1,RuntimeClass", Name: "nvidia"}
+	r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", "nvidia", map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"}))
+	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {addons.RuntimeClassStack: {nvidia}}}})
+	stack := filepath.Join(r.dir, addons.RuntimeClassStack)
+	writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"gvisor", "nvidia"})))
+	writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.deleteNames(); slices.Contains(got, "nvidia") {
+		t.Fatalf("deletes %v: the foreign nvidia RuntimeClass was pruned", got)
+	}
+	inv := clusterInventory(t, r.fakeCs)
+	for _, ref := range inv.Nodes["cp1"][addons.RuntimeClassStack] {
+		if ref.Name == "nvidia" {
+			t.Errorf("the inventory still records the foreign nvidia as Stratum's: %+v", inv.Nodes["cp1"])
+		}
+	}
+	if !slices.ContainsFunc(inv.Unowned, func(o inventoryObject) bool { return o.Name == "nvidia" }) {
+		t.Errorf("unowned = %+v, want the foreign nvidia released", inv.Unowned)
+	}
+	r.reset()
+	if err := os.RemoveAll(stack); err != nil {
+		t.Fatal(err)
+	}
+	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.deleteNames(); !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("deletes %v once the stack is removed, want only Stratum's gvisor", got)
 	}
 }

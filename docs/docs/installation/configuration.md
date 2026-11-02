@@ -148,6 +148,53 @@ A node cannot declare:
   region labels. Label a node with `stratum kubectl label node` from a control
   plane instead.
 
+## RuntimeClasses
+
+`spec.runtimeClasses` names the runtime handlers the cluster publishes a
+RuntimeClass for. A control plane reads it on every start. Each RuntimeClass
+carries the handler's name and schedules its pods onto the nodes labelled
+`runtime.stratum.ciq.com/<handler>=true`, which are the nodes that declare the
+handler in `spec.node.runtimeHandlers`. None is a default: a pod runs under a
+handler only when its `runtimeClassName` names it.
+
+```yaml
+# /etc/stratum/config.yaml on a control plane
+spec:
+  runtimeClasses:
+    - nvidia
+```
+
+Removing a name deletes its RuntimeClass, and an empty list deletes them all.
+`runc` is containerd's default handler and needs no RuntimeClass, so the list
+refuses it. The operator publishes them, so the list refuses `spec.operator:
+false`, and a control plane refuses to turn the operator off while any are
+published.
+
+A RuntimeClass the cluster already has under a listed name, such as one a GPU
+operator installed, is left as it is: Stratum neither changes it nor deletes it
+when the name leaves the list, and the operator logs `RuntimeClass <name>
+already exists and is not Stratum's`. Pods naming it run under that class.
+Delete it to have Stratum publish its own.
+
+Stratum stages the RuntimeClasses in the `runtime-classes` directory under the
+operator's manifests directory. A control plane refuses to start while that
+directory holds a manifest Stratum did not stage there, naming it: move your
+own manifests to a directory of their own.
+
+!!! warning "Every control plane must carry the same list"
+    The RuntimeClasses are cluster-wide, but each control plane renders them
+    from its own config file, and each `stratum up` records its render as the
+    cluster's desired add-ons. The operator's leader applies add-ons only while
+    its own render matches that record. A control plane started with a
+    different list therefore stops the leader applying every bundled add-on,
+    Cilium and CoreDNS among them, until the lists match again; the operator
+    logs `staged tree digest ... does not match the recorded desired
+    generation` meanwhile. To change the list, edit it on every control plane,
+    then restart `stratum up` on each. A worker's config file cannot set it.
+    A rolling upgrade with the list set pauses them the same way until every
+    control plane runs a release that renders RuntimeClasses: an older one
+    renders none.
+
 ## Node IP
 
 A node takes its IP from the first of these that is set:
