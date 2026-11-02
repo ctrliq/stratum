@@ -994,7 +994,7 @@ func TestKubeletConfCISLinesAreExactlyTheProfile(t *testing.T) {
 // nodeConfigsFixture redirects every path the node-config writers touch to a
 // temp dir and stages a containerd stub that prints the captured real default,
 // so PrepareNodeConfigs and WriteNodeConfigs run their full write path —
-// containerd config, registry no-op, kubelet.conf. It seeds a stratum-written
+// containerd config, registry no-op, runtime-handler drop-in, kubelet.conf. It seeds a stratum-written
 // file at the legacy host-config path and returns that path, so a test can pin
 // whether the entry point reaps it.
 func nodeConfigsFixture(t *testing.T) string {
@@ -1002,11 +1002,11 @@ func nodeConfigsFixture(t *testing.T) string {
 	const want = "ghcr.io/ctrliq/stratum/pause:3.10.2"
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket, oldImage := version.BinDir, version.ContainerdConfig, version.ControlSocket, SandboxImage
-	oldReg, oldCerts, oldConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD
+	oldReg, oldCerts, oldConfD, oldRuntimeConfD := version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD
 	oldConf, oldPKI, oldLegacy := version.K8sConfDir, version.PKIDir, legacyHostConfig
 	t.Cleanup(func() {
 		version.BinDir, version.ContainerdConfig, version.ControlSocket, SandboxImage = oldBin, oldConfig, oldSocket, oldImage
-		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD = oldReg, oldCerts, oldConfD
+		version.RegistriesConfig, version.CertsDir, version.ContainerdConfD, version.ContainerdRuntimeConfD = oldReg, oldCerts, oldConfD, oldRuntimeConfD
 		version.K8sConfDir, version.PKIDir, legacyHostConfig = oldConf, oldPKI, oldLegacy
 	})
 	version.BinDir = dir
@@ -1017,6 +1017,7 @@ func nodeConfigsFixture(t *testing.T) string {
 	version.RegistriesConfig = filepath.Join(dir, "registries.yaml")
 	version.CertsDir = filepath.Join(dir, "certs.d")
 	version.ContainerdConfD = filepath.Join(dir, "conf.d", "stratum-registry.toml")
+	version.ContainerdRuntimeConfD = filepath.Join(dir, "conf.d", "stratum-runtime.toml")
 	version.K8sConfDir = filepath.Join(dir, "kubelet")
 	version.PKIDir = joinedPKIDir(t)
 	SandboxImage = want
