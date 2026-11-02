@@ -348,7 +348,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		Server: o.Server, Profile: profileName, CIS: profileName == nodestate.CISProfile, SELinuxOptOut: optOut, DualStack: o.DualStack,
 		ServiceCIDR: o.ServiceCIDR, PodCIDR: o.PodCIDR,
 		ClusterDomain: o.ClusterDomain,
-	}
+		NodeTaintsCheckPending: len(node.Taints) > 0, }
 	// containerd and kubelet configs are RunWorker's, on this start as on
 	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {

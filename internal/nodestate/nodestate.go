@@ -75,6 +75,30 @@ type NodeState struct {
 	// the scheduled loops do. Empty on a node that has not restarted since it
 	// began recording it; readers then use the default path.
 	ConfigPath string `json:"configPath,omitempty"`
+<<<<<<< HEAD
+||||||| parent of 72bb486 (feat(cluster): register node taints and keep node labels on the Node (#112))
+	// RuntimeHandlers is spec.node.runtimeHandlers: extra containerd runtime
+	// handlers by name, each the absolute path of its OCI runtime binary.
+	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
+	// NodeLabels and NodeTaints are spec.node.labels and spec.node.taints:
+	// what this node declares on its Node object. A taint is key[=value]:Effect.
+	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
+	NodeTaints []string          `json:"nodeTaints,omitempty"`
+=======
+	// RuntimeHandlers is spec.node.runtimeHandlers: extra containerd runtime
+	// handlers by name, each the absolute path of its OCI runtime binary.
+	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
+	// NodeLabels and NodeTaints are spec.node.labels and spec.node.taints:
+	// what this node declares on its Node object. A taint is key[=value]:Effect.
+	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
+	NodeTaints []string          `json:"nodeTaints,omitempty"`
+	// NodeTaintsCheckPending records that a worker joined with taints and
+	// has not yet checked that its Node carries them. The kubelet applies
+	// them only when it creates the Node, so a join that re-registers onto a
+	// Node already there leaves them off; the worker's first start that finds
+	// its Node registered checks, warns, and clears this.
+	NodeTaintsCheckPending bool `json:"nodeTaintsCheckPending,omitzero"`
+>>>>>>> 72bb486 (feat(cluster): register node taints and keep node labels on the Node (#112))
 }
 
 // CISProfile is the name of the engine's CIS profile.

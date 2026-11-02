@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/util/validation"
+
 	"github.com/ctrliq/stratum/internal/addons"
 	"github.com/ctrliq/stratum/internal/assets"
 	"github.com/ctrliq/stratum/internal/atomicfile"
@@ -119,6 +121,11 @@ tlsCipherSuites: [%s]
 	if st.Role == "worker" {
 		b.WriteString("rotateCertificates: true\n")
 	}
+	taints, err := registerWithTaintsLine(st.NodeTaints)
+	if err != nil {
+		return fmt.Errorf("render kubelet.conf: %w; repair nodeTaints in %s", err, nodestate.StatePath())
+	}
+	b.WriteString(taints)
 	fmt.Fprintf(&b, "staticPodPath: %s\n", staticpod.Dir())
 	if err := os.MkdirAll(staticpod.Dir(), 0o755); err != nil {
 		return err
@@ -222,4 +229,62 @@ func servingBootstrapped(p profile.Profile, pkiDir string) bool {
 func hasServingLeaf(pkiDir string) bool {
 	_, err := os.Stat(filepath.Join(pkiDir, "kubelet.crt"))
 	return err == nil
+}
+
+// SplitTaint splits a key[=value]:Effect taint into its parts, without
+// validating them; ok is false when t has no effect or a second ":". It is
+// the one reading of the spelling, for the validation, the flag-over-file
+// merge and the kubelet.conf rendering alike.
+func SplitTaint(t string) (key, value, effect string, ok bool) {
+	kv, effect, ok := strings.Cut(t, ":")
+	if !ok || strings.Contains(effect, ":") {
+		return "", "", "", false
+	}
+	key, value, _ = strings.Cut(kv, "=")
+	return key, value, effect, true
+}
+
+// TaintEffects are the effects a node taint may carry.
+var TaintEffects = []string{"NoSchedule", "PreferNoSchedule", "NoExecute"}
+
+// ParseTaint splits a key[=value]:Effect taint and validates each part as the
+// API server would.
+func ParseTaint(t string) (key, value, effect string, err error) {
+	key, value, effect, ok := SplitTaint(t)
+	if !ok {
+		return "", "", "", fmt.Errorf("node taint %q is not key[=value]:Effect", t)
+	}
+	if !slices.Contains(TaintEffects, effect) {
+		return "", "", "", fmt.Errorf("node taint %q: effect %q is not one of %s", t, effect, strings.Join(TaintEffects, ", "))
+	}
+	if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+		return "", "", "", fmt.Errorf("node taint %q: key: %s", t, strings.Join(errs, "; "))
+	}
+	if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
+		return "", "", "", fmt.Errorf("node taint %q: value: %s", t, strings.Join(errs, "; "))
+	}
+	return key, value, effect, nil
+}
+
+// registerWithTaintsLine renders the node's spec.node taints, each
+// key[=value]:Effect, as the kubelet's registerWithTaints: the taints the Node
+// is created with. The kubelet applies them only when it registers the Node,
+// which is what holds a new node's workloads off until it is released; empty
+// renders nothing. Every writer of the taints validates them, but a worker
+// restart renders node.yaml as it finds it, so a taint the kubelet would
+// refuse to read is refused here, by name, instead of failing every kubelet
+// start.
+func registerWithTaintsLine(taints []string) (string, error) {
+	if len(taints) == 0 {
+		return "", nil
+	}
+	entries := make([]string, 0, len(taints))
+	for _, t := range taints {
+		key, value, effect, err := ParseTaint(t)
+		if err != nil {
+			return "", err
+		}
+		entries = append(entries, fmt.Sprintf("{key: %q, value: %q, effect: %s}", key, value, effect))
+	}
+	return "registerWithTaints: [" + strings.Join(entries, ", ") + "]\n", nil
 }
