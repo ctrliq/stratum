@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"sigs.k8s.io/yaml"
@@ -9,10 +10,13 @@ import (
 // The node's taints reach kubelet.conf as registerWithTaints, read back the
 // way the kubelet reads it: each key, value and effect in its own field.
 func TestRegisterWithTaintsLine(t *testing.T) {
-	if got := registerWithTaintsLine(nil); got != "" {
-		t.Errorf("no taints rendered %q, want nothing", got)
+	if got, err := registerWithTaintsLine(nil); got != "" || err != nil {
+		t.Errorf("no taints rendered %q, %v; want nothing", got, err)
 	}
-	line := registerWithTaintsLine([]string{"stratum.ciq.com/unverified=true:NoSchedule", "dedicated:NoExecute"})
+	line, err := registerWithTaintsLine([]string{"stratum.ciq.com/unverified=true:NoSchedule", "dedicated:NoExecute"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := `registerWithTaints: [{key: "stratum.ciq.com/unverified", value: "true", effect: NoSchedule}, {key: "dedicated", value: "", effect: NoExecute}]` + "\n"
 	if line != want {
 		t.Errorf("rendered\n%s\nwant\n%s", line, want)
@@ -47,6 +51,18 @@ func TestSplitTaint(t *testing.T) {
 		key, value, effect, ok := SplitTaint(tc.in)
 		if key != tc.key || value != tc.value || effect != tc.effect || ok != tc.ok {
 			t.Errorf("SplitTaint(%q) = %q, %q, %q, %v; want %q, %q, %q, %v", tc.in, key, value, effect, ok, tc.key, tc.value, tc.effect, tc.ok)
+		}
+	}
+}
+
+// A worker restart renders the taints node.yaml carries without the join's
+// validation, so a taint the kubelet could not read is refused by name
+// instead of rendered.
+func TestRegisterWithTaintsLineRefusesATaintTheKubeletCannotRead(t *testing.T) {
+	for _, taint := range []string{"dedicated", "dedicated:Sometimes", "bad key:NoSchedule", "k=bad value:NoSchedule", "a:NoSchedule:extra"} {
+		line, err := registerWithTaintsLine([]string{"dedicated:NoExecute", taint})
+		if err == nil || !strings.Contains(err.Error(), taint) {
+			t.Errorf("%q rendered %q, %v; want a refusal naming it", taint, line, err)
 		}
 	}
 }

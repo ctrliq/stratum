@@ -63,8 +63,6 @@ func nodeMaySetLabel(key string) bool {
 	return true
 }
 
-var taintEffects = []string{"NoSchedule", "PreferNoSchedule", "NoExecute"}
-
 // Validate reports the first label, taint or runtime handler the node cannot
 // declare. It reads nothing from the host; CheckBinaries does.
 func (n NodeSpec) Validate() error {
@@ -120,21 +118,12 @@ func validateLabel(key, value string) error {
 	return nil
 }
 
-// parseTaint splits key[=value]:Effect and validates each part as the API
-// server would.
+// parseTaint splits key[=value]:Effect, validates each part as the API server
+// would, and refuses a key stratum sets itself.
 func parseTaint(t string) (key, value, effect string, err error) {
-	key, value, effect, ok := runtime.SplitTaint(t)
-	if !ok {
-		return "", "", "", fmt.Errorf("node taint %q is not key[=value]:Effect", t)
-	}
-	if !slices.Contains(taintEffects, effect) {
-		return "", "", "", fmt.Errorf("node taint %q: effect %q is not one of %s", t, effect, strings.Join(taintEffects, ", "))
-	}
-	if errs := validation.IsQualifiedName(key); len(errs) > 0 {
-		return "", "", "", fmt.Errorf("node taint %q: key: %s", t, strings.Join(errs, "; "))
-	}
-	if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
-		return "", "", "", fmt.Errorf("node taint %q: value: %s", t, strings.Join(errs, "; "))
+	key, value, effect, err = runtime.ParseTaint(t)
+	if err != nil {
+		return "", "", "", err
 	}
 	if engineOwnedKey(key) {
 		return "", "", "", fmt.Errorf("node taint %q: %s is set by stratum itself and cannot be declared", t, key)
