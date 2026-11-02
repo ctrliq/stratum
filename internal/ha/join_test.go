@@ -2596,6 +2596,7 @@ func TestControlPlaneJoinFailsADeterministicMemberAddRefusalDirectly(t *testing.
 		{"a duplicate peer URL", rpctypes.ErrPeerURLExist, "Peer URLs already exists", false},
 		{"the strict reconfiguration refusal", rpctypes.ErrUnhealthy, "unhealthy cluster", false},
 		{"another controller's member not started yet", rpctypes.ErrMemberNotEnoughStarted, "not enough started members", true},
+		{"another controller's learner not promoted yet", rpctypes.ErrTooManyLearners, "too many learner members", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			joinFixture(t)
@@ -2725,6 +2726,7 @@ func TestAmbiguousMemberAddRetryRefusedByAnUnstartedMemberSaysToJoinOneAtATime(t
 		wantHint bool
 	}{
 		{"another controller's member not started yet", rpctypes.ErrMemberNotEnoughStarted, true},
+		{"another controller's learner not promoted yet", rpctypes.ErrTooManyLearners, true},
 		{"a transport failure", errors.New("connection refused"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
