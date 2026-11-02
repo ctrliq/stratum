@@ -351,3 +351,25 @@ func TestApplyRuntimeHandlersSavesNothingWhenTheDropInWriteFails(t *testing.T) {
 		t.Errorf("node.yaml declares %v after the failed write, want the earlier %v", got, saved)
 	}
 }
+
+// A drop-in written but whose containerd restart failed is what the next
+// containerd start loads, so node.yaml saves its handlers all the same: left
+// naming the old ones, a later `runtime restart` would label the node for a
+// handler containerd no longer has.
+func TestApplyRuntimeHandlersSavesAWrittenDropInWhoseRestartFailed(t *testing.T) {
+	kata := map[string]string{"kata": executable(t)}
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"gvisor": executable(t)}})
+	applyHandlers = func(io.Writer, map[string]string, bool) (runtime.ApplyHandlersResult, error) {
+		return runtime.ApplyHandlersResult{Changed: true, Written: true, Unloaded: true}, errors.New("containerd did not come back")
+	}
+	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata, Restart: true})
+	if err == nil || !strings.Contains(err.Error(), "containerd did not come back") {
+		t.Fatalf("apply = %v, want the restart's error", err)
+	}
+	if !res.Saved {
+		t.Error("the written drop-in's handlers were not reported saved")
+	}
+	if got := savedHandlers(t); !maps.Equal(got, kata) {
+		t.Errorf("node.yaml declares %v, want %v, which the drop-in on disk declares", got, kata)
+	}
+}

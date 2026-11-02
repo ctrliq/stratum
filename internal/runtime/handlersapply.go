@@ -21,12 +21,15 @@ import (
 )
 
 // ApplyHandlersResult is ApplyHandlers' outcome. Changed means the drop-in
-// changed on disk; Restarted is true only when this call restarted a running
-// containerd, so a caller reports the restart from Restarted, never Changed.
-// Unloaded means the running containerd started before the drop-in's latest
-// change, by this call or an earlier one that did not restart it.
+// changed on disk; Written means the drop-in on disk now declares the
+// handlers, even when the restart after it failed; Restarted is true only
+// when this call restarted a running containerd, so a caller reports the
+// restart from Restarted, never Changed. Unloaded means the running
+// containerd started before the drop-in's latest change, by this call or an
+// earlier one that did not restart it.
 type ApplyHandlersResult struct {
 	Changed   bool
+	Written   bool
 	Restarted bool
 	Unloaded  bool
 }
@@ -54,6 +57,7 @@ func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (Apply
 		}
 		return out, err
 	}
+	out.Written = true
 	if (!changed && behind.pid == 0) || !Active() {
 		return out, nil
 	}

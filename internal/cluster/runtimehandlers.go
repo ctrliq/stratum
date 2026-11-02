@@ -43,6 +43,9 @@ var (
 // writes containerd's drop-in, and then saves them to node.yaml when they
 // changed: a drop-in that could not be written leaves node.yaml naming only
 // handlers containerd was given, so no start labels the node for the rest.
+// One written but whose containerd restart failed is saved all the same,
+// since the next containerd start loads it, and node.yaml naming the old
+// handlers would have that start labelled for them.
 // A worker's are its saved handlers, replaced by o.Handlers or cleared by
 // o.Clear. A control plane rebuilds its handlers from spec.node.runtimeHandlers
 // at every `stratum up`, so it re-reads the config file it was started with
@@ -87,6 +90,12 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 	res, err := applyHandlers(w, want, o.Restart)
 	out.ApplyHandlersResult = res
 	if err != nil {
+		if res.Written && !maps.Equal(st.RuntimeHandlers, want) {
+			if serr := nodestate.Mutate(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }); serr != nil {
+				return out, fmt.Errorf("%w; saving the runtime handlers the drop-in now declares failed too: %v", err, serr)
+			}
+			out.Saved = true
+		}
 		return out, err
 	}
 	if !maps.Equal(st.RuntimeHandlers, want) {

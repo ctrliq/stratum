@@ -94,8 +94,8 @@ func TestApplyHandlers_ReportsWhetherItRestarted(t *testing.T) {
 		handlersHost(t, true)
 		fakeSupervisor(t, true)
 		res, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true)
-		if err == nil || res.Restarted || !res.Changed {
-			t.Errorf("apply with a refused restart = %+v, %v; want changed, not restarted, and an error", res, err)
+		if err == nil || res.Restarted || !res.Changed || !res.Written {
+			t.Errorf("apply with a refused restart = %+v, %v; want written, changed, not restarted, and an error", res, err)
 		}
 	})
 }
@@ -425,7 +425,7 @@ func TestApplyHandlersThatCouldNotSyncTheDropInLeavesTheRestartPending(t *testin
 	gvisor := map[string]string{"gvisor": fakeBinary(t, "runsc")}
 	failDirSync(t)
 	res, err := ApplyHandlers(io.Discard, gvisor, true)
-	if !errors.Is(err, atomicfile.ErrNotDurable) || !res.Changed || !res.Unloaded || res.Restarted {
+	if !errors.Is(err, atomicfile.ErrNotDurable) || !res.Changed || !res.Unloaded || res.Restarted || res.Written {
 		t.Fatalf("apply = %+v, %v; want a changed, unloaded drop-in and the write's ErrNotDurable", res, err)
 	}
 	syncDir = atomicfile.SyncDir
