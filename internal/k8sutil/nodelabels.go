@@ -23,9 +23,11 @@ const (
 
 // nodeLabelChanges is the label patch that gives a Node the labels it
 // declares and the runtime-handler label of each handler it declares, and
-// removes the handler label of a handler it no longer declares. A label the
-// node does not declare, outside the handler prefix, is left alone: it is
-// another writer's. nil means the Node already carries them.
+// removes every other label under the handler prefix, which stratum owns: a
+// node cannot declare a label there, so one it carries is a handler the node
+// no longer declares or a label set by hand. A label outside the prefix that
+// the node does not declare is left alone: it is another writer's. nil means
+// the Node already carries them.
 func nodeLabelChanges(current, declared map[string]string, handlers []string) map[string]*string {
 	want := maps.Clone(declared)
 	if want == nil {

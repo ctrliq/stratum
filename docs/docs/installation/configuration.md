@@ -124,9 +124,10 @@ running.
 The node registers with its taints when it first joins. On every start, Stratum
 gives the Node its `spec.node` labels and a
 `runtime.stratum.ciq.com/<handler>=true` label for each runtime handler, which
-that handler's RuntimeClass selects nodes by. It removes the label of a handler
-the node no longer declares. It leaves every other label alone, so a label you
-remove from `spec.node` stays on the Node until you remove it with
+that handler's RuntimeClass selects nodes by. Stratum owns every label under
+`runtime.stratum.ciq.com/`: it removes any there that is not one of the node's
+handlers, including a label set by hand. It leaves every other label alone, so
+a label you remove from `spec.node` stays on the Node until you remove it with
 `stratum kubectl label node <node> <key>-`.
 
 A node cannot declare:
