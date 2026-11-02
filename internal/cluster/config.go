@@ -66,6 +66,10 @@ type Spec struct {
 	CertRenew *bool      `json:"certRenew,omitempty"` // rotate expiring leaves automatically (default on)
 	SELinux   *bool      `json:"selinux,omitempty"`   // label Stratum's files for container-selinux (default on)
 	Dashboard *Dashboard `json:"dashboard,omitempty"`
+	Node      NodeSpec   `json:"node,omitempty"`
+	// RuntimeClasses names the runtime handlers the cluster publishes a
+	// RuntimeClass for, read by control planes only.
+	RuntimeClasses []string `json:"runtimeClasses,omitempty"`
 }
 
 // Dashboard is spec.dashboard: the dashboard the cluster runs for itself. It is
@@ -273,6 +277,12 @@ func LoadConfig(path string) (*ClusterConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := c.validateNode(); err != nil {
+		return nil, err
+	}
+	if err := validateRuntimeClasses(c.Spec.RuntimeClasses); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	c.defaults()
 	if err := c.resolveProfile(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -289,12 +299,21 @@ func LoadConfig(path string) (*ClusterConfig, error) {
 
 // WorkerConfig is what a --worker reads from its config file.
 type WorkerConfig struct {
-	NodeIP        string // spec.network.nodeIP
-	SELinuxOptOut bool   // spec.selinux: false
+	NodeIP        string   // spec.network.nodeIP
+	SELinuxOptOut bool     // spec.selinux: false
+	Node          NodeSpec // spec.node
 }
 
-// workerFields are the fields a --worker honours.
-var workerFields = []string{"spec.network.nodeIP", "spec.selinux"}
+// workerFields are the fields a --worker honours: a leaf, or a map whose
+// every entry it honours.
+var workerFields = []string{"spec.network.nodeIP", "spec.selinux", "spec.node.labels", "spec.node.taints", "spec.node.runtimeHandlers"}
+
+// workerField reports whether a --worker honours the present leaf p.
+func workerField(p string) bool {
+	return slices.ContainsFunc(workerFields, func(f string) bool {
+		return strings.EqualFold(p, f) || len(p) > len(f) && strings.EqualFold(p[:len(f)+1], f+".")
+	})
+}
 
 // WorkerSELinux reads spec.selinux from a worker's config file on a restart,
 // which reads nothing else from it. set is false when the file is missing or
@@ -323,8 +342,8 @@ func WorkerSELinux(path string) (optOut, set bool, err error) {
 	return false, false, nil
 }
 
-// LoadWorkerConfig is the config a --worker honours: spec.network.nodeIP and
-// spec.selinux, and nothing else. The file is parsed as strictly as a control
+// LoadWorkerConfig is the config a --worker honours: spec.network.nodeIP,
+// spec.selinux and spec.node, and nothing else. The file is parsed as strictly as a control
 // plane parses it, and any other field that is set is an error naming it: a
 // worker has no use for it, and a setting that appears to apply and does not is
 // worse than a refusal. A missing file yields the zero WorkerConfig.
@@ -348,17 +367,20 @@ func LoadWorkerConfig(path string) (WorkerConfig, error) {
 			continue
 		}
 		for _, p := range presentFields(v, "spec") {
-			if !slices.ContainsFunc(workerFields, func(f string) bool { return strings.EqualFold(p, f) }) {
+			if !workerField(p) {
 				set = append(set, p)
 			}
 		}
 	}
 	if len(set) > 0 {
 		slices.Sort(set)
-		return WorkerConfig{}, fmt.Errorf("%s: %s set, but a --worker reads only spec.network.nodeIP and spec.selinux from it; remove them from this node's file (pod and service CIDRs, the cluster domain and --profile are worker flags)",
+		return WorkerConfig{}, fmt.Errorf("%s: %s set, but a --worker reads only spec.network.nodeIP, spec.selinux and spec.node from it; remove them from this node's file (pod and service CIDRs, the cluster domain and --profile are worker flags)",
 			path, strings.Join(set, ", "))
 	}
-	return WorkerConfig{NodeIP: c.Spec.Network.NodeIP, SELinuxOptOut: c.SELinuxOptOut()}, nil
+	if err := c.validateNode(); err != nil {
+		return WorkerConfig{}, err
+	}
+	return WorkerConfig{NodeIP: c.Spec.Network.NodeIP, SELinuxOptOut: c.SELinuxOptOut(), Node: c.Spec.Node}, nil
 }
 
 // presentFields lists the dotted paths of the leaves a decoded document sets.
@@ -376,6 +398,16 @@ func presentFields(v any, path string) []string {
 	default:
 		return []string{path}
 	}
+}
+
+// validateNode reports a spec.node the node cannot declare. It is checked
+// where spec.node is read, not in parseConfig: a worker restart, which reads
+// only spec.selinux, must not lose that setting to a field it ignores.
+func (c *ClusterConfig) validateNode() error {
+	if err := c.Spec.Node.Validate(); err != nil {
+		return fmt.Errorf("%s: spec.node: %w", c.path, err)
+	}
+	return nil
 }
 
 // parseConfig reads and strictly parses path without applying defaults, and
