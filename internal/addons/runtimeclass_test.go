@@ -26,7 +26,10 @@ func TestRuntimeClassesSelectTheNodesCarryingTheirHandler(t *testing.T) {
 		if rc.Name != want || rc.Handler != want {
 			t.Errorf("document %d: name %q handler %q, want both %q", i, rc.Name, rc.Handler, want)
 		}
-		if rc.Scheduling == nil || len(rc.Scheduling.NodeSelector) != 1 || rc.Scheduling.NodeSelector[k8sutil.RuntimeHandlerLabelPrefix+want] != "true" {
+		if rc.Scheduling == nil {
+			t.Fatalf("%s carries no scheduling, want a node selector", want)
+		}
+		if len(rc.Scheduling.NodeSelector) != 1 || rc.Scheduling.NodeSelector[k8sutil.RuntimeHandlerLabelPrefix+want] != "true" {
 			t.Errorf("%s selects %+v, want only %s%s=true", want, rc.Scheduling, k8sutil.RuntimeHandlerLabelPrefix, want)
 		}
 		if rc.Overhead != nil || rc.Scheduling.Tolerations != nil {

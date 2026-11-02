@@ -29,7 +29,7 @@ func labelled(apiVersion, kind, ns, name, stack string) *unstructured.Unstructur
 }
 
 func TestUnrecordedStackLabelsDoNotAuthorizeDeletion(t *testing.T) {
-	for _, stack := range []string{"dashboard", "local-path"} {
+	for _, stack := range []string{"dashboard", "local-path", addons.RuntimeClassStack} {
 		t.Run(stack, func(t *testing.T) {
 			r := deployFixture(t,
 				labelled("v1", "Namespace", "", "unrelated-tenant", stack),
@@ -331,14 +331,20 @@ func TestBundledCleanupUsesTrustedHistory(t *testing.T) {
 	}
 }
 
+// A RuntimeClass the runtime-classes stack applied is deleted once the stack
+// is removed, as spec.runtimeClasses emptied removes it, and the other
+// stacks' objects stay.
 func TestRuntimeClassStackIsPrunedWhenRemoved(t *testing.T) {
 	ctx := context.Background()
 	r := deployFixture(t, cp("cp1", "10.0.0.11"))
 	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
 	stack := filepath.Join(r.dir, addons.RuntimeClassStack)
-	writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), configMap("nvidia", "kube-system"))
+	writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"nvidia"})))
 	writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
 	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+	if got := r.patchNames(); !slices.Contains(got, "nvidia") {
+		t.Fatalf("patches %v, want the nvidia RuntimeClass applied", got)
+	}
 	r.reset()
 	if err := os.RemoveAll(stack); err != nil {
 		t.Fatal(err)
@@ -346,5 +352,64 @@ func TestRuntimeClassStackIsPrunedWhenRemoved(t *testing.T) {
 	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
 	if got := r.deleteNames(); !slices.Equal(got, []string{"nvidia"}) {
 		t.Fatalf("deletes %v, want nvidia once spec.runtimeClasses is emptied", got)
+	}
+}
+
+func runtimeClass(name, handler string, labels map[string]string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]any{"handler": handler}}
+	u.SetAPIVersion("node.k8s.io/v1")
+	u.SetKind("RuntimeClass")
+	u.SetName(name)
+	u.SetLabels(labels)
+	return u
+}
+
+// A RuntimeClass the cluster already has under a declared name, without the
+// runtime-classes stack label, is another installer's, such as a GPU
+// operator's: Stratum neither applies over it nor records it, so removing
+// the name never deletes it. One with another handler, which an apply could
+// not change, does not stop the pass from pruning either.
+func TestRuntimeClassStackLeavesAClassItDidNotCreate(t *testing.T) {
+	for _, handler := range []string{"nvidia", "nvidia-cdi"} {
+		t.Run(handler, func(t *testing.T) {
+			ctx := context.Background()
+			r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", handler, map[string]string{"app.kubernetes.io/managed-by": "gpu-operator"}))
+			seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {"coredns": {kubeCM("orphan")}}}})
+			stack := filepath.Join(r.dir, addons.RuntimeClassStack)
+			writeManifest(t, filepath.Join(stack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"gvisor", "nvidia"})))
+			writeManifest(t, filepath.Join(r.dir, "coredns", "coredns.yaml"), configMap("keep", "kube-system"))
+			r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+			if got := r.patchNames(); slices.Contains(got, "nvidia") || !slices.Contains(got, "gvisor") {
+				t.Errorf("patches %v, want gvisor applied and the existing nvidia left alone", got)
+			}
+			if got := r.deleteNames(); !slices.Equal(got, []string{"orphan"}) {
+				t.Errorf("deletes %v, want the pass to prune the orphan as usual", got)
+			}
+			for _, ref := range clusterInventory(t, r.fakeCs).Nodes["cp1"][addons.RuntimeClassStack] {
+				if ref.Name == "nvidia" {
+					t.Errorf("recorded the existing nvidia RuntimeClass as Stratum's: %+v", ref)
+				}
+			}
+			r.reset()
+			if err := os.RemoveAll(stack); err != nil {
+				t.Fatal(err)
+			}
+			r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
+			if got := r.deleteNames(); !slices.Equal(got, []string{"gvisor"}) {
+				t.Errorf("deletes %v, want only Stratum's gvisor once the stack is removed", got)
+			}
+		})
+	}
+}
+
+// A class Stratum applied carries the stack label, so a later pass applies
+// it again rather than taking it for another installer's.
+func TestRuntimeClassStackReappliesItsOwnClass(t *testing.T) {
+	r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", "nvidia", map[string]string{group + "/stack": addons.RuntimeClassStack}))
+	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
+	writeManifest(t, filepath.Join(r.dir, addons.RuntimeClassStack, "runtime-classes.yaml"), string(addons.RenderRuntimeClasses([]string{"nvidia"})))
+	r.reconcile(context.Background(), "10.0.0.1", "10.0.0.11")
+	if got := r.patchNames(); !slices.Contains(got, "nvidia") {
+		t.Errorf("patches %v, want Stratum's own nvidia applied", got)
 	}
 }
