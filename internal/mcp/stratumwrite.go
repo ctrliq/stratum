@@ -578,3 +578,53 @@ func RegistryApplyHandler() sdk.ToolHandlerFor[RegistryApplyIn, RegistryApplyOut
 		return nil, out, nil
 	}
 }
+
+// ------------------------------------------------------------ runtime_apply
+
+// RuntimeApplyIn is runtime_apply's (empty) input. It takes no handlers: a
+// handler names a binary containerd executes, so declaring one stays with the
+// operator's flags and config file.
+type RuntimeApplyIn struct{}
+
+// RuntimeApplyOut is runtime_apply's result.
+type RuntimeApplyOut struct {
+	Handlers  map[string]string `json:"handlers,omitempty" jsonschema:"the runtime handlers this node declares, by name"`
+	Source    string            `json:"source" jsonschema:"where the handlers came from: a worker's saved handlers, or a control plane's config file"`
+	Changed   bool              `json:"changed" jsonschema:"the containerd drop-in changed"`
+	Unloaded  bool              `json:"unloaded" jsonschema:"the running containerd has not loaded the drop-in, after this call or an earlier one, so it must be restarted before the change takes effect"`
+	Restarted bool              `json:"restarted" jsonschema:"always false: this tool writes the drop-in only and leaves the containerd restart to the operator"`
+	Warnings  []string          `json:"warnings,omitempty"`
+	Note      string            `json:"note"`
+}
+
+// RuntimeApplyHandler writes containerd's runtime-handler drop-in from the
+// handlers this node declares.
+func RuntimeApplyHandler() sdk.ToolHandlerFor[RuntimeApplyIn, RuntimeApplyOut] {
+	return func(context.Context, *sdk.CallToolRequest, RuntimeApplyIn) (*sdk.CallToolResult, RuntimeApplyOut, error) {
+		if err := requireStratumHost(); err != nil {
+			return nil, RuntimeApplyOut{}, err
+		}
+		var progress strings.Builder
+		res, err := clustercfg.ApplyRuntimeHandlers(&progress, clustercfg.RuntimeApplyOptions{})
+		if err != nil {
+			return nil, RuntimeApplyOut{}, fmt.Errorf("apply runtime handlers: %w", err)
+		}
+		out := RuntimeApplyOut{Handlers: res.Handlers, Source: res.Source, Changed: res.Changed, Unloaded: res.Unloaded, Restarted: false}
+		for _, line := range strings.Split(progress.String(), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				out.Warnings = append(out.Warnings, line)
+			}
+		}
+		switch {
+		case res.Unloaded:
+			out.Note = "containerd has not loaded the drop-in and must be restarted before the change takes effect (`stratum runtime restart` " +
+				"on the node) — this tool does not restart it, because that briefly interrupts every image pull on the node. " +
+				"The node is labelled for a new handler only once containerd has loaded it."
+		case res.Changed:
+			out.Note = "The drop-in changed; containerd is not running and loads it when it next starts."
+		default:
+			out.Note = "The drop-in already matched what containerd loaded; nothing changed and no restart is needed."
+		}
+		return nil, out, nil
+	}
+}

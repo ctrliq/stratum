@@ -343,6 +343,10 @@ func TestStratumWriteToolsRequireAStratumHost(t *testing.T) {
 			_, _, err := RegistryApplyHandler()(ctx, nil, RegistryApplyIn{})
 			return err
 		},
+		"runtime_apply": func() error {
+			_, _, err := RuntimeApplyHandler()(ctx, nil, RuntimeApplyIn{})
+			return err
+		},
 	}
 
 	for name, call := range checks {
