@@ -490,11 +490,12 @@ func savedControllerIP(prev *NodeState) (string, error) {
 // keepEtcdMembership lets a pre-existing state (restart, or a join that prepared
 // it) win for etcd membership: PrepareController must never reset an HA member
 // to state=new, nor forget that the cluster has had peers, which is
-// what makes `stratum up` demand the member's WAL.
+// what makes `stratum up` demand the member's WAL, nor forget a learner the
+// controller's start has yet to promote.
 func keepEtcdMembership(st, prev *NodeState) {
 	if prev != nil && prev.EtcdInitialCluster != "" {
 		st.EtcdName, st.EtcdInitialCluster, st.EtcdState = prev.EtcdName, prev.EtcdInitialCluster, prev.EtcdState
-		st.EtcdHasPeers = prev.EtcdHasPeers
+		st.EtcdHasPeers, st.EtcdPromotePending = prev.EtcdHasPeers, prev.EtcdPromotePending
 	}
 }
 

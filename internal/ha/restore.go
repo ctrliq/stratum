@@ -428,6 +428,9 @@ func rejoinRerun(cp1IP string, learner bool) string {
 // the local CP, wipes the stale (old-cluster) etcd data dir, adds this member to
 // the seed's etcd as a learner, rewrites the etcd manifest as a joining member
 // (state=existing), restarts, and promotes the learner once it has caught up.
+// A promote a join left pending (EtcdPromotePending) stays recorded until the
+// rejoin's own promote has landed, so a rejoin that stops with the member
+// still a learner leaves the controller's start to promote it.
 // The node's PKI + kubeconfigs are already in place — this is a rejoin, not a
 // fresh join. cp1IP is the seed's IP (from --server).
 //
@@ -618,6 +621,12 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 	if err := waitRejoined(ctx, w, cp1IP, nodeIP, seed.ClusterID, id, learner); err != nil {
 		return fmt.Errorf("rejoin: %w — %s", err, rejoinRerun(cp1IP, rejoinStillLearner(cp1IP, newPeer, learner)))
 	}
+	if st.EtcdPromotePending {
+		st.EtcdPromotePending = false
+		if err := rejoinSaveState(st); err != nil {
+			return err
+		}
+	}
 	if err := rejoinStartPod("kube-apiserver"); err != nil {
 		return err
 	}
@@ -663,7 +672,7 @@ func waitRejoined(ctx context.Context, w io.Writer, cp1IP, nodeIP string, cluste
 			}
 			if lastPromote.IsZero() || now.Sub(lastPromote) >= rejoinPromoteEvery {
 				lastPromote = now
-				perr := rejoinPromote(cp1IP, id)
+				perr := rejoinPromote(id, cp1IP)
 				switch {
 				case perr == nil, isMemberNotLearner(perr):
 					k8sutil.Step(w, fmt.Sprintf("rejoin: etcd member %x promoted to a voter", id))
