@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -69,11 +70,13 @@ func TestNodeRegisteredTaskLabelsNothingWhenTheNodeNeverRegisters(t *testing.T) 
 // call's arguments, and paces retries every millisecond.
 func stubOwnLabels(t *testing.T, warnAfter time.Duration, fail func(call int32) error) *atomic.Int32 {
 	t.Helper()
-	oldReconcile, oldInterval, oldWarn := reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter
+	workerScratchHost(t)
+	oldReconcile, oldInterval, oldWarn, oldBinary := reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter, checkHandlerBinary
 	t.Cleanup(func() {
-		reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter = oldReconcile, oldInterval, oldWarn
+		reconcileOwnNodeLabels, nodeRegistrationInterval, bindingWarnAfter, checkHandlerBinary = oldReconcile, oldInterval, oldWarn, oldBinary
 	})
 	nodeRegistrationInterval, bindingWarnAfter = time.Millisecond, warnAfter
+	checkHandlerBinary = func(string) error { return nil }
 	var calls atomic.Int32
 	reconcileOwnNodeLabels = func(_ context.Context, node string, declared map[string]string, handlers []string) error {
 		if node != "w1" || declared["zone"] != "a" || !slices.Equal(handlers, []string{"gpu", "kata"}) {
@@ -318,5 +321,59 @@ func TestWorkerKubeletStartChecksAJoinsTaints(t *testing.T) {
 	labelOwnNode = func(context.Context, *NodeState) {}
 	if out := captureWorkerOutput(t, func() { workerKubeletStart(context.Background(), st)("w1") }); !strings.Contains(out, "registered without its declared taints") {
 		t.Errorf("the kubelet start did not check the join's taints: %s", out)
+	}
+}
+
+// The kubelet hook labels from node.yaml as it is now: `stratum runtime apply`
+// changes the handlers under a running supervisor, and labelling from the
+// state the supervisor started with would take the new handler's label back
+// off at the next kubelet start.
+func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
+	workerScratchHost(t)
+	old := reconcileOwnNodeLabels
+	t.Cleanup(func() { reconcileOwnNodeLabels = old })
+	var got []string
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+		got = handlers
+		return nil
+	}
+	started := &NodeState{Role: "worker", Hostname: "w1"}
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"nvidia": executable(t)}}); err != nil {
+		t.Fatal(err)
+	}
+	labelOwnNode(context.Background(), started)
+	if !slices.Equal(got, []string{"nvidia"}) {
+		t.Errorf("labelled handlers %v, want [nvidia] from node.yaml", got)
+	}
+
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	started.RuntimeHandlers = map[string]string{"gvisor": executable(t)}
+	labelOwnNode(context.Background(), started)
+	if !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("labelled handlers %v from another node's state, want [gvisor] from the started state", got)
+	}
+}
+
+// A worker restart only warns about a handler whose binary is missing, so the
+// labels leave that handler out: its RuntimeClass would schedule pods onto a
+// node that cannot start them.
+func TestNodeLabelsLeaveOutAHandlerWhoseBinaryIsMissing(t *testing.T) {
+	workerScratchHost(t)
+	old := reconcileOwnNodeLabels
+	t.Cleanup(func() { reconcileOwnNodeLabels = old })
+	var got []string
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+		got = handlers
+		return nil
+	}
+	handlers := map[string]string{"gvisor": executable(t), "nvidia": filepath.Join(t.TempDir(), "nvidia-container-runtime")}
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: handlers}); err != nil {
+		t.Fatal(err)
+	}
+	labelOwnNode(context.Background(), &NodeState{Hostname: "w1"})
+	if !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("labelled handlers %v, want only [gvisor], whose binary exists", got)
 	}
 }
