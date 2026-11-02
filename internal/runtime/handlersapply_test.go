@@ -152,6 +152,27 @@ func TestCheckHandlers(t *testing.T) {
 			t.Errorf("a node with no handlers and an old config = %+v, want a warning and no error", r.Findings)
 		}
 	})
+	t.Run("nothing_declared_with_a_config_that_does_not_parse_fails", func(t *testing.T) {
+		handlersHost(t, true)
+		if err := os.WriteFile(version.ContainerdConfig, []byte("imports = [\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if r := CheckHandlers(nil); !r.Failed() || !strings.Contains(findings(r, SeverityError), "does not parse") {
+			t.Errorf("a node with no handlers and a config containerd cannot read = %+v, want an error", r.Findings)
+		}
+	})
+	t.Run("a_registry_drop_in_that_does_not_parse_fails", func(t *testing.T) {
+		handlersHost(t, true)
+		if err := os.MkdirAll(filepath.Dir(version.ContainerdConfD), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(version.ContainerdConfD, []byte("[plugins\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if r := CheckHandlers(nil); !r.Failed() || !strings.Contains(findings(r, SeverityError), version.ContainerdConfD+" does not parse") {
+			t.Errorf("a registry drop-in containerd cannot read = %+v, want an error naming it", r.Findings)
+		}
+	})
 	t.Run("nothing_declared", func(t *testing.T) {
 		handlersHost(t, true)
 		r := CheckHandlers(nil)

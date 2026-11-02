@@ -189,6 +189,13 @@ func LoadedHandlers(names []string) []string {
 	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return !slices.Contains(loaded.names, n) })
 }
 
+// errNoHandlersImport is RequireHandlersImport's report of a containerd
+// config that parses but does not import the runtime-handler drop-in: one
+// rendered before runtime handlers existed. Only that is harmless on a node
+// that declares none; a config that cannot be read or parsed stops
+// containerd whatever it declares.
+var errNoHandlersImport = errors.New("does not import the runtime-handler drop-in")
+
 // RequireHandlersImport reports whether containerd's config imports the
 // runtime-handler drop-in's directory after the shared conf.d.
 func RequireHandlersImport() error {
@@ -196,9 +203,12 @@ func RequireHandlersImport() error {
 	if err != nil {
 		return fmt.Errorf("read containerd config: %w", err)
 	}
+	if _, err := configImports(string(cfg)); err != nil {
+		return fmt.Errorf("%s does not parse (%v); containerd will refuse to start with it", version.ContainerdConfig, err)
+	}
 	if !importsDropIns(string(cfg)) {
-		return fmt.Errorf("%s does not import %s after %s, so containerd would not read runtime handlers; run `stratum up` or upgrade this node to render it again",
-			version.ContainerdConfig, handlersImportGlob(), confdImportGlob)
+		return fmt.Errorf("%s %w %s after %s, so containerd would not read runtime handlers; run `stratum up` or upgrade this node to render it again",
+			version.ContainerdConfig, errNoHandlersImport, handlersImportGlob(), confdImportGlob)
 	}
 	return nil
 }
@@ -263,7 +273,7 @@ func CheckHandlers(saved map[string]string) HandlerReport {
 	}
 	if err := RequireHandlersImport(); err != nil {
 		severity := SeverityError
-		if len(saved) == 0 {
+		if len(saved) == 0 && errors.Is(err, errNoHandlersImport) {
 			severity = SeverityWarn
 		}
 		r.add(severity, "%v", err)
@@ -350,17 +360,19 @@ type sharedConfD struct {
 // one of saved's runtime names, which `nvidia-ctk runtime configure` does, or
 // changes containerd's default runtime. stratum's drop-in is imported after
 // conf.d, so its definition of a name wins, but a changed default runs every
-// pod without a runtimeClassName under that runtime.
+// pod without a runtimeClassName under that runtime. Every file there must
+// parse, stratum's registry drop-in included, since containerd imports them
+// all; the registry drop-in is stratum's own, so it is spared the warnings.
 func checkSharedConfD(r *HandlerReport, saved map[string]string) {
 	dir := filepath.Dir(version.ContainerdConfD)
 	files, _ := filepath.Glob(filepath.Join(dir, "*.toml"))
 	for _, f := range files {
-		if f == version.ContainerdConfD {
-			continue
-		}
 		var c sharedConfD
 		if _, err := toml.DecodeFile(f, &c); err != nil {
 			r.add(SeverityError, "%s does not parse (%v); containerd will refuse to start with it", f, err)
+			continue
+		}
+		if f == version.ContainerdConfD {
 			continue
 		}
 		for _, plugin := range slices.Sorted(maps.Keys(c.Plugins)) {
