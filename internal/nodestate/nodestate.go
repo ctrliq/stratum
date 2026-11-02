@@ -75,6 +75,20 @@ type NodeState struct {
 	// the scheduled loops do. Empty on a node that has not restarted since it
 	// began recording it; readers then use the default path.
 	ConfigPath string `json:"configPath,omitempty"`
+<<<<<<< HEAD
+||||||| parent of ea379c7 (feat(cluster): carry node labels, taints and runtime handlers on worker join (#109))
+	// RuntimeHandlers is spec.node.runtimeHandlers: extra containerd runtime
+	// handlers by name, each the absolute path of its OCI runtime binary.
+	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
+=======
+	// RuntimeHandlers is spec.node.runtimeHandlers: extra containerd runtime
+	// handlers by name, each the absolute path of its OCI runtime binary.
+	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
+	// NodeLabels and NodeTaints are spec.node.labels and spec.node.taints:
+	// what this node declares on its Node object. A taint is key[=value]:Effect.
+	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
+	NodeTaints []string          `json:"nodeTaints,omitempty"`
+>>>>>>> ea379c7 (feat(cluster): carry node labels, taints and runtime handlers on worker join (#109))
 }
 
 // CISProfile is the name of the engine's CIS profile.
