@@ -26,9 +26,12 @@ func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 		t.Fatal(err)
 	}
 	var written []map[string]string
-	old, oldLabels, oldImport := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport
-	t.Cleanup(func() { applyHandlers, reconcileOwnNodeLabels, requireHandlersImport = old, oldLabels, oldImport })
+	old, oldLabels, oldImport, oldConfD := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD
+	t.Cleanup(func() {
+		applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD = old, oldLabels, oldImport, oldConfD
+	})
 	requireHandlersImport = func() error { return nil }
+	requireSharedConfD = func() error { return nil }
 	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string) error { return nil }
 	applyHandlers = func(_ io.Writer, h map[string]string, _ bool) (runtime.ApplyHandlersResult, error) {
 		written = append(written, h)
@@ -371,5 +374,19 @@ func TestApplyRuntimeHandlersSavesAWrittenDropInWhoseRestartFailed(t *testing.T)
 	}
 	if got := savedHandlers(t); !maps.Equal(got, kata) {
 		t.Errorf("node.yaml declares %v, want %v, which the drop-in on disk declares", got, kata)
+	}
+}
+
+// A shared conf.d file that does not parse would stop the restarted
+// containerd from starting, so apply refuses before it writes or saves.
+func TestApplyRuntimeHandlersRefusesASharedConfDThatDoesNotParse(t *testing.T) {
+	saved := map[string]string{"gvisor": executable(t)}
+	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+	requireSharedConfD = func() error { return errors.New("conf.d/broken.toml does not parse") }
+	if _, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: map[string]string{"kata": executable(t)}, Restart: true}); err == nil || !strings.Contains(err.Error(), "broken.toml") {
+		t.Fatalf("apply = %v, want the conf.d refusal", err)
+	}
+	if len(*written) != 0 || !maps.Equal(savedHandlers(t), saved) {
+		t.Errorf("a refused apply wrote %v and saved %v", *written, savedHandlers(t))
 	}
 }

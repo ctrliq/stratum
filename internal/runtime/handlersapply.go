@@ -360,6 +360,21 @@ type sharedConfD struct {
 	} `toml:"plugins"`
 }
 
+// RequireSharedConfDParses reports the first file in the shared conf.d that
+// does not parse. containerd imports every one, so a runtime apply that
+// restarted it with one there would stop a working containerd for one that
+// cannot start.
+func RequireSharedConfDParses() error {
+	files, _ := filepath.Glob(filepath.Join(filepath.Dir(version.ContainerdConfD), "*.toml"))
+	for _, f := range files {
+		var c sharedConfD
+		if _, err := toml.DecodeFile(f, &c); err != nil {
+			return fmt.Errorf("%s does not parse (%v); containerd would refuse to start with it, so nothing was changed. Fix or remove it and run again", f, err)
+		}
+	}
+	return nil
+}
+
 // checkSharedConfD warns about every file in the shared conf.d that defines
 // one of saved's runtime names, which `nvidia-ctk runtime configure` does, or
 // changes containerd's default runtime. stratum's drop-in is imported after

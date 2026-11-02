@@ -450,3 +450,42 @@ func TestCheckHandlersReadsTheSharedConfDWithNoHandlers(t *testing.T) {
 		t.Errorf("check with no handlers = %+v, want an error for the conf.d file that does not parse", r.Findings)
 	}
 }
+
+// The drop-in's path is stratum's, but a file there it did not write may hold
+// an operator's configuration: an apply refuses rather than replace it, as
+// runtime check tells the operator to move it aside.
+func TestApplyHandlersRefusesADropInItDidNotWrite(t *testing.T) {
+	handlersHost(t, true)
+	mine := "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]\nruntime_type = 'io.containerd.kata.v2'\n"
+	if err := os.MkdirAll(filepath.Dir(version.ContainerdRuntimeConfD), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(version.ContainerdRuntimeConfD, []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true); err == nil || !strings.Contains(err.Error(), "not written by stratum") {
+		t.Fatalf("apply over a foreign drop-in = %v, want a refusal", err)
+	}
+	if got, _ := os.ReadFile(version.ContainerdRuntimeConfD); string(got) != mine {
+		t.Errorf("the foreign drop-in became %q", got)
+	}
+}
+
+// containerd imports every shared conf.d file, so one that does not parse is
+// refused by name.
+func TestRequireSharedConfDParses(t *testing.T) {
+	handlersHost(t, true)
+	if err := RequireSharedConfDParses(); err != nil {
+		t.Fatalf("a clean conf.d = %v", err)
+	}
+	bad := filepath.Join(filepath.Dir(version.ContainerdConfD), "broken.toml")
+	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("[plugins\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSharedConfDParses(); err == nil || !strings.Contains(err.Error(), bad) {
+		t.Errorf("a conf.d with %s = %v, want a refusal naming it", bad, err)
+	}
+}

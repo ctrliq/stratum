@@ -189,6 +189,9 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	if prevErr == nil && string(prev) == rendered {
 		return false, nil
 	}
+	if prevErr == nil && !strings.HasPrefix(string(prev), handlersMarker) {
+		return false, fmt.Errorf("%s was not written by stratum, and writing the runtime handlers would replace it; move it aside and run again", path)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
