@@ -91,11 +91,12 @@ func (n NodeSpec) Validate() error {
 }
 
 // CheckBinaries reports the first runtime handler whose binary is not an
-// executable file on this host. A join refuses it; a restart only warns.
+// executable file on this host. A join refuses it; a restart only warns. The
+// error says what failed; each caller says what to do about it.
 func (n NodeSpec) CheckBinaries() error {
 	for _, name := range slices.Sorted(maps.Keys(n.RuntimeHandlers)) {
 		if err := runtime.CheckHandlerBinary(n.RuntimeHandlers[name]); err != nil {
-			return fmt.Errorf("runtime handler %s: %w; install it before this node joins", name, err)
+			return fmt.Errorf("runtime handler %s: %w", name, err)
 		}
 	}
 	return nil
@@ -162,7 +163,7 @@ func JoinNodeSpec(file, flags NodeSpec) (NodeSpec, error) {
 		return NodeSpec{}, err
 	}
 	if err := node.CheckBinaries(); err != nil {
-		return NodeSpec{}, err
+		return NodeSpec{}, fmt.Errorf("%w; install it before this node joins", err)
 	}
 	return node, nil
 }

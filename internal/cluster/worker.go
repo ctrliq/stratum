@@ -408,18 +408,18 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
 	labels, handlers = st.NodeLabels, st.RuntimeHandlers
 	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
-		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", formatKeyValues(labels), formatKeyValues(flags.Labels)))
+		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", FormatKeyValues(labels), FormatKeyValues(flags.Labels)))
 		labels = flags.Labels
 	}
 	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, handlers) {
-		replaced = append(replaced, fmt.Sprintf("--runtime-handler replaces the runtime handlers this worker saved (%s -> %s)", formatKeyValues(handlers), formatKeyValues(flags.RuntimeHandlers)))
+		replaced = append(replaced, fmt.Sprintf("--runtime-handler replaces the runtime handlers this worker saved (%s -> %s)", FormatKeyValues(handlers), FormatKeyValues(flags.RuntimeHandlers)))
 		handlers = flags.RuntimeHandlers
 	}
 	return labels, handlers, replaced
 }
 
-// formatKeyValues renders a map as sorted name=value pairs, "none" when empty.
-func formatKeyValues(m map[string]string) string {
+// FormatKeyValues renders a map as sorted name=value pairs, "none" when empty.
+func FormatKeyValues(m map[string]string) string {
 	if len(m) == 0 {
 		return "none"
 	}
