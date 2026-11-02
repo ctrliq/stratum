@@ -85,11 +85,7 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState) error
 	if configPath == "" {
 		configPath = DefaultConfigPath
 	}
-	onStart := managedKubeletOnStart(tasks, st.Hostname, func(ctx context.Context, hostname string) {
-		if restampWhenRegistered(ctx, hostname) {
-			labelOwnNode(ctx, st)
-		}
-	})
+	onStart := managedKubeletOnStart(tasks, st.Hostname, controllerKubeletStart(st))
 	err := runSupervisor(ctx, procs, supervisor.Options{
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
@@ -194,12 +190,8 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
 		// No admin.conf here: the kubelet stamps its own Node.
-		OnStart: kubeletOnStart(st.Hostname, func(hostname string) {
-			if restampOwnNodeWhenRegistered(hostname) {
-				labelOwnNode(context.Background(), st)
-			}
-		}),
-		ReExec: UpArgv(version.StratumInstallPath, true, "", ""),
+		OnStart: kubeletOnStart(st.Hostname, workerKubeletStart(ctx, st)),
+		ReExec:  UpArgv(version.StratumInstallPath, true, "", ""),
 	})
 }
 
@@ -544,15 +536,42 @@ var (
 		}
 	}
 
+	reconcileOwnNodeLabels = k8sutil.ReconcileOwnNodeLabels
+
 	// labelOwnNode gives this node's Node its spec.node labels and the label
 	// of each runtime handler it declares, as its kubelet, on every kubelet
-	// start of both roles; non-fatal, but logged.
+	// start of both roles. A label that fails is retried until it lands or
+	// ctx ends (retryUntilApplied), as the control-plane label is: a node
+	// without its handler labels takes none of its RuntimeClasses' pods, and
+	// nothing else would label it before the next kubelet start. Non-fatal,
+	// but logged.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
 		handlers := slices.Sorted(maps.Keys(st.RuntimeHandlers))
-		if err := k8sutil.ReconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, handlers); err != nil {
-			fmt.Fprintf(os.Stderr, "stratum: label %s: %v (non-fatal)\n", st.Hostname, err)
+		label := func(ctx context.Context) error {
+			return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, handlers)
+		}
+		err := label(ctx)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "stratum: label %s: %v; retrying\n", st.Hostname, err)
+		took, ok := retryUntilApplied(ctx, label, func(err error) {
+			fmt.Fprintf(os.Stderr, "stratum: WARN: cannot label %s yet (%v); still retrying — until it lands, "+
+				"pods whose RuntimeClass selects this node's runtime handlers are not scheduled onto it\n", st.Hostname, err)
+		})
+		if ok {
+			fmt.Fprintf(os.Stderr, "stratum: labelled %s after %v\n", st.Hostname, took)
 		}
 	}
+
+	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
+	// register, giving up after timeout.
+	waitOwnNodeRegistered = k8sutil.WaitOwnNodeRegistered
+	stampOwnNode          = k8sutil.StampOwnNode
+	// ownNodeRegistrationWarnAfter is how long a worker waits for its own
+	// Node before it says it is still waiting; it waits on after. A worker
+	// runs no node-registered task, so this is its one registration wait.
+	ownNodeRegistrationWarnAfter = 5 * time.Minute
 )
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a
@@ -608,6 +627,27 @@ func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Co
 	}
 }
 
+// controllerKubeletStart is a controller's kubelet-start restamp: once its
+// Node is registered, its version stamp and then its own labels.
+func controllerKubeletStart(st *NodeState) func(context.Context, string) {
+	return func(ctx context.Context, hostname string) {
+		if restampWhenRegistered(ctx, hostname) {
+			labelOwnNode(ctx, st)
+		}
+	}
+}
+
+// workerKubeletStart is a worker's kubelet-start restamp: once its Node is
+// registered, its version stamp and then its own labels, under the worker's
+// run context.
+func workerKubeletStart(ctx context.Context, st *NodeState) func(string) {
+	return func(hostname string) {
+		if restampOwnNodeWhenRegistered(ctx, hostname) {
+			labelOwnNode(ctx, st)
+		}
+	}
+}
+
 // restampWhenRegistered is the controller's kubelet-start restamp: it
 // re-asserts the node's version annotations when the node is already
 // registered, with one check and no waiting. The supervisor outlives
@@ -627,15 +667,27 @@ func restampWhenRegistered(ctx context.Context, hostname string) bool {
 }
 
 // restampOwnNodeWhenRegistered stamps a worker's own Node and reports
-// whether the Node is registered, so its labels can follow.
-func restampOwnNodeWhenRegistered(hostname string) bool {
-	// A first start waits out TLS bootstrap, which writes the kubeconfig this
-	// reads, and registration.
-	if err := k8sutil.WaitOwnNodeRegistered(hostname, 5*time.Minute); err != nil {
-		fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
-		return false
+// whether the Node is registered, so its labels can follow. A first start
+// waits out TLS bootstrap, which writes the kubeconfig this reads, and
+// registration, until ctx ends: a slow first join must still be labelled for
+// its runtime handlers, or their RuntimeClasses' pods would wait for the next
+// kubelet start. It says so once registration has taken
+// ownNodeRegistrationWarnAfter.
+func restampOwnNodeWhenRegistered(ctx context.Context, hostname string) bool {
+	for warned := false; ; {
+		err := waitOwnNodeRegistered(hostname, ownNodeRegistrationWarnAfter)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		if !warned {
+			warned = true
+			fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v; still waiting\n", hostname, err)
+		}
 	}
-	if err := k8sutil.StampOwnNode(hostname); err != nil {
+	if err := stampOwnNode(hostname); err != nil {
 		fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
 	}
 	return true
@@ -868,13 +920,13 @@ waitForRegistration:
 			fmt.Fprintf(os.Stderr, "stratum: node %s registered after %v; labeling it control-plane and stamping its version\n", hostname, time.Since(start))
 			labelErr := labelControlPlane(ctx, hostname)
 			stampNode(ctx, hostname)
-			labelOwnNode(ctx, st)
 			for _, line := range hint {
 				fmt.Fprintf(os.Stderr, "stratum: %s\n", line)
 			}
 			if labelErr != nil {
 				labelUntilApplied(ctx, hostname, labelErr)
 			}
+			labelOwnNode(ctx, st)
 			<-ctx.Done()
 			return
 		}
@@ -898,26 +950,39 @@ waitForRegistration:
 // labels the node by hand meets an idempotent retry, not a contradiction.
 func labelUntilApplied(ctx context.Context, hostname string, err error) {
 	fmt.Fprintf(os.Stderr, "stratum: label control-plane %s: %v; retrying\n", hostname, err)
+	took, ok := retryUntilApplied(ctx, func(ctx context.Context) error { return labelControlPlane(ctx, hostname) }, func(err error) {
+		fmt.Fprintf(os.Stderr, "stratum: WARN: cannot label %s control-plane yet (%v); still retrying — until it lands, "+
+			"`stratum upgrade --cluster` and `stratum certs rotate-ca --cluster` treat it as a worker; label it by hand with %s=true\n",
+			hostname, err, k8sutil.ControlPlaneLabel)
+	})
+	if ok {
+		fmt.Fprintf(os.Stderr, "stratum: labeled %s control-plane after %v\n", hostname, took)
+	}
+}
+
+// retryUntilApplied calls apply every nodeRegistrationInterval until it
+// succeeds or ctx ends, after a first attempt that failed, and calls warn
+// once with the latest error after it has failed for bindingWarnAfter. It
+// reports how long apply failed for and whether it landed.
+func retryUntilApplied(ctx context.Context, apply func(context.Context) error, warn func(error)) (time.Duration, bool) {
 	failingSince := time.Now()
 	warned := false
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return 0, false
 		case <-time.After(nodeRegistrationInterval):
 		}
-		if err = labelControlPlane(ctx, hostname); err == nil {
-			fmt.Fprintf(os.Stderr, "stratum: labeled %s control-plane after %v\n", hostname, time.Since(failingSince).Round(time.Second))
-			return
+		err := apply(ctx)
+		if err == nil {
+			return time.Since(failingSince).Round(time.Second), true
 		}
 		if ctx.Err() != nil {
-			return
+			return 0, false
 		}
 		if !warned && time.Since(failingSince) >= bindingWarnAfter {
 			warned = true
-			fmt.Fprintf(os.Stderr, "stratum: WARN: cannot label %s control-plane yet (%v); still retrying — until it lands, "+
-				"`stratum upgrade --cluster` and `stratum certs rotate-ca --cluster` treat it as a worker; label it by hand with %s=true\n",
-				hostname, err, k8sutil.ControlPlaneLabel)
+			warn(err)
 		}
 	}
 }
