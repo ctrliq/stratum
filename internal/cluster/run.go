@@ -617,18 +617,21 @@ func restampOwnNodeWhenRegistered(hostname string) {
 }
 
 // postStart starts the controller's post-start housekeeping: the etcd growth
-// recorder for an ungrown seed, the node-registered task, and the long-lived
-// cert-renew and snapshot loops the config enables, each a run-group task
-// with the controller's context. No task waits on the apiserver to start —
-// and none needs it: renewal reads
-// and reissues local certificates only, a snapshot needs only the local
-// etcd, the recorder only this node's own etcd, and the node-registered
-// task's per-tick registration check is itself the apiserver wait.
+// recorder for an ungrown seed, the learner promotion for a joined member, the
+// node-registered task, and the long-lived cert-renew and snapshot loops the
+// config enables, each a run-group task with the controller's context. No task
+// waits on the apiserver to start, and none needs it: renewal reads and
+// reissues local certificates only, a snapshot needs only the local etcd, the
+// recorder and the learner promotion only etcd, and the node-registered task's
+// per-tick registration check is itself the apiserver wait.
 func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// Only this node's own etcd, no apiserver: started first, so a seed whose
 	// apiserver never becomes ready still records HA growth.
 	if st.EtcdState == "new" && !st.EtcdHasPeers {
 		g.add("etcd growth recorder", startEtcdGrowthRecorder)
+	}
+	if st.EtcdPromotePending {
+		g.add("etcd learner promotion", promoteLearner)
 	}
 	// The node-registered task is the one cluster-facing piece: it waits out
 	// the node's registration itself, per tick, so a slow apiserver delays
