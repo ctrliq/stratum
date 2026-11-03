@@ -143,7 +143,8 @@ func newNodeHoldCommand() *cobra.Command {
 			fmt.Fprintln(out, "a drain refuses pods with emptyDir volumes, CoreDNS among them, and their data is lost when they move: "+
 				"check it, and add --delete-emptydir-data only if losing it is acceptable")
 			fmt.Fprintf(out, "CoreDNS has no PodDisruptionBudget: before the drain, check with `%s` that another replica, not Terminating, "+
-				"is Running and Ready on another Ready node; on a single-node cluster, cluster DNS is down until you uncordon it\n",
+				"is Running and Ready on another Ready node; on a single-node cluster, cluster DNS is down until you uncordon and release it, "+
+				"since CoreDNS does not tolerate the hold\n",
 				kubectlHint("-n kube-system get pods -l k8s-app=kube-dns -o wide"))
 			return nil
 		},

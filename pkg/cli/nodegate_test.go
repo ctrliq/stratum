@@ -63,7 +63,7 @@ func TestNodeHoldThenRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hold: %v\n%s", err, out)
 	}
-	for _, want := range []string{kubectlHint("drain gpu1"), kubectlHint("uncordon gpu1"), "while it is still held", "--delete-emptydir-data only if", "without a toleration", "DaemonSet and static pods stay", kubectlHint("-n kube-system get pods -l k8s-app=kube-dns -o wide")} {
+	for _, want := range []string{kubectlHint("drain gpu1"), kubectlHint("uncordon gpu1"), "while it is still held", "--delete-emptydir-data only if", "without a toleration", "DaemonSet and static pods stay", "until you uncordon and release it", kubectlHint("-n kube-system get pods -l k8s-app=kube-dns -o wide")} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hold printed:\n%s\nwant %q", out, want)
 		}

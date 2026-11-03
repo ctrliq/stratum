@@ -220,7 +220,9 @@ another Ready node:
 ```
 
 If none is, get one serving there first. On a single-node cluster, cluster DNS
-is down from the drain until you uncordon the node.
+is down from the drain until you uncordon and release the node: CoreDNS does
+not tolerate the `stratum.ciq.com/unverified` taint, so it cannot schedule
+back while the node is held.
 
 A drain also cordons the node, and a cordoned node takes no pods, the burn-in
 job included. After the maintenance, uncordon the node while it is still held.
