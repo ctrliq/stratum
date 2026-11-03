@@ -14,6 +14,7 @@ import (
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -787,6 +788,146 @@ func errSecretInPodSpec(what string) error {
 		"tier. This is a fixed policy, not a permission that can be granted by a flag", what)
 }
 
+// checkServiceAccountTokens refuses a pod spec that would have a service
+// account token mounted when a role binding grants that account anything:
+// the container could print the token, and pod_logs would return it. A token
+// is mounted unless the pod spec sets automountServiceAccountToken: false, or
+// leaves it unset and the account itself sets it false. An account that does
+// not exist yet is still checked by name, since a binding can name it first.
+// This server cannot write service accounts or bindings (deniedWrites).
+//
+// It runs only on the object an apply would store (checkApplyResult): a
+// manifest may leave the account to the existing object, and the existing
+// object is about to be replaced, so only the merged result says which token
+// the pods will get.
+func checkServiceAccountTokens(ctx context.Context, typed kubernetes.Interface, obj map[string]any, ns string) error {
+	if ns == "" {
+		ns = metav1.NamespaceDefault
+	}
+	var bindings *accountBindings
+	return forEachPodSpec(obj, func(spec map[string]any) error {
+		// forEachPodSpec also hands over a workload's own spec, or a
+		// Service's; only a map with containers is a pod spec.
+		if _, isPodSpec := spec["containers"].([]any); !isPodSpec {
+			return nil
+		}
+		automount, set, err := unstructured.NestedBool(spec, "automountServiceAccountToken")
+		if err != nil {
+			return fmt.Errorf("read the pod spec's automountServiceAccountToken: %w", err)
+		}
+		if set && !automount {
+			return nil
+		}
+		account, err := podServiceAccount(spec)
+		if err != nil {
+			return err
+		}
+		if !set {
+			sa, err := typed.CoreV1().ServiceAccounts(ns).Get(ctx, account, metav1.GetOptions{})
+			switch {
+			case apierrors.IsNotFound(err):
+			case err != nil:
+				return fmt.Errorf("read service account %q to check whether its token is mounted: %w", account, err)
+			case sa.AutomountServiceAccountToken != nil && !*sa.AutomountServiceAccountToken:
+				return nil
+			}
+		}
+		if bindings == nil {
+			if bindings, err = listAccountBindings(ctx, typed); err != nil {
+				return err
+			}
+		}
+		if binding := bindings.bindingFor(ns, account); binding != "" {
+			return errSecretInPodSpec(fmt.Sprintf("service account %q's token mounted (%s grants that "+
+				"account permissions; set automountServiceAccountToken: false if the "+
+				"container does not call the API)", account, binding))
+		}
+		return nil
+	})
+}
+
+// podServiceAccount returns the account a pod spec runs as: serviceAccountName,
+// else the deprecated serviceAccount the API server copies into it, else the
+// namespace's default account.
+func podServiceAccount(spec map[string]any) (string, error) {
+	for _, field := range []string{"serviceAccountName", "serviceAccount"} {
+		name, _, err := unstructured.NestedString(spec, field)
+		if err != nil {
+			return "", fmt.Errorf("read the pod spec's %s: %w", field, err)
+		}
+		if name != "" {
+			return name, nil
+		}
+	}
+	return "default", nil
+}
+
+// accountBindings are the cluster's role bindings, listed once per check.
+type accountBindings struct {
+	roleBindings        []rbacv1.RoleBinding
+	clusterRoleBindings []rbacv1.ClusterRoleBinding
+}
+
+// listAccountBindings lists every RoleBinding, in every namespace since one
+// can name an account in another, and every ClusterRoleBinding.
+func listAccountBindings(ctx context.Context, typed kubernetes.Interface) (*accountBindings, error) {
+	rbs, err := typed.RbacV1().RoleBindings(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list role bindings to check what a mounted service account token grants: %w", err)
+	}
+	crbs, err := typed.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list cluster role bindings to check what a mounted service account token grants: %w", err)
+	}
+	return &accountBindings{roleBindings: rbs.Items, clusterRoleBindings: crbs.Items}, nil
+}
+
+// bindingFor names the first binding that grants account in ns anything, or
+// "" when none does.
+func (b *accountBindings) bindingFor(ns, account string) string {
+	for _, rb := range b.roleBindings {
+		if namesAccount(rb.Subjects, rb.Namespace, ns, account) {
+			return fmt.Sprintf("RoleBinding %s/%s", rb.Namespace, rb.Name)
+		}
+	}
+	for _, crb := range b.clusterRoleBindings {
+		if namesAccount(crb.Subjects, "", ns, account) {
+			return fmt.Sprintf("ClusterRoleBinding %s", crb.Name)
+		}
+	}
+	return ""
+}
+
+// namesAccount reports whether subjects reach account in ns the way the RBAC
+// authorizer matches them: as a ServiceAccount (whose namespace defaults to
+// the binding's), as the account's user name, or through the group of every
+// account in ns. The groups of every account and every authenticated identity
+// are not counted: the stock bindings to them (discovery, the issuer's keys)
+// reach every pod in the cluster, so counting them would refuse every pod.
+func namesAccount(subjects []rbacv1.Subject, bindingNS, ns, account string) bool {
+	for _, s := range subjects {
+		switch s.Kind {
+		case rbacv1.ServiceAccountKind:
+			subjectNS := s.Namespace
+			if subjectNS == "" {
+				subjectNS = bindingNS
+			}
+			if s.Name == account && subjectNS == ns {
+				return true
+			}
+		case rbacv1.UserKind:
+			if s.Name == "system:serviceaccount:"+ns+":"+account {
+				return true
+			}
+		case rbacv1.GroupKind:
+			if s.Name == "system:serviceaccounts:"+ns {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // checkConversionWebhook refuses a CustomResourceDefinition that routes
 // conversion through a webhook.
 func checkConversionWebhook(gvr schema.GroupVersionResource, obj map[string]any) error {
@@ -1003,8 +1144,9 @@ func ResourceApplyHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 				return nil, ResourceApplyOut{}, applyError(err, in.Force)
 			}
 			if err := checkApplyResult(ctx, cl.Typed, gvr, got.Object, ns); err != nil {
-				return nil, ResourceApplyOut{}, fmt.Errorf("%s %s/%s WAS STORED, but the stored object, or storage "+
-					"it references, no longer passes the checks its dry run passed. Review or delete it now: %w",
+				return nil, ResourceApplyOut{}, fmt.Errorf("%s %s/%s WAS STORED, but the stored object, or the storage, "+
+					"service account or role bindings it references, no longer passes (or could not be re-read "+
+					"for) the checks its dry run passed. Review or delete it now: %w",
 					gvr.Resource, got.GetNamespace(), got.GetName(), err)
 			}
 			break
@@ -1033,6 +1175,7 @@ func checkApplyResult(ctx context.Context, cs kubernetes.Interface, gvr schema.G
 		func() error { return checkConversionWebhook(gvr, obj) },
 		func() error { return checkPodTemplate(obj) },
 		func() error { return checkClaimedVolumes(ctx, cs, obj, ns) },
+		func() error { return checkServiceAccountTokens(ctx, cs, obj, ns) },
 	} {
 		if err := check(); err != nil {
 			return fmt.Errorf("the object the API server would store for this apply, after merging it "+
