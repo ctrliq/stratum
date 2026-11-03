@@ -452,9 +452,10 @@ func TestCheckHandlersReadsTheSharedConfDWithNoHandlers(t *testing.T) {
 }
 
 // The drop-in's path is stratum's, but a file there it did not write may hold
-// an operator's configuration: an apply refuses rather than replace it, as
-// runtime check tells the operator to move it aside.
-func TestApplyHandlersRefusesADropInItDidNotWrite(t *testing.T) {
+// an operator's configuration: RequireOwnDropIn, which runtime apply runs,
+// refuses to replace it, while a node start, which must not fail on it,
+// replaces it and says so.
+func TestAForeignDropInIsRefusedByApplyAndReplacedByAStart(t *testing.T) {
 	handlersHost(t, true)
 	mine := "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]\nruntime_type = 'io.containerd.kata.v2'\n"
 	if err := os.MkdirAll(filepath.Dir(version.ContainerdRuntimeConfD), 0o755); err != nil {
@@ -463,11 +464,25 @@ func TestApplyHandlersRefusesADropInItDidNotWrite(t *testing.T) {
 	if err := os.WriteFile(version.ContainerdRuntimeConfD, []byte(mine), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true); err == nil || !strings.Contains(err.Error(), "not written by stratum") {
-		t.Fatalf("apply over a foreign drop-in = %v, want a refusal", err)
+	gvisor := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+	if err := RequireOwnDropIn(nil); err != nil {
+		t.Errorf("no handlers = %v, want nothing to refuse", err)
 	}
-	if got, _ := os.ReadFile(version.ContainerdRuntimeConfD); string(got) != mine {
-		t.Errorf("the foreign drop-in became %q", got)
+	if err := RequireOwnDropIn(gvisor); err == nil || !strings.Contains(err.Error(), "not written by stratum") {
+		t.Fatalf("RequireOwnDropIn over a foreign drop-in = %v, want a refusal", err)
+	}
+	var out strings.Builder
+	if _, err := ApplyHandlers(&out, gvisor, false); err != nil {
+		t.Fatalf("a start over a foreign drop-in = %v, want it replaced", err)
+	}
+	if !strings.Contains(out.String(), "was not written by stratum; replacing it") {
+		t.Errorf("a start replaced the foreign drop-in without saying so:\n%s", out.String())
+	}
+	if got, _ := os.ReadFile(version.ContainerdRuntimeConfD); !strings.HasPrefix(string(got), handlersMarker) {
+		t.Errorf("the drop-in after a start = %q, want stratum's", got)
+	}
+	if err := RequireOwnDropIn(gvisor); err != nil {
+		t.Errorf("RequireOwnDropIn over stratum's own drop-in = %v", err)
 	}
 }
 

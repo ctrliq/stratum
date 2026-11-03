@@ -26,12 +26,13 @@ func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 		t.Fatal(err)
 	}
 	var written []map[string]string
-	old, oldLabels, oldImport, oldConfD := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD
+	old, oldLabels, oldImport, oldConfD, oldOwn := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD, requireOwnDropIn
 	t.Cleanup(func() {
-		applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD = old, oldLabels, oldImport, oldConfD
+		applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD, requireOwnDropIn = old, oldLabels, oldImport, oldConfD, oldOwn
 	})
 	requireHandlersImport = func() error { return nil }
 	requireSharedConfD = func() error { return nil }
+	requireOwnDropIn = func(map[string]string) error { return nil }
 	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string) error { return nil }
 	applyHandlers = func(_ io.Writer, h map[string]string, _ bool) (runtime.ApplyHandlersResult, error) {
 		written = append(written, h)
@@ -385,6 +386,26 @@ func TestApplyRuntimeHandlersRefusesASharedConfDThatDoesNotParse(t *testing.T) {
 	requireSharedConfD = func() error { return errors.New("conf.d/broken.toml does not parse") }
 	if _, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: map[string]string{"kata": executable(t)}, Restart: true}); err == nil || !strings.Contains(err.Error(), "broken.toml") {
 		t.Fatalf("apply = %v, want the conf.d refusal", err)
+	}
+	if len(*written) != 0 || !maps.Equal(savedHandlers(t), saved) {
+		t.Errorf("a refused apply wrote %v and saved %v", *written, savedHandlers(t))
+	}
+}
+
+// apply refuses to replace a drop-in stratum did not write, before it writes
+// or saves anything.
+func TestApplyRuntimeHandlersRefusesADropInItDidNotWrite(t *testing.T) {
+	saved := map[string]string{"gvisor": executable(t)}
+	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+	kata := map[string]string{"kata": executable(t)}
+	requireOwnDropIn = func(h map[string]string) error {
+		if !maps.Equal(h, kata) {
+			t.Errorf("checked the drop-in for %v, want the handlers being applied", h)
+		}
+		return errors.New("stratum-runtime.toml was not written by stratum")
+	}
+	if _, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata, Restart: true}); err == nil || !strings.Contains(err.Error(), "not written by stratum") {
+		t.Fatalf("apply = %v, want the foreign drop-in refusal", err)
 	}
 	if len(*written) != 0 || !maps.Equal(savedHandlers(t), saved) {
 		t.Errorf("a refused apply wrote %v and saved %v", *written, savedHandlers(t))

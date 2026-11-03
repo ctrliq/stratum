@@ -10,8 +10,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
@@ -91,6 +93,38 @@ func TestNodeReleaseOfACordonedNodeSaysToUncordonIt(t *testing.T) {
 	}
 	if n, _ := cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{}); !n.Spec.Unschedulable {
 		t.Error("release uncordoned the node; a cordon is the operator's to clear")
+	}
+}
+
+// release reports what it did, removing the startup taint, and never that
+// workloads can schedule: another taint or a cordon may still keep them off.
+// A cordon check that fails still gets the uncordon hint.
+func TestNodeReleaseReportsOnlyTheTaintItRemoved(t *testing.T) {
+	cs, _ := stubNodeGate(t)
+	out, err := runNode(t, "release", "gpu1", "--by", "alice")
+	if err != nil {
+		t.Fatalf("release: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "removed the "+k8sutil.UnverifiedTaint+" taint") || strings.Contains(out, "can now schedule") || strings.Contains(out, "uncordon") {
+		t.Errorf("release of an uncordoned node printed:\n%s", out)
+	}
+
+	if _, err := runNode(t, "hold", "gpu1", "--by", "bob", "--reason", "fan"); err != nil {
+		t.Fatal(err)
+	}
+	gets := 0
+	cs.PrependReactor("get", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if gets++; gets > 1 {
+			return true, nil, errors.New("connection refused")
+		}
+		return false, nil, nil
+	})
+	out, err = runNode(t, "release", "gpu1", "--by", "alice")
+	if err != nil {
+		t.Fatalf("release: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "could not check whether gpu1 is cordoned") || !strings.Contains(out, "stratum kubectl uncordon gpu1") {
+		t.Errorf("release whose cordon check failed printed:\n%s\nwant the uncordon hint", out)
 	}
 }
 

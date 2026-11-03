@@ -70,12 +70,14 @@ func newNodeReleaseCommand() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "released %s: removed the %s taint (verified by %s)\n", args[0], k8sutil.UnverifiedTaint, by)
 			n, err := cs.CoreV1().Nodes().Get(cmd.Context(), args[0], metav1.GetOptions{})
-			if err == nil && n.Spec.Unschedulable {
-				fmt.Fprintf(out, "released %s (verified by %s), but it is still cordoned, as a drain leaves it: run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], by, args[0])
-				return nil
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "WARN: could not check whether %s is cordoned (%v); if a drain cordoned it, run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], err, args[0])
+			case n.Spec.Unschedulable:
+				fmt.Fprintf(out, "%s is still cordoned, as a drain leaves it: run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], args[0])
 			}
-			fmt.Fprintf(out, "released %s: workloads can now schedule onto it (verified by %s)\n", args[0], by)
 			return nil
 		},
 	}

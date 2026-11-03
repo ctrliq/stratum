@@ -37,6 +37,7 @@ var (
 	applyHandlers         = runtime.ApplyHandlers
 	requireHandlersImport = runtime.RequireHandlersImport
 	requireSharedConfD    = runtime.RequireSharedConfDParses
+	requireOwnDropIn      = runtime.RequireOwnDropIn
 	restartContainerd     = runtime.RestartContainerd
 )
 
@@ -53,8 +54,9 @@ var (
 // and refuses o.Handlers and o.Clear: saving them to node.yaml alone would be
 // undone by its next start. Every handler is validated, its binary checked,
 // and containerd's config checked to import the drop-in before anything is
-// written, and every file in the shared conf.d checked to parse, since a
-// restart would stop a working containerd for one that cannot start. The
+// written, every file in the shared conf.d checked to parse, since a restart
+// would stop a working containerd for one that cannot start, and a drop-in
+// stratum did not write refused rather than replaced. The
 // Node's runtime-handler labels follow for the handlers its
 // containerd has loaded, so a RuntimeClass schedules onto the node without
 // waiting for its next start but not before containerd can run the handler;
@@ -90,6 +92,9 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 		return RuntimeApplyResult{}, err
 	}
 	if err := requireSharedConfD(); err != nil {
+		return RuntimeApplyResult{}, err
+	}
+	if err := requireOwnDropIn(want); err != nil {
 		return RuntimeApplyResult{}, err
 	}
 	out := RuntimeApplyResult{Handlers: want, Source: source}
