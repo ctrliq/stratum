@@ -18,8 +18,20 @@ trap finish EXIT
 TAINT=stratum.ciq.com/unverified
 FAKE=/inttest/fake-runtime
 BB=$("$(dirname "$0")/../mirror-images.sh" --list | grep '/busybox:' | cut -d@ -f1)
-taints() { on cp1 "$K get node cp2 -o jsonpath='{.spec.taints}'" 2>/dev/null; }
-tainted() { taints | grep -q "\"key\":\"$TAINT\""; }
+taints() {
+  for _ in 1 2 3 4 5; do
+    on cp1 "$K get node cp2 -o jsonpath='{.spec.taints}'" 2>/dev/null && return 0
+    sleep 2
+  done
+  return 1
+}
+# tainted ends the check when the taints cannot be read, so a failed read is
+# never taken for an untainted node.
+tainted() {
+  local t
+  t=$(taints) || { fail "could not read cp2's taints"; done_testing; exit 1; }
+  grep -q "\"key\":\"$TAINT\"" <<<"$t"
+}
 annotation() { on cp1 "$K get node cp2 -o jsonpath='{.metadata.annotations.stratum\.ciq\.com/$1}'" 2>/dev/null; }
 labels() { on cp1 "$K get node cp2 -o jsonpath='{.metadata.labels}'" 2>/dev/null; }
 
@@ -46,9 +58,11 @@ pass "cp2 joined as a worker"
 # --- what the worker declared ---------------------------------------------------
 assert_contains "the worker registered with its startup taint" \
   "{\"effect\":\"NoSchedule\",\"key\":\"$TAINT\",\"value\":\"true\"}" "$(taints)"
-assert_contains "the worker carries its zone label" '"topology.kubernetes.io/zone":"rack-1"' "$(labels)"
 has_fake() { labels | grep -q '"runtime.stratum.ciq.com/fake":"true"'; }
 wait_for "the worker's runtime handler label" 120 has_fake || fail "no fake handler label: $(labels)"
+# The zone and handler labels land in one patch after the Node registers, so
+# the zone is asserted only once the handler label is there.
+assert_contains "the worker carries its zone label" '"topology.kubernetes.io/zone":"rack-1"' "$(labels)"
 assert_contains "the worker's drop-in declares its runtime handler" "BinaryName = '$FAKE'" \
   "$(on cp2 "cat $ROOT/config/containerd.d/stratum-runtime.toml" 2>/dev/null)"
 
@@ -88,16 +102,23 @@ assert_eq "release cleared the hold" " " "$(annotation held) $(annotation held-r
 
 # --- a restarted worker does not taint itself again -----------------------------
 renewed() { on cp1 "$K -n kube-node-lease get lease cp2 -o jsonpath='{.spec.renewTime}'" 2>/dev/null; }
+heartbeat() { on cp1 "$K get node cp2 -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].lastHeartbeatTime}'" 2>/dev/null; }
 docker stop -t 5 "$HA_PREFIX-cp2" >/dev/null
 # Read after the stop: the old kubelet can renew while it shuts down, so only a
-# renewal after this one is the restarted kubelet's.
+# renewal after this one is the restarted kubelet's. The Lease renews apart
+# from the Node's status, and the Node can stay Ready through a short stop, so
+# the check also waits for the restarted kubelet's first status heartbeat.
 lease_before=$(renewed)
+heartbeat_before=$(heartbeat)
+[[ -n $heartbeat_before ]] || { fail "no Ready heartbeat on cp2 before the restart"; done_testing; exit 1; }
 docker start "$HA_PREFIX-cp2" >/dev/null
 on cp2 ": > /tmp/stratum.log"
 node_up cp2 --worker
 wait_for "the worker to restart" 600 node_started cp2 || { node_log cp2; exit 1; }
 lease_moved() { local now; now=$(renewed); [[ -n $now && $now != "$lease_before" ]]; }
 wait_for "the restarted kubelet to renew its Lease" 300 lease_moved || { node_log cp2; exit 1; }
+heartbeat_moved() { local now; now=$(heartbeat); [[ -n $now && $now != "$heartbeat_before" ]]; }
+wait_for "the restarted kubelet to post the Node's status" 300 heartbeat_moved || { node_log cp2; exit 1; }
 wait_for "2 nodes Ready again" 600 ready_at_least cp1 2 || { on cp1 "$K get nodes -o wide" || true; exit 1; }
 if tainted; then fail "the restarted worker put its startup taint back: $(taints)"; else pass "a restart does not re-arm the startup taint"; fi
 assert_contains "the restarted worker keeps its zone label" '"topology.kubernetes.io/zone":"rack-1"' "$(labels)"
