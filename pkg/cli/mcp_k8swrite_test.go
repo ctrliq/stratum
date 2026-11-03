@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -778,6 +780,57 @@ func TestSecretBearingPodSpecsAreRefused(t *testing.T) {
 			t.Errorf("out = %+v", out)
 		}
 	})
+}
+
+// A workload whose pods would mount a bound service account's token is
+// refused: the container could print the token and pod_logs would return it.
+// The same workload with automountServiceAccountToken: false is applied.
+func TestBoundServiceAccountTokensAreRefused(t *testing.T) {
+	s := newWriteSession(t, true, false)
+
+	if _, err := s.typed.RbacV1().RoleBindings(s.namespace).Create(t.Context(), &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "op-edit"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "edit"},
+		Subjects:   []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: "op", Namespace: s.namespace}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create binding: %v", err)
+	}
+
+	deployment := func(name string, extra map[string]any) map[string]any {
+		spec := map[string]any{
+			"serviceAccountName": "op",
+			"containers":         []any{map[string]any{"name": "c", "image": "busybox"}},
+		}
+		maps.Copy(spec, extra)
+		return map[string]any{
+			"apiVersion": "apps/v1", "kind": "Deployment",
+			"metadata": map[string]any{"name": name, "namespace": s.namespace},
+			"spec": map[string]any{
+				"selector": map[string]any{"matchLabels": map[string]any{"app": name}},
+				"template": map[string]any{
+					"metadata": map[string]any{"labels": map[string]any{"app": name}},
+					"spec":     spec,
+				},
+			},
+		}
+	}
+
+	msg := s.callExpectingError(t, "resource_apply", map[string]any{"manifest": deployment("leak", nil)})
+	for _, want := range []string{`service account "op"`, "RoleBinding " + s.namespace + "/op-edit", "pod_logs"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not name %q", msg, want)
+		}
+	}
+	if _, err := s.typed.AppsV1().Deployments(s.namespace).Get(t.Context(), "leak", metav1.GetOptions{}); !errors.IsNotFound(err) {
+		t.Errorf("the refused Deployment was stored: err = %v", err)
+	}
+
+	var out mcpsrv.ResourceApplyOut
+	s.call(t, "resource_apply", map[string]any{"manifest": deployment("no-token",
+		map[string]any{"automountServiceAccountToken": false})}, &out)
+	if out.Name != "no-token" {
+		t.Errorf("out = %+v", out)
+	}
 }
 
 // A volume that names a Secret for the kubelet to deliver leaks it without
