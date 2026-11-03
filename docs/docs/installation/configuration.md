@@ -164,8 +164,9 @@ tolerates the taint has passed. Release it from a control plane:
 That removes every `stratum.ciq.com/unverified` taint from the Node, records
 who released it, and when, in its `stratum.ciq.com/verified` annotation, as
 `<who>@<time>`, and removes the `stratum.ciq.com/held` and
-`stratum.ciq.com/held-reason` annotations a hold left. `--by` names who, and
-defaults to the user who ran `sudo`.
+`stratum.ciq.com/held-reason` annotations a hold left. `--by` names who. It
+defaults to the user who ran `sudo`, or to the current user, usually `root`,
+when the command did not run through `sudo`.
 `release` refuses a node without the taint; `--force` records it as verified
 anyway. It does not uncordon the node: one drained during a hold stays
 cordoned until `stratum kubectl uncordon gpu-worker-1`, and `release` says so.
