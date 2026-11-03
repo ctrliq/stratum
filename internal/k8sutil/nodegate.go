@@ -93,11 +93,15 @@ func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string,
 		return ReleaseResult{}, err
 	}
 	var removed, read bool
-	var held string
+	var held [2]string
 	n, err := updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
+		// The reason is compared too: the stamp has second precision, so a
+		// re-hold within the same second differs only in its reason. A record
+		// that was cleared is another release, which the taint check decides.
+		rec := [2]string{n.Annotations[HeldAnnotation], n.Annotations[HeldReasonAnnotation]}
 		if !read {
-			held, read = n.Annotations[HeldAnnotation], true
-		} else if n.Annotations[HeldAnnotation] != held {
+			held, read = rec, true
+		} else if rec != held && rec[0] != "" {
 			return fmt.Errorf("release %s: %w", name, ErrHeldMeanwhile)
 		}
 		removed = hasUnverifiedTaint(n)

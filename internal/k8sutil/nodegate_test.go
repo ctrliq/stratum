@@ -163,10 +163,11 @@ func TestNodeGateRefusesANodeReplacedDuringARetry(t *testing.T) {
 	}
 }
 
-// A hold that lands between a release's read and its conflicting update is a
-// newer decision than the release; the retry refuses rather than undo it.
-func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
-	cs := fake.NewClientset(gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil))
+// releaseAcrossAWrite runs a release whose first update conflicts after
+// between has changed the stored node.
+func releaseAcrossAWrite(t *testing.T, start *corev1.Node, between func(*corev1.Node)) (*fake.Clientset, error) {
+	t.Helper()
+	cs := fake.NewClientset(start)
 	updates := 0
 	cs.PrependReactor("update", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
 		updates++
@@ -179,17 +180,49 @@ func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
 			return true, nil, err
 		}
 		n := obj.(*corev1.Node)
-		n.Annotations = map[string]string{HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "fan failure"}
+		between(n)
 		if err := cs.Tracker().Update(nodes, n, ""); err != nil {
 			return true, nil, err
 		}
 		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, "gpu1", errors.New("the object has been modified"))
 	})
-	if _, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); !errors.Is(err, ErrHeldMeanwhile) {
-		t.Fatalf("release across a hold = %v, want ErrHeldMeanwhile", err)
+	_, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime)
+	return cs, err
+}
+
+// A hold that lands between a release's read and its conflicting update is a
+// newer decision than the release; the retry refuses rather than undo it, even
+// when the new hold's stamp equals the old one and only its reason differs.
+func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
+	taint := []corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}
+	for name, start := range map[string]map[string]string{
+		"unheld":     nil,
+		"same stamp": {HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "psu failure"},
+	} {
+		cs, err := releaseAcrossAWrite(t, gateNode(taint, start), func(n *corev1.Node) {
+			n.Annotations = map[string]string{HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "fan failure"}
+		})
+		if !errors.Is(err, ErrHeldMeanwhile) {
+			t.Fatalf("%s: release across a hold = %v, want ErrHeldMeanwhile", name, err)
+		}
+		if n := getNode(t, cs); len(n.Spec.Taints) != 1 || n.Annotations[HeldReasonAnnotation] != "fan failure" || n.Annotations[VerifiedAnnotation] != "" {
+			t.Errorf("%s: the release undid the hold: %+v", name, n)
+		}
 	}
-	if n := getNode(t, cs); len(n.Spec.Taints) != 1 || n.Annotations[HeldReasonAnnotation] != "fan failure" || n.Annotations[VerifiedAnnotation] != "" {
-		t.Errorf("the release undid the hold: %+v", n)
+}
+
+// A release that lands between another release's read and its conflicting
+// update cleared the hold; the retry reports the node as no longer held, not
+// as held meanwhile.
+func TestReleaseNodeAcrossAnotherRelease(t *testing.T) {
+	taint := []corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}
+	start := map[string]string{HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "fan failure"}
+	_, err := releaseAcrossAWrite(t, gateNode(taint, start), func(n *corev1.Node) {
+		n.Spec.Taints = nil
+		n.Annotations = map[string]string{VerifiedAnnotation: "carol@2026-10-31T16:00:01Z"}
+	})
+	if !errors.Is(err, ErrNotHeld) {
+		t.Fatalf("release across another release = %v, want ErrNotHeld", err)
 	}
 }
 
