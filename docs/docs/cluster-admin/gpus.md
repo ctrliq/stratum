@@ -91,7 +91,7 @@ that every node it runs on has a GPU. Patch its DaemonSet for Stratum:
   plugin pod that stays Pending.
 - A toleration for `stratum.ciq.com/unverified`, so the plugin runs on a GPU
   worker that joined with the startup taint and has not been
-  [released](../installation/configuration.md#releasing-a-node) yet. Without
+  [released](../installation/configuration.md#releasing-and-holding-a-node) yet. Without
   it the node never advertises its GPU, and a burn-in job that asks for one
   never schedules. A merge patch replaces the whole list, so the patch keeps
   NVIDIA's own `nvidia.com/gpu` toleration too.
