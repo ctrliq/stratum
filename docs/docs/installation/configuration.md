@@ -204,9 +204,23 @@ are. To move them, drain the node:
 # /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf drain gpu-worker-1 --ignore-daemonsets
 ```
 
+A drain moves only evictable pods: DaemonSet pods and static pods stay on the
+node.
+
 The drain refuses pods with `emptyDir` volumes, CoreDNS among them, and leaves
 them running. Their `emptyDir` data is lost when they move. Check it, and run
 the drain again with `--delete-emptydir-data` only if losing it is acceptable.
+
+CoreDNS has no PodDisruptionBudget. Before you drain a node that runs a CoreDNS
+replica, check that another replica, not Terminating, is Running and Ready on
+another Ready node:
+
+```console
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf -n kube-system get pods -l k8s-app=kube-dns -o wide
+```
+
+If none is, get one serving there first. On a single-node cluster, cluster DNS
+is down from the drain until you uncordon the node.
 
 A drain also cordons the node, and a cordoned node takes no pods, the burn-in
 job included. After the maintenance, uncordon the node while it is still held.

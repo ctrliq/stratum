@@ -117,8 +117,9 @@ func newNodeHoldCommand() *cobra.Command {
 		Long: "Adds the " + k8sutil.UnverifiedTaint + "=true:NoSchedule taint to a node, removes its " + k8sutil.VerifiedAnnotation + " annotation,\n" +
 			"and records who held it and when in the " + k8sutil.HeldAnnotation + " annotation and why in the\n" +
 			k8sutil.HeldReasonAnnotation + " annotation, in one update. Pods already running stay; drain the node to move\n" +
-			"them. A drain also cordons it, which keeps a burn-in job off too: after the maintenance, uncordon it\n" +
-			"while it is still held, run the burn-in, then release it. Run it on a control plane.",
+			"the evictable ones (DaemonSet and static pods stay). A drain also cordons it, which keeps a\n" +
+			"burn-in job off too: after the maintenance, uncordon it while it is still held, run the burn-in,\n" +
+			"then release it. Run it on a control plane.",
 		Args: oneNodeName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := k8sutil.ValidateNodeGateActor(by); err != nil {
@@ -136,11 +137,14 @@ func newNodeHoldCommand() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "held %s: new pods without a toleration for %s no longer schedule onto it, until `stratum node release %s`\n", args[0], k8sutil.UnverifiedTaint, args[0])
-			fmt.Fprintf(out, "pods already running stay; run `%s` to move them, which also cordons it and keeps a burn-in job off: "+
+			fmt.Fprintf(out, "pods already running stay; run `%s` to move the evictable ones (DaemonSet and static pods stay), which also cordons it and keeps a burn-in job off: "+
 				"after the maintenance, run `%s` while it is still held, run the burn-in, then release it\n",
 				kubectlHint("drain "+args[0]+" --ignore-daemonsets"), kubectlHint("uncordon "+args[0]))
 			fmt.Fprintln(out, "a drain refuses pods with emptyDir volumes, CoreDNS among them, and their data is lost when they move: "+
 				"check it, and add --delete-emptydir-data only if losing it is acceptable")
+			fmt.Fprintf(out, "CoreDNS has no PodDisruptionBudget: before the drain, check with `%s` that another replica, not Terminating, "+
+				"is Running and Ready on another Ready node; on a single-node cluster, cluster DNS is down until you uncordon it\n",
+				kubectlHint("-n kube-system get pods -l k8s-app=kube-dns -o wide"))
 			return nil
 		},
 	}
