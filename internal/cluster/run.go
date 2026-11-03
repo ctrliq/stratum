@@ -1492,9 +1492,49 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 // namespace once the socket is up — the airgap contract: the
 // artifact carries its images, so no node ever needs a registry to reach
 // Ready. Idempotent by containerd's own import semantics (matching digests
-// no-op), so restarts re-run it harmlessly.
+// no-op), so restarts re-run it harmlessly. The operator's archives in
+// version.ImagesDropInDir follow, so they are on the node before kubelet starts.
 func importPayloadImages(ctx context.Context) error {
-	return ImportImages(ctx, filepath.Join(version.DataDir, assets.ImagesDir))
+	if err := ImportImages(ctx, filepath.Join(version.DataDir, assets.ImagesDir)); err != nil {
+		return err
+	}
+	importDropInImages(os.Stdout, os.Stderr)
+	return nil
+}
+
+// importDropInImages imports and pins the operator's image archives. Unlike a
+// payload archive, one that fails is skipped with a warning rather than failing
+// kubelet's start: the payload is the node's own, while a bad file an operator
+// dropped must not take every pod on the node down with it.
+func importDropInImages(w, warn io.Writer) {
+	tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
+	if len(tars) == 0 {
+		return
+	}
+	sock := strings.TrimPrefix(version.ContainerdSock, "unix://")
+	ctr := filepath.Join(version.BinDir, "ctr")
+	_ = os.MkdirAll(filepath.Dir(dropInStampPath("")), 0o755)
+	var imported []string
+	for _, tar := range tars {
+		stamp := dropInStampPath(tar)
+		if !stampCurrentAt(tar, stamp) {
+			out, err := exec.Command(ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar).CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(warn, "stratum: warning: skipping %s: import: %v\n%s", tar, err, out)
+				continue
+			}
+			fmt.Fprintf(w, "stratum: imported operator images from %s\n", tar)
+			writeStampAt(tar, stamp)
+		}
+		imported = append(imported, tar)
+	}
+	names, err := assets.ImageNames(imported)
+	if err == nil {
+		err = pinPayloadImages(ctr, sock, names)
+	}
+	if err != nil {
+		fmt.Fprintf(warn, "stratum: warning: pin the operator images in %s: %v\n", version.ImagesDropInDir, err)
+	}
 }
 
 // ImportImages is importPayloadImages pointed at an explicit archive dir —
@@ -1551,23 +1591,33 @@ var importWaitContainerd = waitContainerd
 // stamp lives under the CONFIG dir, not next to the tar: assets.Stage stages
 // the images dir read-only, so a sibling stamp file fails to write silently
 // and every kubelet restart would re-read the whole archive again.
-func stampCurrent(tar string) bool {
+func stampCurrent(tar string) bool { return stampCurrentAt(tar, stampPath(tar)) }
+
+func stampCurrentAt(tar, stamp string) bool {
 	fi, err := os.Stat(tar)
 	if err != nil {
 		return false
 	}
-	b, err := os.ReadFile(stampPath(tar))
+	b, err := os.ReadFile(stamp)
 	return err == nil && string(b) == stampValue(fi)
 }
 
-func writeStamp(tar string) {
+func writeStamp(tar string) { writeStampAt(tar, stampPath(tar)) }
+
+func writeStampAt(tar, stamp string) {
 	if fi, err := os.Stat(tar); err == nil {
-		_ = os.WriteFile(stampPath(tar), []byte(stampValue(fi)), 0o644)
+		_ = os.WriteFile(stamp, []byte(stampValue(fi)), 0o644)
 	}
 }
 
 func stampPath(tar string) string {
 	return filepath.Join(version.K8sConfDir, filepath.Base(tar)+".imported")
+}
+
+// dropInStampPath keeps an operator archive's stamp apart from a payload
+// archive's of the same name, so neither can mark the other imported.
+func dropInStampPath(tar string) string {
+	return filepath.Join(version.K8sConfDir, "images.d", filepath.Base(tar)+".imported")
 }
 
 func stampValue(fi os.FileInfo) string {

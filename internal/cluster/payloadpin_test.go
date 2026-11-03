@@ -113,3 +113,70 @@ func TestImportImagesPinsEveryArchivedName(t *testing.T) {
 		t.Errorf("a workload's own image was pinned; calls:\n%s", log)
 	}
 }
+
+// An operator's archive is imported and pinned like a payload one, once per
+// archive version. One that fails to import is skipped with a warning rather
+// than failing kubelet's start.
+func TestImportDropInImagesImportsPinsAndSkipsAFailure(t *testing.T) {
+	origBin, origConf, origDropIn := version.BinDir, version.K8sConfDir, version.ImagesDropInDir
+	t.Cleanup(func() { version.BinDir, version.K8sConfDir, version.ImagesDropInDir = origBin, origConf, origDropIn })
+	version.BinDir, version.K8sConfDir, version.ImagesDropInDir = t.TempDir(), t.TempDir(), t.TempDir()
+
+	calls := filepath.Join(t.TempDir(), "calls")
+	ls := "REF TYPE DIGEST SIZE PLATFORMS LABELS\n" +
+		"ghcr.io/ctrliq/stratum-fleet-agent:v1 index sha256:a1 30MiB linux/arm64 -\n" +
+		"docker.io/library/nginx:1 index sha256:n1 50MiB linux/arm64 -\n"
+	script := "#!/bin/sh\nshift 4\necho \"$*\" >> " + calls + "\n" +
+		"case \"$*\" in *broken.tar) echo 'ctr: unexpected EOF'; exit 1;; esac\n" +
+		"[ \"$1 $2\" = \"images ls\" ] && printf '" + strings.ReplaceAll(ls, "\n", "\\n") + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(version.BinDir, "ctr"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, index := range map[string]string{
+		"fleet-agent.tar": `{"manifests":[{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1"}}]}`,
+		"broken.tar":      `{"manifests":[{"annotations":{"io.containerd.image.name":"example.com/broken:v1"}}]}`,
+	} {
+		b, err := os.ReadFile(writeImageArchive(t, map[string]string{"index.json": index}, []string{"index.json"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(version.ImagesDropInDir, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out, warn strings.Builder
+	importDropInImages(&out, &warn)
+	b, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(b)
+	for _, want := range []string{
+		"images import " + filepath.Join(version.ImagesDropInDir, "fleet-agent.tar"),
+		"images label ghcr.io/ctrliq/stratum-fleet-agent:v1 io.cri-containerd.pinned=pinned",
+		"images label ghcr.io/ctrliq/stratum-fleet-agent@sha256:a1 io.cri-containerd.pinned=pinned",
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("ctr was never asked to %q; calls:\n%s", want, log)
+		}
+	}
+	if strings.Contains(log, "label docker.io/library/nginx") || strings.Contains(log, "label example.com/broken") {
+		t.Errorf("an image no imported archive carries was pinned; calls:\n%s", log)
+	}
+	if !strings.Contains(warn.String(), "broken.tar") {
+		t.Errorf("warnings = %q, want the archive that failed to import named", warn.String())
+	}
+
+	if err := os.Remove(calls); err != nil {
+		t.Fatal(err)
+	}
+	importDropInImages(&out, &warn)
+	b, err = os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "import "+filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
+		t.Errorf("an unchanged archive was imported again on the next start; calls:\n%s", b)
+	}
+}

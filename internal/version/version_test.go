@@ -190,6 +190,7 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 		{"AdmissionConfigPath", AdmissionConfigPath, filepath.Join(data, "config", "admission-config.yaml")},
 		{"EncryptionConfigPath", EncryptionConfigPath, filepath.Join(data, "pki", "encryption-config.yaml")},
 		{"RegistriesConfig", RegistriesConfig, filepath.Join(conf, "registries.yaml")},
+		{"ImagesDropInDir", ImagesDropInDir, filepath.Join(conf, "images.d")},
 		{"NetConfigPath", NetConfigPath, filepath.Join(data, "pki", "netconfig")},
 		{"CiliumSettingsPath", CiliumSettingsPath, filepath.Join(data, "pki", "cilium.json")},
 		// Moved here from internal/assets and internal/upgrade; the payload

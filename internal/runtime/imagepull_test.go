@@ -74,16 +74,21 @@ func TestKubeletConfigExemptsNothingWithoutAPayloadRegistry(t *testing.T) {
 // test's own directories, and restores the registry stamp afterwards.
 func isolatePayload(t *testing.T) {
 	t.Helper()
-	oldPKI, oldConf, oldData, oldReg := version.PKIDir, version.K8sConfDir, version.DataDir, addons.ImageRegistry
+	oldPKI, oldConf, oldData, oldDropIn, oldReg := version.PKIDir, version.K8sConfDir, version.DataDir, version.ImagesDropInDir, addons.ImageRegistry
 	t.Cleanup(func() {
-		version.PKIDir, version.K8sConfDir, version.DataDir, addons.ImageRegistry = oldPKI, oldConf, oldData, oldReg
+		version.PKIDir, version.K8sConfDir, version.DataDir, version.ImagesDropInDir, addons.ImageRegistry = oldPKI, oldConf, oldData, oldDropIn, oldReg
 	})
 	version.DataDir = t.TempDir()
+	version.ImagesDropInDir = filepath.Join(t.TempDir(), "images.d")
 }
 
 func stageArchive(t *testing.T, name, index string) {
 	t.Helper()
-	dir := filepath.Join(version.DataDir, "images")
+	stageArchiveIn(t, filepath.Join(version.DataDir, "images"), name, index)
+}
+
+func stageArchiveIn(t *testing.T, dir, name, index string) {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -158,5 +163,39 @@ func TestKubeletConfigRefusesAnUnreadablePayloadArchive(t *testing.T) {
 	err := writeKubeletConfig(&nodestate.NodeState{Role: "worker", Hostname: "w1"})
 	if err == nil || !strings.Contains(err.Error(), "addon-images.tar") {
 		t.Errorf("an unreadable payload archive = %v, want an error naming it", err)
+	}
+}
+
+// An operator who stages an image for a node with no registry access puts its
+// archive in images.d. Without an allowlist entry kubelet still asks the
+// registry for it, so the node goes to ImagePullBackOff on an image it holds.
+func TestKubeletConfigExemptsTheOperatorsDropInImages(t *testing.T) {
+	isolatePayload(t)
+	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
+	stageArchive(t, "stratum-images.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum/etcd:3.7.0"}}]}`)
+	stageArchiveIn(t, version.ImagesDropInDir, "fleet-agent.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1.37.1"}}]}`)
+	stageArchiveIn(t, version.ImagesDropInDir, "notes.txt", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"example.com/not-an-archive:v1"}}]}`)
+
+	want := []string{"ghcr.io/ctrliq/stratum/*", "ghcr.io/ctrliq/stratum-fleet-agent"}
+	if got := kubeletAllowlist(t); !slices.Equal(got, want) {
+		t.Errorf("preloadedImagesVerificationAllowlist = %q, want %q", got, want)
+	}
+}
+
+// A bad file the operator dropped must not keep the kubelet from starting: it
+// is skipped, and the operator's other archives are still exempted.
+func TestKubeletConfigSkipsAnUnreadableDropInArchive(t *testing.T) {
+	isolatePayload(t)
+	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
+	stageArchiveIn(t, version.ImagesDropInDir, "broken.tar", "{")
+	stageArchiveIn(t, version.ImagesDropInDir, "fleet-agent.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1.37.1"}}]}`)
+
+	want := []string{"ghcr.io/ctrliq/stratum/*", "ghcr.io/ctrliq/stratum-fleet-agent"}
+	if got := kubeletAllowlist(t); !slices.Equal(got, want) {
+		t.Errorf("preloadedImagesVerificationAllowlist = %q, want %q", got, want)
 	}
 }

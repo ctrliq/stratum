@@ -167,9 +167,12 @@ tlsCipherSuites: [%s]
 // from the node. The exemption covers the payload registry namespace and the
 // repository of every image the staged archives carry: an importer's images
 // sit outside the namespace, and without their own entries kubelet asks the
-// registry for them, which an airgapped node cannot reach. A build with
-// neither renders none, leaving kubelet on its default policy rather than
-// exempting a namespace that is not the payload's.
+// registry for them, which an airgapped node cannot reach. The operator's
+// archives in version.ImagesDropInDir are exempted the same way; one kubelet
+// cannot read is skipped with a warning, since a bad file an operator dropped
+// must not stop the node's kubelet from starting. A build with none of these
+// renders none, leaving kubelet on its default policy rather than exempting a
+// namespace that is not the payload's.
 func payloadImagePullPolicy() (string, error) {
 	var allow []string
 	r := addons.ImageRegistry
@@ -181,6 +184,17 @@ func payloadImagePullPolicy() (string, error) {
 	names, err := assets.ImageNames(archives)
 	if err != nil {
 		return "", fmt.Errorf("list the payload images kubelet must not re-verify: %w", err)
+	}
+	dropIns, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
+	for _, archive := range dropIns {
+		got, err := assets.ArchiveImageNames(archive)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stratum: warning: %s is not exempt from kubelet's pull-credential check: read its image names: %v\n", archive, err)
+			continue
+		}
+		for _, n := range got {
+			names[n] = true
+		}
 	}
 	repos := map[string]bool{}
 	for n := range names {
