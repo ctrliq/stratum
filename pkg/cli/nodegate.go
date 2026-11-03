@@ -139,6 +139,8 @@ func newNodeHoldCommand() *cobra.Command {
 			fmt.Fprintf(out, "pods already running stay; run `%s` to move them, which also cordons it and keeps a burn-in job off: "+
 				"after the maintenance, run `%s` while it is still held, run the burn-in, then release it\n",
 				kubectlHint("drain "+args[0]+" --ignore-daemonsets"), kubectlHint("uncordon "+args[0]))
+			fmt.Fprintln(out, "a drain refuses pods with emptyDir volumes, CoreDNS among them, and their data is lost when they move: "+
+				"check it, and add --delete-emptydir-data only if losing it is acceptable")
 			return nil
 		},
 	}

@@ -163,6 +163,36 @@ func TestNodeGateRefusesANodeReplacedDuringARetry(t *testing.T) {
 	}
 }
 
+// A hold that lands between a release's read and its conflicting update is a
+// newer decision than the release; the retry refuses rather than undo it.
+func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
+	cs := fake.NewClientset(gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil))
+	updates := 0
+	cs.PrependReactor("update", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+		updates++
+		if updates > 1 {
+			return false, nil, nil
+		}
+		nodes := corev1.SchemeGroupVersion.WithResource("nodes")
+		obj, err := cs.Tracker().Get(nodes, "", "gpu1")
+		if err != nil {
+			return true, nil, err
+		}
+		n := obj.(*corev1.Node)
+		n.Annotations = map[string]string{HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "fan failure"}
+		if err := cs.Tracker().Update(nodes, n, ""); err != nil {
+			return true, nil, err
+		}
+		return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, "gpu1", errors.New("the object has been modified"))
+	})
+	if _, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); !errors.Is(err, ErrHeldMeanwhile) {
+		t.Fatalf("release across a hold = %v, want ErrHeldMeanwhile", err)
+	}
+	if n := getNode(t, cs); len(n.Spec.Taints) != 1 || n.Annotations[HeldReasonAnnotation] != "fan failure" || n.Annotations[VerifiedAnnotation] != "" {
+		t.Errorf("the release undid the hold: %+v", n)
+	}
+}
+
 func TestHoldNode(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{foreignTaint}, map[string]string{VerifiedAnnotation: "alice@then", "keep": "me"}))
 	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "  RMA with ops@vendor.example ", gateTime); err != nil {

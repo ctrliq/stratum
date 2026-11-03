@@ -29,6 +29,11 @@ const (
 // startup taint.
 var ErrNotHeld = errors.New("the node does not carry the " + UnverifiedTaint + " taint")
 
+// ErrHeldMeanwhile is ReleaseNode's refusal of a node that someone held
+// between its first read and a conflict retry: releasing it would undo a hold
+// placed after the operator checked the node.
+var ErrHeldMeanwhile = errors.New("the node was held while it was being released, and the release would undo that hold; nothing was changed, check the hold and run again")
+
 // ErrNodeReplaced is the refusal of a release or hold whose node was deleted
 // and registered again while the update was being retried; nothing was
 // changed on the new Node.
@@ -87,8 +92,14 @@ func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string,
 	if err := ValidateNodeGateActor(who); err != nil {
 		return ReleaseResult{}, err
 	}
-	var removed bool
+	var removed, read bool
+	var held string
 	n, err := updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
+		if !read {
+			held, read = n.Annotations[HeldAnnotation], true
+		} else if n.Annotations[HeldAnnotation] != held {
+			return fmt.Errorf("release %s: %w", name, ErrHeldMeanwhile)
+		}
 		removed = hasUnverifiedTaint(n)
 		if !removed && !force {
 			return fmt.Errorf("release %s: %w", name, ErrNotHeld)
