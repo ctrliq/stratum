@@ -235,11 +235,14 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [pods, namespaces, nodes, events, services, configmaps,
-                persistentvolumeclaims, persistentvolumes]
+                persistentvolumeclaims, persistentvolumes, serviceaccounts]
     verbs: [get, list, watch]
   - apiGroups: [""]
     resources: [pods/log]
     verbs: [get]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [rolebindings, clusterrolebindings]
+    verbs: [list]
   - apiGroups: [apps]
     resources: [deployments, statefulsets, daemonsets, replicasets]
     verbs: [get, list, watch]
@@ -247,6 +250,11 @@ rules:
     resources: [jobs, cronjobs]
     verbs: [get, list, watch]
 ```
+
+`resource_apply` reads service accounts and lists role bindings to check
+whether a pod spec would mount the token of an account a binding grants
+anything (see [What it will never do](#what-it-will-never-do)). Without those
+rules it refuses every pod spec it cannot check.
 
 **Secrets are deliberately absent, and the server refuses them anyway.**
 `resource_get` and `resource_list` will not return a Secret at any tier, even
@@ -327,6 +335,23 @@ grant itself more than you gave it:
   `imagePullSecrets` and the volume references need no container at all: the
   kubelet presents the credential to whatever registry the image names, or to
   whatever endpoint the volume names, such as an iSCSI portal's CHAP login.
+- **Applying a workload whose pods mount a bound service account's token** —
+  a pod gets its service account's token unless the pod spec sets
+  `automountServiceAccountToken: false`, or leaves it unset and the account
+  sets it false. When a RoleBinding or
+  ClusterRoleBinding names that account (as a ServiceAccount, by its user name,
+  or through the `system:serviceaccounts:<namespace>` group), the container
+  could print the token and `pod_logs` would return it, so a Deployment,
+  StatefulSet, Job or other template is refused. The check is on the object
+  the apply would store, so an account the manifest leaves out but the
+  existing object keeps is still checked. Bindings to every account or every
+  authenticated user (`system:serviceaccounts`, `system:authenticated`) are not
+  counted: they reach every pod in the cluster. If the account or the bindings
+  cannot be read, the apply is refused. The check sees the bindings at apply
+  time; a binding added later is not caught. A bare Pod that gets a token is
+  refused whether or not its account is bound: admission adds the token as a
+  projected `serviceAccountToken` volume, which the rule above refuses, so a
+  Pod applied here needs `automountServiceAccountToken: false`.
 - **Mounting a claim backed by a node-path volume** — writing a
   PersistentVolume or a claim is already refused, but an operator may have left
   a `hostPath` or `local` PV behind, and mounting a claim bound to one reaches
