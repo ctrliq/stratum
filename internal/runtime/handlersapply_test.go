@@ -504,3 +504,41 @@ func TestRequireSharedConfDParses(t *testing.T) {
 		t.Errorf("a conf.d with %s = %v, want a refusal naming it", bad, err)
 	}
 }
+
+// runtime apply's preflight and runtime check read the shared conf.d through
+// one reader, so they agree: valid files, stratum's registry drop-in and an
+// nvidia-ctk drop-in among them, pass both, and a file that does not parse
+// fails both, by name.
+func TestApplyAndCheckAgreeOnTheSharedConfD(t *testing.T) {
+	handlersHost(t, true)
+	confd := filepath.Dir(version.ContainerdConfD)
+	if err := os.MkdirAll(confd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		filepath.Base(version.ContainerdConfD): "[plugins.'io.containerd.cri.v1.images'.registry]\nconfig_path = '/etc/containerd/certs.d'\n",
+		"99-nvidia.toml": "[plugins.'io.containerd.cri.v1.runtime'.containerd]\ndefault_runtime_name = 'runc'\n" +
+			"[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]\nBinaryName = '/usr/bin/nvidia-container-runtime'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(confd, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RequireSharedConfDParses(); err != nil {
+		t.Errorf("apply's preflight refused a valid conf.d: %v", err)
+	}
+	if got := findings(CheckHandlers(nil), SeverityError); strings.Contains(got, "does not parse") {
+		t.Errorf("check reported a valid conf.d as broken: %s", got)
+	}
+
+	bad := filepath.Join(confd, "broken.toml")
+	if err := os.WriteFile(bad, []byte("[plugins\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSharedConfDParses(); err == nil || !strings.Contains(err.Error(), bad) {
+		t.Errorf("apply's preflight = %v, want a refusal naming %s", err, bad)
+	}
+	if got := findings(CheckHandlers(nil), SeverityError); !strings.Contains(got, bad+" does not parse") {
+		t.Errorf("check = %s, want %s reported as not parsing", got, bad)
+	}
+}
