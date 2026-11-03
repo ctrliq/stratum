@@ -151,25 +151,37 @@ A node cannot declare:
   region labels. Label a node with `stratum kubectl label node` from a control
   plane instead.
 
-### Releasing a node
+### Releasing and holding a node
 
 A node that joins with the `stratum.ciq.com/unverified=true:NoSchedule` taint
-takes no workloads until you release it, for example after a burn-in job that
-tolerates the taint has passed. Release it from a control plane:
+takes no workloads until you release it. Release it once a burn-in job that
+tolerates the taint has passed. Run `release` from a control plane:
 
 ```console
 # /usr/local/bin/stratum node release gpu-worker-1
 ```
 
-That removes every `stratum.ciq.com/unverified` taint from the Node, records
-who released it, and when, in its `stratum.ciq.com/verified` annotation, as
-`<who>@<time>`, and removes the `stratum.ciq.com/held` and
-`stratum.ciq.com/held-reason` annotations a hold left. `--by` names who. It
-defaults to the user who ran `sudo`, or to the current user, usually `root`,
-when the command did not run through `sudo`.
-`release` refuses a node without the taint; `--force` records it as verified
-anyway. It does not uncordon the node: one drained during a hold stays
-cordoned until `stratum kubectl uncordon gpu-worker-1`, and `release` says so.
+`release` makes three changes to the Node. It removes every
+`stratum.ciq.com/unverified` taint. It records who released the node and when
+in the `stratum.ciq.com/verified` annotation, as `<who>@<time>`. It removes the
+`stratum.ciq.com/held` and `stratum.ciq.com/held-reason` annotations that a hold
+left.
+
+`--by` sets who is recorded. It defaults to the user who ran `sudo`, or to the
+current user, usually `root`, without `sudo`. It cannot be empty or contain
+whitespace. The time is in UTC, in RFC 3339 format, for example
+`jane@2026-11-03T14:02:11Z`.
+
+`release` refuses a node without the taint. `--force` records it as verified
+anyway, and says that it removed no taint.
+
+`release` does not uncordon the node. A node drained during a hold stays
+cordoned after the release, and `release` prints a reminder. Uncordon it once
+it is ready for workloads:
+
+```console
+# /usr/local/bin/stratum kubectl uncordon gpu-worker-1
+```
 
 To take a node out of service again, for a repair or a reimage, hold it:
 
@@ -177,15 +189,21 @@ To take a node out of service again, for a repair or a reimage, hold it:
 # /usr/local/bin/stratum node hold gpu-worker-1 --reason "replacing a failed GPU"
 ```
 
-That adds the taint back, removes `stratum.ciq.com/verified`, records who held
-it and when in `stratum.ciq.com/held`, as `<who>@<time>`, and records the
-reason in `stratum.ciq.com/held-reason`. New pods that do not tolerate the
-taint stay off the node; a burn-in job that tolerates it still schedules. Pods
-already running on the node stay; run
-`stratum kubectl drain gpu-worker-1 --ignore-daemonsets` to move them. The
-drain also cordons the node, so after releasing it, run
-`stratum kubectl uncordon gpu-worker-1`. Neither command changes any other
-taint or annotation.
+`hold` adds the taint back and removes `stratum.ciq.com/verified`. It records
+who held the node and when in `stratum.ciq.com/held`, as `<who>@<time>`, and
+the reason in `stratum.ciq.com/held-reason`.
+
+New pods that do not tolerate the taint stay off the node. A burn-in job that
+tolerates it still schedules. Pods already running on the node stay where they
+are. To move them, drain the node:
+
+```console
+# /usr/local/bin/stratum kubectl drain gpu-worker-1 --ignore-daemonsets
+```
+
+A drain also cordons the node, so uncordon it after you release it.
+
+`release` and `hold` change no other taint or annotation.
 
 ## RuntimeClasses
 
