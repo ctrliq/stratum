@@ -120,6 +120,49 @@ func TestNodeGateRetriesAConflict(t *testing.T) {
 	}
 }
 
+// A Node deleted and registered again under the same name between a
+// conflicting update and its retry is a different machine, or a reinstall;
+// the gate refuses it rather than releasing or holding the node the operator
+// did not check.
+func TestNodeGateRefusesANodeReplacedDuringARetry(t *testing.T) {
+	for name, gate := range map[string]func(*fake.Clientset) error{
+		"release": func(cs *fake.Clientset) error {
+			_, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime)
+			return err
+		},
+		"hold": func(cs *fake.Clientset) error {
+			return HoldNode(context.Background(), cs, "gpu1", "bob", "repair", gateTime)
+		},
+	} {
+		first := gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil)
+		first.UID = "first"
+		cs := fake.NewClientset(first)
+		updates := 0
+		cs.PrependReactor("update", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+			updates++
+			if updates > 1 {
+				return false, nil, nil
+			}
+			nodes := corev1.SchemeGroupVersion.WithResource("nodes")
+			if err := cs.Tracker().Delete(nodes, "", "gpu1"); err != nil {
+				return true, nil, err
+			}
+			second := gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil)
+			second.UID = "second"
+			if err := cs.Tracker().Add(second); err != nil {
+				return true, nil, err
+			}
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, "gpu1", errors.New("the object has been modified"))
+		})
+		if err := gate(cs); !errors.Is(err, ErrNodeReplaced) {
+			t.Errorf("%s across a replacement = %v, want ErrNodeReplaced", name, err)
+		}
+		if n := getNode(t, cs); len(n.Spec.Taints) != 1 || len(n.Annotations) != 0 {
+			t.Errorf("%s changed the replacement Node: %+v", name, n)
+		}
+	}
+}
+
 func TestHoldNode(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{foreignTaint}, map[string]string{VerifiedAnnotation: "alice@then", "keep": "me"}))
 	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "  RMA with ops@vendor.example ", gateTime); err != nil {

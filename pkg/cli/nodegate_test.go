@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 // stubNodeGate points `stratum node` at a fake clientset holding one tainted
@@ -62,7 +63,7 @@ func TestNodeHoldThenRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hold: %v\n%s", err, out)
 	}
-	for _, want := range []string{"stratum kubectl drain gpu1", "stratum kubectl uncordon gpu1", "without a toleration"} {
+	for _, want := range []string{kubectlHint("drain gpu1"), kubectlHint("uncordon gpu1"), "while it is still held", "without a toleration"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hold printed:\n%s\nwant %q", out, want)
 		}
@@ -86,7 +87,7 @@ func TestNodeReleaseOfACordonedNodeSaysToUncordonIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("release: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "still cordoned") || !strings.Contains(out, "stratum kubectl uncordon gpu1") || strings.Contains(out, "can now schedule") {
+	if !strings.Contains(out, "still cordoned") || !strings.Contains(out, "stratum kubectl --kubeconfig "+version.AdminConf+" uncordon gpu1") || strings.Contains(out, "can now schedule") {
 		t.Errorf("release of a cordoned node printed:\n%s\nwant the uncordon hint", out)
 	}
 	if n, _ := cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{}); !n.Spec.Unschedulable {
@@ -125,6 +126,8 @@ func TestNodeGateRefusesBadInvocationsBeforeConnecting(t *testing.T) {
 	}{
 		"release without a node": {args: []string{"release"}},
 		"two nodes":              {args: []string{"release", "gpu1", "gpu2"}},
+		"an empty node":          {args: []string{"release", "", "--by", "alice"}, flag: "node name"},
+		"a blank node to hold":   {args: []string{"hold", " ", "--by", "bob", "--reason", "repair"}, flag: "node name"},
 		"hold without a reason":  {args: []string{"hold", "gpu1", "--by", "bob"}, flag: "--reason"},
 		"an empty actor":         {args: []string{"release", "gpu1", "--by", ""}, flag: "--by"},
 		"a spaced actor":         {args: []string{"hold", "gpu1", "--by", "bob smith", "--reason", "x"}, flag: "--by"},

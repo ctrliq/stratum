@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 // nodeGateClientset is the client `stratum node` writes through: this control
@@ -31,6 +33,25 @@ var nodeGateNow = time.Now
 func newNodeCommand() *cobra.Command {
 	return newGroupCommand("node", "Hold a node behind the startup taint, or release it",
 		newNodeReleaseCommand(), newNodeHoldCommand())
+}
+
+// oneNodeName takes exactly one node name and refuses an empty one, as an
+// unset shell variable gives, before the command connects.
+func oneNodeName(cmd *cobra.Command, args []string) error {
+	if err := cobra.ExactArgs(1)(cmd, args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(args[0]) == "" {
+		return errors.New("the node name is empty")
+	}
+	return nil
+}
+
+// kubectlHint is the `stratum kubectl` command for a follow-up step, naming
+// this control plane's admin kubeconfig so a KUBECONFIG set for another
+// cluster does not take it there.
+func kubectlHint(args string) string {
+	return "stratum kubectl --kubeconfig " + version.AdminConf + " " + args
 }
 
 // defaultActor is who a release or hold is recorded as without --by: the
@@ -55,7 +76,7 @@ func newNodeReleaseCommand() *cobra.Command {
 			k8sutil.VerifiedAnnotation + " annotation, and removes the " + k8sutil.HeldAnnotation + " and " + k8sutil.HeldReasonAnnotation + "\n" +
 			"annotations, in one update. It refuses a node without the taint unless --force.\n" +
 			"Run it on a control plane.",
-		Args: cobra.ExactArgs(1),
+		Args: oneNodeName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := k8sutil.ValidateNodeGateActor(by); err != nil {
 				return fmt.Errorf("--by: %w", err)
@@ -78,7 +99,7 @@ func newNodeReleaseCommand() *cobra.Command {
 				fmt.Fprintf(out, "recorded %s as verified by %s; it did not carry the %s taint\n", args[0], by, k8sutil.UnverifiedTaint)
 			}
 			if res.Cordoned {
-				fmt.Fprintf(out, "%s is still cordoned, as a drain leaves it: run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], args[0])
+				fmt.Fprintf(out, "%s is still cordoned, as a drain leaves it: run `%s` once it is ready for workloads\n", args[0], kubectlHint("uncordon "+args[0]))
 			}
 			return nil
 		},
@@ -96,8 +117,9 @@ func newNodeHoldCommand() *cobra.Command {
 		Long: "Adds the " + k8sutil.UnverifiedTaint + "=true:NoSchedule taint to a node, removes its " + k8sutil.VerifiedAnnotation + " annotation,\n" +
 			"and records who held it and when in the " + k8sutil.HeldAnnotation + " annotation and why in the\n" +
 			k8sutil.HeldReasonAnnotation + " annotation, in one update. Pods already running stay; drain the node to move\n" +
-			"them, and uncordon it after `stratum node release`, which does not. Run it on a control plane.",
-		Args: cobra.ExactArgs(1),
+			"them. A drain also cordons it, which keeps a burn-in job off too: after the maintenance, uncordon it\n" +
+			"while it is still held, run the burn-in, then release it. Run it on a control plane.",
+		Args: oneNodeName,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := k8sutil.ValidateNodeGateActor(by); err != nil {
 				return fmt.Errorf("--by: %w", err)
@@ -114,8 +136,9 @@ func newNodeHoldCommand() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "held %s: new pods without a toleration for %s no longer schedule onto it, until `stratum node release %s`\n", args[0], k8sutil.UnverifiedTaint, args[0])
-			fmt.Fprintf(out, "pods already running stay; run `stratum kubectl drain %s --ignore-daemonsets` to move them, "+
-				"which also cordons it: uncordon it with `stratum kubectl uncordon %s` after the release\n", args[0], args[0])
+			fmt.Fprintf(out, "pods already running stay; run `%s` to move them, which also cordons it and keeps a burn-in job off: "+
+				"after the maintenance, run `%s` while it is still held, run the burn-in, then release it\n",
+				kubectlHint("drain "+args[0]+" --ignore-daemonsets"), kubectlHint("uncordon "+args[0]))
 			return nil
 		},
 	}

@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 )
@@ -27,6 +28,11 @@ const (
 // ErrNotHeld is ReleaseNode's refusal of a node that does not carry the
 // startup taint.
 var ErrNotHeld = errors.New("the node does not carry the " + UnverifiedTaint + " taint")
+
+// ErrNodeReplaced is the refusal of a release or hold whose node was deleted
+// and registered again while the update was being retried; nothing was
+// changed on the new Node.
+var ErrNodeReplaced = errors.New("the node was deleted and registered again during the update, and nothing was changed on the new one; check it and run again")
 
 // ValidateNodeGateActor reports whether who can name the actor in a verified
 // or held annotation, which readers split at its last '@': it must be
@@ -138,13 +144,23 @@ func HoldNode(ctx context.Context, cs kubernetes.Interface, name, who, reason st
 
 // updateNodeOnConflict reads the node, applies mutate, and updates it with the
 // read's resourceVersion, starting over from a fresh read when another writer
-// changed it in between. It returns the Node the update wrote.
+// changed it in between. It returns the Node the update wrote. A retry that
+// reads a Node with a different UID refuses with ErrNodeReplaced: the node
+// was deleted and another registered under its name, and the operator acted
+// on the first one.
 func updateNodeOnConflict(ctx context.Context, cs kubernetes.Interface, name string, mutate func(*corev1.Node) error) (*corev1.Node, error) {
 	var updated *corev1.Node
+	var uid types.UID
+	read := false
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		n, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return err
+		}
+		if !read {
+			uid, read = n.UID, true
+		} else if n.UID != uid {
+			return fmt.Errorf("%s: %w", name, ErrNodeReplaced)
 		}
 		if err := mutate(n); err != nil {
 			return err
