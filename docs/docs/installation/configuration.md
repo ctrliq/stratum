@@ -175,13 +175,16 @@ whitespace. The time is in UTC, in RFC 3339 format, for example
 `release` refuses a node without the taint. `--force` records it as verified
 anyway, and says that it removed no taint.
 
-`release` does not uncordon the node. A node drained during a hold stays
-cordoned after the release, and `release` prints a reminder. Uncordon it once
-it is ready for workloads:
+`release` does not uncordon the node. A node still cordoned after the release
+takes no workloads, and `release` prints a reminder. Uncordon it once it is
+ready for workloads:
 
 ```console
-# /usr/local/bin/stratum kubectl uncordon gpu-worker-1
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf uncordon gpu-worker-1
 ```
+
+`--kubeconfig` keeps the command on this cluster when `KUBECONFIG` names
+another one.
 
 To take a node out of service again, for a repair or a reimage, hold it:
 
@@ -198,10 +201,19 @@ tolerates it still schedules. Pods already running on the node stay where they
 are. To move them, drain the node:
 
 ```console
-# /usr/local/bin/stratum kubectl drain gpu-worker-1 --ignore-daemonsets
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf drain gpu-worker-1 --ignore-daemonsets
 ```
 
-A drain also cordons the node, so uncordon it after you release it.
+A drain also cordons the node, and a cordoned node takes no pods, the burn-in
+job included. After the maintenance, uncordon the node while it is still held.
+The taint keeps other workloads off it, and the burn-in job can schedule:
+
+```console
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf uncordon gpu-worker-1
+```
+
+Leave a cordon you set for another reason in place. When the burn-in passes,
+release the node.
 
 `release` and `hold` change no other taint or annotation.
 
