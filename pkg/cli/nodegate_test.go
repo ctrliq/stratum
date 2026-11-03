@@ -10,10 +10,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
@@ -98,9 +96,9 @@ func TestNodeReleaseOfACordonedNodeSaysToUncordonIt(t *testing.T) {
 
 // release reports what it did, removing the startup taint, and never that
 // workloads can schedule: another taint or a cordon may still keep them off.
-// A cordon check that fails still gets the uncordon hint.
+// A forced release of an untainted node reports that it removed nothing.
 func TestNodeReleaseReportsOnlyTheTaintItRemoved(t *testing.T) {
-	cs, _ := stubNodeGate(t)
+	stubNodeGate(t)
 	out, err := runNode(t, "release", "gpu1", "--by", "alice")
 	if err != nil {
 		t.Fatalf("release: %v\n%s", err, out)
@@ -109,22 +107,12 @@ func TestNodeReleaseReportsOnlyTheTaintItRemoved(t *testing.T) {
 		t.Errorf("release of an uncordoned node printed:\n%s", out)
 	}
 
-	if _, err := runNode(t, "hold", "gpu1", "--by", "bob", "--reason", "fan"); err != nil {
-		t.Fatal(err)
-	}
-	gets := 0
-	cs.PrependReactor("get", "nodes", func(clienttesting.Action) (bool, runtime.Object, error) {
-		if gets++; gets > 1 {
-			return true, nil, errors.New("connection refused")
-		}
-		return false, nil, nil
-	})
-	out, err = runNode(t, "release", "gpu1", "--by", "alice")
+	out, err = runNode(t, "release", "gpu1", "--by", "alice", "--force")
 	if err != nil {
-		t.Fatalf("release: %v\n%s", err, out)
+		t.Fatalf("forced release: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "could not check whether gpu1 is cordoned") || !strings.Contains(out, "stratum kubectl uncordon gpu1") {
-		t.Errorf("release whose cordon check failed printed:\n%s\nwant the uncordon hint", out)
+	if !strings.Contains(out, "recorded gpu1 as verified by alice; it did not carry") || strings.Contains(out, "removed the") {
+		t.Errorf("a forced release of an untainted node printed:\n%s\nwant no removal reported", out)
 	}
 }
 

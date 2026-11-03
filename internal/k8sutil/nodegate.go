@@ -61,18 +61,30 @@ func hasUnverifiedTaint(n *corev1.Node) bool {
 	return slices.ContainsFunc(n.Spec.Taints, func(t corev1.Taint) bool { return t.Key == UnverifiedTaint })
 }
 
+// ReleaseResult is what ReleaseNode did: Removed reports that the node
+// carried the startup taint and it was removed, which a forced re-verify of an
+// untainted node does not; Cordoned reports that the released node is still
+// cordoned, as a drain leaves it.
+type ReleaseResult struct {
+	Removed  bool
+	Cordoned bool
+}
+
 // ReleaseNode lets workloads onto a node held behind the startup taint: it
 // removes every taint keyed stratum.ciq.com/unverified, records who released
 // it and when in stratum.ciq.com/verified, and removes the hold record and
 // its reason, in one update against the resourceVersion it read, retried on a
 // conflict. It refuses a node without the taint with ErrNotHeld unless force,
-// which re-verifies it. Every other taint and annotation is left as it was.
-func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string, force bool, now time.Time) error {
+// which re-verifies it. Every other taint and annotation, and a cordon, is
+// left as it was.
+func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string, force bool, now time.Time) (ReleaseResult, error) {
 	if err := ValidateNodeGateActor(who); err != nil {
-		return err
+		return ReleaseResult{}, err
 	}
-	return updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
-		if !hasUnverifiedTaint(n) && !force {
+	var removed bool
+	n, err := updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
+		removed = hasUnverifiedTaint(n)
+		if !removed && !force {
 			return fmt.Errorf("release %s: %w", name, ErrNotHeld)
 		}
 		n.Spec.Taints = slices.DeleteFunc(n.Spec.Taints, func(t corev1.Taint) bool { return t.Key == UnverifiedTaint })
@@ -84,6 +96,10 @@ func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string,
 		delete(n.Annotations, HeldReasonAnnotation)
 		return nil
 	})
+	if err != nil {
+		return ReleaseResult{}, err
+	}
+	return ReleaseResult{Removed: removed, Cordoned: n.Spec.Unschedulable}, nil
 }
 
 // HoldNode keeps new workloads off a node until it is released again: it
@@ -102,7 +118,7 @@ func HoldNode(ctx context.Context, cs kubernetes.Interface, name, who, reason st
 	if err := ValidateHoldReason(reason); err != nil {
 		return err
 	}
-	return updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
+	_, err := updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
 		hold := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}
 		if i := slices.IndexFunc(n.Spec.Taints, func(t corev1.Taint) bool { return hold.MatchTaint(&t) }); i >= 0 {
 			n.Spec.Taints[i].Value = hold.Value
@@ -117,13 +133,15 @@ func HoldNode(ctx context.Context, cs kubernetes.Interface, name, who, reason st
 		n.Annotations[HeldReasonAnnotation] = strings.TrimSpace(reason)
 		return nil
 	})
+	return err
 }
 
 // updateNodeOnConflict reads the node, applies mutate, and updates it with the
 // read's resourceVersion, starting over from a fresh read when another writer
-// changed it in between.
-func updateNodeOnConflict(ctx context.Context, cs kubernetes.Interface, name string, mutate func(*corev1.Node) error) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+// changed it in between. It returns the Node the update wrote.
+func updateNodeOnConflict(ctx context.Context, cs kubernetes.Interface, name string, mutate func(*corev1.Node) error) (*corev1.Node, error) {
+	var updated *corev1.Node
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		n, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -131,7 +149,8 @@ func updateNodeOnConflict(ctx context.Context, cs kubernetes.Interface, name str
 		if err := mutate(n); err != nil {
 			return err
 		}
-		_, err = cs.CoreV1().Nodes().Update(ctx, n, metav1.UpdateOptions{})
+		updated, err = cs.CoreV1().Nodes().Update(ctx, n, metav1.UpdateOptions{})
 		return err
 	})
+	return updated, err
 }

@@ -8,16 +8,17 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
 // nodeGateClientset is the client `stratum node` writes through: this control
-// plane's admin.conf.
+// plane's internal admin kubeconfig, super-admin.conf when it exists, else
+// admin.conf (NodeAdminClientset). The API server's audit log records that
+// shared identity, so the --by annotation is the record of who acted.
 var nodeGateClientset = func() (kubernetes.Interface, error) {
-	cs, err := k8sutil.AdminClientset()
+	cs, err := NodeAdminClientset()
 	if err != nil {
 		return nil, fmt.Errorf("%w; run `stratum node` on a control plane", err)
 	}
@@ -63,19 +64,20 @@ func newNodeReleaseCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := k8sutil.ReleaseNode(cmd.Context(), cs, args[0], by, force, nodeGateNow()); err != nil {
+			res, err := k8sutil.ReleaseNode(cmd.Context(), cs, args[0], by, force, nodeGateNow())
+			if err != nil {
 				if errors.Is(err, k8sutil.ErrNotHeld) {
 					return fmt.Errorf("%w; pass --force to record it as verified anyway", err)
 				}
 				return err
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "released %s: removed the %s taint (verified by %s)\n", args[0], k8sutil.UnverifiedTaint, by)
-			n, err := cs.CoreV1().Nodes().Get(cmd.Context(), args[0], metav1.GetOptions{})
-			switch {
-			case err != nil:
-				fmt.Fprintf(out, "WARN: could not check whether %s is cordoned (%v); if a drain cordoned it, run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], err, args[0])
-			case n.Spec.Unschedulable:
+			if res.Removed {
+				fmt.Fprintf(out, "released %s: removed the %s taint (verified by %s)\n", args[0], k8sutil.UnverifiedTaint, by)
+			} else {
+				fmt.Fprintf(out, "recorded %s as verified by %s; it did not carry the %s taint\n", args[0], by, k8sutil.UnverifiedTaint)
+			}
+			if res.Cordoned {
 				fmt.Fprintf(out, "%s is still cordoned, as a drain leaves it: run `stratum kubectl uncordon %s` once it is ready for workloads\n", args[0], args[0])
 			}
 			return nil

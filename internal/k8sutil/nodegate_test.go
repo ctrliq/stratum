@@ -43,8 +43,12 @@ func TestReleaseNode(t *testing.T) {
 		{Key: UnverifiedTaint, Effect: corev1.TaintEffectNoExecute},
 	}
 	cs := fake.NewClientset(gateNode(unverified, map[string]string{HeldAnnotation: "ops@then", HeldReasonAnnotation: "reimage", "keep": "me"}))
-	if err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
+	res, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !res.Removed || res.Cordoned {
+		t.Errorf("release = %+v, want the taint removed and no cordon", res)
 	}
 	n := getNode(t, cs)
 	if len(n.Spec.Taints) != 1 || n.Spec.Taints[0] != foreignTaint {
@@ -62,15 +66,19 @@ func TestReleaseNode(t *testing.T) {
 
 func TestReleaseNodeRefusesANodeThatIsNotHeld(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{foreignTaint}, nil))
-	err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime)
+	_, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime)
 	if !errors.Is(err, ErrNotHeld) {
 		t.Fatalf("release of an untainted node = %v, want ErrNotHeld", err)
 	}
 	if _, ok := getNode(t, cs).Annotations[VerifiedAnnotation]; ok {
 		t.Error("a refused release wrote the verified annotation")
 	}
-	if err := ReleaseNode(context.Background(), cs, "gpu1", "alice", true, gateTime); err != nil {
+	res, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", true, gateTime)
+	if err != nil {
 		t.Fatalf("forced release: %v", err)
+	}
+	if res.Removed {
+		t.Errorf("forced release of an untainted node = %+v, want nothing reported removed", res)
 	}
 	n := getNode(t, cs)
 	if n.Annotations[VerifiedAnnotation] == "" || len(n.Spec.Taints) != 1 {
@@ -101,7 +109,7 @@ func TestNodeGateRetriesAConflict(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	if err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
+	if _, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
 		t.Fatalf("release across a conflict: %v", err)
 	}
 	if updates != 2 {
@@ -145,10 +153,10 @@ func TestNodeGateRefusals(t *testing.T) {
 	cs := fake.NewClientset(gateNode(nil, nil))
 	ctx := context.Background()
 	for name, err := range map[string]error{
-		"release with no actor":       ReleaseNode(ctx, cs, "gpu1", "", true, gateTime),
-		"release with a spaced actor": ReleaseNode(ctx, cs, "gpu1", "alice smith", true, gateTime),
+		"release with no actor":       releaseErr(ReleaseNode(ctx, cs, "gpu1", "", true, gateTime)),
+		"release with a spaced actor": releaseErr(ReleaseNode(ctx, cs, "gpu1", "alice smith", true, gateTime)),
 		"hold with no reason":         HoldNode(ctx, cs, "gpu1", "bob", "  ", gateTime),
-		"release of a missing node":   ReleaseNode(ctx, cs, "absent", "alice", true, gateTime),
+		"release of a missing node":   releaseErr(ReleaseNode(ctx, cs, "absent", "alice", true, gateTime)),
 	} {
 		if err == nil {
 			t.Errorf("%s succeeded", name)
@@ -171,7 +179,7 @@ func TestHoldNodeAddsNoScheduleBesideASofterStartupTaint(t *testing.T) {
 	if n := getNode(t, cs); len(n.Spec.Taints) != 2 || n.Spec.Taints[0] != soft || n.Spec.Taints[1] != hold {
 		t.Errorf("taints after hold = %+v, want %+v and %+v", n.Spec.Taints, soft, hold)
 	}
-	if err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
+	if _, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime); err != nil {
 		t.Fatal(err)
 	}
 	if n := getNode(t, cs); len(n.Spec.Taints) != 0 {
@@ -190,5 +198,22 @@ func TestHoldNodeSetsTheStartupTaintsValue(t *testing.T) {
 	hold := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}
 	if n := getNode(t, cs); len(n.Spec.Taints) != 1 || n.Spec.Taints[0] != hold {
 		t.Errorf("taints after hold = %+v, want only %+v", n.Spec.Taints, hold)
+	}
+}
+
+func releaseErr(_ ReleaseResult, err error) error { return err }
+
+// A released node that a drain cordoned is reported as still cordoned, and
+// the cordon is left for the operator.
+func TestReleaseNodeReportsACordon(t *testing.T) {
+	n := gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil)
+	n.Spec.Unschedulable = true
+	cs := fake.NewClientset(n)
+	res, err := ReleaseNode(context.Background(), cs, "gpu1", "alice", false, gateTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Removed || !res.Cordoned || !getNode(t, cs).Spec.Unschedulable {
+		t.Errorf("release of a cordoned node = %+v, want the taint removed, the cordon reported and kept", res)
 	}
 }
