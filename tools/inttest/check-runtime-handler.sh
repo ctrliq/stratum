@@ -123,7 +123,7 @@ $K delete pod rh-fake rh-fake2 --wait=true --timeout=60s >/dev/null 2>&1 || true
 config "{}" "[]"
 out=$("$STRATUM" runtime apply 2>&1) || fail "stratum runtime apply with no handlers failed: $out"
 if [[ -e $DROPIN ]]; then fail "the drop-in is still there with no handlers: $(cat "$DROPIN")"; else pass "removing the last handler removes the drop-in"; fi
-none() { ! labels | grep -q 'runtime.stratum.ciq.com/'; }
+none() { local l; l=$(labels) || return 1; [[ $l == *'"kubernetes.io/hostname"'* && $l != *'runtime.stratum.ciq.com/'* ]]; }
 wait_for "the handler labels to go" 120 none || fail "handler labels left: $(labels)"
 if out=$(runtime_check); then pass "stratum runtime check passes with no handlers"; else fail "check with no handlers: $out"; fi
 
