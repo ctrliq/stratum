@@ -204,6 +204,10 @@ are. To move them, drain the node:
 # /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf drain gpu-worker-1 --ignore-daemonsets
 ```
 
+The drain refuses pods with `emptyDir` volumes, CoreDNS among them, and leaves
+them running. Their `emptyDir` data is lost when they move. Check it, and run
+the drain again with `--delete-emptydir-data` only if losing it is acceptable.
+
 A drain also cordons the node, and a cordoned node takes no pods, the burn-in
 job included. After the maintenance, uncordon the node while it is still held.
 The taint keeps other workloads off it, and the burn-in job can schedule:
