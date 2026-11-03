@@ -75,8 +75,10 @@ Device plugins register through the kubelet's device-plugin socket, and GPU
 metrics exporters read its pod-resources socket. On a labelled SELinux node, a
 `container_t` pod cannot connect to either, so such a pod runs as `spc_t` or
 with `privileged: true` (see [Containers](../installation/configuration.md#containers)).
-Either one gives the pod the host's full access, so keep these pods in a
-namespace of their own:
+`spc_t` lifts SELinux confinement and leaves the pod's other restrictions in
+place. `privileged: true` goes further and lifts those too, with every
+capability and the host's devices. Either one weakens the pod's isolation from
+the host, so keep these pods in a namespace of their own:
 
 - The `baseline` and `restricted` Pod Security levels refuse both. Stratum sets
   no cluster-wide level, so a namespace enforces one only when it is labelled

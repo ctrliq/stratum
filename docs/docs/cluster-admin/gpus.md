@@ -56,6 +56,10 @@ already-joined worker the handler without restarting it:
 # /usr/local/bin/stratum runtime apply --runtime-handler nvidia=/usr/bin/nvidia-container-runtime
 ```
 
+`--runtime-handler` replaces the handlers the worker saved; it does not add
+to them. On a worker that already has other handlers, give each of them with
+its own `--runtime-handler` too, or `apply` removes them and their labels.
+
 If `apply` reports that containerd has not loaded the handlers, run
 `sudo /usr/local/bin/stratum runtime restart`. Running containers keep running
 while containerd restarts.
@@ -102,7 +106,7 @@ that every node it runs on has a GPU. Patch its DaemonSet for Stratum:
   --type merge -p '{"spec":{"template":{"spec":{"runtimeClassName":"nvidia","nodeSelector":{"runtime.stratum.ciq.com/nvidia":"true"},"tolerations":[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"},{"key":"stratum.ciq.com/unverified","operator":"Exists","effect":"NoSchedule"}],"securityContext":{"seLinuxOptions":{"type":"spc_t"}}}}}}'
 ```
 
-A pod that runs as `spc_t` has the host's full access; see
+SELinux does not confine a pod that runs as `spc_t`; see
 [Pods that use the kubelet's sockets](hardening.md#pods-that-use-the-kubelets-sockets).
 
 Use v0.17.4 or newer. On GPUs with unified memory, such as the DGX Spark's
@@ -166,15 +170,21 @@ A GPU metrics exporter such as NVIDIA's DCGM exporter reads the kubelet's
 pod-resources API to label each metric with the pod that uses the GPU. On
 Stratum that socket is under the kubelet's root directory,
 `/var/lib/stratum/kubelet/pod-resources`, not `/var/lib/kubelet/pod-resources`.
-Set the exporter's Helm value `kubeletPath` to it:
+Set the exporter's Helm value `kubeletPath` to it. Like the device plugin, the
+exporter also needs `runtimeClassName: nvidia`, for the driver libraries, and a
+`nodeSelector` on the handler's label, so it runs only on the GPU nodes. The
+chart leaves both empty:
 
 ```yaml
+runtimeClassName: nvidia
+nodeSelector:
+  runtime.stratum.ciq.com/nvidia: "true"
 kubeletPath: /var/lib/stratum/kubelet/pod-resources
 ```
 
-On the default path the exporter still runs and exports metrics, but none of
-them carry a `pod` or `namespace` label, and it logs no error. On an SELinux
-node it also needs to run as `spc_t`, like the device plugin.
+On the default `kubeletPath` the exporter still runs and exports metrics, but
+none of them carry a `pod` or `namespace` label, and it logs no error. On an
+SELinux node it also needs to run as `spc_t`, like the device plugin.
 
 ## Two traps for a model server
 
@@ -185,12 +195,15 @@ the node's only GPU, the new pod cannot schedule
 finishes. Set `spec.strategy.type: Recreate` on a Deployment whose pods each
 take a whole GPU.
 
-**On a unified-memory host, set a memory limit.** A DGX Spark reports its whole
-128 GB as GPU memory. An inference server that allocates too much does not get
-a GPU out-of-memory error: the host runs out of memory, and the machine can go
-down. A `resources.limits.memory` on the pod turns that into an OOM-killed
-container. Size it below what the host needs to stay up; on a 128 GB DGX Spark,
-`100Gi` left enough for the node. Run one model server per host.
+**On a unified-memory host, budget the model server's memory.** A DGX Spark
+reports its whole 128 GB as GPU memory. An inference server that allocates too
+much does not get a GPU out-of-memory error: the host runs out of memory, and
+the machine can go down. A `resources.limits.memory` on the pod does not
+prevent that on its own. GPU allocations may not be charged to the pod's
+memory cgroup, so they can grow past the limit. Cap what the server allocates
+instead, with its model size and its context or KV-cache budget, and leave the
+host room to stay up. Run one model server per host. A memory limit still
+bounds the server's other allocations.
 
 A Deployment that does both:
 
@@ -225,7 +238,8 @@ spec:
 ```
 
 `OLLAMA_CONTEXT_LENGTH` caps the default context, which Ollama otherwise sizes
-from the roughly 121 GiB the GB10 reports as GPU memory.
+from the roughly 121 GiB the GB10 reports as GPU memory. It is the budget that
+keeps the server's GPU allocations down; the `100Gi` limit bounds the rest.
 
 ## Moving from `nvidia-ctk`
 
@@ -235,15 +249,34 @@ you applied yourself, keeps working. Once you declare the handler in step 1,
 defines the `nvidia` runtime too. To move it to the steps above:
 
 1. Declare the handler and the RuntimeClass as in
-   [step 1](#1-declare-the-handler-and-its-runtimeclass). Stratum takes over a
-   RuntimeClass named `nvidia` that you applied, and adds its node selector
-   within a few minutes. A
-   RuntimeClass's handler cannot change, so if yours names a handler other
-   than `nvidia`, delete it first.
-2. Remove `/etc/containerd/conf.d/99-nvidia.toml`, then run
+   [step 1](#1-declare-the-handler-and-its-runtimeclass).
+2. Delete the `nvidia` RuntimeClass you applied. Stratum leaves a RuntimeClass
+   it did not publish as it is, so yours would keep scheduling GPU pods onto
+   nodes without the handler. Stratum publishes its own, with the node
+   selector, within a few minutes, and the `get` prints that selector once it
+   is there:
+
+    ```console
+    # /usr/local/bin/stratum kubectl delete runtimeclass nvidia
+    # /usr/local/bin/stratum kubectl get runtimeclass nvidia -o jsonpath='{.scheduling.nodeSelector}{"\n"}'
+    ```
+
+    Running pods keep running. Until the new class is there, a new pod that
+    names it is refused.
+3. Check whether the file makes `nvidia` containerd's default runtime:
+
+    ```console
+    # grep default_runtime_name /etc/containerd/conf.d/99-nvidia.toml
+    ```
+
+    If it does, GPU pods that do not name a RuntimeClass run under NVIDIA's
+    runtime now, and their replacements run under `runc`, without the driver
+    libraries, once the file is gone. Set `runtimeClassName: nvidia` on those
+    workloads' pod templates first.
+4. Remove `/etc/containerd/conf.d/99-nvidia.toml`, then run
    `sudo /usr/local/bin/stratum runtime restart` and
    `sudo /usr/local/bin/stratum runtime check`.
-3. Once `check` passes, the node carries `runtime.stratum.ciq.com/nvidia=true`.
+5. Once `check` passes, the node carries `runtime.stratum.ciq.com/nvidia=true`.
    Patch your device plugin's DaemonSet as in
    [step 2](#2-install-the-device-plugin). Patching before the label is there
    takes the plugin off the node, because its new node selector does not
