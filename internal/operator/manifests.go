@@ -134,6 +134,11 @@ type manifestDeployer struct {
 	// message logged for that, so a held port is logged once, not per pass.
 	yielded   bool
 	lastYield string
+	// foreignClasses names the RuntimeClasses spec.runtimeClasses declares
+	// that the cluster already has and are not Stratum's (foreignRuntimeClass);
+	// foreignRefs are the ones the file being applied declared.
+	foreignClasses map[string]bool
+	foreignRefs    []objRef
 }
 
 type manifestFileState struct {
@@ -307,7 +312,9 @@ func (d *manifestDeployer) reconcileManifests(ctx context.Context, vip, selfIP s
 		prev, seen := d.state[path]
 		unchanged := seen && prev.sum == sum && now.Sub(prev.lastApply) < manifestResync
 		d.yielded = false
+		d.foreignRefs = nil
 		refs, n, err := d.applyManifestFile(ctx, data, stack, !unchanged)
+		loose = append(loose, d.foreignRefs...)
 		if err != nil {
 			log.Printf("manifests: apply %s: %v", path, err)
 			pruneReady = false // never prune on a pass that failed to read intent
@@ -467,6 +474,20 @@ func (d *manifestDeployer) applyManifestFile(ctx context.Context, data []byte, s
 			labels[group+"/stack"] = stack
 			obj.SetLabels(labels)
 		}
+		if stack == addons.RuntimeClassStack {
+			foreign := d.foreignClasses[obj.GetName()]
+			if apply {
+				var err error
+				if foreign, err = d.foreignRuntimeClass(ctx, obj); err != nil {
+					return refs, count, err
+				}
+			}
+			if foreign {
+				d.foreignRefs = append(d.foreignRefs, refOf(obj))
+				count++
+				continue
+			}
+		}
 		refs = append(refs, refOf(obj))
 		if apply {
 			if err := d.recordBundledOwnership(ctx, stack, refOf(obj)); err != nil {
@@ -481,6 +502,47 @@ func (d *manifestDeployer) applyManifestFile(ctx context.Context, data []byte, s
 		}
 		count++
 	}
+}
+
+// foreignRuntimeClass reports whether obj, a RuntimeClass spec.runtimeClasses
+// declares, names one the cluster already has that is not Stratum's: one
+// without its runtime-classes stack label, such as the class a GPU operator
+// installs for the same handler. Stratum leaves that class alone, logging
+// once per name, and records it in foreignClasses for the passes that do not
+// apply: applying over it would take it over and delete it when the name
+// leaves the list, and one with another handler, which a RuntimeClass cannot
+// change, would fail every pass and stop pruning everywhere. The class counts
+// as declared, so the stack still prunes, and joins the pass's loose refs
+// (foreignRefs) rather than the stack's: it is kept out of the prune, and an
+// ownership the inventory already records for it, from a class Stratum once
+// published under that name or an apply it recorded but never made, is
+// released as a loose file's is.
+func (d *manifestDeployer) foreignRuntimeClass(ctx context.Context, obj *unstructured.Unstructured) (bool, error) {
+	ri, err := d.manifestResourceFor(obj)
+	if err != nil {
+		return false, err
+	}
+	cur, err := ri.Get(ctx, obj.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		delete(d.foreignClasses, obj.GetName())
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read RuntimeClass %s: %w", obj.GetName(), err)
+	}
+	if cur.GetLabels()[group+"/stack"] == addons.RuntimeClassStack {
+		delete(d.foreignClasses, obj.GetName())
+		return false, nil
+	}
+	if !d.foreignClasses[obj.GetName()] {
+		if d.foreignClasses == nil {
+			d.foreignClasses = map[string]bool{}
+		}
+		d.foreignClasses[obj.GetName()] = true
+		log.Printf("manifests: RuntimeClass %s already exists and is not Stratum's; leaving it as it is (handler %v). "+
+			"Pods naming it run under that class; delete it to have Stratum publish its own", obj.GetName(), cur.Object["handler"])
+	}
+	return true, nil
 }
 
 // applyManifestObject applies a single object, rebuilding the RESTMapper once

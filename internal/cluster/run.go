@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/ctrliq/stratum/internal/addons"
 	"github.com/ctrliq/stratum/internal/assets"
@@ -84,7 +87,11 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState) error
 	if configPath == "" {
 		configPath = DefaultConfigPath
 	}
-	onStart := managedKubeletOnStart(tasks, st.Hostname, restampWhenRegistered)
+	onStart := managedKubeletOnStart(tasks, st.Hostname, controllerKubeletStart(st), func(ctx context.Context, hostname string) {
+		if nodeRegistered(ctx, hostname) {
+			labelOwnNode(ctx, st)
+		}
+	})
 	err := runSupervisor(ctx, procs, supervisor.Options{
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
@@ -189,8 +196,12 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
 		// No admin.conf here: the kubelet stamps its own Node.
-		OnStart: kubeletOnStart(st.Hostname, restampOwnNodeWhenRegistered),
-		ReExec:  UpArgv(version.StratumInstallPath, true, "", ""),
+		OnStart: kubeletOnStart(st.Hostname, workerKubeletStart(ctx, st), func(hostname string) {
+			if ownNodeRegistered(hostname) {
+				labelOwnNode(ctx, st)
+			}
+		}),
+		ReExec: UpArgv(version.StratumInstallPath, true, "", ""),
 	})
 }
 
@@ -200,6 +211,12 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 // deployer's change detection stays quiet across restarts.
 func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 	if err := refuseOrphaningTheDashboard(cfg); err != nil {
+		return err
+	}
+	if err := refuseRuntimeClassesWithoutTheOperator(cfg); err != nil {
+		return err
+	}
+	if err := refuseForeignRuntimeClassFiles(); err != nil {
 		return err
 	}
 	// Cilium's apiserver address is left as a sentinel: the operator fills it
@@ -222,6 +239,9 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 	}
 	if cfg.DashboardEnabled() {
 		stacks[dashboardFile] = addons.RenderDashboard(cfg.DashboardSettings())
+	}
+	if len(cfg.Spec.RuntimeClasses) > 0 {
+		stacks[runtimeClassFile] = addons.RenderRuntimeClasses(cfg.Spec.RuntimeClasses)
 	}
 	imported, err := renderImporterStacks(st)
 	if err != nil {
@@ -263,8 +283,9 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 }
 
 const (
-	localPathFile = "local-path/local-path.yaml"
-	dashboardFile = addons.DashboardStack + "/dashboard.yaml"
+	localPathFile    = "local-path/local-path.yaml"
+	dashboardFile    = addons.DashboardStack + "/dashboard.yaml"
+	runtimeClassFile = addons.RuntimeClassStack + "/runtime-classes.yaml"
 )
 
 // refuseOrphaningTheDashboard refuses spec.operator: false while the dashboard
@@ -280,6 +301,66 @@ func refuseOrphaningTheDashboard(cfg *ClusterConfig) error {
 	return errors.New("spec.operator: false would leave the dashboard running with nothing to prune it or renew its certificate. " +
 		"Set spec.dashboard.enabled: false and restart Stratum with the operator still on, wait until " +
 		"`stratum kubectl get ns " + addons.DashboardNamespace + "` reports NotFound, then turn the operator off")
+}
+
+// refuseRuntimeClassesWithoutTheOperator refuses spec.runtimeClasses with
+// spec.operator: false, which nothing would publish, and spec.operator: false
+// while RuntimeClasses are still staged, which nothing would prune.
+func refuseRuntimeClassesWithoutTheOperator(cfg *ClusterConfig) error {
+	if cfg.OperatorEnabled() {
+		return nil
+	}
+	if len(cfg.Spec.RuntimeClasses) > 0 {
+		return errors.New("spec.runtimeClasses needs the operator, which publishes them: with spec.operator: false nothing would. " +
+			"Remove spec.runtimeClasses, or leave the operator on")
+	}
+	if _, err := os.Stat(filepath.Join(version.ManifestsDir, runtimeClassFile)); err != nil {
+		return nil
+	}
+	return errors.New("spec.operator: false would leave the RuntimeClasses spec.runtimeClasses published with nothing to remove them. " +
+		"Restart Stratum with spec.runtimeClasses removed and the operator still on, wait until " +
+		"`stratum kubectl get runtimeclass` no longer lists them, then turn the operator off")
+}
+
+// refuseForeignRuntimeClassFiles refuses a start while the runtime-classes
+// stack directory holds a manifest Stratum did not stage there: one other than
+// its runtime-classes.yaml, or one without RuntimeClassHeader. Earlier releases
+// staged nothing there, so an administrator may have dropped their own
+// RuntimeClasses in it, and this start would overwrite that file or remove it,
+// and the operator would then delete what it declares.
+func refuseForeignRuntimeClassFiles() error {
+	dir := filepath.Join(version.ManifestsDir, addons.RuntimeClassStack)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var foreign []string
+	for _, e := range entries {
+		if e.IsDir() || (filepath.Ext(e.Name()) != ".yaml" && filepath.Ext(e.Name()) != ".yml") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if path == filepath.Join(version.ManifestsDir, runtimeClassFile) {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.HasPrefix(string(b), addons.RuntimeClassHeader) {
+				continue
+			}
+		}
+		foreign = append(foreign, path)
+	}
+	if len(foreign) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s holds %s, which Stratum did not stage: Stratum now stages spec.runtimeClasses in that directory, "+
+		"and would overwrite or remove what is there, and the operator would then delete the objects it declares. "+
+		"Move them to a directory of their own under %s, which the operator applies as a stack of that name, and start again",
+		dir, strings.Join(foreign, ", "), version.ManifestsDir)
 }
 
 // removeStaleBundledFiles deletes files an earlier start staged under the
@@ -534,7 +615,79 @@ var (
 			fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
 		}
 	}
+
+	reconcileOwnNodeLabels = k8sutil.ReconcileOwnNodeLabels
+
+	// labelOwnNode labels this node's Node by reconcileNodeLabels, as its
+	// kubelet, on every kubelet start of both roles. A label that fails is
+	// retried until it lands or ctx ends (retryUntilApplied), as the
+	// control-plane label is: a node without its handler labels takes none of
+	// its RuntimeClasses' pods, and nothing else would label it before the
+	// next kubelet start. Non-fatal, but logged. Each attempt labels from
+	// node.yaml as it is then, falling back to st: `stratum runtime apply`
+	// changes the handlers under a running supervisor, whose st predates the
+	// change.
+	labelOwnNode = func(ctx context.Context, st *NodeState) {
+		label := func(ctx context.Context) error {
+			cur := st
+			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
+				cur = saved
+			}
+			return reconcileNodeLabels(ctx, cur)
+		}
+		err := label(ctx)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "stratum: label %s: %v; retrying\n", st.Hostname, err)
+		took, ok := retryUntilApplied(ctx, label, func(err error) {
+			fmt.Fprintf(os.Stderr, "stratum: WARN: cannot label %s yet (%v); still retrying — until it lands, "+
+				"pods whose RuntimeClass selects this node's runtime handlers are not scheduled onto it\n", st.Hostname, err)
+		})
+		if ok {
+			fmt.Fprintf(os.Stderr, "stratum: labelled %s after %v\n", st.Hostname, took)
+		}
+	}
+
+	// loadedHandlers narrows a node's declared runtime handlers to those its
+	// running containerd has loaded.
+	loadedHandlers = runtime.LoadedHandlers
+
+	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
+	// register, giving up after timeout.
+	waitOwnNodeRegistered = k8sutil.WaitOwnNodeRegistered
+	stampOwnNode          = k8sutil.StampOwnNode
+	ownNodeTaints         = k8sutil.OwnNodeTaints
+	// ownNodeRegistrationWarnAfter is how long a worker waits for its own
+	// Node before it says it is still waiting; it waits on after. A worker
+	// runs no node-registered task, so this is its one registration wait.
+	ownNodeRegistrationWarnAfter = 5 * time.Minute
+
+	// checkHandlerBinary reports whether a runtime handler's binary is an
+	// executable file.
+	checkHandlerBinary = runtime.CheckHandlerBinary
+
+	// ownNodeRegistered reports, as the kubelet, whether a worker's Node is
+	// registered. It waits briefly: a first join's containerd starts before
+	// the kubelet has a credential or a Node.
+	ownNodeRegistered = func(hostname string) bool {
+		return k8sutil.WaitOwnNodeRegistered(hostname, 10*time.Second) == nil
+	}
 )
+
+// reconcileNodeLabels gives this node's Node its spec.node labels and the
+// label of each runtime handler its containerd has loaded and whose binary is
+// executable, which its RuntimeClasses select nodes by, and removes the rest,
+// from st as its caller has it. A worker restart only warns about a missing
+// binary, so its handler stays unlabelled until a relabel after the binary is
+// installed. It is the one labelling rule for a kubelet or containerd start,
+// `stratum runtime apply` and `stratum runtime restart`.
+func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
+	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
+		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
+	})
+	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
+}
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a
 // worker alike: every kubelet start, including the restart `stratum upgrade`
@@ -547,26 +700,69 @@ var (
 // restamp runs at a time: a crash-looping kubelet would otherwise stack up
 // overlapping restamps, so a start during one drops out and the one in flight
 // stamps.
-func kubeletOnStart(hostname string, restamp func(hostname string)) func(string, int) {
-	var running atomic.Bool
+//
+// Every containerd start calls relabel the same way, apart from restamp. A
+// containerd that restarts without its kubelet, by `stratum registry apply`
+// or the supervisor, loads the runtime-handler drop-in on disk, which may
+// name a handler an apply wrote without restarting, and no kubelet start
+// follows to label the node for it. A nil relabel is never called.
+func kubeletOnStart(hostname string, restamp, relabel func(hostname string)) func(string, int) {
+	onKubelet, onContainerd := singleFlight(hostname, restamp), singleFlight(hostname, relabel)
 	return func(name string, pid int) {
 		fmt.Printf("stratum: started %s (pid %d)\n", name, pid)
-		if name == "kubelet" && running.CompareAndSwap(false, true) {
+		switch name {
+		case "kubelet":
+			onKubelet()
+		case "containerd":
+			onContainerd()
+		}
+	}
+}
+
+// singleFlight runs fn(hostname) in the background each time the returned func
+// is called, unless a run is still in flight. A nil fn never runs.
+func singleFlight(hostname string, fn func(string)) func() {
+	if fn == nil {
+		return func() {}
+	}
+	var running atomic.Bool
+	return func() {
+		if running.CompareAndSwap(false, true) {
 			go func() {
 				defer running.Store(false)
-				restamp(hostname)
+				fn(hostname)
 			}()
 		}
 	}
 }
 
-// managedKubeletOnStart keeps controller restamps under the run group's panic
-// recovery and shutdown join. Starts while a restamp is queued or in progress
-// are coalesced; the supervisor hook itself never waits for the API.
-func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Context, string)) func(string, int) {
+// managedKubeletOnStart is kubeletOnStart for a controller, with its restamps
+// and relabels under the run group's panic recovery and shutdown join. Starts
+// while a run is queued or in progress are coalesced; the supervisor hook
+// itself never waits for the API.
+func managedKubeletOnStart(g *runGroup, hostname string, restamp, relabel func(context.Context, string)) func(string, int) {
+	onKubelet := managedSingleFlight(g, "kubelet restamp", hostname, restamp)
+	onContainerd := managedSingleFlight(g, "containerd relabel", hostname, relabel)
+	return func(name string, pid int) {
+		fmt.Printf("stratum: started %s (pid %d)\n", name, pid)
+		switch name {
+		case "kubelet":
+			onKubelet()
+		case "containerd":
+			onContainerd()
+		}
+	}
+}
+
+// managedSingleFlight is singleFlight as the run-group task named task. A nil
+// fn adds no task.
+func managedSingleFlight(g *runGroup, task, hostname string, fn func(context.Context, string)) func() {
+	if fn == nil {
+		return func() {}
+	}
 	starts := make(chan struct{}, 1)
 	var running atomic.Bool
-	g.add("kubelet restamp", func(ctx context.Context) {
+	g.add(task, func(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
@@ -575,18 +771,77 @@ func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Co
 				func() {
 					defer running.Store(false)
 					if ctx.Err() == nil {
-						restamp(ctx, hostname)
+						fn(ctx, hostname)
 					}
 				}()
 			}
 		}
 	})
-	return func(name string, pid int) {
-		fmt.Printf("stratum: started %s (pid %d)\n", name, pid)
-		if name == "kubelet" && g.ctx.Err() == nil && running.CompareAndSwap(false, true) {
+	return func() {
+		if g.ctx.Err() == nil && running.CompareAndSwap(false, true) {
 			starts <- struct{}{}
 		}
 	}
+}
+
+// controllerKubeletStart is a controller's kubelet-start restamp: once its
+// Node is registered, its version stamp and then its own labels.
+func controllerKubeletStart(st *NodeState) func(context.Context, string) {
+	return func(ctx context.Context, hostname string) {
+		if restampWhenRegistered(ctx, hostname) {
+			labelOwnNode(ctx, st)
+		}
+	}
+}
+
+// workerKubeletStart is a worker's kubelet-start restamp: once its Node is
+// registered, its version stamp, the check of a join's taints, and then its
+// own labels, under the worker's run context.
+func workerKubeletStart(ctx context.Context, st *NodeState) func(string) {
+	return func(hostname string) {
+		if restampOwnNodeWhenRegistered(ctx, hostname) {
+			checkJoinedTaints(ctx, st)
+			labelOwnNode(ctx, st)
+		}
+	}
+}
+
+// checkJoinedTaints warns when a worker that joined with taints finds its
+// registered Node without one of them, once per join
+// (NodeTaintsCheckPending). The kubelet applies registerWithTaints only when
+// it creates the Node, so a node reinstalled and joined again while its old
+// Node is still there re-registers onto that Node untainted, and takes
+// workloads its taints were to hold off. The kubelet may not taint its own
+// Node, so the warning names the fixes a control plane has. A check that
+// cannot read the Node stays pending for the next start.
+func checkJoinedTaints(ctx context.Context, st *NodeState) {
+	if !st.NodeTaintsCheckPending {
+		return
+	}
+	have, err := ownNodeTaints(ctx, st.Hostname)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stratum: check %s carries its declared taints: %v; checking again on the next start\n", st.Hostname, err)
+		return
+	}
+	var missing []string
+	for _, t := range st.NodeTaints {
+		key, value, effect, _ := runtime.SplitTaint(t)
+		want := corev1.Taint{Key: key, Value: value, Effect: corev1.TaintEffect(effect)}
+		if !slices.ContainsFunc(have, func(h corev1.Taint) bool { return want.MatchTaint(&h) && h.Value == want.Value }) {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "stratum: WARN: node %[1]s registered without its declared taints %[2]s: the kubelet applies them only when it creates "+
+			"the Node, and this join registered onto a Node that was already there, so nothing holds workloads off it. From a control plane, "+
+			"taint it with `stratum kubectl taint node %[1]s <taint>`, or delete the Node with `stratum kubectl delete node %[1]s` and restart "+
+			"this worker so it registers again with them\n", st.Hostname, strings.Join(missing, ", "))
+	}
+	if err := nodestate.MutateSave(func(cur *NodeState) error { cur.NodeTaintsCheckPending = false; return nil }, saveState); err != nil {
+		fmt.Fprintf(os.Stderr, "stratum: record that %s checked its taints: %v (non-fatal)\n", st.Hostname, err)
+		return
+	}
+	st.NodeTaintsCheckPending = false
 }
 
 // restampWhenRegistered is the controller's kubelet-start restamp: it
@@ -597,23 +852,41 @@ func managedKubeletOnStart(g *runGroup, hostname string, restamp func(context.Co
 // already there. The wait for a first registration — with the control-plane
 // label that rides with it — belongs to the node-registered task on the run
 // group. A first-boot kubelet that has not registered yet therefore leaves
-// the stamp to the task and stamps nothing itself.
-func restampWhenRegistered(ctx context.Context, hostname string) {
-	if nodeRegistered(ctx, hostname) {
-		stampNode(ctx, hostname)
+// the stamp to the task and stamps nothing itself. It reports whether the node
+// is registered, so the node's own labels can follow without a second check.
+func restampWhenRegistered(ctx context.Context, hostname string) bool {
+	if !nodeRegistered(ctx, hostname) {
+		return false
 	}
+	stampNode(ctx, hostname)
+	return true
 }
 
-func restampOwnNodeWhenRegistered(hostname string) {
-	// A first start waits out TLS bootstrap, which writes the kubeconfig this
-	// reads, and registration.
-	if err := k8sutil.WaitOwnNodeRegistered(hostname, 5*time.Minute); err != nil {
-		fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
-		return
+// restampOwnNodeWhenRegistered stamps a worker's own Node and reports
+// whether the Node is registered, so its labels can follow. A first start
+// waits out TLS bootstrap, which writes the kubeconfig this reads, and
+// registration, until ctx ends: a slow first join must still be labelled for
+// its runtime handlers, or their RuntimeClasses' pods would wait for the next
+// kubelet start. It says so once registration has taken
+// ownNodeRegistrationWarnAfter.
+func restampOwnNodeWhenRegistered(ctx context.Context, hostname string) bool {
+	for warned := false; ; {
+		err := waitOwnNodeRegistered(hostname, ownNodeRegistrationWarnAfter)
+		if err == nil {
+			break
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		if !warned {
+			warned = true
+			fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v; still waiting\n", hostname, err)
+		}
 	}
-	if err := k8sutil.StampOwnNode(hostname); err != nil {
+	if err := stampOwnNode(hostname); err != nil {
 		fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
 	}
+	return true
 }
 
 // postStart starts the controller's post-start housekeeping: the etcd growth
@@ -636,7 +909,7 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// The node-registered task is the one cluster-facing piece: it waits out
 	// the node's registration itself, per tick, so a slow apiserver delays
 	// its ticks, never the loops beside it.
-	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st.Hostname, dashboardHint(cfg, st.NodeIP)) })
+	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st, dashboardHint(cfg, st.NodeIP)) })
 	if cfg.CertRenewEnabled() {
 		g.add("cert renewal", func(ctx context.Context) { certRenewLoop(ctx, st.Hostname) })
 	}
@@ -794,8 +1067,8 @@ func reconcileTask(what string, retry, resync time.Duration, apply func(context.
 }
 
 // nodeRegisteredTask is the controller's ONE node-registered task: it owns
-// the wait for this node's kubelet to register, and the control-plane label
-// and version stamp that ride with it. It is the single waiter: a wait of
+// the wait for this node's kubelet to register, and the control-plane label,
+// version stamp and the node's own spec.node labels that ride with it. It is the single waiter: a wait of
 // its own in the kubelet-start restamp, in postStart, or in a joined-member
 // labelling pkg/cli fires beside the controller (ha.LabelJoinedControlPlane)
 // would each give up on its own schedule. This one waits on one cadence
@@ -813,7 +1086,8 @@ func reconcileTask(what string, retry, resync time.Duration, apply func(context.
 // — an unlabeled control plane is classified a worker by `stratum upgrade
 // --cluster` — and holds until shutdown too: giving up is final for this
 // run, and a late auto-label would contradict the instruction it printed.
-func nodeRegisteredTask(ctx context.Context, hostname string, hint []string) {
+func nodeRegisteredTask(ctx context.Context, st *NodeState, hint []string) {
+	hostname := st.Hostname
 	fmt.Fprintf(os.Stderr, "stratum: waiting up to %v for node %s to register\n", nodeRegistrationGiveUp, hostname)
 	start := time.Now()
 	// The budget covers each API request as well as the waits between them:
@@ -848,6 +1122,7 @@ waitForRegistration:
 			if labelErr != nil {
 				labelUntilApplied(ctx, hostname, labelErr)
 			}
+			labelOwnNode(ctx, st)
 			<-ctx.Done()
 			return
 		}
@@ -871,26 +1146,39 @@ waitForRegistration:
 // labels the node by hand meets an idempotent retry, not a contradiction.
 func labelUntilApplied(ctx context.Context, hostname string, err error) {
 	fmt.Fprintf(os.Stderr, "stratum: label control-plane %s: %v; retrying\n", hostname, err)
+	took, ok := retryUntilApplied(ctx, func(ctx context.Context) error { return labelControlPlane(ctx, hostname) }, func(err error) {
+		fmt.Fprintf(os.Stderr, "stratum: WARN: cannot label %s control-plane yet (%v); still retrying — until it lands, "+
+			"`stratum upgrade --cluster` and `stratum certs rotate-ca --cluster` treat it as a worker; label it by hand with %s=true\n",
+			hostname, err, k8sutil.ControlPlaneLabel)
+	})
+	if ok {
+		fmt.Fprintf(os.Stderr, "stratum: labeled %s control-plane after %v\n", hostname, took)
+	}
+}
+
+// retryUntilApplied calls apply every nodeRegistrationInterval until it
+// succeeds or ctx ends, after a first attempt that failed, and calls warn
+// once with the latest error after it has failed for bindingWarnAfter. It
+// reports how long apply failed for and whether it landed.
+func retryUntilApplied(ctx context.Context, apply func(context.Context) error, warn func(error)) (time.Duration, bool) {
 	failingSince := time.Now()
 	warned := false
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return 0, false
 		case <-time.After(nodeRegistrationInterval):
 		}
-		if err = labelControlPlane(ctx, hostname); err == nil {
-			fmt.Fprintf(os.Stderr, "stratum: labeled %s control-plane after %v\n", hostname, time.Since(failingSince).Round(time.Second))
-			return
+		err := apply(ctx)
+		if err == nil {
+			return time.Since(failingSince).Round(time.Second), true
 		}
 		if ctx.Err() != nil {
-			return
+			return 0, false
 		}
 		if !warned && time.Since(failingSince) >= bindingWarnAfter {
 			warned = true
-			fmt.Fprintf(os.Stderr, "stratum: WARN: cannot label %s control-plane yet (%v); still retrying — until it lands, "+
-				"`stratum upgrade --cluster` and `stratum certs rotate-ca --cluster` treat it as a worker; label it by hand with %s=true\n",
-				hostname, err, k8sutil.ControlPlaneLabel)
+			warn(err)
 		}
 	}
 }

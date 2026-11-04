@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
@@ -72,6 +74,12 @@ type WorkerOptions struct {
 	SELinuxOptOut *bool
 	// DualStack registers a v4,v6 node IP pair on a join (--dual-stack).
 	DualStack bool
+	// Node is --node-label, --node-taint and --runtime-handler. A nil field
+	// was not given. A join lays it over ConfigNode; a restart given a field
+	// replaces the one the worker saved with it.
+	Node NodeSpec
+	// ConfigNode is spec.node from the config file, which only a join reads.
+	ConfigNode NodeSpec
 }
 
 // PrepareWorker runs the worker join flow: discover + pin the CA,
@@ -128,6 +136,16 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		} else if o.PodCIDR != "" && o.PodCIDR != st.PodCIDR {
 			return nil, fmt.Errorf("--pod-cidr %s conflicts with this worker's saved pod CIDR %s", o.PodCIDR, st.PodCIDR)
 		}
+		if err := o.Node.Validate(); err != nil {
+			return nil, fmt.Errorf("worker restart: %w; nothing was saved", err)
+		}
+		if o.Node.Taints != nil && !sameTaints(o.Node.Taints, st.NodeTaints) {
+			return nil, fmt.Errorf("worker restart: --node-taint %s differs from the taints this worker joined with (%s), "+
+				"and a node registers its taints only when it joins; change them from a control plane with "+
+				"`stratum kubectl taint node %s`; nothing was saved",
+				strings.Join(o.Node.Taints, ","), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname)
+		}
+		labels, handlers, replaced := restartNodeFacts(st, o.Node)
 		// A restart keeps the address this worker registered with unless
 		// --node-ip moves it, by the rule every controller start uses: the
 		// saved address outranks $NODE_IP, which says only what the
@@ -193,6 +211,23 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if len(replaced) > 0 {
+			if err := nodestate.Mutate(func(cur *NodeState) error {
+				if o.Node.Labels != nil {
+					cur.NodeLabels = labels
+				}
+				if o.Node.RuntimeHandlers != nil {
+					cur.RuntimeHandlers = handlers
+				}
+				st.NodeLabels, st.RuntimeHandlers = cur.NodeLabels, cur.RuntimeHandlers
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("save worker node facts: %w", err)
+			}
+			for _, line := range replaced {
+				fmt.Printf("stratum: %s\n", line)
+			}
+		}
 		if recordPodCIDR {
 			if err := nodestate.Mutate(func(cur *NodeState) error { cur.PodCIDR = o.PodCIDR; return nil }); err != nil {
 				return nil, fmt.Errorf("save worker pod CIDR: %w", err)
@@ -252,6 +287,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := netcfg.ValidateDomain(o.ClusterDomain); err != nil {
 			return nil, fmt.Errorf("--cluster-domain: %w", err)
 		}
+	}
+	node, err := JoinNodeSpec(o.ConfigNode, o.Node)
+	if err != nil {
+		return nil, fmt.Errorf("worker join: %w", err)
 	}
 	hostname, err := hostHostname()
 	if err != nil {
@@ -348,6 +387,8 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		Server: o.Server, Profile: profileName, CIS: profileName == nodestate.CISProfile, SELinuxOptOut: optOut, DualStack: o.DualStack,
 		ServiceCIDR: o.ServiceCIDR, PodCIDR: o.PodCIDR,
 		ClusterDomain: o.ClusterDomain,
+		NodeLabels:    node.Labels, NodeTaints: node.Taints, RuntimeHandlers: node.RuntimeHandlers,
+		NodeTaintsCheckPending: len(node.Taints) > 0,
 	}
 	// containerd and kubelet configs are RunWorker's, on this start as on
 	// every other.
@@ -359,4 +400,32 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		return nil, err
 	}
 	return st, nil
+}
+
+// restartNodeFacts is the saved labels and runtime handlers, each replaced by
+// the restart's flag when one was given, and a line for every field that
+// changes what the worker saved.
+func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
+	labels, handlers = st.NodeLabels, st.RuntimeHandlers
+	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", FormatKeyValues(labels), FormatKeyValues(flags.Labels)))
+		labels = flags.Labels
+	}
+	if flags.RuntimeHandlers != nil && !maps.Equal(flags.RuntimeHandlers, handlers) {
+		replaced = append(replaced, fmt.Sprintf("--runtime-handler replaces the runtime handlers this worker saved (%s -> %s)", FormatKeyValues(handlers), FormatKeyValues(flags.RuntimeHandlers)))
+		handlers = flags.RuntimeHandlers
+	}
+	return labels, handlers, replaced
+}
+
+// FormatKeyValues renders a map as sorted name=value pairs, "none" when empty.
+func FormatKeyValues(m map[string]string) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
+	}
+	return strings.Join(out, ",")
 }

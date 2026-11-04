@@ -37,6 +37,7 @@ var catalogReadTools = []string{
 	"snapshot_list",
 	"token_list",
 	"registry_check",
+	"runtime_check",
 	"upgrade_plan",
 	"snapshot_restore_copies",
 	"uninstall_preview",
@@ -62,6 +63,7 @@ var catalogWriteTools = []string{
 	"snapshot_prune",
 	"token_create",
 	"registry_apply",
+	"runtime_apply",
 }
 
 // catalogDestructiveTools is every destructive-tier descriptor: absent
