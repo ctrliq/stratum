@@ -174,8 +174,8 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 	// config just written. A changed config reaches a running containerd only
 	// through whoever owns it — `stratum registry apply` (runtime.ApplyRegistry)
 	// or the in-place upgrade's own host reload.
-	if _, err := runtime.EnsureConfig(); err != nil {
-		return fmt.Errorf("prepare containerd config: %w", err)
+	if _, err := runtime.EnsureContainerdConfigs(os.Stdout, st); err != nil {
+		return fmt.Errorf("prepare containerd: %w", err)
 	}
 	if err := prepareWorkerKubelet(st); err != nil {
 		return err

@@ -347,6 +347,7 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		"ConfDir":                   version.ConfDir,
 		"ContainerdConfig":          version.ContainerdConfig,
 		"ContainerdConfD":           version.ContainerdConfD,
+		"ContainerdRuntimeConfD":    version.ContainerdRuntimeConfD,
 		"ContainerdRootDir":         version.ContainerdRootDir,
 		"ContainerdStateDir":        version.ContainerdStateDir,
 		"ControlSocket":             version.ControlSocket,
