@@ -198,9 +198,16 @@ func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
 	for name, start := range map[string]map[string]string{
 		"unheld":     nil,
 		"same stamp": {HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "psu failure"},
+		"same second and reason": {
+			HeldAnnotation:       gateStamp("bob", time.Date(2026, 10, 31, 16, 0, 0, 100_000_000, time.UTC)),
+			HeldReasonAnnotation: "fan failure",
+		},
 	} {
 		cs, err := releaseAcrossAWrite(t, gateNode(taint, start), func(n *corev1.Node) {
-			n.Annotations = map[string]string{HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "fan failure"}
+			n.Annotations = map[string]string{
+				HeldAnnotation:       gateStamp("bob", time.Date(2026, 10, 31, 16, 0, 0, 0, time.UTC)),
+				HeldReasonAnnotation: "fan failure",
+			}
 		})
 		if !errors.Is(err, ErrHeldMeanwhile) {
 			t.Fatalf("%s: release across a hold = %v, want ErrHeldMeanwhile", name, err)

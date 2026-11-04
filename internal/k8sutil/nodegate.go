@@ -17,7 +17,7 @@ import (
 )
 
 // HeldAnnotation records who held a node behind the startup taint and when,
-// as <who>@<RFC3339> like VerifiedAnnotation; HeldReasonAnnotation records
+// as <who>@<RFC3339 with nanoseconds> like VerifiedAnnotation; HeldReasonAnnotation records
 // why. The reason is free text, so it has an annotation of its own rather
 // than a place in a value readers split.
 const (
@@ -61,9 +61,11 @@ func ValidateHoldReason(reason string) error {
 	return nil
 }
 
-// gateStamp is the <who>@<RFC3339> the gate annotations carry.
+// gateStamp is the <who>@<RFC3339 with nanoseconds> the gate annotations
+// carry. The fraction keeps two holds by one actor within a second apart, so a
+// release retry can tell a newer hold from the one it read.
 func gateStamp(who string, now time.Time) string {
-	return who + "@" + now.UTC().Format(time.RFC3339)
+	return who + "@" + now.UTC().Format(time.RFC3339Nano)
 }
 
 // hasUnverifiedTaint reports whether n carries the startup taint, with any
@@ -86,8 +88,10 @@ type ReleaseResult struct {
 // it and when in stratum.ciq.com/verified, and removes the hold record and
 // its reason, in one update against the resourceVersion it read, retried on a
 // conflict. It refuses a node without the taint with ErrNotHeld unless force,
-// which re-verifies it. Every other taint and annotation, and a cordon, is
-// left as it was.
+// which re-verifies it. A retry refuses with ErrHeldMeanwhile when the hold
+// record or its reason changed since the first read, since that is a newer
+// hold; a record that was cleared is another release, which the taint check
+// decides. Every other taint and annotation, and a cordon, is left as it was.
 func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string, force bool, now time.Time) (ReleaseResult, error) {
 	if err := ValidateNodeGateActor(who); err != nil {
 		return ReleaseResult{}, err
@@ -95,9 +99,6 @@ func ReleaseNode(ctx context.Context, cs kubernetes.Interface, name, who string,
 	var removed, read bool
 	var held [2]string
 	n, err := updateNodeOnConflict(ctx, cs, name, func(n *corev1.Node) error {
-		// The reason is compared too: the stamp has second precision, so a
-		// re-hold within the same second differs only in its reason. A record
-		// that was cleared is another release, which the taint check decides.
 		rec := [2]string{n.Annotations[HeldAnnotation], n.Annotations[HeldReasonAnnotation]}
 		if !read {
 			held, read = rec, true
