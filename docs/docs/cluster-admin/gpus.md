@@ -60,9 +60,11 @@ already-joined worker the handler without restarting it:
 to them. On a worker that already has other handlers, give each of them with
 its own `--runtime-handler` too, or `apply` removes them and their labels.
 
-If `apply` reports that containerd has not loaded the handlers, run
-`sudo /usr/local/bin/stratum runtime restart`. Running containers keep running
-while containerd restarts.
+`apply` restarts containerd to load the handlers. Running containers keep
+running while it restarts. If the restart fails, `apply` exits non-zero with
+an error such as `restart containerd after a runtime handler change: ...`, and
+the handlers are written but not loaded. Fix what the error names, then run
+`sudo /usr/local/bin/stratum runtime restart`.
 
 Then check the node:
 
