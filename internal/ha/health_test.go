@@ -13,7 +13,7 @@ import (
 // convinced it is fine.
 
 func member(ip string, leader uint64, errs []string, err error) EtcdMemberHealth {
-	return EtcdMemberHealth{Endpoint: ip, Leader: leader, Errors: errs, Err: err}
+	return EtcdMemberHealth{Leader: leader, Errors: errs, Err: err}
 }
 
 func healthyFrom(m map[string]EtcdMemberHealth) func(string) EtcdMemberHealth {
