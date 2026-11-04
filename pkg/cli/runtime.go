@@ -46,8 +46,6 @@ func newRuntimeApplyCommand() *cobra.Command {
 			switch {
 			case res.Restarted:
 				fmt.Fprintln(out, "containerd restarted to load the runtime handlers")
-			case res.Unloaded:
-				fmt.Fprintln(out, "containerd has not loaded the runtime handlers; run `stratum runtime restart`")
 			case res.Changed:
 				fmt.Fprintln(out, "containerd is not running; it loads the runtime handlers when it next starts")
 			default:
