@@ -169,8 +169,8 @@ left.
 
 `--by` sets who is recorded. It defaults to the user who ran `sudo`, or to the
 current user, usually `root`, without `sudo`. It cannot be empty or contain
-whitespace. The time is in UTC, in RFC 3339 format, for example
-`jane@2026-11-03T14:02:11Z`.
+whitespace. The time is in UTC, in RFC 3339 format with fractional seconds,
+for example `jane@2026-11-03T14:02:11.482913Z`.
 
 `release` refuses a node without the taint. `--force` records it as verified
 anyway, and says that it removed no taint.
