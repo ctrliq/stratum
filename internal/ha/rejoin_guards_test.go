@@ -188,6 +188,47 @@ func TestAddSettlingOnlyRetriesRefusals(t *testing.T) {
 	}
 }
 
+// TestMemberAddSettlingRetriesOnlyRefusalsThatAddedNothing pins the refusals
+// a learner add retries. etcd allows one learner at a time, so a join that
+// follows another closely is refused with too-many-learners until the earlier
+// joiner is promoted, and that refusal must be retried, not returned.
+func TestMemberAddSettlingRetriesOnlyRefusalsThatAddedNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"the strict reconfiguration refusal", rpctypes.ErrGRPCUnhealthy, true},
+		{"another member still a learner", rpctypes.ErrGRPCTooManyLearners, true},
+		{"another member still a learner, wrapped", fmt.Errorf("member add: %w", rpctypes.ErrTooManyLearners), true},
+		{"a client deadline, which may have added the member", context.DeadlineExceeded, false},
+		{"a duplicate peer URL", rpctypes.ErrGRPCPeerURLExist, false},
+		{"no error", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := memberAddSettling(tc.err); got != tc.want {
+				t.Errorf("memberAddSettling(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+
+	t.Cleanup(func() { memberAddSettle = 90 * time.Second })
+	memberAddSettle = 10 * time.Millisecond
+	calls := 0
+	if _, err := addSettling(io.Discard, func(context.Context) (*clientv3.MemberAddResponse, error) {
+		calls++
+		if calls == 1 {
+			return nil, rpctypes.ErrGRPCTooManyLearners
+		}
+		return &clientv3.MemberAddResponse{}, nil
+	}, memberAddSettling, ""); err != nil {
+		t.Errorf("an add refused once with too-many-learners = %v, want it retried to success", err)
+	}
+	if calls != 2 {
+		t.Errorf("the add ran %d times, want 2", calls)
+	}
+}
+
 func TestAddSettlingKeepsRejoinRetriesOffStdout(t *testing.T) {
 	var progress bytes.Buffer
 	calls := 0
