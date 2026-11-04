@@ -133,8 +133,16 @@ jobs:
       #
       # Not cached: that needs actions/cache, which nothing here uses yet, and
       # the download is a fraction of this job's runtime.
+      #
+      # The same download carries a real etcd binary, which also runs
+      # internal/ha's live etcd tests: they skip without
+      # STRATUM_TEST_ETCD_BIN, and cover a join's learner add and the
+      # recovery of a committed voter add against real etcd processes.
       - name: Fetch envtest control-plane binaries
-        run: echo "KUBEBUILDER_ASSETS=$(make envtest-assets)" >> "$GITHUB_ENV"
+        run: |
+          assets=$(make envtest-assets)
+          echo "KUBEBUILDER_ASSETS=$assets" >> "$GITHUB_ENV"
+          echo "STRATUM_TEST_ETCD_BIN=$assets/etcd" >> "$GITHUB_ENV"
       - run: make test
       # The destructive tools serialize on one operation lock (opMu, the
       # destructive tools' sole exclusion), and a regression that lets two

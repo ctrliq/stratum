@@ -601,12 +601,13 @@ func joinQuorumHeld(cpIPs []string) error {
 }
 
 // concurrentJoinHint follows the refusals a join started alongside another
-// controller's meets. That controller's member-add takes the cluster from one
-// voter to two before the new member starts, and until it does the cluster
-// cannot answer a linearizable member listing (the probe, and the quorum read
-// that reconciles a recorded intent) or accept another voter (etcd's strict
-// reconfiguration check). Each refusal leaves membership as it was, so a
-// re-run after the first join finishes succeeds.
+// controller's meets. That controller's member is a learner until it has
+// caught up and its start has promoted it, and etcd accepts one learner at a
+// time; a promote that has just landed takes the cluster to two voters, and
+// until the new one settles the cluster may not answer a linearizable member
+// listing (the probe, and the quorum read that reconciles a recorded intent).
+// Each refusal leaves membership as it was, so a re-run after the first join
+// finishes succeeds.
 const concurrentJoinHint = "if another control plane is joining now, wait until it is Ready and re-run this join; " +
 	"join controllers one at a time"
 
@@ -666,7 +667,7 @@ func reconcileAmbiguousMemberAdd(fx joinEffects, etcdIPs []string, hostname, pee
 	if retryErr != nil {
 		err := fmt.Errorf("HA join: the member-add's reply was lost (%v), the member is not in the "+
 			"cluster's member list, and the one retry failed: %w", addErr, retryErr)
-		if isNotEnoughStarted(retryErr) {
+		if isNotEnoughStarted(retryErr) || isTooManyLearners(retryErr) {
 			err = fmt.Errorf("%w (%s)", err, concurrentJoinHint)
 		}
 		return "", err
@@ -1301,12 +1302,13 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 	// them.
 	st := &nodestate.NodeState{
 		Role: "controller", Hostname: hostname,
-		Server:    kubeconfig.NodeServerURL("", o.VIP.Address),
-		EtcdName:  hostname,
-		EtcdState: "existing",
-		Profile:   o.Profile,
-		CIS:       o.CIS,
-		VIP:       o.VIP,
+		Server:             kubeconfig.NodeServerURL("", o.VIP.Address),
+		EtcdName:           hostname,
+		EtcdState:          "existing",
+		EtcdPromotePending: true,
+		Profile:            o.Profile,
+		CIS:                o.CIS,
+		VIP:                o.VIP,
 	}
 
 	// The facts the hooks resolve, captured for the prepared value the
@@ -1871,7 +1873,7 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 				// guess around etcd's own answer. Fail with it; the journal stays
 				// as the recovery record, and a re-run reconciles it.
 				if memberAddRefused(addErr) {
-					if isNotEnoughStarted(addErr) {
+					if isNotEnoughStarted(addErr) || isTooManyLearners(addErr) {
 						return "", fmt.Errorf("%w (%s)", addErr, concurrentJoinHint)
 					}
 					return "", addErr
