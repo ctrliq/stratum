@@ -2,8 +2,10 @@ package runtime
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -127,6 +129,47 @@ func TestServingBootstrappedAgreesWithTheRenderedKubeletConf(t *testing.T) {
 	}
 }
 
+// A node's spec.node taints reach the kubelet.conf both roles render, and a
+// node with none renders no registerWithTaints.
+func TestKubeletConfCarriesTheNodeTaints(t *testing.T) {
+	kubeletProfileFixture(t)
+	registerForTest(t)
+	for _, role := range []string{"controller", "worker"} {
+		st := controller("")
+		st.Role = role
+		if conf := renderKubelet(t, st); strings.Contains(conf, "registerWithTaints") {
+			t.Errorf("%s without taints renders registerWithTaints:\n%s", role, conf)
+		}
+		st.NodeTaints = []string{"stratum.ciq.com/unverified=true:NoSchedule", "dedicated:NoExecute"}
+		var conf struct {
+			RegisterWithTaints []struct{ Key, Value, Effect string } `json:"registerWithTaints"`
+		}
+		if err := yaml.Unmarshal([]byte(renderKubelet(t, st)), &conf); err != nil {
+			t.Fatal(err)
+		}
+		want := []struct{ Key, Value, Effect string }{{"stratum.ciq.com/unverified", "true", "NoSchedule"}, {"dedicated", "", "NoExecute"}}
+		if !slices.Equal(conf.RegisterWithTaints, want) {
+			t.Errorf("%s registers with %+v, want %+v", role, conf.RegisterWithTaints, want)
+		}
+	}
+}
+
+// A taint node.yaml carries that the kubelet could not read fails the render,
+// naming it, and writes no kubelet.conf a kubelet would refuse.
+func TestKubeletConfRefusesASavedTaintTheKubeletCannotRead(t *testing.T) {
+	kubeletProfileFixture(t)
+	registerForTest(t)
+	st := controller("")
+	st.Role = "worker"
+	st.NodeTaints = []string{"dedicated:Sometimes"}
+	if err := WriteKubeletConfig(st); err == nil || !strings.Contains(err.Error(), "dedicated:Sometimes") {
+		t.Errorf("WriteKubeletConfig = %v, want a refusal naming the taint", err)
+	}
+	if _, err := os.Stat(filepath.Join(version.K8sConfDir, "kubelet.conf")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a refused render left kubelet.conf behind: %v", err)
+	}
+}
+
 func TestTheEngineKubeletKeysAreReservedFromProfiles(t *testing.T) {
 	kubeletProfileFixture(t)
 	registerForTest(t)
@@ -135,6 +178,7 @@ func TestTheEngineKubeletKeysAreReservedFromProfiles(t *testing.T) {
 			setServingLeaf(t, leaf)
 			st := controller("")
 			st.Role = role
+			st.NodeTaints = []string{"stratum.ciq.com/unverified=true:NoSchedule"}
 			var conf map[string]any
 			if err := yaml.Unmarshal([]byte(renderKubelet(t, st)), &conf); err != nil {
 				t.Fatal(err)

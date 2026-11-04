@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -60,6 +61,11 @@ const (
 	// orchestrator's. Only the upgrade's own writes set it.
 	UpgradeCordonAnnotation = "stratum.ciq.com/upgrade-cordoned"
 )
+
+// RuntimeHandlerLabelPrefix prefixes the label stratum sets on a node for
+// each containerd runtime handler it declares, <prefix><handler>="true",
+// which the handler's RuntimeClass selects nodes by.
+const RuntimeHandlerLabelPrefix = "runtime.stratum.ciq.com/"
 
 // OperatorLeaseName is the Lease the operator campaigns for under leader
 // election (kube-system/<name>): only the holder reconciles, so several
@@ -652,6 +658,21 @@ func StampOwnNode(node string) error {
 		_, err := cs.CoreV1().Nodes().Patch(ctx, node, types.MergePatchType, stampPatch(k8s, stratum), metav1.PatchOptions{})
 		return err
 	})
+}
+
+// OwnNodeTaints reads, as the kubelet, the taints its own Node carries.
+func OwnNodeTaints(ctx context.Context, node string) ([]corev1.Taint, error) {
+	cs, err := kubeletClientset()
+	if err != nil {
+		return nil, fmt.Errorf("read %s's taints: %w", node, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	n, err := cs.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("read %s's taints: %w", node, err)
+	}
+	return n.Spec.Taints, nil
 }
 
 // WaitOwnNodeRegistered polls, as the kubelet, until its Node exists, giving

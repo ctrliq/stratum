@@ -14,6 +14,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/ctrliq/stratum/internal/addons"
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/netcfg"
 	"github.com/ctrliq/stratum/internal/version"
@@ -31,7 +32,7 @@ type StackContext struct {
 var ImporterStacks func(StackContext) (map[string][]byte, error)
 
 // bundledStacks are the stack names writeBundles can stage itself.
-var bundledStacks = []string{"crds", "node-mark", "cilium", "coredns", "local-path", "dashboard"}
+var bundledStacks = []string{"crds", "node-mark", "cilium", "coredns", "local-path", "dashboard", addons.RuntimeClassStack}
 
 // importerIndex records the files importer stacks staged, so a later start can remove the ones no longer returned.
 const importerIndex = ".importer-stacks.json"
