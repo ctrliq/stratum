@@ -193,8 +193,10 @@ right to submit it under the project's open source license.
 `git commit -s` adds the line from your `user.name` and `user.email`. The
 sign-off must carry the commit author's email. The pre-commit `commit-msg` hook
 refuses a commit without one, and CI's `signoff` check fails a pull request
-with any commit that lacks one; merge commits are not checked. To add a missing
-sign-off:
+with any commit that lacks one; merge commits are not checked. Both compare
+emails case-insensitively, and count GitHub's two noreply forms of one account,
+`<id>+<login>@users.noreply.github.com` and `<login>@users.noreply.github.com`,
+as the same email. To add a missing sign-off:
 
 ```bash
 git commit --amend --signoff

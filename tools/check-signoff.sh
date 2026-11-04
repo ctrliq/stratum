@@ -13,6 +13,12 @@
 #       the committer's email. A merge in progress is not checked, matching
 #       the range mode.
 #
+# Emails compare case-insensitively, and GitHub's two noreply forms of one
+# account, <id>+<login>@users.noreply.github.com and
+# <login>@users.noreply.github.com, count as the same email: a squash merge
+# rewrites the author to the ID-prefixed form, so a backport of a squashed
+# commit carries an author the trailer never named. Nothing else is looser.
+#
 # Only the trailer block counts, as git interpret-trailers parses it: a
 # "Signed-off-by:" line in the middle of the body is prose, not a sign-off.
 # Exit 0 when every commit is signed off, 1 when one is not, 2 on bad usage
@@ -24,14 +30,20 @@ usage() {
   exit 2
 }
 
+# Lowercases and drops the numeric ID from a GitHub noreply address.
+norm_email() {
+  tr '[:upper:]' '[:lower:]' \
+    | sed 's/^[0-9][0-9]*+\([^@+]*@users\.noreply\.github\.com\)$/\1/'
+}
+
 signoff_emails() {
   git interpret-trailers --parse --no-divider \
     | sed -n 's/^Signed-off-by: .*<\([^>]*\)>[[:space:]]*$/\1/p' \
-    | tr '[:upper:]' '[:lower:]'
+    | norm_email
 }
 
 ident_email() {
-  sed -n 's/.*<\([^>]*\)>.*/\1/p' | tr '[:upper:]' '[:lower:]'
+  sed -n 's/.*<\([^>]*\)>.*/\1/p' | norm_email
 }
 
 how_to_fix="Sign off with \`git commit --amend --signoff\`, or for every commit on the branch \`git rebase --signoff <base>\`."
@@ -75,11 +87,12 @@ commits=$(git rev-list --no-merges "$base..$head") \
 
 missing=0
 for c in $commits; do
-  author=$(git log -1 --format=%ae "$c" | tr '[:upper:]' '[:lower:]')
+  shown=$(git log -1 --format=%ae "$c")
+  author=$(norm_email <<<"$shown")
   emails=$(git log -1 --format=%B "$c" | signoff_emails)
   if [ -z "$author" ] || ! grep -qxF -e "$author" <<<"$emails"; then
     echo "check-signoff: $(git log -1 --format='%h %s' "$c")" >&2
-    echo "  has no Signed-off-by trailer for its author, $author" >&2
+    echo "  has no Signed-off-by trailer for its author, $shown" >&2
     missing=$((missing + 1))
   fi
 done

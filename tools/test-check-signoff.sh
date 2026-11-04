@@ -59,6 +59,35 @@ run "$GATE" "$base" HEAD
 g reset -q --hard HEAD~1
 ok
 
+# --- GitHub's two noreply forms of one account are the same email -------------
+# A squash merge rewrites the author to <id>+<login>@..., so a backport carries
+# an author the original trailer never named (<login>@...).
+commit --author='Jane Doe <12345+janedoe@users.noreply.github.com>' -m 'fix(x): id author' -m 'Signed-off-by: Jane Doe <janedoe@users.noreply.github.com>'
+run "$GATE" "$base" HEAD
+[ "$rc" -eq 0 ] || fail "id-prefixed author with a bare noreply sign-off failed (rc=$rc): $out"
+g reset -q --hard HEAD~1
+commit --author='Jane Doe <janedoe@users.noreply.github.com>' -m 'fix(x): bare author' -m 'Signed-off-by: Jane Doe <12345+JaneDoe@users.noreply.github.com>'
+run "$GATE" "$base" HEAD
+[ "$rc" -eq 0 ] || fail "bare noreply author with an id-prefixed sign-off failed (rc=$rc): $out"
+g reset -q --hard HEAD~1
+ok
+
+# --- ...but a different login, or a non-noreply domain, still fails ----------
+commit --author='Jane Doe <12345+janedoe@users.noreply.github.com>' -m 'fix(x): other login' -m 'Signed-off-by: Jane Doe <otherdoe@users.noreply.github.com>'
+run "$GATE" "$base" HEAD
+[ "$rc" -eq 1 ] || fail "a different noreply login passed (rc=$rc): $out"
+case $out in *"12345+janedoe@users.noreply.github.com"*) ;; *) fail "failure did not show the author's address: $out" ;; esac
+g reset -q --hard HEAD~1
+commit --author='Jane Doe <12345+janedoe@users.noreply.github.com>' -m 'fix(x): other id login' -m 'Signed-off-by: Jane Doe <999+otherdoe@users.noreply.github.com>'
+run "$GATE" "$base" HEAD
+[ "$rc" -eq 1 ] || fail "a different id-prefixed login passed (rc=$rc): $out"
+g reset -q --hard HEAD~1
+commit --author='Jane Doe <12345+jane@example.com>' -m 'fix(x): id on another domain' -m 'Signed-off-by: Jane Doe <jane@example.com>'
+run "$GATE" "$base" HEAD
+[ "$rc" -eq 1 ] || fail "an id prefix on a non-noreply domain was ignored (rc=$rc): $out"
+g reset -q --hard HEAD~1
+ok
+
 # --- a Signed-off-by line inside the body is not a trailer --------------------
 commit -m 'fix(x): body mention' -m 'Signed-off-by: Jane Doe <jane@example.com>' -m 'More text after it.'
 run "$GATE" "$base" HEAD
@@ -152,6 +181,21 @@ run env GIT_AUTHOR_NAME='Jane Doe' GIT_AUTHOR_EMAIL=jane@example.com \
   GIT_COMMITTER_NAME='Jane Doe' GIT_COMMITTER_EMAIL=jane@example.com "$GATE" --message "$msg"
 [ "$rc" -eq 1 ] || fail "a sign-off below an auto-selected ; scissors line passed (rc=$rc): $out"
 g config core.commentChar '#'
+ok
+
+# --- commit-msg mode: the two noreply forms match, a different login does not -
+printf 'feat(x): msg\n\nSigned-off-by: Jane Doe <janedoe@users.noreply.github.com>\n' > "$msg"
+run env GIT_AUTHOR_NAME='Jane Doe' GIT_AUTHOR_EMAIL=12345+janedoe@users.noreply.github.com \
+  GIT_COMMITTER_NAME='Jane Doe' GIT_COMMITTER_EMAIL=jane@example.com "$GATE" --message "$msg"
+[ "$rc" -eq 0 ] || fail "id-prefixed author with a bare noreply sign-off failed in commit-msg mode (rc=$rc): $out"
+printf 'feat(x): msg\n\nSigned-off-by: Jane Doe <12345+JaneDoe@users.noreply.github.com>\n' > "$msg"
+run env GIT_AUTHOR_NAME='Jane Doe' GIT_AUTHOR_EMAIL=janedoe@users.noreply.github.com \
+  GIT_COMMITTER_NAME='Jane Doe' GIT_COMMITTER_EMAIL=jane@example.com "$GATE" --message "$msg"
+[ "$rc" -eq 0 ] || fail "bare noreply author with an id-prefixed sign-off failed in commit-msg mode (rc=$rc): $out"
+printf 'feat(x): msg\n\nSigned-off-by: Jane Doe <otherdoe@users.noreply.github.com>\n' > "$msg"
+run env GIT_AUTHOR_NAME='Jane Doe' GIT_AUTHOR_EMAIL=12345+janedoe@users.noreply.github.com \
+  GIT_COMMITTER_NAME='Jane Doe' GIT_COMMITTER_EMAIL=jane@example.com "$GATE" --message "$msg"
+[ "$rc" -eq 1 ] || fail "a different noreply login passed in commit-msg mode (rc=$rc): $out"
 ok
 
 echo "test-check-signoff: ok ($pass cases)"
