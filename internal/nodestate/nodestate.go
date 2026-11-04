@@ -65,6 +65,11 @@ type NodeState struct {
 	// every start.
 	SELinuxOptOut bool `json:"selinuxOptOut,omitempty"`
 	VIP           VIP  `json:"vip,omitempty"`
+	// EtcdPromotePending records that a control-plane join added this node's
+	// etcd member as a learner and it has not been promoted yet. The
+	// controller's start promotes it once it has caught up and clears this. A
+	// snapshot rejoin promotes its own learner and clears it too.
+	EtcdPromotePending bool `json:"etcdPromotePending,omitzero"`
 	// EtcdHasPeers records that this member's etcd cluster has had more than
 	// one member. It is deliberately not folded into EtcdInitialCluster and
 	// EtcdState, which are etcd's argv: rewriting them changes the etcd manifest,
