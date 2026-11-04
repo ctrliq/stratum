@@ -83,7 +83,7 @@ if tainted; then pass "the worker is still tainted after its own attempt"; else 
 out=$(on cp1 "/dist/stratum node release cp2 --by inttest" 2>&1) || fail "stratum node release failed: $out"
 if tainted; then fail "release left the taint: $(taints)"; else pass "release removed the startup taint"; fi
 verified=$(annotation verified)
-if [[ $verified =~ ^inttest@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$ ]]; then
+if [[ $verified =~ ^inttest@[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$ ]]; then
   pass "release recorded who verified the node and when ($verified)"
 else
   fail "the verified annotation is '$verified', want inttest@<RFC3339>"
