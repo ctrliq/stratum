@@ -109,7 +109,7 @@ jobs:
       # pointing at resources that no longer exist.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
+      - uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7
       # One state bucket per cloud: a job's credentials reach exactly one, and
       # the backend refuses any other scheme (backends/ssh-lib.sh). Resolved in
       # shell rather than a chain of `&&`/`||` expressions so that an unset
