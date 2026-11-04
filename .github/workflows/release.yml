@@ -486,7 +486,7 @@ jobs:
         with:
           fetch-depth: 0
       # Provisioning is Pulumi-on-GCP; the runner needs only the Pulumi CLI.
-      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
+      - uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7
       # One state bucket per cloud: a job's credentials reach exactly one, and
       # the backend refuses any other scheme (backends/ssh-lib.sh). Resolved in
       # shell rather than a chain of `&&`/`||` expressions so that an unset
