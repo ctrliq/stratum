@@ -25,10 +25,9 @@ import (
 // EtcdMemberHealth is one member's answer. Err set means the member did not
 // answer, which is never treated as healthy.
 type EtcdMemberHealth struct {
-	Endpoint string
-	Leader   uint64
-	Errors   []string
-	Err      error
+	Leader uint64
+	Errors []string
+	Err    error
 }
 
 // Healthy reports whether this member answered, knows a leader, and raised no
@@ -42,7 +41,7 @@ func (m EtcdMemberHealth) Healthy() bool {
 // working quorum.
 func EtcdMemberStatus(cpIP string) EtcdMemberHealth {
 	ep := etcdEndpoint(cpIP)
-	h := EtcdMemberHealth{Endpoint: ep}
+	var h EtcdMemberHealth
 	cli, err := etcdClient(cpIP)
 	if err != nil {
 		h.Err = err
