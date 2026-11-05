@@ -106,11 +106,17 @@ export async function signOut({ deadlineMs = SHELL_DELETE_BOUND_MS } = {}) {
   if (revision !== currentAuthRevision()) return { superseded: true };
   nodeShell.endNodeShellSession();
   const result = await logout();
-  // Three outcomes: signed out (ok), superseded (another revision won), and
-  // failed (the server refused or was unreachable). A failed logout leaves the
-  // sealed session cookie standing, so the caller must not treat it as signed
-  // out.
-  return { superseded: !!result.stale, failed: !result.stale && !result.ok, error: result.error };
+  // Three outcomes: signed out (ok, or a 401 that says the session had already
+  // ended), superseded (another revision won), and failed (the server refused
+  // or was unreachable). A failed logout leaves the sealed session cookie
+  // standing, so the caller must not treat it as signed out.
+  if (result.stale) return { superseded: true };
+  if (result.ok || result.status === 401) return { superseded: false };
+  // logout() retired the shared identity and CSRF token before it sent the
+  // request, so write and exec controls are off. The cookie is still live:
+  // read both back from /me so a user who is still signed in can still act.
+  await fetchMe();
+  return { superseded: false, failed: true, error: result.error };
 }
 
 // Bespoke screens (custom value); every other route falls through to the generic

@@ -103,7 +103,13 @@ async function openDash({ cookies = { value: 'initial-session', csrf: 'csrf' }, 
     }
     if (path === '/api/v1/logout') {
       if (cookies.value && opts.headers['X-Stratum-CSRF'] !== cookies.csrf) return answer(403, 'invalid csrf');
-      await logoutPlan(opts);
+      // A plan may answer for the server, e.g. { status: 401 } for a session
+      // that ended before the logout arrived.
+      const planned = await logoutPlan(opts);
+      if (planned && planned.status) {
+        if (planned.status === 401) { cookies.value = null; cookies.csrf = null; }
+        return answer(planned.status, planned.body || '');
+      }
       // Browsers apply Set-Cookie before fetch resolves, regardless of whether
       // the JavaScript continuation later decides this response is stale.
       cookies.value = null;
@@ -1285,11 +1291,19 @@ test('a logout the server refuses (403 invalid csrf) does not show the signed-ou
   const d = await openDash();
   const initial = await bootSignedIn(d);
   d.session.setCsrfToken('wrong-csrf'); // the server answers 403 invalid csrf
+  const who = d.session.currentIdentity();
+  assert.ok(who && who.username, 'the test starts signed in');
 
   await bounded(initial.onSignOut(), 5000);
 
   assert.equal(d.logouts().length, 1, 'the logout POST was attempted exactly once');
   assert.equal(d.cookie(), 'initial-session', 'a refused logout does not clear the sealed cookie');
+  // Still signed in means still able to act: the shared identity, CSRF token
+  // and write capability survive, or the header says signed in while every
+  // write and exec control is gone.
+  assert.deepEqual(d.session.currentIdentity(), who, 'a refused logout keeps the signed-in identity');
+  assert.equal(d.session.getCsrfToken(), 'csrf', 'a refused logout reads the live cookie\'s CSRF token back');
+  assert.equal(d.session.canWrite(), true, 'a refused logout keeps write and exec controls');
   assert.equal(d.navigation.includes('/login'), false,
     'a failed logout must not navigate to the signed-out UI');
   assert.ok(d.reports.some(([channel]) => channel === 'error'),
@@ -1305,17 +1319,39 @@ test('a logout request that fails on the network does not show the signed-out UI
   const d = await openDash();
   const initial = await bootSignedIn(d);
   d.setLogoutPlan(() => { throw new Error('network down'); });
+  const who = d.session.currentIdentity();
+  const csrf = d.session.getCsrfToken();
+  assert.ok(who && who.username && csrf, 'the test starts signed in with a CSRF token');
 
   await bounded(initial.onSignOut(), 5000);
 
   assert.equal(d.logouts().length, 1, 'the logout POST was attempted exactly once');
   assert.equal(d.cookie(), 'initial-session', 'a failed logout does not clear the sealed cookie');
+  assert.deepEqual(d.session.currentIdentity(), who, 'a failed logout keeps the signed-in identity');
+  assert.equal(d.session.getCsrfToken(), csrf, 'a failed logout keeps the CSRF token');
+  assert.equal(d.session.canWrite(), true, 'a failed logout keeps write and exec controls');
   assert.ok(d.reports.some(([channel]) => channel === 'error'),
     `the failed sign-out must be reported, not swallowed (${d.reports.length} reports)`);
   assert.ok(d.reports.some(([, text]) => text.includes('network down')),
     `the report must name the failure reason (${JSON.stringify(d.reports)})`);
   assert.equal(d.navigation.includes('/login'), false,
     'a failed logout must not navigate to the signed-out UI');
+});
+
+// A 401 on the logout POST means the session had already ended: that is a
+// completed sign-out, not a failure to report, so the signed-out UI shows.
+test('a logout answered 401 (session already ended) still shows the signed-out UI', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const d = await openDash();
+  const initial = await bootSignedIn(d);
+  d.setLogoutPlan(() => ({ status: 401, body: 'session expired' }));
+
+  await bounded(initial.onSignOut(), 5000);
+
+  assert.equal(d.logouts().length, 1, 'the logout POST was attempted exactly once');
+  assert.equal(d.navigation.includes('/login'), true, 'an ended session goes to the signed-out UI');
+  assert.equal(d.reports.some(([channel, text]) => channel === 'error' && text.includes('sign-out failed')), false,
+    'an ended session is not reported as a failed sign-out');
 });
 
 // The failed outcome must reach the user's eyes, not just the console: the
