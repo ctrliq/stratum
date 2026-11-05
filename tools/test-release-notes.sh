@@ -37,7 +37,7 @@ git config tag.forceSignAnnotated false
 
 commit() {  # kubernetes version the commit pins
   printf 'stratum_name = %s\nkubernetes_version = %s\n' "$NAME" "$1" > build/versions.mk
-  git add build/versions.mk
+  git add -f build/versions.mk  # past a global gitignore that ignores build/
   git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "pin $1"
 }
 # A release branch: a parentless root commit, as the public repo cuts them.
