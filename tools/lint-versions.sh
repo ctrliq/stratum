@@ -78,8 +78,10 @@ is_allowed() {
     # number a fixture already used. Scoped to the version check ($2) only: a
     # pinned *revision* (a 40-char SHA) in a test is almost never a deliberate
     # fixture — it's an accidental copy of a real pin — so the revision loop must
-    # keep enforcing on test files.
-    *_test.go)
+    # keep enforcing on test files. tools/test-release-notes.sh is the same kind
+    # of fixture in shell: its fake release history needs patch versions on
+    # several minors, and one of them hit release-1.36's pin of 1.36.6.
+    *_test.go|tools/test-release-notes.sh)
       [[ ${2:-} == version ]] && return 0
       return 1 ;;
     # The dashboard's tests are test fixtures for the same reason, in a
