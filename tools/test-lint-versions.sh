@@ -61,31 +61,6 @@ expect "a local ./ action is accepted" 0 $WF "      - uses: ./.github/actions/pr
 expect "a docker:// image by digest is accepted" 0 $WF "      - uses: docker://alpine@$DIGEST"
 expect "a SHA-pinned composite step is accepted" 0 .github/actions/prep/action.yml "    - uses: 'some/action@$SHA'"
 
-<<<<<<< HEAD
-||||||| parent of d808e97 (fix(lint): exempt the release-notes fixture from the version check (#204))
-mkdir -p "$TREE/tools/inttest"
-CHECK=tools/inttest/check-x.sh
-expect "a release tag in an inttest's previous= header is accepted" 0 $CHECK '#!/usr/bin/env bash
-# ske-inttest: previous=v10.0.0-stratum.0-rc.1'
-expect "the same version elsewhere in that check is refused" 1 $CHECK '#!/usr/bin/env bash
-# ske-inttest: previous=v10.0.0-stratum.0-rc.1
-want=10.0.0' "$CHECK pins pnpm literal '10.0.0'"
-rm -f "$TREE/$CHECK"
-expect "a previous= header outside tools/inttest is refused" 1 tools/x.sh '# ske-inttest: previous=v10.0.0-stratum.0-rc.1'
-rm -f "$TREE/$CHECK" "$TREE/tools/x.sh"
-
-=======
-mkdir -p "$TREE/tools/inttest"
-CHECK=tools/inttest/check-x.sh
-expect "a release tag in an inttest's previous= header is accepted" 0 $CHECK '#!/usr/bin/env bash
-# ske-inttest: previous=v10.0.0-stratum.0-rc.1'
-expect "the same version elsewhere in that check is refused" 1 $CHECK '#!/usr/bin/env bash
-# ske-inttest: previous=v10.0.0-stratum.0-rc.1
-want=10.0.0' "$CHECK pins pnpm literal '10.0.0'"
-rm -f "$TREE/$CHECK"
-expect "a previous= header outside tools/inttest is refused" 1 tools/x.sh '# ske-inttest: previous=v10.0.0-stratum.0-rc.1'
-rm -f "$TREE/$CHECK" "$TREE/tools/x.sh"
-
 # The release-notes test's fake release history may hit a pinned version, but
 # never a pinned revision.
 NOTES=tools/test-release-notes.sh
@@ -93,7 +68,6 @@ expect "a pinned version in the release-notes fixture is accepted" 0 $NOTES 'com
 expect "a pinned revision in the release-notes fixture is refused" 1 $NOTES "rev=$REV" "$NOTES pins x_revision literal"
 rm -f "$TREE/$NOTES"
 
->>>>>>> d808e97 (fix(lint): exempt the release-notes fixture from the version check (#204))
 if [[ $fail -ne 0 ]]; then
   echo "test-lint-versions: FAILED" >&2
   exit 1
