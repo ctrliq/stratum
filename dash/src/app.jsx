@@ -42,7 +42,7 @@ import { K8S, resetK8S } from './data.js';
 import * as liveLoader from './live.js';
 import * as nodeShell from './node-shell.js';
 import { getConfig } from './cluster-context.js';
-import { fetchMe, logout, setUnauthorizedHandler, clearSession, currentSessionRevision, currentAuthRevision, isSessionCurrent, subscribeRemoteSessionChanges } from './session.js';
+import { fetchMe, probeMe, logout, setUnauthorizedHandler, clearSession, currentSessionRevision, currentAuthRevision, isSessionCurrent, subscribeRemoteSessionChanges } from './session.js';
 import { getScreen, screenLabel } from './registry.js';
 
 // ---- sign-out: the shells go before the cookie does -------------------------
@@ -115,7 +115,26 @@ export async function signOut({ deadlineMs = SHELL_DELETE_BOUND_MS } = {}) {
   // logout() retired the shared identity and CSRF token before it sent the
   // request, so write and exec controls are off. The cookie is still live:
   // read both back from /me so a user who is still signed in can still act.
-  await fetchMe();
+  // The read is bounded by the same deadline the shell deletes ran under, so
+  // a stalled recovery cannot hold sign-out hostage past the bound the caller
+  // chose. probeMe keeps the status: a 401 confirms the session expired while
+  // the refused logout was in flight, which is a signed-out outcome, not a
+  // failure to stay signed in about.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), deadlineMs);
+  const recovery = await probeMe({ signal: abort.signal });
+  clearTimeout(timer);
+  if (recovery.stale) return { superseded: true };
+  if (recovery.status === 401) {
+    // The confirmed expiry retires the shared identity and CSRF token; the
+    // unauthorized handler is suppressed on this quiet probe, so the caller
+    // sees the signed-out outcome and shows the signed-out UI.
+    clearSession();
+    return { superseded: false };
+  }
+  // ok: identity and CSRF are restored and the failed outcome stands. A
+  // network error or the deadline leaves no identity restored — the user is
+  // still told the sign-out failed either way.
   return { superseded: false, failed: true, error: result.error };
 }
 

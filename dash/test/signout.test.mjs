@@ -91,7 +91,9 @@ async function openDash({ cookies = { value: 'initial-session', csrf: 'csrf' }, 
       })) : cookies.value ? answer(200, JSON.stringify({
         ...IDENTITY, username: cookies.value === 'initial-session' ? IDENTITY.username : cookies.value, csrfToken: cookies.csrf,
       })) : answer(401, 'session expired');
-      await mePlan();
+      // A plan may hold the read open (opts carries the abort signal) or
+      // just observe it; the response itself is decided by the cookie state.
+      await mePlan(opts);
       return response;
     }
     if (path === '/api/v1/login') {
@@ -1352,6 +1354,74 @@ test('a logout answered 401 (session already ended) still shows the signed-out U
   assert.equal(d.navigation.includes('/login'), true, 'an ended session goes to the signed-out UI');
   assert.equal(d.reports.some(([channel, text]) => channel === 'error' && text.includes('sign-out failed')), false,
     'an ended session is not reported as a failed sign-out');
+});
+
+// A recovery /me read that never answers on its own — but honors an abort
+// signal, the way a real fetch dies when the deadline aborts it. The harness
+// hands the plan the fetch's opts so a stalled read ends at the deadline.
+const hangMe = ({ signal } = {}) => new Promise((resolve, reject) => {
+  if (!signal) return; // no signal, no end
+  if (signal.aborted) return reject(new Error('the request was aborted'));
+  signal.addEventListener('abort', () => reject(new Error('the request was aborted')), { once: true });
+});
+
+// A refused logout leaves the sealed cookie standing, and the recovery /me
+// read that restores identity and CSRF must not hold sign-out hostage: it is
+// bounded by the same deadline the shell deletes ran under, and a read that
+// never answers still ends in the failed outcome the user can see.
+test('a recovery /me read that never answers is abandoned at the bound and sign-out still reports failure', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const d = await openDash();
+  const initial = await bootSignedIn(d);
+  d.session.setCsrfToken('wrong-csrf'); // the server answers 403 invalid csrf
+  d.setMePlan(hangMe);                  // the recovery read stalls past any bound
+  d.setPath('/overview');
+
+  // Drive the shell's own handler, the one the user menu clicks: the failed
+  // outcome must reach the toast the shell owns, not only the console.
+  const shell = d.renderShell(initial);
+  const onSignOut = shell.props.children.find((el) => el && el.type === 'AppShell').props.onSignOut;
+  assert.equal(shell.props.children.some((el) => el && el.type === 'div' && el.props.className === 'toast'), false,
+    'no failure toast before a sign-out is attempted');
+
+  const done = onSignOut();
+  await settle();
+  assert.equal(d.logouts().length, 1, 'the logout POST was attempted exactly once');
+  assert.ok(d.calls.some((c) => c.method === 'GET' && c.url === '/api/v1/me'),
+    'the recovery /me read was attempted after the refused logout');
+
+  t.mock.timers.tick(3000); // the default recovery bound (SHELL_DELETE_BOUND_MS)
+  await bounded(done, 5000); // sign-out returns at the bound, not never
+
+  assert.ok(d.reports.some(([channel, text]) => channel === 'error' && text.includes('sign-out failed')),
+    `the bounded sign-out failure must be reported (${JSON.stringify(d.reports)})`);
+  assert.equal(d.navigation.includes('/login'), false,
+    'a timed-out recovery is not proof of a signed-out session — no /login hop');
+  const flashed = d.renderShell(initial);
+  const toast = flashed.props.children.find((el) => el && el.type === 'div' && el.props.className === 'toast');
+  assert.ok(toast, 'the failed sign-out must still flash in the shell the user is looking at');
+  assert.deepEqual(toast.props.children, ['Sign-out failed — you are still signed in']);
+  t.mock.timers.tick(3000); // the toast expires; no mocked timer outlives the test
+});
+
+// If the session expires while the refused logout was in flight, the recovery
+// /me answers 401 — that is a confirmed expiry, not a failure to stay signed
+// in about: the signed-out UI shows and no stale identity remains.
+test('a recovery /me answered 401 (the session expired during the refused logout) shows the signed-out UI', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const d = await openDash();
+  const initial = await bootSignedIn(d);
+  d.session.setCsrfToken('wrong-csrf'); // the server refuses the logout with 403
+  d.revokeToken();                      // and the recovery read finds the session expired
+
+  await bounded(initial.onSignOut(), 5000);
+
+  assert.equal(d.logouts().length, 1, 'the logout POST was attempted exactly once');
+  assert.equal(d.navigation.includes('/login'), true, 'a confirmed expiry goes to the signed-out UI');
+  assert.equal(d.session.currentIdentity(), null, 'no stale identity survives a confirmed expiry');
+  assert.equal(d.session.getCsrfToken(), null, 'no stale CSRF token survives a confirmed expiry');
+  assert.equal(d.reports.some(([channel, text]) => channel === 'error' && text.includes('sign-out failed')), false,
+    'a confirmed expiry is not reported as a failed sign-out');
 });
 
 // The failed outcome must reach the user's eyes, not just the console: the
