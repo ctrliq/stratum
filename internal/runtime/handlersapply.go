@@ -360,6 +360,52 @@ type sharedConfD struct {
 	} `toml:"plugins"`
 }
 
+// RequireSharedConfDParses reports the first file in the shared conf.d that
+// does not parse. containerd imports every one, so a runtime apply or restart
+// that restarted it with one there would stop a working containerd for one
+// that cannot start.
+func RequireSharedConfDParses() error {
+	if err := sharedConfDParseError(); err != nil {
+		return fmt.Errorf("%w, so nothing was changed. Fix or remove it and run again", err)
+	}
+	return nil
+}
+
+// sharedConfDParseError is the first file in the shared conf.d that does not
+// parse, as an error naming it, or nil.
+func sharedConfDParseError() error {
+	for _, f := range readSharedConfD() {
+		if f.err != nil {
+			return fmt.Errorf("%s does not parse (%v); containerd would refuse to start with it", f.path, f.err)
+		}
+	}
+	return nil
+}
+
+// sharedConfDFile is one file in the shared conf.d as stratum reads it: the
+// slice of its config that can contend with stratum's, or the error it does
+// not parse with.
+type sharedConfDFile struct {
+	path string
+	conf sharedConfD
+	err  error
+}
+
+// readSharedConfD decodes every file in the shared conf.d, all of which
+// containerd imports, in name order. RequireSharedConfDParses and
+// checkSharedConfD both read it, so runtime apply and runtime check agree on
+// which files do not parse.
+func readSharedConfD() []sharedConfDFile {
+	paths, _ := filepath.Glob(filepath.Join(filepath.Dir(version.ContainerdConfD), "*.toml"))
+	files := make([]sharedConfDFile, 0, len(paths))
+	for _, path := range paths {
+		f := sharedConfDFile{path: path}
+		_, f.err = toml.DecodeFile(path, &f.conf)
+		files = append(files, f)
+	}
+	return files
+}
+
 // checkSharedConfD warns about every file in the shared conf.d that defines
 // one of saved's runtime names, which `nvidia-ctk runtime configure` does, or
 // changes containerd's default runtime. stratum's drop-in is imported after
@@ -368,26 +414,23 @@ type sharedConfD struct {
 // parse, stratum's registry drop-in included, since containerd imports them
 // all; the registry drop-in is stratum's own, so it is spared the warnings.
 func checkSharedConfD(r *HandlerReport, saved map[string]string) {
-	dir := filepath.Dir(version.ContainerdConfD)
-	files, _ := filepath.Glob(filepath.Join(dir, "*.toml"))
-	for _, f := range files {
-		var c sharedConfD
-		if _, err := toml.DecodeFile(f, &c); err != nil {
-			r.add(SeverityError, "%s does not parse (%v); containerd will refuse to start with it", f, err)
+	for _, f := range readSharedConfD() {
+		if f.err != nil {
+			r.add(SeverityError, "%s does not parse (%v); containerd will refuse to start with it", f.path, f.err)
 			continue
 		}
-		if f == version.ContainerdConfD {
+		if f.path == version.ContainerdConfD {
 			continue
 		}
-		for _, plugin := range slices.Sorted(maps.Keys(c.Plugins)) {
-			p := c.Plugins[plugin].Containerd
+		for _, plugin := range slices.Sorted(maps.Keys(f.conf.Plugins)) {
+			p := f.conf.Plugins[plugin].Containerd
 			for _, name := range slices.Sorted(maps.Keys(p.Runtimes)) {
 				if _, ok := saved[name]; ok {
-					r.add(SeverityWarn, "%s also defines runtime %s; containerd reads %s after it, so stratum's definition wins", f, name, version.ContainerdRuntimeConfD)
+					r.add(SeverityWarn, "%s also defines runtime %s; containerd reads %s after it, so stratum's definition wins", f.path, name, version.ContainerdRuntimeConfD)
 				}
 			}
 			if p.DefaultRuntimeName != "" && p.DefaultRuntimeName != "runc" {
-				r.add(SeverityWarn, "%s sets containerd's default runtime to %s, so every pod without a runtimeClassName runs under it", f, p.DefaultRuntimeName)
+				r.add(SeverityWarn, "%s sets containerd's default runtime to %s, so every pod without a runtimeClassName runs under it", f.path, p.DefaultRuntimeName)
 			}
 		}
 	}
