@@ -1597,7 +1597,7 @@ func ImportImagesWithWriter(ctx context.Context, w io.Writer, dir string) error 
 		if stampCurrent(tar) {
 			continue
 		}
-		cmd := exec.Command(ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar)
+		cmd := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			// Failing here fails kubelet's WaitFor, which the supervisor
 			// retries with backoff — a visible crash-loop instead of a node
