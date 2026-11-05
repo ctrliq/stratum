@@ -256,6 +256,19 @@ func TestCheckJoinedTaintsNamesNodeHoldOnlyForTheStartupTaint(t *testing.T) {
 	}
 }
 
+// `stratum node hold` adds only stratum.ciq.com/unverified=true:NoSchedule, so
+// a missing startup-key taint with another effect or value keeps the kubectl
+// fix: following the hold hint would not restore a NoExecute eviction.
+func TestCheckJoinedTaintsKeepsKubectlForAnotherStartupTaintEffect(t *testing.T) {
+	st := &NodeState{Role: "worker", Hostname: "w1", NodeTaintsCheckPending: true,
+		NodeTaints: []string{"stratum.ciq.com/unverified=true:NoExecute"}}
+	stubOwnTaints(t, st, nil, nil)
+	out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) })
+	if !strings.Contains(out, "stratum.ciq.com/unverified=true:NoExecute") || !strings.Contains(out, "stratum kubectl taint node w1") || strings.Contains(out, "node hold") {
+		t.Errorf("a join that missed unverified=true:NoExecute warned:\n%s\nwant the kubectl fix and no node hold", out)
+	}
+}
+
 func TestCheckJoinedTaintsWarnsWhenTheNodeLacksADeclaredTaint(t *testing.T) {
 	st := joinedWithTaints()
 	stubOwnTaints(t, st, []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoExecute}}, nil)

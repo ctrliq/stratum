@@ -833,8 +833,11 @@ func checkJoinedTaints(ctx context.Context, st *NodeState) {
 	}
 	if len(missing) > 0 {
 		fix := "taint it with `stratum kubectl taint node %[1]s <taint>`"
-		if slices.ContainsFunc(missing, func(t string) bool { k, _, _, _ := runtime.SplitTaint(t); return k == k8sutil.UnverifiedTaint }) {
-			fix = "hold it with `stratum node hold %[1]s --reason <why>`, which adds the " + k8sutil.UnverifiedTaint + " taint, " + fix + " for any other"
+		if slices.ContainsFunc(missing, func(t string) bool {
+			k, v, e, _ := runtime.SplitTaint(t)
+			return k == k8sutil.UnverifiedTaint && v == "true" && e == string(corev1.TaintEffectNoSchedule)
+		}) {
+			fix = "hold it with `stratum node hold %[1]s --reason <why>`, which adds " + k8sutil.UnverifiedTaint + "=true:NoSchedule, " + fix + " for any other"
 		}
 		fmt.Fprintf(os.Stderr, "stratum: WARN: node %[1]s registered without its declared taints %[2]s: the kubelet applies them only when it creates "+
 			"the Node, and this join registered onto a Node that was already there, so nothing holds workloads off it. From a control plane, "+
