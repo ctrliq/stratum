@@ -1,9 +1,11 @@
 package staticpod
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -1187,7 +1189,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		}
 	}
 
-	if err := RestoreSnapshot(snap); err != nil {
+	if err := RestoreSnapshot(io.Discard, snap); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1268,7 +1270,7 @@ func TestRestoreSnapshotRestoresDerivedFileModeAndType(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := RestoreSnapshot(snap); err != nil {
+			if err := RestoreSnapshot(io.Discard, snap); err != nil {
 				t.Fatal(err)
 			}
 			after, err := os.Lstat(path)
@@ -1494,12 +1496,19 @@ func TestRestoreSnapshotSweepsVisibleLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := RestoreSnapshot(snap); err != nil {
+	var out bytes.Buffer
+	if err := RestoreSnapshot(&out, snap); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := os.Stat(filepath.Join(Dir(), "etcd.yaml.tmp")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the visible staging ghost survived the restore (%v); kubelet keeps parsing it as a pod", err)
+	}
+	// The report goes to the caller's writer, never the process's stdout: on
+	// the MCP stdio transport stdout is the protocol stream.
+	want := "  removed stale staging file " + filepath.Join(Dir(), "etcd.yaml.tmp") + " (kubelet was parsing it as a pod)\n"
+	if out.String() != want {
+		t.Errorf("restore output = %q; want %q", out.String(), want)
 	}
 	if b, err := os.ReadFile(filepath.Join(Dir(), ".kube-scheduler.yaml.tmp-1")); err != nil || string(b) != "an in-flight render\n" {
 		t.Errorf("the restore touched a hidden in-flight staging write (%q, %v) — that is a concurrent Start's temp, and deleting it fails that writer's rename with ENOENT", b, err)
@@ -1542,7 +1551,7 @@ func TestRestoreSnapshotFailsWhenAGhostSurvives(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(Dir(), 0o755) })
 
-	if err := RestoreSnapshot(snap); err == nil {
+	if err := RestoreSnapshot(io.Discard, snap); err == nil {
 		t.Fatal("RestoreSnapshot reported success while a staging ghost it could not remove is still in the manifest dir")
 	}
 }
