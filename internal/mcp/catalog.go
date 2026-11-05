@@ -549,10 +549,11 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 		{
 			Name: "ha_repoint",
 			Description: "REPOINTS THIS NODE'S CLIENTS at the cluster VIP, restarting local components. With " +
-				"cilium=true it also repoints Cilium ACROSS THE WHOLE CLUSTER from this one node — a " +
-				"once-per-cluster operation that affects every node's networking. The cluster-wide part " +
-				"runs on the server's own credential and default context, which RBAC bounds, and refuses " +
-				"any cluster but this node's own.",
+				"cilium=true it INSTEAD repoints Cilium ACROSS THE WHOLE CLUSTER from this one node — a " +
+				"once-per-cluster operation that affects every node's networking — and leaves this node's " +
+				"clients as they are: run it without cilium on each node that needs its clients moved. The " +
+				"cluster-wide repoint runs on the server's own credential and default context, which RBAC " +
+				"bounds, and refuses any cluster but this node's own.",
 			Tier:       TierDestructive,
 			Credential: CredentialConfigurableConnector,
 			Add: func(srv *sdk.Server, t *sdk.Tool) {
