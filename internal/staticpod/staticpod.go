@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -277,13 +278,15 @@ func Snapshot(dir string) error {
 // directory the apiserver's argv names. Before anything moves, the visible
 // staging files the pre-atomic writer left in the live manifest directory are
 // swept: kubelet parses them as pods, and they sort AFTER the real manifest in
-// the file source's glob, so they hold that pod's store key permanently.
-func RestoreSnapshot(dir string) error {
+// the file source's glob, so they hold that pod's store key permanently. Each
+// swept file is reported on w, the caller's writer: on the MCP stdio transport
+// the process's stdout is the protocol stream, so a raw print there breaks it.
+func RestoreSnapshot(w io.Writer, dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return err
 	}
-	if err := sweepVisibleStaging(); err != nil {
+	if err := sweepVisibleStaging(w); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -321,8 +324,8 @@ func RestoreSnapshot(dir string) error {
 // pre-atomic writer could leave in the manifest directory, where kubelet
 // parses them as pods. A hidden temp is a live write by a concurrent Start —
 // removing it would fail that writer's rename with ENOENT — and is never ours
-// to delete.
-func sweepVisibleStaging() error {
+// to delete. Each removal is reported on w.
+func sweepVisibleStaging(w io.Writer) error {
 	entries, err := os.ReadDir(Dir())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -343,7 +346,7 @@ func sweepVisibleStaging() error {
 		if err := os.Remove(stale); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove stale staging file %s (kubelet parses it as a pod): %w", stale, err)
 		}
-		fmt.Printf("  removed stale staging file %s (kubelet was parsing it as a pod)\n", stale)
+		fmt.Fprintf(w, "  removed stale staging file %s (kubelet was parsing it as a pod)\n", stale)
 	}
 	return nil
 }
