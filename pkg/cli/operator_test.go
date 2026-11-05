@@ -99,8 +99,16 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	// Wait closes both pipes once the child exits. The verdict is the last
+	// stdout line, so drain stdout first: a fast exit cannot lose the verdict
+	// to that close. Stderr is only read up to its barrier line, so its tail
+	// is not waited for.
+	drained := make(chan struct{})
 	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
+	go func() {
+		<-drained
+		waited <- cmd.Wait()
+	}()
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 
 	errLines := make(chan string, 16)
@@ -138,6 +146,7 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 
 	lines := make(chan string, 16)
 	go func() {
+		defer close(drained)
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
 			lines <- sc.Text()
