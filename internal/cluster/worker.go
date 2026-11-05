@@ -82,6 +82,27 @@ type WorkerOptions struct {
 	ConfigNode NodeSpec
 }
 
+// ResolveJoinNodeIP resolves and checks the node IP of a new worker join. A
+// join is a new registration, so an address an earlier join saved on this
+// host is not a source: --node-ip, then spec.network.nodeIP, then $NODE_IP,
+// then detection. The join saves this address and every later start reuses
+// it, so it is checked before anything on the host or the cluster is
+// touched — which is why the up command runs this same function before it
+// stages the payload, so a refusal writes nothing. The stack is read from
+// the value, as the restart reads it from the saved one: a pair given
+// without --dual-stack registers both families, and one address given with
+// it registers only that one, as before the check.
+func ResolveJoinNodeIP(nodeIP, configNodeIP string, dual bool) (host.NodeIPChoice, error) {
+	choice, err := host.ResolveNodeIP(nodeIP, configNodeIP, "", func() (string, error) { return hostDetectNodeIPs(dual) })
+	if err != nil {
+		return host.NodeIPChoice{}, err
+	}
+	if err := host.CheckNodeIP(choice.IP, strings.Contains(choice.IP, ",")); err != nil {
+		return host.NodeIPChoice{}, fmt.Errorf("worker join: %s %q cannot be this worker's node IP: %w", choice.Source, choice.IP, err)
+	}
+	return choice, nil
+}
+
 // PrepareWorker runs the worker join flow: discover + pin the CA,
 // write the bootstrap kubeconfig, persist the node state. RunWorker, which
 // follows, writes the kubelet and containerd configs. The kubelet does TLS
@@ -297,19 +318,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		return nil, err
 	}
 	// A join is a new registration, so an address an earlier join saved on
-	// this host is not a source: --node-ip, then spec.network.nodeIP, then
-	// $NODE_IP, then detection.
-	choice, err := host.ResolveNodeIP(o.NodeIP, o.ConfigNodeIP, "", func() (string, error) { return hostDetectNodeIPs(o.DualStack) })
+	// this host is not a source; ResolveJoinNodeIP names the order.
+	choice, err := ResolveJoinNodeIP(o.NodeIP, o.ConfigNodeIP, o.DualStack)
 	if err != nil {
 		return nil, err
-	}
-	// The join saves this address and every later start reuses it, so it is
-	// checked before anything on the host or the cluster is touched. The
-	// stack is read from the value, as the restart reads it from the saved
-	// one: a pair given without --dual-stack registers both families, and one
-	// address given with it registers only that one, as before the check.
-	if err := host.CheckNodeIP(choice.IP, strings.Contains(choice.IP, ",")); err != nil {
-		return nil, fmt.Errorf("worker join: %s %q cannot be this worker's node IP: %w", choice.Source, choice.IP, err)
 	}
 	fmt.Printf("stratum: node IP %s (%s)\n", choice.IP, choice.Source)
 	nodeIP := choice.IP

@@ -272,6 +272,18 @@ func runUp(parent context.Context, o runUpOptions) error {
 	if err := preStageProfile(o); err != nil {
 		return err
 	}
+	// A fresh worker join is refused before the payload is staged, so a bad
+	// --node-ip changes nothing on the host: staging writes the binaries and
+	// images under DataDir, and a refusal after them leaves them behind. The
+	// same resolve + check the join itself runs (cluster.ResolveJoinNodeIP,
+	// shared with PrepareWorker's join path, same inputs and error text)
+	// runs here. A restart is not gated by this — its address comes from
+	// saved node state and its check runs in PrepareWorker as before.
+	if o.worker && o.server != "" {
+		if _, err := cluster.ResolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
+			return err
+		}
+	}
 	// Uninstall takes the same data lock before removing DataDir. Keep staging
 	// outside its deletion window, including for worker starts.
 	releaseStageLock, err := etcddata.Lock(version.EtcdDataDir)
@@ -292,7 +304,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		releaseStageLock()
 		return cleanStopOr(err, ctx)
 	}
-	_, stageErr := assets.Stage(version.DataDir)
+	_, stageErr := stagePayload(version.DataDir)
 	releaseStageLock()
 	if stageErr != nil && !errors.Is(stageErr, assets.ErrNoPayload) {
 		return fmt.Errorf("staging payload: %w", stageErr)
