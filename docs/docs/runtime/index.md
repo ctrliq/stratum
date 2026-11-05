@@ -149,7 +149,8 @@ run every pod without a `runtimeClassName` under it.
 
 `stratum runtime restart` restarts containerd on its own, for example after you
 reinstall a handler's binary or after `runtime_apply`, and then updates the
-node's handler labels.
+node's handler labels. It refuses, and restarts nothing, when a file in
+`/etc/containerd/conf.d` does not parse.
 
 ## A containerd Stratum did not start
 
@@ -330,6 +331,9 @@ credentials or TLS take effect at once. `apply` restarts containerd only when
 the drop-in is created, changed or removed: on the first `apply`, and when the
 last mirror or registry config is removed. Deleting `registries.yaml` and
 running `apply` removes the mirrors and the drop-in, and restarts containerd.
+When a file in `/etc/containerd/conf.d` does not parse, `apply` writes the
+config but does not restart containerd, and names the file. Fix or remove it,
+then run `stratum runtime restart`.
 
 Credentials are sent as a static `authorization` header (Basic or Bearer).
 Registries that require Docker Hub's token flow may still reject it with 401;
