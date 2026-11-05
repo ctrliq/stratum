@@ -109,7 +109,7 @@ ha_bring_up() {
   # `|| true`: under pipefail a grep that finds no --join line would end the
   # script here, before the error below could say why.
   line=$(grep -F -- '--join' <<<"$out" | head -1 || true)
-  [[ -n $line ]] || { echo "token create never succeeded: $(tail -3 <<<"$out")" >&2; return 1; }
+  [[ -n $line ]] || { echo "token create never succeeded: $out" >&2; return 1; }
   parse_join "$line" || { echo "no parseable --join line in token output" >&2; return 1; }
 
   local n i=2
