@@ -1469,11 +1469,20 @@ func scheduledSaveOptions(cfg *ClusterConfig, load func(etcdsnap.Config) (etcdsn
 }
 
 // snapshotLoop saves etcd snapshots on the configured interval — the
-// supervisor-native stratum-etcd-snapshot.timer. Config precedence: the
+// supervisor-native stratum-etcd-snapshot.timer — and takes its first
+// scheduled snapshot when the loop starts, before the ticker is armed, so a
+// control plane restarted more often than the interval still snapshots once
+// per daemon lifetime. Config precedence: the
 // operator-managed snapshot config file (written by `stratum snapshot
 // schedule` and the MCP `snapshot_schedule` tool) wins
 // over the cluster config's inline settings.
 func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := snapshotSave(ctx, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
+	}
 	t := time.NewTicker(snapshotInterval(cfg))
 	defer t.Stop()
 	for {
