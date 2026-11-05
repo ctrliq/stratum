@@ -106,7 +106,11 @@ export async function signOut({ deadlineMs = SHELL_DELETE_BOUND_MS } = {}) {
   if (revision !== currentAuthRevision()) return { superseded: true };
   nodeShell.endNodeShellSession();
   const result = await logout();
-  return { superseded: !!result.stale };
+  // Three outcomes: signed out (ok), superseded (another revision won), and
+  // failed (the server refused or was unreachable). A failed logout leaves the
+  // sealed session cookie standing, so the caller must not treat it as signed
+  // out.
+  return { superseded: !!result.stale, failed: !result.stale && !result.ok, error: result.error };
 }
 
 // Bespoke screens (custom value); every other route falls through to the generic
@@ -205,9 +209,17 @@ function Boot() {
     // Shells first (bounded, reported), then the logout that clears the
     // cookie — after it the shell deletes would only ever be 401s.
     const outcome = await signOut();
-    if (outcome.superseded) return;
+    if (outcome.superseded) return outcome;
+    if (outcome.failed) {
+      // The logout POST did not go through, so the sealed session cookie is
+      // still live: stay in the shell and say so instead of showing the
+      // signed-out UI as if sign-out had worked.
+      console.error(`Stratum: sign-out failed${outcome.error ? ` (${outcome.error})` : ''}; you are still signed in`);
+      return outcome;
+    }
     setMe(null); setPhase('login');
     navigate('/login', { replace: true });
+    return outcome;
   }, [navigate]);
 
   if (phase === 'loading' || !config) return <BootSplash text="Connecting to the cluster…" />;
@@ -371,6 +383,15 @@ export function Shell({ config, me, onSignOut }) {
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2800); }, []);
 
+  // A failed sign-out keeps the user signed in (Boot leaves the session
+  // alone); the outcome comes back through this prop so the failure shows in
+  // the toast the shell owns.
+  const handleSignOut = useCallback(async () => {
+    const outcome = await onSignOut();
+    if (outcome && outcome.failed) flash('Sign-out failed — you are still signed in');
+    return outcome;
+  }, [onSignOut, flash]);
+
   // ---- navigation (everything goes through the router) ----
   const hrefFor = useCallback((id, extra = {}) => {
     const q = new URLSearchParams();
@@ -498,7 +519,7 @@ export function Shell({ config, me, onSignOut }) {
         namespaces={data.NAMESPACES || ['all-namespaces']}
         live={live} updated={updated} stale={staleSlices} onToggleLive={() => setLive((v) => !v)}
         onPalette={() => setPaletteOpen(true)}
-        cluster={cluster} config={config} me={me} onSignOut={onSignOut}>
+        cluster={cluster} config={config} me={me} onSignOut={handleSignOut}>
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
           <div style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative' }}>
             {loading && (
