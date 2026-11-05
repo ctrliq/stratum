@@ -18,8 +18,10 @@ func newHARepointCommand() *cobra.Command {
 		Use:   "ha-repoint",
 		Short: "Move this node's clients onto the cluster VIP",
 		Long: `ha-repoint moves this node's clients (kubeconfigs + local components) onto
-the cluster VIP, and optionally re-points Cilium cluster-wide. Used once when
-a cluster that began as a single controller grows into HA.`,
+the cluster VIP. With --cilium it instead re-points Cilium cluster-wide and
+leaves this node's clients as they are: run it without --cilium on each node
+whose clients need moving, and with --cilium once for the whole cluster. Used
+once when a cluster that began as a single controller grows into HA.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if vip == "" {
@@ -38,6 +40,6 @@ a cluster that began as a single controller grows into HA.`,
 	}
 	fs := cmd.Flags()
 	fs.StringVar(&vip, "vip", "", "cluster VIP address (required)")
-	fs.BoolVar(&cilium, "cilium", false, "also re-point the Cilium agents/operator at the VIP (run ONCE, cluster-wide)")
+	fs.BoolVar(&cilium, "cilium", false, "re-point the Cilium agents/operator at the VIP instead of this node's clients (run ONCE, cluster-wide)")
 	return cmd
 }
