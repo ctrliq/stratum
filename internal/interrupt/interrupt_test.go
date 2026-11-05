@@ -62,12 +62,19 @@ func TestContextSecondSignalKills(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
+			// Wait closes the stdout pipe once the child exits. Drain it
+			// first so a fast exit cannot lose its last lines to that close.
+			drained := make(chan struct{})
 			waited := make(chan error, 1)
-			go func() { waited <- cmd.Wait() }()
+			go func() {
+				<-drained
+				waited <- cmd.Wait()
+			}()
 			t.Cleanup(func() { _ = cmd.Process.Kill() })
 
 			lines := make(chan string, 16)
 			go func() {
+				defer close(drained)
 				sc := bufio.NewScanner(out)
 				for sc.Scan() {
 					lines <- sc.Text()
