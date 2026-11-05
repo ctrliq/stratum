@@ -518,6 +518,7 @@ lint: lint-shell
 	tools/test-inttest-header.sh
 	tools/test-check-lifecycle-prune.sh
 	tools/test-version.sh
+	tools/test-release-notes.sh
 	tools/test-build-id.sh
 	tools/test-revisions.sh
 	tools/test-go-version.sh
