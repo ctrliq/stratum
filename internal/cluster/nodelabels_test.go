@@ -245,11 +245,22 @@ func joinedWithTaints() *NodeState {
 // A join that registers onto a Node already there finds it without the
 // taints the kubelet would have created it with: the worker warns, naming
 // the missing taint and the control-plane fixes, once.
+// The startup taint's fix is `stratum node hold`; a join that missed only
+// another taint is told to add it with kubectl.
+func TestCheckJoinedTaintsNamesNodeHoldOnlyForTheStartupTaint(t *testing.T) {
+	st := joinedWithTaints()
+	stubOwnTaints(t, st, []corev1.Taint{{Key: "stratum.ciq.com/unverified", Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil)
+	out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) })
+	if !strings.Contains(out, "dedicated=gpu:NoExecute") || !strings.Contains(out, "stratum kubectl taint node w1") || strings.Contains(out, "node hold") {
+		t.Errorf("a join that missed only dedicated=gpu warned:\n%s\nwant the kubectl fix and no node hold", out)
+	}
+}
+
 func TestCheckJoinedTaintsWarnsWhenTheNodeLacksADeclaredTaint(t *testing.T) {
 	st := joinedWithTaints()
 	stubOwnTaints(t, st, []corev1.Taint{{Key: "dedicated", Value: "gpu", Effect: corev1.TaintEffectNoExecute}}, nil)
 	out := captureWorkerOutput(t, func() { checkJoinedTaints(context.Background(), st) })
-	for _, want := range []string{"WARN: node w1 registered without its declared taints stratum.ciq.com/unverified=true:NoSchedule:", "stratum kubectl taint node w1", "stratum kubectl delete node w1"} {
+	for _, want := range []string{"WARN: node w1 registered without its declared taints stratum.ciq.com/unverified=true:NoSchedule:", "stratum node hold w1 --reason", "stratum kubectl taint node w1", "stratum kubectl delete node w1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}

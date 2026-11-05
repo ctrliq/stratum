@@ -832,9 +832,13 @@ func checkJoinedTaints(ctx context.Context, st *NodeState) {
 		}
 	}
 	if len(missing) > 0 {
+		fix := "taint it with `stratum kubectl taint node %[1]s <taint>`"
+		if slices.ContainsFunc(missing, func(t string) bool { k, _, _, _ := runtime.SplitTaint(t); return k == k8sutil.UnverifiedTaint }) {
+			fix = "hold it with `stratum node hold %[1]s --reason <why>`, which adds the " + k8sutil.UnverifiedTaint + " taint, " + fix + " for any other"
+		}
 		fmt.Fprintf(os.Stderr, "stratum: WARN: node %[1]s registered without its declared taints %[2]s: the kubelet applies them only when it creates "+
 			"the Node, and this join registered onto a Node that was already there, so nothing holds workloads off it. From a control plane, "+
-			"taint it with `stratum kubectl taint node %[1]s <taint>`, or delete the Node with `stratum kubectl delete node %[1]s` and restart "+
+			fix+", or delete the Node with `stratum kubectl delete node %[1]s` and restart "+
 			"this worker so it registers again with them\n", st.Hostname, strings.Join(missing, ", "))
 	}
 	if err := nodestate.MutateSave(func(cur *NodeState) error { cur.NodeTaintsCheckPending = false; return nil }, saveState); err != nil {
