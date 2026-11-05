@@ -189,6 +189,9 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	if prevErr == nil && string(prev) == rendered {
 		return false, nil
 	}
+	if prevErr == nil && !strings.HasPrefix(string(prev), handlersMarker) {
+		fmt.Fprintf(w, "  WARN: %s was not written by stratum; replacing it with the runtime handlers this node declares\n", path)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
 	}
@@ -196,6 +199,30 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 		return errors.Is(err, atomicfile.ErrNotDurable), err
 	}
 	return true, nil
+}
+
+// RequireOwnDropIn refuses runtime handlers whose drop-in would replace a file
+// at its path that stratum did not write, which may hold an operator's
+// configuration. `stratum runtime apply` runs it before anything changes, as
+// `runtime check` tells the operator to move such a file aside. A node start
+// does not: it replaces the file, warning, rather than fail to start a node
+// whose handlers were already applied.
+func RequireOwnDropIn(handlers map[string]string) error {
+	if len(handlers) == 0 {
+		return nil
+	}
+	path := version.ContainerdRuntimeConfD
+	prev, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(string(prev), handlersMarker) {
+		return fmt.Errorf("%s was not written by stratum, and writing the runtime handlers would replace it; move it aside and run again", path)
+	}
+	return nil
 }
 
 // configImports is a containerd config's imports, read as containerd reads
