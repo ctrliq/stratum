@@ -275,19 +275,13 @@ func runUp(parent context.Context, o runUpOptions) error {
 	// A fresh worker join is refused before the payload is staged, so a bad
 	// --node-ip changes nothing on the host: staging writes the binaries and
 	// images under DataDir, and a refusal after them leaves them behind. The
-	// same resolution and check the join itself runs in PrepareWorker run
-	// here, with the same inputs and error text; a restart is not gated by
-	// this — its address comes from saved node state and its check runs in
-	// PrepareWorker as before.
+	// same resolve + check the join itself runs (cluster.ResolveJoinNodeIP,
+	// shared with PrepareWorker's join path, same inputs and error text)
+	// runs here. A restart is not gated by this — its address comes from
+	// saved node state and its check runs in PrepareWorker as before.
 	if o.worker && o.server != "" {
-		choice, err := host.ResolveNodeIP(o.nodeIP, joinCfg.NodeIP, "", func() (string, error) { return host.DetectNodeIPs(o.dual) })
-		if err != nil {
+		if _, err := cluster.ResolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
 			return err
-		}
-		// The stack is read from the value, as the join reads it: a pair
-		// given without --dual-stack registers both families.
-		if err := host.CheckNodeIP(choice.IP, strings.Contains(choice.IP, ",")); err != nil {
-			return fmt.Errorf("worker join: %s %q cannot be this worker's node IP: %w", choice.Source, choice.IP, err)
 		}
 	}
 	// Uninstall takes the same data lock before removing DataDir. Keep staging
