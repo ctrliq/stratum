@@ -265,9 +265,16 @@ func startDashChild(t *testing.T, run string) *dashProc {
 		t.Fatal(err)
 	}
 	p := &dashProc{cmd: cmd, lines: make(chan string, 64), waited: make(chan error, 1)}
-	go func() { p.waited <- cmd.Wait() }()
+	// Wait closes StdoutPipe once the child exits. Drain it first so a fast
+	// clean exit cannot lose its "exit code" line to that close.
+	drained := make(chan struct{})
+	go func() {
+		<-drained
+		p.waited <- cmd.Wait()
+	}()
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	go func() {
+		defer close(drained)
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
 			p.lines <- sc.Text()

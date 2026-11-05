@@ -151,6 +151,92 @@ A node cannot declare:
   region labels. Label a node with `stratum kubectl label node` from a control
   plane instead.
 
+### Releasing and holding a node
+
+A node that joins with the `stratum.ciq.com/unverified=true:NoSchedule` taint
+takes no workloads until you release it. Release it once a burn-in job that
+tolerates the taint has passed. Run `release` from a control plane:
+
+```console
+# /usr/local/bin/stratum node release gpu-worker-1
+```
+
+`release` makes three changes to the Node. It removes every
+`stratum.ciq.com/unverified` taint. It records who released the node and when
+in the `stratum.ciq.com/verified` annotation, as `<who>@<time>`. It removes the
+`stratum.ciq.com/held` and `stratum.ciq.com/held-reason` annotations that a hold
+left.
+
+`--by` sets who is recorded. It defaults to the user who ran `sudo`, or to the
+current user, usually `root`, without `sudo`. It cannot be empty or contain
+whitespace. The time is in UTC, in RFC 3339 format with fractional seconds,
+for example `jane@2026-11-03T14:02:11.482913Z`.
+
+`release` refuses a node without the taint. `--force` records it as verified
+anyway, and says that it removed no taint.
+
+`release` does not uncordon the node. A node still cordoned after the release
+takes no workloads, and `release` prints a reminder. Uncordon it once it is
+ready for workloads:
+
+```console
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf uncordon gpu-worker-1
+```
+
+`--kubeconfig` keeps the command on this cluster when `KUBECONFIG` names
+another one.
+
+To take a node out of service again, for a repair or a reimage, hold it:
+
+```console
+# /usr/local/bin/stratum node hold gpu-worker-1 --reason "replacing a failed GPU"
+```
+
+`hold` adds the taint back and removes `stratum.ciq.com/verified`. It records
+who held the node and when in `stratum.ciq.com/held`, as `<who>@<time>`, and
+the reason in `stratum.ciq.com/held-reason`.
+
+New pods that do not tolerate the taint stay off the node. A burn-in job that
+tolerates it still schedules. Pods already running on the node stay where they
+are. To move them, drain the node:
+
+```console
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf drain gpu-worker-1 --ignore-daemonsets
+```
+
+A drain moves only evictable pods: DaemonSet pods and static pods stay on the
+node.
+
+The drain refuses pods with `emptyDir` volumes, CoreDNS among them, and leaves
+them running. Their `emptyDir` data is lost when they move. Check it, and run
+the drain again with `--delete-emptydir-data` only if losing it is acceptable.
+
+CoreDNS has no PodDisruptionBudget. Before you drain a node that runs a CoreDNS
+replica, check that another replica, not Terminating, is Running and Ready on
+another Ready node:
+
+```console
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf -n kube-system get pods -l k8s-app=kube-dns -o wide
+```
+
+If none is, get one serving there first. On a single-node cluster, cluster DNS
+is down from the drain until you uncordon and release the node: CoreDNS does
+not tolerate the `stratum.ciq.com/unverified` taint, so it cannot schedule
+back while the node is held.
+
+A drain also cordons the node, and a cordoned node takes no pods, the burn-in
+job included. After the maintenance, uncordon the node while it is still held.
+The taint keeps other workloads off it, and the burn-in job can schedule:
+
+```console
+# /usr/local/bin/stratum kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf uncordon gpu-worker-1
+```
+
+Leave a cordon you set for another reason in place. When the burn-in passes,
+release the node.
+
+`release` and `hold` change no other taint or annotation.
+
 ## RuntimeClasses
 
 `spec.runtimeClasses` names the runtime handlers the cluster publishes a

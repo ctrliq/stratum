@@ -1266,6 +1266,28 @@ func TestApplyRegistry_ReportsWhetherItRestarted(t *testing.T) {
 		}
 	})
 
+	t.Run("a shared conf.d file that does not parse: written, not restarted", func(t *testing.T) {
+		restarts := fakeSupervisor(t, false)
+		registryFixture(t)
+		broken := filepath.Join(filepath.Dir(version.ContainerdConfD), "broken.toml")
+		if err := os.MkdirAll(filepath.Dir(broken), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(broken, []byte("[plugins\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		res, err := ApplyRegistry()
+		if err == nil || !strings.Contains(err.Error(), "broken.toml") || !strings.Contains(err.Error(), "stratum runtime restart") {
+			t.Fatalf("ApplyRegistry = %v, want the file named and the restart to run once it is fixed", err)
+		}
+		if !res.Changed || res.Restarted {
+			t.Errorf("result = %+v, want the drop-in written and no restart", res)
+		}
+		if n := restarts(); n != 0 {
+			t.Errorf("the supervisor served %d restart ops, want none", n)
+		}
+	})
+
 	t.Run("restart refused: the error carries and Restarted stays false", func(t *testing.T) {
 		restarts := fakeSupervisor(t, true)
 		registryFixture(t)
