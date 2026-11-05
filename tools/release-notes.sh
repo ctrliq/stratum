@@ -12,6 +12,7 @@
 #   tools/release-notes.sh                     notes for the next release
 #   tools/release-notes.sh <tag>               notes for a specific tag
 #   tools/release-notes.sh <tag> <previous>    override the range's start
+#   tools/release-notes.sh <tag> ''            no previous tag: since the beginning
 #
 # Needs `gh` for PR labels and authors. Without it the sections still generate
 # from commit subjects, just less precisely — a release is never blocked on a
@@ -25,11 +26,15 @@ NAME=$(sed -n 's/^stratum_name *= *//p' build/versions.mk | tr -d ' ')
 # The release immediately before this one, in VERSION order rather than by date:
 # tags cut minutes apart tie on creatordate, and a re-cut tag would sort as the
 # newest thing on the branch. RC tags are skipped — an RC's changes are in the
-# final, and listing them again would double every entry.
-if [[ -n ${2:-} ]]; then
+# final, and listing them again would double every entry. Only tags on $TAG's
+# own minor count: each release branch starts from a parentless root commit, so
+# another minor's final shares no history with it and a compare against it is
+# meaningless. The first final on a minor has no previous tag.
+if [[ $# -ge 2 ]]; then
   PREV=$2
 else
-  PREV=$( { git tag -l "v*-${NAME}.*" | grep -vE -- '-rc\.[0-9]+$' | grep -vFx "$TAG"; echo "$TAG"; } \
+  LINE=$(sed -E 's/^(v[0-9]+\.[0-9]+)\..*/\1/' <<<"$TAG")
+  PREV=$( { git tag -l "${LINE}.*-${NAME}.*" | grep -vE -- '-rc\.[0-9]+$' | grep -vFx "$TAG"; echo "$TAG"; } \
          | sort -V | grep -B1 -Fx -- "$TAG" | head -1 )
   [[ $PREV != "$TAG" ]] || PREV=""
 fi
