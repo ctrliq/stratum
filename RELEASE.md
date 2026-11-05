@@ -213,7 +213,8 @@ The same pipeline runs again against the final tag.
 tools/release-notes.sh v1.36.4-stratum.0 > notes.md
 ```
 
-This generates the skeleton: every merged PR since the previous tag, grouped
+This generates the skeleton: every merged PR since the previous final on the
+same minor (all of them for a minor's first final), grouped
 into upstream bump / components / features / fixes / backports, with the
 upstream Kubernetes changelog linked at the top.
 
