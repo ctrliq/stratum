@@ -32,7 +32,7 @@ function yamlScalar(v) {
     || /[:#[\]{}&*!|>'"%@`,]/.test(s) || /^\s|\s$/.test(s)) return JSON.stringify(s);
   return s;
 }
-function toYaml(v, ind = 0) {
+export function toYaml(v, ind = 0) {
   const pad = '  '.repeat(ind);
   if (v === null || v === undefined || typeof v !== 'object') return yamlScalar(v);
   if (Array.isArray(v)) {
@@ -43,6 +43,7 @@ function toYaml(v, ind = 0) {
         const first = lines[0].slice((ind + 1) * 2);
         return pad + '- ' + first + (lines.length > 1 ? '\n' + lines.slice(1).join('\n') : '');
       }
+      if (item !== null && typeof item === 'object') return pad + '- ' + (Array.isArray(item) ? '[]' : '{}');
       return pad + '- ' + yamlScalar(item);
     }).join('\n');
   }
@@ -53,6 +54,7 @@ function toYaml(v, ind = 0) {
     if (val !== null && typeof val === 'object' && (Array.isArray(val) ? val.length : Object.keys(val).length)) {
       return pad + k + ':\n' + toYaml(val, ind + 1);
     }
+    if (val !== null && typeof val === 'object') return pad + k + ': ' + (Array.isArray(val) ? '[]' : '{}');
     return pad + k + ': ' + yamlScalar(val);
   }).join('\n');
 }
