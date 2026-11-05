@@ -96,8 +96,10 @@ node reads S3 credentials as [Credentials](#credentials) lists.
 - Both start from the settings already in effect. On a node without the file,
   they keep the S3 target from `config.yaml`.
 - The MCP tool changes only retention.
-- With the CLI, `--s3-bucket` replaces the whole S3 target: a flag you leave
-  out clears that setting.
+- With the CLI, each `--s3-*` flag applies only when it is passed: a flag you
+  leave out keeps the configured value. Passing one of the other S3 flags
+  requires an S3 bucket, either `--s3-bucket` in the same call or one already
+  configured.
 - Once the file exists, change it by running `stratum snapshot schedule` again
   or by editing it. The running controller's snapshot loop reads it on its next
   tick.

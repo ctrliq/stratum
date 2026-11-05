@@ -475,19 +475,55 @@ func newSnapshotScheduleCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read snapshot config (not overwriting it): %w", err)
 			}
+			// Each S3 flag applies only when it was passed: an unset flag means
+			// "not stated", not "set to empty", so a lone --s3-bucket must not wipe
+			// the configured endpoint/region/prefix/path-style. Key on Changed, not
+			// on values: an explicit --s3-path-style=false must override a
+			// configured true even though false is also the flag's default.
+			var detailFlags []string
+			if cmd.Flags().Changed("s3-endpoint") {
+				detailFlags = append(detailFlags, "--s3-endpoint")
+			}
+			if cmd.Flags().Changed("s3-region") {
+				detailFlags = append(detailFlags, "--s3-region")
+			}
+			if cmd.Flags().Changed("s3-prefix") {
+				detailFlags = append(detailFlags, "--s3-prefix")
+			}
+			if cmd.Flags().Changed("s3-path-style") {
+				detailFlags = append(detailFlags, "--s3-path-style")
+			}
+			// An S3 detail flag configures nothing without a bucket: refuse rather
+			// than silently save a no-op. Either --s3-bucket in this call or a
+			// bucket already in the loaded config is enough.
+			if len(detailFlags) > 0 && bucket == "" && cfg.S3.Bucket == "" {
+				verb := "needs"
+				if len(detailFlags) > 1 {
+					verb = "need"
+				}
+				return fmt.Errorf("snapshot schedule: %s %s an S3 bucket: pass --s3-bucket (no bucket is configured)", strings.Join(detailFlags, ", "), verb)
+			}
 			if retain > 0 {
 				cfg.Retain = retain
 			}
-			if bucket != "" {
+			if cmd.Flags().Changed("s3-bucket") {
 				cfg.S3.Bucket = bucket
-				cfg.S3.Endpoint = endpoint
-				cfg.S3.Region = region
-				cfg.S3.Prefix = prefix
-				cfg.S3.PathStyle = pathStyle
-				// credentials come from the environment (STRATUM_S3_*/AWS_*) — never
-				// argv; LoadConfig already overlaid them onto cfg.S3. SaveConfig
-				// will not write them back out.
 			}
+			if cmd.Flags().Changed("s3-endpoint") {
+				cfg.S3.Endpoint = endpoint
+			}
+			if cmd.Flags().Changed("s3-region") {
+				cfg.S3.Region = region
+			}
+			if cmd.Flags().Changed("s3-prefix") {
+				cfg.S3.Prefix = prefix
+			}
+			if cmd.Flags().Changed("s3-path-style") {
+				cfg.S3.PathStyle = pathStyle
+			}
+			// credentials come from the environment (STRATUM_S3_*/AWS_*) — never
+			// argv; LoadConfig already overlaid them onto cfg.S3. SaveConfig
+			// will not write them back out.
 			if err := scheduleSaveConfig(os.Stdout, cfg); err != nil {
 				return err
 			}
