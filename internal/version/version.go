@@ -226,6 +226,12 @@ var (
 	CertsDir         = "/etc/containerd/certs.d"
 	ContainerdConfD  = "/etc/containerd/conf.d/stratum-registry.toml"
 
+	// ImagesDropInDir holds the operator's own image archives. Every start
+	// imports them beside the payload's and exempts their repositories from
+	// kubelet's pull-credential check, so an image staged for a node with no
+	// registry access is used from the node.
+	ImagesDropInDir string
+
 	// NetConfigPath persists the cluster's effective pod/service CIDRs (chosen at
 	// cluster-init) so HA joins and cert rotation inherit the exact same values
 	// (incl. IPv6 families under dual-stack). Lives UNDER PKIDir so it rides the
@@ -301,6 +307,7 @@ func SetRoots(dataDir, confDir, runDir string) {
 	AdmissionConfigPath = filepath.Join(K8sConfDir, "admission-config.yaml")
 	EncryptionConfigPath = filepath.Join(PKIDir, "encryption-config.yaml")
 	RegistriesConfig = filepath.Join(ConfDir, "registries.yaml")
+	ImagesDropInDir = filepath.Join(ConfDir, "images.d")
 	NetConfigPath = filepath.Join(PKIDir, "netconfig")
 	CiliumSettingsPath = filepath.Join(PKIDir, "cilium.json")
 	ControllerManagerManifest = filepath.Join(K8sConfDir, "manifests", "kube-controller-manager.yaml")
