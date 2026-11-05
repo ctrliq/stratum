@@ -162,14 +162,47 @@ tlsCipherSuites: [%s]
 	return atomicfile.WriteFile(KubeletConfigPath(), []byte(b.String()), 0o600)
 }
 
+// DropInImportStamp is where the record that an operator archive in
+// version.ImagesDropInDir was imported and its images pinned is kept, apart
+// from a payload archive's of the same name so neither can mark the other
+// imported.
+func DropInImportStamp(tar string) string {
+	return filepath.Join(version.K8sConfDir, "images.d", filepath.Base(tar)+".imported")
+}
+
+// ImportStampValue is what an import stamp records of its archive: its size
+// and modification time, so a replaced archive is imported again.
+func ImportStampValue(fi os.FileInfo) string {
+	return fmt.Sprintf("%d %d", fi.Size(), fi.ModTime().UnixNano())
+}
+
+// DropInImported reports whether the operator archive tar, as it is now, was
+// imported and its images pinned.
+func DropInImported(tar string) bool {
+	fi, err := os.Stat(tar)
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(DropInImportStamp(tar))
+	return err == nil && string(b) == ImportStampValue(fi)
+}
+
 // payloadImagePullPolicy is the kubelet.conf lines that exempt every payload
 // image from kubelet's pull-credential check, so a payload image is always used
 // from the node. The exemption covers the payload registry namespace and the
 // repository of every image the staged archives carry: an importer's images
 // sit outside the namespace, and without their own entries kubelet asks the
-// registry for them, which an airgapped node cannot reach. A build with
-// neither renders none, leaving kubelet on its default policy rather than
-// exempting a namespace that is not the payload's.
+// registry for them, which an airgapped node cannot reach. The operator's
+// archives in version.ImagesDropInDir are exempted the same way, but only once
+// they are imported and pinned (DropInImported): the exemption covers a whole
+// repository, so one for an archive whose import failed would let pods use
+// other images of that repository on the node without their own credentials.
+// The stamp is checked again after the names are read, so an archive replaced
+// in between exempts nothing. One kubelet cannot read is skipped with a
+// warning, since a bad file an operator dropped must not stop the node's
+// kubelet from starting. A build with none of these renders none, leaving
+// kubelet on its default policy rather than exempting a namespace that is not
+// the payload's.
 func payloadImagePullPolicy() (string, error) {
 	var allow []string
 	r := addons.ImageRegistry
@@ -181,6 +214,23 @@ func payloadImagePullPolicy() (string, error) {
 	names, err := assets.ImageNames(archives)
 	if err != nil {
 		return "", fmt.Errorf("list the payload images kubelet must not re-verify: %w", err)
+	}
+	dropIns, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
+	for _, archive := range dropIns {
+		if !DropInImported(archive) {
+			continue
+		}
+		got, err := assets.ArchiveImageNames(archive)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "stratum: warning: %s is not exempt from kubelet's pull-credential check: read its image names: %v\n", archive, err)
+			continue
+		}
+		if !DropInImported(archive) { // replaced while its names were read
+			continue
+		}
+		for _, n := range got {
+			names[n] = true
+		}
 	}
 	repos := map[string]bool{}
 	for n := range names {

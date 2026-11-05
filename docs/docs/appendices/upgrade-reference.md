@@ -507,8 +507,10 @@ image outside the payload registry's namespace, as described in
 After the upgrade, a pod whose image you loaded by hand, for example with
 `ctr images import`, fails the next time its container starts on an airgapped
 node. It fails with `ErrImagePull` if its `imagePullPolicy` is `IfNotPresent`, or
-`ErrImageNeverPull` if it is `Never`. Before you upgrade, push those images to a
-registry the nodes can reach, through a
+`ErrImageNeverPull` if it is `Never`. Before you upgrade, put those images'
+archives in `/etc/stratum/images.d` on each node, as described in
+[Images you stage on a node](../runtime/index.md#images-you-stage-on-a-node), or
+push them to a registry the nodes can reach, through a
 [registry mirror](../runtime/index.md#registry-mirrors) if they are airgapped.
 
 ### SELinux confinement

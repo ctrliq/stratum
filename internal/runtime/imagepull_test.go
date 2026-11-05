@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
@@ -74,16 +75,38 @@ func TestKubeletConfigExemptsNothingWithoutAPayloadRegistry(t *testing.T) {
 // test's own directories, and restores the registry stamp afterwards.
 func isolatePayload(t *testing.T) {
 	t.Helper()
-	oldPKI, oldConf, oldData, oldReg := version.PKIDir, version.K8sConfDir, version.DataDir, addons.ImageRegistry
+	oldPKI, oldConf, oldData, oldDropIn, oldReg := version.PKIDir, version.K8sConfDir, version.DataDir, version.ImagesDropInDir, addons.ImageRegistry
 	t.Cleanup(func() {
-		version.PKIDir, version.K8sConfDir, version.DataDir, addons.ImageRegistry = oldPKI, oldConf, oldData, oldReg
+		version.PKIDir, version.K8sConfDir, version.DataDir, version.ImagesDropInDir, addons.ImageRegistry = oldPKI, oldConf, oldData, oldDropIn, oldReg
 	})
-	version.DataDir = t.TempDir()
+	version.DataDir, version.K8sConfDir = t.TempDir(), t.TempDir()
+	version.ImagesDropInDir = filepath.Join(t.TempDir(), "images.d")
 }
 
 func stageArchive(t *testing.T, name, index string) {
 	t.Helper()
-	dir := filepath.Join(version.DataDir, "images")
+	stageArchiveIn(t, filepath.Join(version.DataDir, "images"), name, index)
+}
+
+// markImported writes the stamp the import leaves once an operator archive's
+// images are pinned.
+func markImported(t *testing.T, name string) {
+	t.Helper()
+	tar := filepath.Join(version.ImagesDropInDir, name)
+	fi, err := os.Stat(tar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(DropInImportStamp(tar)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DropInImportStamp(tar), []byte(ImportStampValue(fi)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stageArchiveIn(t *testing.T, dir, name, index string) {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +131,7 @@ func stageArchive(t *testing.T, name, index string) {
 
 func kubeletAllowlist(t *testing.T) []string {
 	t.Helper()
-	version.PKIDir, version.K8sConfDir = joinedPKIDir(t), t.TempDir()
+	version.PKIDir = joinedPKIDir(t)
 	if err := writeKubeletConfig(&nodestate.NodeState{Role: "worker", Hostname: "w1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -158,5 +181,69 @@ func TestKubeletConfigRefusesAnUnreadablePayloadArchive(t *testing.T) {
 	err := writeKubeletConfig(&nodestate.NodeState{Role: "worker", Hostname: "w1"})
 	if err == nil || !strings.Contains(err.Error(), "addon-images.tar") {
 		t.Errorf("an unreadable payload archive = %v, want an error naming it", err)
+	}
+}
+
+// An operator who stages an image for a node with no registry access puts its
+// archive in images.d. Without an allowlist entry kubelet still asks the
+// registry for it, so the node goes to ImagePullBackOff on an image it holds.
+func TestKubeletConfigExemptsTheOperatorsDropInImages(t *testing.T) {
+	isolatePayload(t)
+	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
+	stageArchive(t, "stratum-images.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum/etcd:3.7.0"}}]}`)
+	stageArchiveIn(t, version.ImagesDropInDir, "fleet-agent.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1.37.1"}}]}`)
+	stageArchiveIn(t, version.ImagesDropInDir, "notes.txt", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"example.com/not-an-archive:v1"}}]}`)
+	markImported(t, "fleet-agent.tar")
+
+	want := []string{"ghcr.io/ctrliq/stratum/*", "ghcr.io/ctrliq/stratum-fleet-agent"}
+	if got := kubeletAllowlist(t); !slices.Equal(got, want) {
+		t.Errorf("preloadedImagesVerificationAllowlist = %q, want %q", got, want)
+	}
+}
+
+// A bad file the operator dropped must not keep the kubelet from starting: it
+// is skipped, and the operator's other archives are still exempted.
+func TestKubeletConfigSkipsAnUnreadableDropInArchive(t *testing.T) {
+	isolatePayload(t)
+	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
+	stageArchiveIn(t, version.ImagesDropInDir, "broken.tar", "{")
+	stageArchiveIn(t, version.ImagesDropInDir, "fleet-agent.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1.37.1"}}]}`)
+	markImported(t, "broken.tar")
+	markImported(t, "fleet-agent.tar")
+
+	want := []string{"ghcr.io/ctrliq/stratum/*", "ghcr.io/ctrliq/stratum-fleet-agent"}
+	if got := kubeletAllowlist(t); !slices.Equal(got, want) {
+		t.Errorf("preloadedImagesVerificationAllowlist = %q, want %q", got, want)
+	}
+}
+
+// The exemption covers a whole repository, so an archive that is not imported
+// and pinned, whether it is new or its import failed, exempts nothing: pods
+// would otherwise use other images of that repository on the node without
+// their own credentials. A replaced archive waits for its new import too.
+func TestKubeletConfigExemptsOnlyImportedDropInArchives(t *testing.T) {
+	isolatePayload(t)
+	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
+	stageArchiveIn(t, version.ImagesDropInDir, "fleet-agent.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1.37.1"}}]}`)
+	stageArchiveIn(t, version.ImagesDropInDir, "skipped.tar", `{"manifests":[
+		{"annotations":{"io.containerd.image.name":"registry.example.com/team/app:v2"}}]}`)
+	markImported(t, "fleet-agent.tar")
+
+	want := []string{"ghcr.io/ctrliq/stratum/*", "ghcr.io/ctrliq/stratum-fleet-agent"}
+	if got := kubeletAllowlist(t); !slices.Equal(got, want) {
+		t.Errorf("preloadedImagesVerificationAllowlist = %q, want %q, without the archive that was not imported", got, want)
+	}
+
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar"), later, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := kubeletAllowlist(t); slices.Contains(got, "ghcr.io/ctrliq/stratum-fleet-agent") {
+		t.Errorf("a replaced archive stayed exempt before its new import: %q", got)
 	}
 }

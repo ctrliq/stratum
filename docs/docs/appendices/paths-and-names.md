@@ -16,6 +16,7 @@ page that explains them.
 | `/etc/stratum/config.yaml` | the declarative ClusterConfig; see [Configuration](../installation/configuration.md#the-configuration-file) |
 | `/etc/stratum/stratum.env` | optional environment for the unit, such as S3 credentials; you create it, root-owned, mode `0600`; see [Environment for the unit](../installation/configuration.md#environment-for-the-unit) |
 | `/etc/stratum/registries.yaml` | registry mirrors, in the RKE2/k3s format; you create it, root-owned, mode `0600`; see [Registry mirrors](../runtime/index.md#registry-mirrors) |
+| `/etc/stratum/images.d/*.tar` | image archives you stage for the node; you create them, root-owned; each start imports them and exempts their repositories from the kubelet's pull-credential check; see [Images you stage on a node](../runtime/index.md#images-you-stage-on-a-node) |
 | `/etc/stratum/snapshot.conf` | snapshot retention and S3 target, written by `stratum snapshot schedule`; created with mode `0600` and may hold S3 credentials, so keep an existing file root-owned and `0600`; see [Where retention and the upload target come from](snapshot-reference.md#where-retention-and-the-upload-target-come-from) |
 | `/var/lib/stratum/manifests/` | manifests the operator applies; see [Deploying manifests](../cluster-admin/index.md#deploying-manifests) |
 
