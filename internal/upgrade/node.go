@@ -1395,7 +1395,7 @@ func restoreAll(w io.Writer, items []backupItem) (failed []string) {
 			// The manifest set is staticpod's to put back: the package that
 			// renders it owns what belongs in it, where its derived files
 			// land, and what kubelet must never find lying there.
-			err = staticpod.RestoreSnapshot(it.bak)
+			err = staticpod.RestoreSnapshot(w, it.bak)
 		case it.profile:
 			err = restoreProfileConfigs(w, it.bak)
 		default:
