@@ -926,12 +926,14 @@ func SnapshotRejoinHandler() sdk.ToolHandlerFor[SnapshotRejoinIn, destructiveOut
 // HARepointIn is ha_repoint's input.
 type HARepointIn struct {
 	VIP    string `json:"vip" jsonschema:"the cluster VIP address this node's clients should use"`
-	Cilium bool   `json:"cilium,omitempty" jsonschema:"ALSO re-point Cilium cluster-wide. This affects every node and is meant to be done exactly once for the whole cluster"`
+	Cilium bool   `json:"cilium,omitempty" jsonschema:"re-point Cilium cluster-wide INSTEAD of this node's clients. This affects every node and is meant to be done exactly once for the whole cluster; this node's clients are left as they are"`
 }
 
-// HARepointHandler moves this node's clients onto the cluster VIP. The
-// cluster-wide Cilium repoint runs on the credential conn resolves; the node
-// repoint rewrites this node's kubeconfigs and needs no API credential.
+// HARepointHandler runs one of two repoints, never both: with Cilium unset it
+// moves this node's clients onto the cluster VIP, rewriting this node's
+// kubeconfigs with no API credential; with Cilium set it re-points Cilium
+// cluster-wide on the credential conn resolves and leaves this node's clients
+// alone.
 func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHandlerFor[HARepointIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in HARepointIn) (*sdk.CallToolResult, destructiveOut, error) {
 		if in.VIP == "" {
@@ -945,13 +947,11 @@ func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHa
 		if in.Cilium {
 			action = "repoint Cilium cluster-wide at " + in.VIP
 		}
-		// The repoint rewrites every kubeconfig on this node, admin.conf
+		// The node repoint rewrites every kubeconfig on this node, admin.conf
 		// included — the files the server's connector caches. From here to
-		// the return the cache is dropped, however the operation ends: the
-		// cluster-wide Cilium work below runs before the node repoint and
-		// can fail after it, and a repoint that got that far has still
-		// earned a re-resolve. The refusals above run the operation never,
-		// so they skip it.
+		// the return the cache is dropped, however the operation ends: a
+		// repoint that failed partway has still earned a re-resolve. The
+		// refusals above run the operation never, so they skip it.
 		defer invalidateConnectors(append([]*kube.Connector{conn}, other...)...)
 		var cs kubernetes.Interface
 		if in.Cilium {
