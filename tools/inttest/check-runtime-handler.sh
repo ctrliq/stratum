@@ -46,8 +46,19 @@ $rc
 EOF
 }
 running() { [[ $($K get pod "$1" -o jsonpath='{.status.phase}' 2>/dev/null) == Running ]]; }
-container_id() { $K get pod "$1" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's|^containerd://||'; }
-ran_through_fake() { grep -q -- "$(container_id "$1")" "$LOG" 2>/dev/null; }
+container_id() {
+  local id
+  id=$($K get pod "$1" -o jsonpath='{.status.containerStatuses[0].containerID}') && [[ -n $id ]] || return 1
+  printf '%s\n' "${id#containerd://}"
+}
+# A pod without a container ID ends the check: an empty pattern would match any
+# line of the log, and a failed lookup would pass the check that a pod did not
+# use the wrapper.
+ran_through_fake() {
+  local id
+  id=$(container_id "$1") || { fail "no container ID for $1: $($K get pod "$1" -o wide 2>&1)"; done_testing; exit 1; }
+  grep -qF -- "$id" "$LOG" 2>/dev/null
+}
 task_running() {
   [[ $("$ROOT/bin/ctr" --address /run/stratum/containerd/containerd.sock -n k8s.io tasks ls 2>/dev/null |
     awk -v id="$1" '$1 == id {print $3}') == RUNNING ]]
@@ -86,7 +97,7 @@ assert_contains "the RuntimeClass put its node selector on the pod" "runtime.str
   "$($K get pod rh-fake -o jsonpath='{.spec.nodeSelector}')"
 
 # --- stratum runtime restart ----------------------------------------------------
-before=$(container_id rh-fake)
+before=$(container_id rh-fake) || { fail "no container ID for rh-fake: $($K get pod rh-fake -o wide 2>&1)"; done_testing; exit 1; }
 out=$("$STRATUM" runtime restart 2>&1) || fail "stratum runtime restart failed: $out"
 wait_for "rh-fake's container to run in the restarted containerd" 120 task_running "$before" ||
   fail "containerd has no running task $before after its restart"
