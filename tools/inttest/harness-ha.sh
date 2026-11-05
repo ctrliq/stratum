@@ -106,7 +106,9 @@ ha_bring_up() {
     out=$(on cp1 "/dist/stratum token create --control-plane --server https://$HA_VIP:6443" 2>&1) && break
     sleep 10
   done
-  line=$(grep -F -- '--join' <<<"$out" | head -1)
+  # `|| true`: under pipefail a grep that finds no --join line would end the
+  # script here, before the error below could say why.
+  line=$(grep -F -- '--join' <<<"$out" | head -1 || true)
   [[ -n $line ]] || { echo "token create never succeeded: $(tail -3 <<<"$out")" >&2; return 1; }
   parse_join "$line" || { echo "no parseable --join line in token output" >&2; return 1; }
 
