@@ -450,3 +450,95 @@ func TestCheckHandlersReadsTheSharedConfDWithNoHandlers(t *testing.T) {
 		t.Errorf("check with no handlers = %+v, want an error for the conf.d file that does not parse", r.Findings)
 	}
 }
+
+// The drop-in's path is stratum's, but a file there it did not write may hold
+// an operator's configuration: RequireOwnDropIn, which runtime apply runs,
+// refuses to replace it, while a node start, which must not fail on it,
+// replaces it and says so.
+func TestAForeignDropInIsRefusedByApplyAndReplacedByAStart(t *testing.T) {
+	handlersHost(t, true)
+	mine := "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]\nruntime_type = 'io.containerd.kata.v2'\n"
+	if err := os.MkdirAll(filepath.Dir(version.ContainerdRuntimeConfD), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(version.ContainerdRuntimeConfD, []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gvisor := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+	if err := RequireOwnDropIn(nil); err != nil {
+		t.Errorf("no handlers = %v, want nothing to refuse", err)
+	}
+	if err := RequireOwnDropIn(gvisor); err == nil || !strings.Contains(err.Error(), "not written by stratum") {
+		t.Fatalf("RequireOwnDropIn over a foreign drop-in = %v, want a refusal", err)
+	}
+	var out strings.Builder
+	if _, err := ApplyHandlers(&out, gvisor, false); err != nil {
+		t.Fatalf("a start over a foreign drop-in = %v, want it replaced", err)
+	}
+	if !strings.Contains(out.String(), "was not written by stratum; replacing it") {
+		t.Errorf("a start replaced the foreign drop-in without saying so:\n%s", out.String())
+	}
+	if got, _ := os.ReadFile(version.ContainerdRuntimeConfD); !strings.HasPrefix(string(got), handlersMarker) {
+		t.Errorf("the drop-in after a start = %q, want stratum's", got)
+	}
+	if err := RequireOwnDropIn(gvisor); err != nil {
+		t.Errorf("RequireOwnDropIn over stratum's own drop-in = %v", err)
+	}
+}
+
+// containerd imports every shared conf.d file, so one that does not parse is
+// refused by name.
+func TestRequireSharedConfDParses(t *testing.T) {
+	handlersHost(t, true)
+	if err := RequireSharedConfDParses(); err != nil {
+		t.Fatalf("a clean conf.d = %v", err)
+	}
+	bad := filepath.Join(filepath.Dir(version.ContainerdConfD), "broken.toml")
+	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("[plugins\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSharedConfDParses(); err == nil || !strings.Contains(err.Error(), bad) {
+		t.Errorf("a conf.d with %s = %v, want a refusal naming it", bad, err)
+	}
+}
+
+// runtime apply's preflight and runtime check read the shared conf.d through
+// one reader, so they agree: valid files, stratum's registry drop-in and an
+// nvidia-ctk drop-in among them, pass both, and a file that does not parse
+// fails both, by name.
+func TestApplyAndCheckAgreeOnTheSharedConfD(t *testing.T) {
+	handlersHost(t, true)
+	confd := filepath.Dir(version.ContainerdConfD)
+	if err := os.MkdirAll(confd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		filepath.Base(version.ContainerdConfD): "[plugins.'io.containerd.cri.v1.images'.registry]\nconfig_path = '/etc/containerd/certs.d'\n",
+		"99-nvidia.toml": "[plugins.'io.containerd.cri.v1.runtime'.containerd]\ndefault_runtime_name = 'runc'\n" +
+			"[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia.options]\nBinaryName = '/usr/bin/nvidia-container-runtime'\n",
+	} {
+		if err := os.WriteFile(filepath.Join(confd, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RequireSharedConfDParses(); err != nil {
+		t.Errorf("apply's preflight refused a valid conf.d: %v", err)
+	}
+	if got := findings(CheckHandlers(nil), SeverityError); strings.Contains(got, "does not parse") {
+		t.Errorf("check reported a valid conf.d as broken: %s", got)
+	}
+
+	bad := filepath.Join(confd, "broken.toml")
+	if err := os.WriteFile(bad, []byte("[plugins\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireSharedConfDParses(); err == nil || !strings.Contains(err.Error(), bad) {
+		t.Errorf("apply's preflight = %v, want a refusal naming %s", err, bad)
+	}
+	if got := findings(CheckHandlers(nil), SeverityError); !strings.Contains(got, bad+" does not parse") {
+		t.Errorf("check = %s, want %s reported as not parsing", got, bad)
+	}
+}

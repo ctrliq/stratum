@@ -36,6 +36,8 @@ type RuntimeApplyResult struct {
 var (
 	applyHandlers         = runtime.ApplyHandlers
 	requireHandlersImport = runtime.RequireHandlersImport
+	requireSharedConfD    = runtime.RequireSharedConfDParses
+	requireOwnDropIn      = runtime.RequireOwnDropIn
 	restartContainerd     = runtime.RestartContainerd
 )
 
@@ -52,7 +54,10 @@ var (
 // and refuses o.Handlers and o.Clear: saving them to node.yaml alone would be
 // undone by its next start. Every handler is validated, its binary checked,
 // and containerd's config checked to import the drop-in before anything is
-// written. The Node's runtime-handler labels follow for the handlers its
+// written, every file in the shared conf.d checked to parse, since a restart
+// would stop a working containerd for one that cannot start, and a drop-in
+// stratum did not write refused rather than replaced. The
+// Node's runtime-handler labels follow for the handlers its
 // containerd has loaded, so a RuntimeClass schedules onto the node without
 // waiting for its next start but not before containerd can run the handler;
 // a label update that fails only warns. It holds the node maintenance lock
@@ -86,6 +91,12 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 	if err := requireHandlersImport(); err != nil {
 		return RuntimeApplyResult{}, err
 	}
+	if err := requireSharedConfD(); err != nil {
+		return RuntimeApplyResult{}, err
+	}
+	if err := requireOwnDropIn(want); err != nil {
+		return RuntimeApplyResult{}, err
+	}
 	out := RuntimeApplyResult{Handlers: want, Source: source}
 	res, err := applyHandlers(w, want, o.Restart)
 	out.ApplyHandlersResult = res
@@ -113,7 +124,8 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 }
 
 // RestartRuntime restarts the supervisor's containerd, then labels this node
-// for the runtime handlers the restart loaded. A label update that fails only
+// for the runtime handlers the restart loaded. It refuses, restarting
+// nothing, when a file in the shared conf.d does not parse. A label update that fails only
 // warns. It holds the node maintenance lock, as ApplyRuntimeHandlers does.
 func RestartRuntime(w io.Writer) error {
 	release, err := nodelock.Acquire("runtime restart")
@@ -121,6 +133,9 @@ func RestartRuntime(w io.Writer) error {
 		return err
 	}
 	defer release()
+	if err := requireSharedConfD(); err != nil {
+		return err
+	}
 	if err := restartContainerd(w); err != nil {
 		return err
 	}

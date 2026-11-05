@@ -43,7 +43,9 @@ type ApplyRegistryResult struct {
 // restarts containerd when the config_path enablement changed (hosts.toml alone
 // are read live) and containerd is running to restart. Backs `stratum registry
 // apply` — lets an operator update mirrors without reinstalling. Restarted, not
-// Changed, is the restart fact a caller reports from.
+// Changed, is the restart fact a caller reports from. When a file in the shared
+// conf.d does not parse it writes the config but does not restart containerd
+// into it, and returns an error naming the file.
 func ApplyRegistry() (ApplyRegistryResult, error) {
 	res, err := registry.Apply()
 	out := ApplyRegistryResult{Result: res}
@@ -51,6 +53,9 @@ func ApplyRegistry() (ApplyRegistryResult, error) {
 		return out, err
 	}
 	if out.Changed && Active() {
+		if err := sharedConfDParseError(); err != nil {
+			return out, fmt.Errorf("%w; the registry config was written, but containerd was not restarted to load it. Fix or remove that file, then run `stratum runtime restart`", err)
+		}
 		restarted, err := restartContainerd(" after registry config change")
 		out.Restarted = restarted
 		if err != nil {

@@ -200,6 +200,7 @@ what payload it carries, can stage that payload, and runs a node.`,
 		newRollbackCommand(),
 		newRegistryCommand(),
 		newRuntimeCommand(),
+		newNodeCommand(),
 		newHARepointCommand(),
 		newUninstallCommand(),
 		newKubectlCommand(),
@@ -211,7 +212,7 @@ what payload it carries, can stage that payload, and runs a node.`,
 }
 
 // newGroupCommand builds a command whose only job is to group subcommands
-// (certs, snapshot, token, registry, runtime) — it has no logic of its
+// (certs, snapshot, token, registry, runtime, node) — it has no logic of its
 // own. unknownCommand and requireSubcommand together make an invalid
 // invocation (no verb, or an unmatched one) print usage and report a clear
 // error, the same way root itself handles the identical mistake, instead of
