@@ -122,9 +122,12 @@ export async function signOut({ deadlineMs = SHELL_DELETE_BOUND_MS } = {}) {
   // failure to stay signed in about.
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), deadlineMs);
+  const probed = currentSessionRevision();
   const recovery = await probeMe({ signal: abort.signal });
   clearTimeout(timer);
-  if (recovery.stale) return { superseded: true };
+  // probeMe checks the revision before it returns; check again here, after
+  // the await, so a login that completed in between is never cleared below.
+  if (recovery.stale || !isSessionCurrent(probed)) return { superseded: true };
   if (recovery.status === 401) {
     // The confirmed expiry retires the shared identity and CSRF token; the
     // unauthorized handler is suppressed on this quiet probe, so the caller
