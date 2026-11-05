@@ -74,10 +74,49 @@ The kubelet also checks an image you load onto a node by hand, for example with
 kubelet did not pull, so this differs from upstream Kubernetes. With `imagePullPolicy:
 IfNotPresent` the check is a pull from the image's registry, which fails on an
 airgapped node. With `imagePullPolicy: Never` the pod fails with
-`ErrImageNeverPull` even though the image is on the node. Serve your own images
-from a registry mirror instead. This applies to clusters you upgrade as well as
-new ones: every `stratum up` rewrites the kubelet's configuration. See
+`ErrImageNeverPull` even though the image is on the node. To use an image from
+the node, put its archive in `/etc/stratum/images.d` instead, as described in
+[Images you stage on a node](#images-you-stage-on-a-node), or serve it from a
+registry mirror. This applies to clusters you upgrade as well as new ones: every
+`stratum up` rewrites the kubelet's configuration. See
 [Images loaded onto a node by hand](../appendices/upgrade-reference.md#images-loaded-onto-a-node-by-hand).
+
+## Images you stage on a node
+
+A node that cannot reach an image's registry can still run it from an archive
+you place in `/etc/stratum/images.d`. Copy the archive to every node that may
+run the image, as a root-owned file whose name ends in `.tar`, then restart
+Stratum on the node:
+
+```sh
+sudo install -D -m 0644 fleet-agent.tar /etc/stratum/images.d/fleet-agent.tar
+sudo systemctl restart stratum
+```
+
+Each start does two things with these archives, as it does with the payload's:
+
+- It imports them into containerd and pins their images, so the kubelet's image
+  garbage collection does not remove them. An archive that has not changed
+  since its images were last imported and pinned is not imported again.
+- It adds the repository of every image they carry to
+  `preloadedImagesVerificationAllowlist`, so the kubelet uses those images from
+  the node without checking pull credentials. Only an archive whose images were
+  imported and pinned is added.
+
+An archive that Stratum cannot read or import is skipped with a warning in the
+Stratum log, and exempts nothing; the node still starts. If pinning fails, the
+archive is imported and pinned again at the next start. The archive can be OCI or Docker format, as
+`ctr images import` accepts, and must name its images: an archive exported by
+digest alone exempts nothing.
+
+The exemption covers the whole repository, not only the tags in the archive.
+Any pod can then use an image of that repository that is on the node without
+the pod's own pull credentials, including one pulled there with another pod's
+pull secret. Stage only images every workload on the node may use.
+
+Removing an archive stops its exemption at the next restart, but leaves its
+images in containerd, pinned. Remove them with
+`sudo /var/lib/stratum/bin/ctr -a /run/stratum/containerd/containerd.sock -n k8s.io images rm <name>`.
 
 ## Configuration
 

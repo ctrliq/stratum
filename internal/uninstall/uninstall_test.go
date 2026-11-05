@@ -358,6 +358,7 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		"EncryptionConfigPath":      version.EncryptionConfigPath,
 		"EtcdDataDir":               version.EtcdDataDir,
 		"HelmCacheDir":              version.HelmCacheDir,
+		"ImagesDropInDir":           version.ImagesDropInDir,
 		"ModulesLoadFile":           version.ModulesLoadFile,
 		"LegacyHelmCacheDir":        version.LegacyHelmCacheDir,
 		"K8sConfDir":                version.K8sConfDir,
