@@ -510,7 +510,10 @@ var (
 	snapshotInterval = func(c *ClusterConfig) time.Duration {
 		return time.Duration(c.Spec.Snapshot.IntervalHours) * time.Hour
 	}
-	snapshotSave = func(ctx context.Context, c *ClusterConfig) error {
+	// How often snapshotLoop's start phase retries the first save while
+	// etcd is still coming up (see snapshotLoop).
+	snapshotStartRetry = time.Minute
+	snapshotSave       = func(ctx context.Context, c *ClusterConfig) error {
 		// The save's prune warnings are the daemon's log: the controller's
 		// stdout is that log, so the writer is os.Stdout, passed explicitly.
 		opts := scheduledSaveOptions(c, etcdsnap.LoadConfigOr, os.Stdout)
@@ -1476,12 +1479,49 @@ func scheduledSaveOptions(cfg *ClusterConfig, load func(etcdsnap.Config) (etcdsn
 }
 
 // snapshotLoop saves etcd snapshots on the configured interval — the
-// supervisor-native stratum-etcd-snapshot.timer. Config precedence: the
+// supervisor-native stratum-etcd-snapshot.timer. The loop starts before the
+// supervisor has etcd up, so its first scheduled snapshot is taken as soon
+// as etcd can take one: the first save is retried every snapshotStartRetry
+// until one succeeds, the context ends, or a full snapshot interval has
+// passed since the loop started — a window that ends without a success
+// reports the last error once, and a control plane restarted more often
+// than the interval still snapshots once per daemon lifetime. Config
+// precedence: the
 // operator-managed snapshot config file (written by `stratum snapshot
 // schedule` and the MCP `snapshot_schedule` tool) wins
 // over the cluster config's inline settings.
 func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
-	t := time.NewTicker(snapshotInterval(cfg))
+	if ctx.Err() != nil {
+		return
+	}
+	interval := snapshotInterval(cfg)
+	started := time.Now()
+	// Non-nil only when the start window ended without a successful save:
+	// the window's last error, reported once below. A success — the first
+	// attempt or a retry — clears it.
+	var windowErr error
+	for {
+		err := snapshotSave(ctx, cfg)
+		if err == nil {
+			windowErr = nil
+			break
+		}
+		if time.Since(started) >= interval {
+			windowErr = err
+			break
+		}
+		timer := time.NewTimer(snapshotStartRetry)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+	if windowErr != nil {
+		fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", windowErr)
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
