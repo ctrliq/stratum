@@ -124,7 +124,8 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 }
 
 // RestartRuntime restarts the supervisor's containerd, then labels this node
-// for the runtime handlers the restart loaded. A label update that fails only
+// for the runtime handlers the restart loaded. It refuses, restarting
+// nothing, when a file in the shared conf.d does not parse. A label update that fails only
 // warns. It holds the node maintenance lock, as ApplyRuntimeHandlers does.
 func RestartRuntime(w io.Writer) error {
 	release, err := nodelock.Acquire("runtime restart")
@@ -132,6 +133,9 @@ func RestartRuntime(w io.Writer) error {
 		return err
 	}
 	defer release()
+	if err := requireSharedConfD(); err != nil {
+		return err
+	}
 	if err := restartContainerd(w); err != nil {
 		return err
 	}

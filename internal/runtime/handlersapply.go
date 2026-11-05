@@ -361,13 +361,22 @@ type sharedConfD struct {
 }
 
 // RequireSharedConfDParses reports the first file in the shared conf.d that
-// does not parse. containerd imports every one, so a runtime apply that
-// restarted it with one there would stop a working containerd for one that
-// cannot start.
+// does not parse. containerd imports every one, so a runtime apply or restart
+// that restarted it with one there would stop a working containerd for one
+// that cannot start.
 func RequireSharedConfDParses() error {
+	if err := sharedConfDParseError(); err != nil {
+		return fmt.Errorf("%w, so nothing was changed. Fix or remove it and run again", err)
+	}
+	return nil
+}
+
+// sharedConfDParseError is the first file in the shared conf.d that does not
+// parse, as an error naming it, or nil.
+func sharedConfDParseError() error {
 	for _, f := range readSharedConfD() {
 		if f.err != nil {
-			return fmt.Errorf("%s does not parse (%v); containerd would refuse to start with it, so nothing was changed. Fix or remove it and run again", f.path, f.err)
+			return fmt.Errorf("%s does not parse (%v); containerd would refuse to start with it", f.path, f.err)
 		}
 	}
 	return nil

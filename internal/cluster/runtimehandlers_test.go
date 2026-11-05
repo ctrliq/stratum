@@ -272,6 +272,23 @@ func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	}
 }
 
+// `stratum runtime restart` refuses, restarting nothing, when a shared conf.d
+// file does not parse: containerd would not start again with it.
+func TestRestartRuntimeRefusesASharedConfDThatDoesNotParse(t *testing.T) {
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
+	oldRestart := restartContainerd
+	t.Cleanup(func() { restartContainerd = oldRestart })
+	restarts := 0
+	restartContainerd = func(io.Writer) error { restarts++; return nil }
+	requireSharedConfD = func() error { return errors.New("conf.d/broken.toml does not parse") }
+	if err := RestartRuntime(io.Discard); err == nil || !strings.Contains(err.Error(), "broken.toml") {
+		t.Fatalf("restart = %v, want the conf.d refusal", err)
+	}
+	if restarts != 0 {
+		t.Errorf("a refused restart restarted containerd %d times", restarts)
+	}
+}
+
 // A node is labelled for a runtime handler only once its containerd has
 // loaded it, on every path that labels: an apply that left containerd running
 // without the new handler, a restart, and a kubelet start.
