@@ -99,7 +99,9 @@ node reads S3 credentials as [Credentials](#credentials) lists.
 - With the CLI, each `--s3-*` flag applies only when it is passed: a flag you
   leave out keeps the configured value. Passing one of the other S3 flags
   requires an S3 bucket, either `--s3-bucket` in the same call or one already
-  configured.
+  configured, and an empty or blank `--s3-bucket` value is refused. To stop
+  S3 uploads instead, remove the `S3_BUCKET` line from `snapshot.conf` (the
+  `S3_ENDPOINT`, `S3_REGION`, `S3_PREFIX` and `S3_PATH_STYLE` lines with it).
 - Once the file exists, change it by running `stratum snapshot schedule` again
   or by editing it. The running controller's snapshot loop reads it on its next
   tick.

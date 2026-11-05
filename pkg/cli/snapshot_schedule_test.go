@@ -211,6 +211,88 @@ func TestSnapshotScheduleExplicitPathStyleFalseWins(t *testing.T) {
 	}
 }
 
+// An explicitly empty --s3-bucket is refused, even over an already-configured
+// bucket: saving it would clear the bucket and with it the omitted S3 details
+// (SaveConfig serializes them only while a bucket is set), and a lone
+// --s3-region us-west-2 alongside it would then configure nothing. The way to
+// stop S3 uploads is to drop the S3 target from /etc/stratum/snapshot.conf.
+func TestSnapshotScheduleEmptyBucketOverConfiguredBucketIsRefused(t *testing.T) {
+	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
+	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
+
+	scheduleLoadConfig = func() (etcdsnap.Config, error) { return configuredS3(), nil }
+	var saved bool
+	scheduleSaveConfig = func(io.Writer, etcdsnap.Config) error { saved = true; return nil }
+
+	cmd := newSnapshotScheduleCommand()
+	cmd.SetArgs([]string{"--s3-bucket=", "--s3-region", "us-west-2"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("an empty --s3-bucket over a configured bucket was accepted")
+	}
+	if !strings.Contains(err.Error(), "--s3-bucket") {
+		t.Errorf("error %q does not name --s3-bucket", err)
+	}
+	if !strings.Contains(err.Error(), etcdsnap.ConfigPath) {
+		t.Errorf("error %q does not say where to stop S3 uploads instead (%s)", err, etcdsnap.ConfigPath)
+	}
+	if saved {
+		t.Error("schedule wrote a config for a target it refused")
+	}
+}
+
+// A lone empty --s3-bucket is refused by the same rule: it would clear the
+// configured bucket and lose the configured endpoint/region/prefix/path-style
+// from disk.
+func TestSnapshotScheduleLoneEmptyBucketIsRefused(t *testing.T) {
+	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
+	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
+
+	scheduleLoadConfig = func() (etcdsnap.Config, error) { return configuredS3(), nil }
+	var saved bool
+	scheduleSaveConfig = func(io.Writer, etcdsnap.Config) error { saved = true; return nil }
+
+	cmd := newSnapshotScheduleCommand()
+	cmd.SetArgs([]string{"--s3-bucket="})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a lone empty --s3-bucket was accepted")
+	}
+	if !strings.Contains(err.Error(), "--s3-bucket") {
+		t.Errorf("error %q does not name --s3-bucket", err)
+	}
+	if saved {
+		t.Error("schedule wrote a config for a target it refused")
+	}
+}
+
+// Whitespace is not a bucket either: --s3-bucket="  " is refused like an
+// empty value.
+func TestSnapshotScheduleWhitespaceBucketIsRefused(t *testing.T) {
+	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
+	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
+
+	scheduleLoadConfig = func() (etcdsnap.Config, error) { return configuredS3(), nil }
+	var saved bool
+	scheduleSaveConfig = func(io.Writer, etcdsnap.Config) error { saved = true; return nil }
+
+	cmd := newSnapshotScheduleCommand()
+	cmd.SetArgs([]string{"--s3-bucket", "  "})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a whitespace-only --s3-bucket was accepted")
+	}
+	if !strings.Contains(err.Error(), "--s3-bucket") {
+		t.Errorf("error %q does not name --s3-bucket", err)
+	}
+	if saved {
+		t.Error("schedule wrote a config for a target it refused")
+	}
+}
+
 // The base behaviour the fix keeps: every flag passed together sets every
 // field.
 func TestSnapshotScheduleAllS3FlagsTogetherSetEveryField(t *testing.T) {

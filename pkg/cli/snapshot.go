@@ -493,10 +493,23 @@ func newSnapshotScheduleCommand() *cobra.Command {
 			if cmd.Flags().Changed("s3-path-style") {
 				detailFlags = append(detailFlags, "--s3-path-style")
 			}
+			// An explicitly empty --s3-bucket is refused before anything is
+			// saved: saving it would clear the configured bucket and with it the
+			// omitted S3 details (SaveConfig writes the S3_* keys only while a
+			// bucket is set), while the way to stop S3 uploads is to drop the
+			// S3 target from the snapshot config file.
+			if cmd.Flags().Changed("s3-bucket") && strings.TrimSpace(bucket) == "" {
+				return fmt.Errorf("snapshot schedule: --s3-bucket was passed empty: an empty bucket is refused; to stop S3 uploads instead, remove the S3_BUCKET line from %s", etcdsnap.ConfigPath)
+			}
 			// An S3 detail flag configures nothing without a bucket: refuse rather
 			// than silently save a no-op. Either --s3-bucket in this call or a
-			// bucket already in the loaded config is enough.
-			if len(detailFlags) > 0 && bucket == "" && cfg.S3.Bucket == "" {
+			// bucket already in the loaded config is enough; the empty value above
+			// is already refused, so the passed bucket is a real target.
+			effectiveBucket := cfg.S3.Bucket
+			if cmd.Flags().Changed("s3-bucket") {
+				effectiveBucket = bucket
+			}
+			if len(detailFlags) > 0 && effectiveBucket == "" {
 				verb := "needs"
 				if len(detailFlags) > 1 {
 					verb = "need"
