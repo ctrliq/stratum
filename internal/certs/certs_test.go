@@ -810,6 +810,28 @@ func TestRotate_ReportsWhetherItRotated(t *testing.T) {
 	})
 }
 
+// TestRotateRefusesANegativeWindow: a negative if-expiring window is refused
+// before anything runs. Taken as-is it would read as a forced run, and the
+// CLI's --yes gate passes on any non-zero window, so a typo would reissue every
+// leaf without the consent a forced run asks for.
+func TestRotateRefusesANegativeWindow(t *testing.T) {
+	prep(t)
+	leaf := filepath.Join(version.PKIDir, "kube-vip.crt")
+	before := readAll(t, leaf)
+
+	rotated, err := RotateContext(context.Background(), io.Discard, Options{IfExpiringDays: -1, Quiet: true})
+	const want = "certs: rotation not started: the if-expiring window must be 0 (rotate now) or a number of days above 0, not -1"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Rotate with a -1 day window: err = %v; want %q", err, want)
+	}
+	if rotated {
+		t.Error("Rotate reported a rotation for a refused run")
+	}
+	if after := readAll(t, leaf); !bytes.Equal(after, before) {
+		t.Error("the refused run reissued a leaf")
+	}
+}
+
 // ── the stdout-guard retirement pins ─────────────────────────────────────────
 //
 // Every operation an MCP tool calls takes an io.Writer FIRST (after any ctx)

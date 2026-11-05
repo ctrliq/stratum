@@ -346,6 +346,13 @@ func SubjectDrift() ([]string, error) {
 // check found nothing to rotate, (true, nil) after a completed rotation, and
 // false beside the error on every refusal or failure.
 func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
+	// Refused before anything else: a negative window would read as a forced
+	// run below, so a typo would reissue every leaf without the consent a
+	// forced run asks for (the CLI's --yes gate passes only on a non-zero
+	// window).
+	if o.IfExpiringDays < 0 {
+		return false, fmt.Errorf("certs: rotation not started: the if-expiring window must be 0 (rotate now) or a number of days above 0, not %d", o.IfExpiringDays)
+	}
 	if err := ctx.Err(); err != nil {
 		return false, fmt.Errorf("certs: rotation not started: %w", err)
 	}
