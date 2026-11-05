@@ -1494,47 +1494,81 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 // Ready. Idempotent by containerd's own import semantics (matching digests
 // no-op), so restarts re-run it harmlessly. The operator's archives in
 // version.ImagesDropInDir follow, so they are on the node before kubelet starts.
+// kubelet.conf was rendered before they were imported, and exempts only the
+// archives already imported, so when this start imports a new one it is
+// rendered again for kubelet to read as it starts. A render that fails only
+// warns: the new images stay subject to the credential check until the next
+// start, the safe side.
 func importPayloadImages(ctx context.Context) error {
 	if err := ImportImages(ctx, filepath.Join(version.DataDir, assets.ImagesDir)); err != nil {
 		return err
 	}
-	importDropInImages(os.Stdout, os.Stderr)
+	importOperatorImages(ctx, os.Stdout, os.Stderr)
 	return nil
 }
 
-// importDropInImages imports and pins the operator's image archives. Unlike a
-// payload archive, one that fails is skipped with a warning rather than failing
-// kubelet's start: the payload is the node's own, while a bad file an operator
-// dropped must not take every pod on the node down with it.
-func importDropInImages(w, warn io.Writer) {
+// importOperatorImages imports the operator's archives and, when it imported a
+// new one, renders kubelet.conf again so kubelet exempts its images.
+func importOperatorImages(ctx context.Context, w, warn io.Writer) {
+	if !importDropInImages(ctx, w, warn) {
+		return
+	}
+	st, err := LoadState()
+	if err == nil {
+		err = writeKubeletConf(st)
+	}
+	if err != nil {
+		fmt.Fprintf(warn, "stratum: warning: the operator images imported from %s are not exempt from kubelet's pull-credential check until the next start: render kubelet.conf: %v\n", version.ImagesDropInDir, err)
+	}
+}
+
+// importDropInImages imports and pins the operator's image archives and
+// reports whether it imported one this start. Unlike a payload archive, one
+// that fails is skipped with a warning rather than failing kubelet's start: the
+// payload is the node's own, while a bad file an operator dropped must not take
+// every pod on the node down with it. An archive's stamp is written only once
+// its images are pinned, so one whose pin failed is imported and pinned again
+// on the next start rather than left to image garbage collection.
+func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 	tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
 	if len(tars) == 0 {
-		return
+		return false
 	}
 	sock := strings.TrimPrefix(version.ContainerdSock, "unix://")
 	ctr := filepath.Join(version.BinDir, "ctr")
 	_ = os.MkdirAll(filepath.Dir(dropInStampPath("")), 0o755)
+	names := map[string]bool{}
 	var imported []string
 	for _, tar := range tars {
-		stamp := dropInStampPath(tar)
-		if !stampCurrentAt(tar, stamp) {
-			out, err := exec.Command(ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar).CombinedOutput()
+		current := runtime.DropInImported(tar)
+		if !current {
+			out, err := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar).CombinedOutput()
 			if err != nil {
 				fmt.Fprintf(warn, "stratum: warning: skipping %s: import: %v\n%s", tar, err, out)
 				continue
 			}
 			fmt.Fprintf(w, "stratum: imported operator images from %s\n", tar)
-			writeStampAt(tar, stamp)
 		}
-		imported = append(imported, tar)
+		got, err := assets.ArchiveImageNames(tar)
+		if err != nil {
+			fmt.Fprintf(warn, "stratum: warning: skipping %s: read its image names: %v\n", tar, err)
+			continue
+		}
+		for _, n := range got {
+			names[n] = true
+		}
+		if !current {
+			imported = append(imported, tar)
+		}
 	}
-	names, err := assets.ImageNames(imported)
-	if err == nil {
-		err = pinPayloadImages(ctr, sock, names)
+	if err := pinPayloadImages(ctx, ctr, sock, names); err != nil {
+		fmt.Fprintf(warn, "stratum: warning: pin the operator images in %s, which are imported again on the next start: %v\n", version.ImagesDropInDir, err)
+		return false
 	}
-	if err != nil {
-		fmt.Fprintf(warn, "stratum: warning: pin the operator images in %s: %v\n", version.ImagesDropInDir, err)
+	for _, tar := range imported {
+		writeStampAt(tar, dropInStampPath(tar))
 	}
+	return len(imported) > 0
 }
 
 // ImportImages is importPayloadImages pointed at an explicit archive dir —
@@ -1580,7 +1614,7 @@ func ImportImagesWithWriter(ctx context.Context, w io.Writer, dir string) error 
 	// Pinning is a handful of ctr calls — cheap enough to re-assert every
 	// start, and it also covers images imported before a stratum upgrade
 	// introduced pinning.
-	return pinPayloadImages(ctr, sock, names)
+	return pinPayloadImages(ctx, ctr, sock, names)
 }
 
 // importWaitContainerd is waitContainerd behind a seam, so a test can run ImportImages against a fake ctr.
@@ -1616,13 +1650,9 @@ func stampPath(tar string) string {
 
 // dropInStampPath keeps an operator archive's stamp apart from a payload
 // archive's of the same name, so neither can mark the other imported.
-func dropInStampPath(tar string) string {
-	return filepath.Join(version.K8sConfDir, "images.d", filepath.Base(tar)+".imported")
-}
+func dropInStampPath(tar string) string { return runtime.DropInImportStamp(tar) }
 
-func stampValue(fi os.FileInfo) string {
-	return fmt.Sprintf("%d %d", fi.Size(), fi.ModTime().UnixNano())
-}
+func stampValue(fi os.FileInfo) string { return runtime.ImportStampValue(fi) }
 
 // payloadImageRows picks the (ref, digest) rows of `ctr images ls` to pin:
 // every name a payload archive carries, and every image under the engine's
@@ -1656,8 +1686,8 @@ func payloadImageRows(ls string, archived map[string]bool) [][2]string {
 //
 // Both were found by CI, not invented: the digest miss is why add-ons pulled
 // from a cold mirror, and a tight runner disk GC'd them minutes after import.
-func pinPayloadImages(ctr, sock string, archived map[string]bool) error {
-	out, err := exec.Command(ctr, "--address", sock, "-n", "k8s.io", "images", "ls").Output()
+func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string]bool) error {
+	out, err := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "ls").Output()
 	if err != nil {
 		return fmt.Errorf("pin payload images: list: %w", err)
 	}
@@ -1675,7 +1705,7 @@ func pinPayloadImages(ctr, sock string, archived map[string]bool) error {
 				repo = ref[:i]
 			}
 			alias := repo + "@" + digest
-			cmd := exec.Command(ctr, "--address", sock, "-n", "k8s.io",
+			cmd := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io",
 				"images", "tag", "--force", ref, alias)
 			if tout, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("alias %s: %w\n%s", alias, err, tout)
@@ -1683,7 +1713,7 @@ func pinPayloadImages(ctr, sock string, archived map[string]bool) error {
 			names = append(names, alias)
 		}
 		for _, name := range names {
-			cmd := exec.Command(ctr, "--address", sock, "-n", "k8s.io",
+			cmd := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io",
 				"images", "label", name, "io.cri-containerd.pinned=pinned")
 			if lout, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("pin %s: %w\n%s", name, err, lout)

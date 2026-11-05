@@ -97,13 +97,15 @@ Each start does two things with these archives, as it does with the payload's:
 
 - It imports them into containerd and pins their images, so the kubelet's image
   garbage collection does not remove them. An archive that has not changed
-  since it was last imported is not imported again.
+  since its images were last imported and pinned is not imported again.
 - It adds the repository of every image they carry to
   `preloadedImagesVerificationAllowlist`, so the kubelet uses those images from
-  the node without checking pull credentials.
+  the node without checking pull credentials. Only an archive whose images were
+  imported and pinned is added.
 
 An archive that Stratum cannot read or import is skipped with a warning in the
-Stratum log; the node still starts. The archive can be OCI or Docker format, as
+Stratum log, and exempts nothing; the node still starts. If pinning fails, the
+archive is imported and pinned again at the next start. The archive can be OCI or Docker format, as
 `ctr images import` accepts, and must name its images: an archive exported by
 digest alone exempts nothing.
 

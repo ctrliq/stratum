@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/ctrliq/stratum/internal/addons"
+	"github.com/ctrliq/stratum/internal/nodestate"
+	"github.com/ctrliq/stratum/internal/runtime"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -146,7 +148,9 @@ func TestImportDropInImagesImportsPinsAndSkipsAFailure(t *testing.T) {
 	}
 
 	var out, warn strings.Builder
-	importDropInImages(&out, &warn)
+	if !importDropInImages(context.Background(), &out, &warn) {
+		t.Error("the first start imported fleet-agent.tar but reported nothing new")
+	}
 	b, err := os.ReadFile(calls)
 	if err != nil {
 		t.Fatal(err)
@@ -171,12 +175,108 @@ func TestImportDropInImagesImportsPinsAndSkipsAFailure(t *testing.T) {
 	if err := os.Remove(calls); err != nil {
 		t.Fatal(err)
 	}
-	importDropInImages(&out, &warn)
+	if importDropInImages(context.Background(), &out, &warn) {
+		t.Error("the next start imported nothing new but reported it did")
+	}
 	b, err = os.ReadFile(calls)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(b), "import "+filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
 		t.Errorf("an unchanged archive was imported again on the next start; calls:\n%s", b)
+	}
+}
+
+// dropInHost stages one operator archive and a ctr that fails any call
+// matching failOn, and returns the file ctr logs its calls to.
+func dropInHost(t *testing.T, failOn string) (calls string) {
+	t.Helper()
+	origBin, origConf, origDropIn := version.BinDir, version.K8sConfDir, version.ImagesDropInDir
+	t.Cleanup(func() { version.BinDir, version.K8sConfDir, version.ImagesDropInDir = origBin, origConf, origDropIn })
+	version.BinDir, version.K8sConfDir, version.ImagesDropInDir = t.TempDir(), t.TempDir(), t.TempDir()
+	calls = filepath.Join(t.TempDir(), "calls")
+	script := "#!/bin/sh\nshift 4\necho \"$*\" >> " + calls + "\n" +
+		"case \"$*\" in " + failOn + ") echo 'ctr: refused'; exit 1;; esac\n" +
+		"[ \"$1 $2\" = \"images ls\" ] && printf 'REF TYPE DIGEST SIZE PLATFORMS LABELS\\nghcr.io/ctrliq/stratum-fleet-agent:v1 index sha256:a1 30MiB linux/arm64 -\\n'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(version.BinDir, "ctr"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(writeImageArchive(t, map[string]string{"index.json": `{"manifests":[{"annotations":{"io.containerd.image.name":"ghcr.io/ctrliq/stratum-fleet-agent:v1"}}]}`}, []string{"index.json"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return calls
+}
+
+// An archive whose images could not be pinned is not stamped: image garbage
+// collection may remove its unpinned images, so the next start imports and
+// pins it again rather than skipping it as current.
+func TestImportDropInImagesStampsOnlyAfterThePin(t *testing.T) {
+	calls := dropInHost(t, "images\\ label*")
+	tar := filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")
+	var out, warn strings.Builder
+	if importDropInImages(context.Background(), &out, &warn) {
+		t.Error("a start whose pin failed reported a fresh import")
+	}
+	if !strings.Contains(warn.String(), "imported again on the next start") {
+		t.Errorf("warnings = %q, want the failed pin reported", warn.String())
+	}
+	if runtime.DropInImported(tar) {
+		t.Fatal("the archive was stamped though its images were not pinned")
+	}
+	if err := os.Remove(calls); err != nil {
+		t.Fatal(err)
+	}
+	importDropInImages(context.Background(), &out, &warn)
+	if b, _ := os.ReadFile(calls); !strings.Contains(string(b), "images import "+tar) {
+		t.Errorf("the next start did not import the unpinned archive again; calls:\n%s", b)
+	}
+}
+
+// A start that imports a new operator archive renders kubelet.conf again, so
+// kubelet, which reads it as it starts, exempts the new images; a start with
+// nothing new leaves it alone.
+func TestImportOperatorImagesRendersKubeletConfAfterAFreshImport(t *testing.T) {
+	dropInHost(t, "nothing")
+	oldLoad, oldWrite := LoadState, writeKubeletConf
+	t.Cleanup(func() { LoadState, writeKubeletConf = oldLoad, oldWrite })
+	LoadState = func() (*nodestate.NodeState, error) { return &nodestate.NodeState{Role: "worker", Hostname: "w1"}, nil }
+	renders := 0
+	writeKubeletConf = func(*nodestate.NodeState) error {
+		renders++
+		if !runtime.DropInImported(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
+			t.Error("kubelet.conf was rendered before the archive was stamped, so it would not exempt it")
+		}
+		return nil
+	}
+	var out, warn strings.Builder
+	importOperatorImages(context.Background(), &out, &warn)
+	importOperatorImages(context.Background(), &out, &warn)
+	if renders != 1 {
+		t.Errorf("kubelet.conf was rendered %d times, want once, after the fresh import", renders)
+	}
+}
+
+// A stalled import ends with the start's context, so a shutdown or re-exec
+// does not wait for it.
+func TestImportDropInImagesStopsWithItsContext(t *testing.T) {
+	dropInHost(t, "nothing")
+	hang := "#!/bin/sh\nexec sleep 30\n"
+	if err := os.WriteFile(filepath.Join(version.BinDir, "ctr"), []byte(hang), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var out, warn strings.Builder
+	start := time.Now()
+	importDropInImages(ctx, &out, &warn)
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("the import ran %s past its cancelled context", took)
+	}
+	if runtime.DropInImported(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
+		t.Error("a cancelled import was stamped")
 	}
 }
