@@ -97,9 +97,17 @@ ha_bring_up() {
   wait_for "the VIP to answer" 300 api_via "$HA_VIP" cp1 || { node_log cp1; return 1; }
   pass "cp1 up, API answering on the VIP"
 
-  local out line
-  out=$(on cp1 "/dist/stratum token create --control-plane --server https://$HA_VIP:6443")
+  # The VIP answering does not mean kube-controller-manager has settled: it can
+  # still be restarting or waiting for its leader lease, and token create
+  # refuses until the bootstrapsigner has signed cluster-info. Retry while it
+  # takes over, as the worker checks do.
+  local out line _
+  for _ in 1 2 3 4 5 6; do
+    out=$(on cp1 "/dist/stratum token create --control-plane --server https://$HA_VIP:6443" 2>&1) && break
+    sleep 10
+  done
   line=$(grep -F -- '--join' <<<"$out" | head -1)
+  [[ -n $line ]] || { echo "token create never succeeded: $(tail -3 <<<"$out")" >&2; return 1; }
   parse_join "$line" || { echo "no parseable --join line in token output" >&2; return 1; }
 
   local n i=2
