@@ -197,10 +197,12 @@ func DropInImported(tar string) bool {
 // they are imported and pinned (DropInImported): the exemption covers a whole
 // repository, so one for an archive whose import failed would let pods use
 // other images of that repository on the node without their own credentials.
-// One kubelet cannot read is skipped with a warning, since a bad file an
-// operator dropped must not stop the node's kubelet from starting. A build with none of these
-// renders none, leaving kubelet on its default policy rather than exempting a
-// namespace that is not the payload's.
+// The stamp is checked again after the names are read, so an archive replaced
+// in between exempts nothing. One kubelet cannot read is skipped with a
+// warning, since a bad file an operator dropped must not stop the node's
+// kubelet from starting. A build with none of these renders none, leaving
+// kubelet on its default policy rather than exempting a namespace that is not
+// the payload's.
 func payloadImagePullPolicy() (string, error) {
 	var allow []string
 	r := addons.ImageRegistry
@@ -221,6 +223,9 @@ func payloadImagePullPolicy() (string, error) {
 		got, err := assets.ArchiveImageNames(archive)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "stratum: warning: %s is not exempt from kubelet's pull-credential check: read its image names: %v\n", archive, err)
+			continue
+		}
+		if !DropInImported(archive) { // replaced while its names were read
 			continue
 		}
 		for _, n := range got {

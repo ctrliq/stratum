@@ -236,6 +236,49 @@ func TestImportDropInImagesStampsOnlyAfterThePin(t *testing.T) {
 	}
 }
 
+// An archive replaced while it was imported is skipped and not stamped:
+// containerd consumed the old content, so a stamp of the new one would exempt
+// images that were never imported and skip importing them on the next start.
+func TestImportDropInImagesSkipsAnArchiveReplacedDuringItsImport(t *testing.T) {
+	calls := dropInHost(t, "nothing")
+	tar := filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")
+	grow := "#!/bin/sh\nshift 4\necho \"$*\" >> " + calls + "\n" +
+		"[ \"$1 $2\" = \"images import\" ] && printf 'x' >> \"$3\"\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(version.BinDir, "ctr"), []byte(grow), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out, warn strings.Builder
+	if importDropInImages(context.Background(), &out, &warn) {
+		t.Error("a start whose only archive changed mid-import reported a fresh import")
+	}
+	if !strings.Contains(warn.String(), "changed while it was imported") {
+		t.Errorf("warnings = %q, want the replaced archive reported", warn.String())
+	}
+	if runtime.DropInImported(tar) {
+		t.Fatal("an archive replaced during its import was stamped as imported")
+	}
+	if b, _ := os.ReadFile(calls); strings.Contains(string(b), "images label") {
+		t.Errorf("the replaced archive's images were pinned; calls:\n%s", b)
+	}
+}
+
+// A stamp that cannot be written is reported, and the start does not count the
+// archive as freshly imported, since kubelet.conf would not exempt it.
+func TestImportDropInImagesReportsAStampItCouldNotWrite(t *testing.T) {
+	dropInHost(t, "nothing")
+	// A file where the stamp directory goes fails the write even as root.
+	if err := os.WriteFile(filepath.Dir(runtime.DropInImportStamp("x")), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, warn strings.Builder
+	if importDropInImages(context.Background(), &out, &warn) {
+		t.Error("a start that recorded no import reported a fresh one")
+	}
+	if !strings.Contains(warn.String(), "fleet-agent.tar is not exempt") {
+		t.Errorf("warnings = %q, want the unwritten stamp reported", warn.String())
+	}
+}
+
 // A start that imports a new operator archive renders kubelet.conf again, so
 // kubelet, which reads it as it starts, exempts the new images; a start with
 // nothing new leaves it alone.
