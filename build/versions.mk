@@ -133,7 +133,7 @@ etcd_binaries = etcdctl etcdutl
 # versions in CI and locally, so the same file can validate differently in
 # two places.
 # renovate: datasource=npm depName=renovate
-renovate_version = 44.221.6
+renovate_version = 44.222.2
 
 # renovate: datasource=github-releases depName=kubernetes-sigs/hydrophone
 hydrophone_version = 0.8.0
