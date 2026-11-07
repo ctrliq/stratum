@@ -205,7 +205,7 @@ image_registry = ghcr.io/ctrliq/stratum
 # renovate: datasource=pypi depName=mkdocs
 mkdocs_version = 1.6.1
 # renovate: datasource=pypi depName=mkdocs-material
-mkdocs_material_version = 9.8.0
+mkdocs_material_version = 9.8.1
 
 # --- SKE's own version ------------------------------------------------------
 # Full version string is v$(kubernetes_version)-stratum.<N>, derived by
