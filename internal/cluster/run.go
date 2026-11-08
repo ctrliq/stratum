@@ -681,12 +681,54 @@ var (
 // from st as its caller has it. A worker restart only warns about a missing
 // binary, so its handler stays unlabelled until a relabel after the binary is
 // installed. It is the one labelling rule for a kubelet or containerd start,
-// `stratum runtime apply` and `stratum runtime restart`.
+// `stratum runtime apply` and `stratum runtime restart`. It also removes a
+// label in AppliedNodeLabels that the node no longer declares.
 func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
 		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
 	})
-	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
+	declared := slices.Sorted(maps.Keys(st.NodeLabels))
+	owned := sortedUnion(st.AppliedNodeLabels, declared)
+	if !slices.Equal(owned, st.AppliedNodeLabels) {
+		if err := recordAppliedNodeLabels(func(cur []string) []string { return sortedUnion(cur, declared) }); err != nil {
+			return fmt.Errorf("record the labels %s declares before applying them: %w", st.Hostname, err)
+		}
+	}
+	if err := reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), owned); err != nil {
+		return err
+	}
+	pruned := slices.DeleteFunc(slices.Clone(owned), func(k string) bool { _, ok := st.NodeLabels[k]; return ok })
+	if len(pruned) == 0 {
+		return nil
+	}
+	if err := recordAppliedNodeLabels(func(cur []string) []string {
+		return slices.DeleteFunc(slices.Clone(cur), func(k string) bool { return slices.Contains(pruned, k) })
+	}); err != nil {
+		return fmt.Errorf("record the labels removed from %s: %w", st.Hostname, err)
+	}
+	return nil
+}
+
+// recordAppliedNodeLabels updates AppliedNodeLabels from the value in node.yaml.
+func recordAppliedNodeLabels(update func([]string) []string) error {
+	return nodestate.MutateSave(func(cur *NodeState) error {
+		cur.AppliedNodeLabels = update(cur.AppliedNodeLabels)
+		if len(cur.AppliedNodeLabels) == 0 {
+			cur.AppliedNodeLabels = nil
+		}
+		return nil
+	}, saveState)
+}
+
+// sortedUnion is the sorted, deduplicated keys of a and b.
+func sortedUnion(a, b []string) []string {
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a

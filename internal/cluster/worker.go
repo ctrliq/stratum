@@ -394,6 +394,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {
 		st.ClusterDNSIP = cur.ClusterDNSIP
+		st.AppliedNodeLabels = cur.AppliedNodeLabels
 		*cur = *st
 		return nil
 	}); err != nil {
@@ -407,7 +408,12 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 // changes what the worker saved.
 func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
 	labels, handlers = st.NodeLabels, st.RuntimeHandlers
-	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+	switch {
+	case flags.Labels == nil || maps.Equal(flags.Labels, labels):
+	case len(flags.Labels) == 0:
+		replaced = append(replaced, fmt.Sprintf("--clear-node-labels removes the labels this worker saved (%s)", FormatKeyValues(labels)))
+		labels = flags.Labels
+	default:
 		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", FormatKeyValues(labels), FormatKeyValues(flags.Labels)))
 		labels = flags.Labels
 	}
