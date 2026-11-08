@@ -78,7 +78,7 @@ func stubOwnLabels(t *testing.T, warnAfter time.Duration, fail func(call int32) 
 	nodeRegistrationInterval, bindingWarnAfter = time.Millisecond, warnAfter
 	checkHandlerBinary = func(string) error { return nil }
 	var calls atomic.Int32
-	reconcileOwnNodeLabels = func(_ context.Context, node string, declared map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, node string, declared map[string]string, handlers, _ []string) error {
 		if node != "w1" || declared["zone"] != "a" || !slices.Equal(handlers, []string{"gpu", "kata"}) {
 			t.Errorf("labelled %s with %v, %v; want w1's own labels and handlers", node, declared, handlers)
 		}
@@ -357,7 +357,7 @@ func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
 	old := reconcileOwnNodeLabels
 	t.Cleanup(func() { reconcileOwnNodeLabels = old })
 	var got []string
-	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers, _ []string) error {
 		got = handlers
 		return nil
 	}
@@ -388,7 +388,7 @@ func TestNodeLabelsLeaveOutAHandlerWhoseBinaryIsMissing(t *testing.T) {
 	old := reconcileOwnNodeLabels
 	t.Cleanup(func() { reconcileOwnNodeLabels = old })
 	var got []string
-	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers, _ []string) error {
 		got = handlers
 		return nil
 	}
@@ -399,5 +399,59 @@ func TestNodeLabelsLeaveOutAHandlerWhoseBinaryIsMissing(t *testing.T) {
 	labelOwnNode(context.Background(), &NodeState{Hostname: "w1"})
 	if !slices.Equal(got, []string{"gvisor"}) {
 		t.Errorf("labelled handlers %v, want only [gvisor], whose binary exists", got)
+	}
+}
+
+func TestNodeLabelsRecordBeforeApplyingAndPruneAfterRemoving(t *testing.T) {
+	workerScratchHost(t)
+	old := reconcileOwnNodeLabels
+	t.Cleanup(func() { reconcileOwnNodeLabels = old })
+	var prune, recordedAtPatch []string
+	var patchErr error
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, _, p []string) error {
+		prune, recordedAtPatch = p, mustLoadState(t).AppliedNodeLabels
+		return patchErr
+	}
+	save := func(labels map[string]string, applied []string) {
+		t.Helper()
+		if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", NodeLabels: labels, AppliedNodeLabels: applied}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	save(map[string]string{"zone": "r1", "pool": "a"}, nil)
+	if err := reconcileNodeLabels(context.Background(), mustLoadState(t)); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"pool", "zone"}; !slices.Equal(recordedAtPatch, want) || !slices.Equal(mustLoadState(t).AppliedNodeLabels, want) {
+		t.Errorf("recorded at patch %v, after %v; want %v both times", recordedAtPatch, mustLoadState(t).AppliedNodeLabels, want)
+	}
+
+	save(map[string]string{"pool": "a"}, []string{"pool", "zone"})
+	patchErr = errors.New("apiserver down")
+	if err := reconcileNodeLabels(context.Background(), mustLoadState(t)); err == nil {
+		t.Fatal("a failed patch was not reported")
+	}
+	if got := mustLoadState(t).AppliedNodeLabels; !slices.Equal(got, []string{"pool", "zone"}) {
+		t.Errorf("a failed patch trimmed the record to %v; zone would never be pruned", got)
+	}
+
+	patchErr = nil
+	if err := reconcileNodeLabels(context.Background(), mustLoadState(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(prune, []string{"pool", "zone"}) {
+		t.Errorf("prune = %v, want [pool zone]", prune)
+	}
+	if got := mustLoadState(t).AppliedNodeLabels; !slices.Equal(got, []string{"pool"}) {
+		t.Errorf("record after the removal landed = %v, want [pool]", got)
+	}
+
+	save(nil, []string{"pool"})
+	if err := reconcileNodeLabels(context.Background(), mustLoadState(t)); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustLoadState(t).AppliedNodeLabels; got != nil {
+		t.Errorf("record after clearing every label = %v, want none", got)
 	}
 }

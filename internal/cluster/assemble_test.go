@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -308,5 +309,32 @@ func TestPrepareControllerRefusesThroughTheSharedAssembly(t *testing.T) {
 				t.Errorf("a refused prepare changed the saved state: %+v, %v", saved, loadErr)
 			}
 		})
+	}
+}
+
+func TestPrepareControllerWarnsAboutChangedTaintsAndKeepsTheLabelRecord(t *testing.T) {
+	assemblyFixture(t)
+	prev := &NodeState{Role: "controller", Hostname: "cp1", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11",
+		EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380",
+		EtcdState: "existing", EtcdHasPeers: true,
+		PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12", ClusterDomain: "cluster.local",
+		NodeTaints: []string{"dedicated=ml:NoSchedule"}, AppliedNodeLabels: []string{"zone"}}
+	if err := SaveState(prev); err != nil {
+		t.Fatal(err)
+	}
+	runThroughRecordingAssembly(t, host.NodeIPChoice{IP: "10.0.0.11", Source: "state"}, nil)
+	cfg := &ClusterConfig{Spec: Spec{Node: NodeSpec{Taints: []string{"gpu=true:NoSchedule"}}}}
+	var st *NodeState
+	out := captureWorkerOutput(t, func() {
+		var err error
+		if st, err = PrepareController(cfg, "", holdDataLock(t)); err != nil {
+			t.Error(err)
+		}
+	})
+	if want := "spec.node.taints changed from dedicated=ml:NoSchedule to gpu=true:NoSchedule"; !strings.Contains(out, want) {
+		t.Errorf("output %q does not warn %q", out, want)
+	}
+	if st != nil && !slices.Equal(st.AppliedNodeLabels, []string{"zone"}) {
+		t.Errorf("AppliedNodeLabels = %v, want the [zone] the last start recorded", st.AppliedNodeLabels)
 	}
 }
