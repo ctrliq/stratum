@@ -146,6 +146,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 				strings.Join(o.Node.Taints, ","), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname)
 		}
 		labels, handlers, replaced := restartNodeFacts(st, o.Node)
+		if err := (NodeSpec{Labels: labels}).Validate(); err != nil {
+			return nil, fmt.Errorf("worker restart: the labels this worker saved: %w; replace them with --node-label "+
+				"or remove them with --clear-node-labels; nothing was saved", err)
+		}
 		// A restart keeps the address this worker registered with unless
 		// --node-ip moves it, by the rule every controller start uses: the
 		// saved address outranks $NODE_IP, which says only what the
