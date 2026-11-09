@@ -688,11 +688,12 @@ func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
 	})
 	declared := slices.Sorted(maps.Keys(st.NodeLabels))
-	owned := sortedUnion(st.AppliedNodeLabels, declared)
-	if !slices.Equal(owned, st.AppliedNodeLabels) {
-		if err := recordAppliedNodeLabels(func(cur []string) []string { return sortedUnion(cur, declared) }); err != nil {
-			return fmt.Errorf("record the labels %s declares before applying them: %w", st.Hostname, err)
-		}
+	owned, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string { return sortedUnion(cur, declared) })
+	switch {
+	case errors.Is(err, errNotThisNodeState):
+		return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), nil)
+	case err != nil:
+		return fmt.Errorf("record the labels %s declares before applying them: %w", st.Hostname, err)
 	}
 	if err := reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), owned); err != nil {
 		return err
@@ -701,7 +702,7 @@ func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	if len(pruned) == 0 {
 		return nil
 	}
-	if err := recordAppliedNodeLabels(func(cur []string) []string {
+	if _, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string {
 		return slices.DeleteFunc(slices.Clone(cur), func(k string) bool { return slices.Contains(pruned, k) })
 	}); err != nil {
 		return fmt.Errorf("record the labels removed from %s: %w", st.Hostname, err)
@@ -709,15 +710,31 @@ func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	return nil
 }
 
-// recordAppliedNodeLabels updates AppliedNodeLabels from the value in node.yaml.
-func recordAppliedNodeLabels(update func([]string) []string) error {
-	return nodestate.MutateSave(func(cur *NodeState) error {
-		cur.AppliedNodeLabels = update(cur.AppliedNodeLabels)
-		if len(cur.AppliedNodeLabels) == 0 {
-			cur.AppliedNodeLabels = nil
+// errNotThisNodeState is recordAppliedNodeLabels' refusal of a node.yaml that
+// is missing or names another host: the labels are applied, but none recorded
+// or pruned.
+var errNotThisNodeState = errors.New("node.yaml is not this node's")
+
+// recordAppliedNodeLabels updates hostname's AppliedNodeLabels from the value
+// in node.yaml, under its mutation lock, and returns the record it leaves.
+func recordAppliedNodeLabels(hostname string, update func([]string) []string) ([]string, error) {
+	var record []string
+	err := nodestate.MutateSave(func(cur *NodeState) error {
+		if cur.Hostname != hostname {
+			return errNotThisNodeState
 		}
+		next := update(cur.AppliedNodeLabels)
+		if len(next) == 0 {
+			next = nil
+		}
+		record = next
+		if slices.Equal(next, cur.AppliedNodeLabels) {
+			return nodestate.ErrUnchanged
+		}
+		cur.AppliedNodeLabels = next
 		return nil
 	}, saveState)
+	return record, err
 }
 
 // sortedUnion is the sorted, deduplicated keys of a and b.
