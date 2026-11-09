@@ -2,6 +2,8 @@ package cluster
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -70,5 +72,15 @@ func TestWorkerRestartRefusesAProfileOtherThanItsJoin(t *testing.T) {
 				t.Errorf("saved profile = %q, want %q kept", got, tc.saved)
 			}
 		})
+	}
+}
+
+func TestWorkerProfileRefusesTwoProfilesInOneFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("spec:\n  profile: fips\n  cis: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if name, err := WorkerProfile(path); err == nil || !strings.Contains(err.Error(), "name two profiles") {
+		t.Errorf("WorkerProfile = %q, %v; want the two-profiles refusal", name, err)
 	}
 }

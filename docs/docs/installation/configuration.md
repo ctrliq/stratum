@@ -59,9 +59,11 @@ flags instead. `spec.operator` has no flag and is refused.
 
 A worker keeps the profile it joined with. A restart that names a different
 one, with `--profile`, `--cis`, `spec.profile` or `spec.cis`, refuses and
-changes nothing. To move a worker to another profile, run `stratum token
-create` on a control plane and run the worker join line it prints on the worker
-with `--profile <name>` added. The join replaces the worker's saved state.
+changes nothing. To move a worker to another profile, first remove
+`spec.profile` and `spec.cis` from its config file, since a worker join refuses
+them. Then run `stratum token create` on a control plane and run the worker join
+line it prints on the worker with `--profile <name>` added. The join replaces
+the worker's saved state.
 
 A key that is present counts as set, even when its value is `false`, `0` or
 `""`, so `operator: false` is refused. A key with no value (`operator:`) and an

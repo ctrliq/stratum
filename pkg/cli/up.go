@@ -269,6 +269,9 @@ func runUp(parent context.Context, o runUpOptions) error {
 	if err := ctx.Err(); err != nil {
 		return cleanStopOr(err, ctx)
 	}
+	if err := refuseWorkerRestartProfileChange(o); err != nil {
+		return err
+	}
 	if err := preStageProfile(o); err != nil {
 		return err
 	}
@@ -283,7 +286,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		return cleanStopOr(err, ctx)
 	}
 	if stageOptOut(o) {
-		if err := selinux.ForgetLabels(); err != nil {
+		if err := forgetSELinuxLabels(); err != nil {
 			releaseStageLock()
 			return err
 		}
@@ -292,7 +295,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		releaseStageLock()
 		return cleanStopOr(err, ctx)
 	}
-	_, stageErr := assets.Stage(version.DataDir)
+	_, stageErr := stagePayload(version.DataDir)
 	releaseStageLock()
 	if stageErr != nil && !errors.Is(stageErr, assets.ErrNoPayload) {
 		return fmt.Errorf("staging payload: %w", stageErr)
@@ -309,17 +312,11 @@ func runUp(parent context.Context, o runUpOptions) error {
 		var token string
 		var wcfg cluster.WorkerConfig
 		var selinuxOptOut *bool
-		var configProfile string
 		if o.server == "" {
 			if v, set, err := cluster.WorkerSELinux(o.configPath); err != nil {
 				fmt.Printf("  WARN: spec.selinux not read: %v; keeping the setting this worker saved\n", err)
-			} else {
-				if set {
-					selinuxOptOut = &v
-				}
-				if configProfile, err = cluster.WorkerProfile(o.configPath); err != nil {
-					return err
-				}
+			} else if set {
+				selinuxOptOut = &v
 			}
 		}
 		if o.server != "" {
@@ -334,15 +331,9 @@ func runUp(parent context.Context, o runUpOptions) error {
 			wcfg = joinCfg
 			selinuxOptOut = &wcfg.SELinuxOptOut
 		}
-		profileName, err := o.profileName()
+		profileName, err := workerProfileName(o)
 		if err != nil {
 			return err
-		}
-		if configProfile != "" {
-			if profileName != "" && profileName != configProfile {
-				return fmt.Errorf("--profile %s and the config's spec.profile %s name two profiles", profileName, configProfile)
-			}
-			profileName = configProfile
 		}
 		st, err := prepareWorkerFn(ctx, cluster.WorkerOptions{
 			Server: o.server, Token: token, CAHash: o.caHash, NodeIP: o.nodeIP, ConfigNodeIP: wcfg.NodeIP,
@@ -736,6 +727,46 @@ func preStageProfile(o runUpOptions) error {
 	return nil
 }
 
+// workerProfileName is the profile a worker start names: --profile or --cis,
+// and on a restart also spec.profile or spec.cis from its config file, which
+// must agree. A config file that cannot be read names none here; the start
+// warns about it where it reads spec.selinux.
+func workerProfileName(o runUpOptions) (string, error) {
+	name, err := o.profileName()
+	if err != nil || o.server != "" {
+		return name, err
+	}
+	if _, _, err := cluster.WorkerSELinux(o.configPath); err != nil {
+		return name, nil
+	}
+	fromConfig, err := cluster.WorkerProfile(o.configPath)
+	if err != nil || fromConfig == "" {
+		return name, err
+	}
+	if name != "" && name != fromConfig {
+		return "", fmt.Errorf("--profile %s and the config's spec.profile %s name two profiles", name, fromConfig)
+	}
+	return fromConfig, nil
+}
+
+// refuseWorkerRestartProfileChange refuses, before anything on the host
+// changes, a worker restart that names a profile other than the one its
+// saved state records.
+func refuseWorkerRestartProfileChange(o runUpOptions) error {
+	if !o.worker || o.server != "" {
+		return nil
+	}
+	st, err := cluster.LoadState()
+	if err != nil || st.Role != "worker" {
+		return nil
+	}
+	name, err := workerProfileName(o)
+	if err != nil {
+		return err
+	}
+	return cluster.RefuseWorkerProfileChange(st, name)
+}
+
 // upConfigPath resolves --config to an absolute path and refuses one that
 // names a file which does not exist.
 //
@@ -879,6 +910,9 @@ func upFlagConflict(o runUpOptions) error {
 // uninstall may remove RunDir while the old start still holds its descriptor.
 // Never remove the coordination inode; closing the descriptor releases the lock.
 var startLockPath = version.StartLockPath
+
+// forgetSELinuxLabels is selinux.ForgetLabels, a seam for tests.
+var forgetSELinuxLabels = selinux.ForgetLabels
 
 // preflightNoRunningNode refuses to start when this node already has a stratum
 // node running. Two cases: a live supervisor already serving the control socket

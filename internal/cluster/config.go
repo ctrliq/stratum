@@ -350,6 +350,9 @@ func WorkerProfile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := c.resolveProfile(); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
 	return c.ProfileName(), nil
 }
 

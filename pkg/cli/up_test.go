@@ -2039,7 +2039,7 @@ func TestRunUpWorkerRestartHandsTheConfigProfileToTheRestart(t *testing.T) {
 				*sw.p = sw.v
 				t.Cleanup(func() { *sw.p = old })
 			}
-			if err := cluster.SaveState(&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443"}); err != nil {
+			if err := cluster.SaveState(&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443", Profile: tc.want}); err != nil {
 				t.Fatal(err)
 			}
 			config := filepath.Join(tmp, "config.yaml")
@@ -2072,5 +2072,49 @@ func TestRunUpWorkerRestartHandsTheConfigProfileToTheRestart(t *testing.T) {
 				t.Errorf("the restart got profile %v, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A worker restart that names a profile other than its saved one is refused
+// before anything on the host changes: no SELinux label reset, no staging, no
+// prepare.
+func TestRunUpRefusesAWorkerProfileChangeBeforeTouchingTheHost(t *testing.T) {
+	registerProfilesForTest(t, profile.Profile{Name: "cis", RequiresSELinux: true})
+	tmp := t.TempDir()
+	for _, sw := range []struct {
+		p *string
+		v string
+	}{
+		{&version.DataDir, filepath.Join(tmp, "data")},
+		{&version.K8sConfDir, filepath.Join(tmp, "config")},
+		{&version.EtcdDataDir, filepath.Join(tmp, "etcd")},
+		{&startLockPath, filepath.Join(tmp, "start.lock")},
+	} {
+		old := *sw.p
+		*sw.p = sw.v
+		t.Cleanup(func() { *sw.p = old })
+	}
+	if err := cluster.SaveState(&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443", SELinuxOptOut: false}); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(config, []byte("spec:\n  profile: cis\n  selinux: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldForget, oldStage, oldPrepare := forgetSELinuxLabels, stagePayload, prepareWorkerFn
+	t.Cleanup(func() { forgetSELinuxLabels, stagePayload, prepareWorkerFn = oldForget, oldStage, oldPrepare })
+	var touched []string
+	forgetSELinuxLabels = func() error { touched = append(touched, "forget SELinux labels"); return nil }
+	stagePayload = func(string) ([]string, error) { touched = append(touched, "stage"); return nil, nil }
+	prepareWorkerFn = func(context.Context, cluster.WorkerOptions) (*cluster.NodeState, error) {
+		touched = append(touched, "prepare")
+		return nil, errors.New("unreachable")
+	}
+	err := runUp(context.Background(), runUpOptions{worker: true, configPath: config})
+	if err == nil || !strings.Contains(err.Error(), `cannot change it to profile "cis"`) || !strings.Contains(err.Error(), "remove spec.profile and spec.cis") {
+		t.Fatalf("runUp = %v, want the profile refusal naming the config fields to remove", err)
+	}
+	if len(touched) > 0 {
+		t.Errorf("the refused restart reached %v first", touched)
 	}
 }
