@@ -167,6 +167,7 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 		// K8sConfDir once at package init before this task.
 		{"StartLockPath", StartLockPath, run + "-start.lock"},
 		{"NodeUpgradeLockPath", NodeUpgradeLockPath, run + "-upgrade.lock"},
+		{"RuntimeHandlersLockPath", RuntimeHandlersLockPath, run + "-runtime-handlers.lock"},
 		{"ControllerManagerManifest", ControllerManagerManifest,
 			filepath.Join(data, "config", "manifests", "kube-controller-manager.yaml")},
 		// Everything else derived from the three roots.

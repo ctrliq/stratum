@@ -2,14 +2,16 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -1148,8 +1150,9 @@ func registryFixture(t *testing.T) {
 // and points version.ControlSocket at it, so comps sees containerd running:
 // status reports pid 100 until a restart op is served, then pid 101 — the new
 // pid comps.Restart's replacement check waits for. With refuseRestart the
-// restart op is refused, for the error path. Returns a func counting the
-// restart ops served.
+// restart op is refused, for the error path. Its containerd answers the CRI
+// status with the runtime handlers of the drop-in on disk when it started and
+// at each restart it served. Returns a func counting the restart ops served.
 func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "control.sock")
@@ -1157,13 +1160,18 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, oldStart := version.ControlSocket, processStart
+	old, oldCRI := version.ControlSocket, criRuntimeHandlers
 	version.ControlSocket = socket
-	processStart = func(pid int) string { return "boot/" + strconv.Itoa(pid) }
-	t.Cleanup(func() { version.ControlSocket, processStart = old, oldStart; ln.Close() })
+	t.Cleanup(func() { version.ControlSocket, criRuntimeHandlers = old, oldCRI; ln.Close() })
 
 	var mu sync.Mutex
 	served := 0
+	loaded := dropInNamesForTest()
+	criRuntimeHandlers = func(context.Context) ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(loaded), nil
+	}
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -1192,6 +1200,8 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 				served++
 				if refuseRestart {
 					out.OK, out.Error = false, "restart refused"
+				} else {
+					loaded = dropInNamesForTest()
 				}
 			}
 			mu.Unlock()
@@ -1200,6 +1210,28 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 		}
 	}()
 	return func() int { mu.Lock(); defer mu.Unlock(); return served }
+}
+
+// dropInNamesForTest is the runtime handlers the drop-in on disk declares.
+func dropInNamesForTest() []string {
+	var c sharedConfD
+	if _, err := toml.DecodeFile(version.ContainerdRuntimeConfD, &c); err != nil {
+		return nil
+	}
+	var names []string
+	for _, p := range c.Plugins {
+		names = append(names, slices.Collect(maps.Keys(p.Containerd.Runtimes))...)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// failCRI makes the running containerd unable to answer the CRI status.
+func failCRI(t *testing.T) {
+	t.Helper()
+	old := criRuntimeHandlers
+	t.Cleanup(func() { criRuntimeHandlers = old })
+	criRuntimeHandlers = func(context.Context) ([]string, error) { return nil, errors.New("connection refused") }
 }
 
 // TestApplyRegistry_ReportsWhetherItRestarted pins ApplyRegistry's contract: it
