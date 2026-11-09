@@ -181,7 +181,7 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 	// config just written. A changed config reaches a running containerd only
 	// through whoever owns it — `stratum registry apply` (runtime.ApplyRegistry)
 	// or the in-place upgrade's own host reload.
-	if _, err := runtime.EnsureContainerdConfigs(os.Stdout, st); err != nil {
+	if err := ensureWorkerContainerdConfigs(ctx, st); err != nil {
 		return fmt.Errorf("prepare containerd: %w", err)
 	}
 	if err := prepareWorkerKubelet(st); err != nil {
@@ -629,6 +629,11 @@ var (
 	// change.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
 		label := func(ctx context.Context) error {
+			release, err := lockRuntimeHandlers(ctx, os.Stderr)
+			if err != nil {
+				return err
+			}
+			defer release()
 			cur := st
 			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
 				cur = saved
@@ -652,6 +657,10 @@ var (
 	// loadedHandlers narrows a node's declared runtime handlers to those its
 	// running containerd has loaded.
 	loadedHandlers = runtime.LoadedHandlers
+
+	// lockRuntimeHandlers and ensureContainerdConfigs are seams for tests.
+	lockRuntimeHandlers     = runtime.LockHandlers
+	ensureContainerdConfigs = runtime.EnsureContainerdConfigs
 
 	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
 	// register, giving up after timeout.
@@ -687,15 +696,19 @@ func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
 		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
 	})
+	loaded, err := loadedHandlers(ctx, runnable)
+	if err != nil {
+		return err
+	}
 	declared := slices.Sorted(maps.Keys(st.NodeLabels))
 	owned, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string { return sortedUnion(cur, declared) })
 	switch {
 	case errors.Is(err, errNotThisNodeState):
-		return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), nil)
+		return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loaded, nil)
 	case err != nil:
 		return fmt.Errorf("record the labels %s declares before applying them: %w", st.Hostname, err)
 	}
-	if err := reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), owned); err != nil {
+	if err := reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loaded, owned); err != nil {
 		return err
 	}
 	pruned := slices.DeleteFunc(slices.Clone(owned), func(k string) bool { _, ok := st.NodeLabels[k]; return ok })
@@ -1823,4 +1836,21 @@ func saveCiliumSettings(s addons.CiliumSettings) error {
 		return fmt.Errorf("save the Cilium settings: %w", err)
 	}
 	return nil
+}
+
+// ensureWorkerContainerdConfigs writes a worker's containerd configs with the
+// runtime handlers node.yaml holds under the runtime-handlers lock, not the
+// ones st read before host preparation: a `stratum runtime apply` in between
+// saved newer ones.
+func ensureWorkerContainerdConfigs(ctx context.Context, st *NodeState) error {
+	release, err := lockRuntimeHandlers(ctx, os.Stdout)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
+		st.RuntimeHandlers = saved.RuntimeHandlers
+	}
+	_, err = ensureContainerdConfigs(os.Stdout, st)
+	return err
 }

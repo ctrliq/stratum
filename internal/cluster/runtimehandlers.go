@@ -42,12 +42,9 @@ var (
 )
 
 // ApplyRuntimeHandlers resolves the runtime handlers this node declares,
-// writes containerd's drop-in, and then saves them to node.yaml when they
-// changed: a drop-in that could not be written leaves node.yaml naming only
-// handlers containerd was given, so no start labels the node for the rest.
-// One written but whose containerd restart failed is saved all the same,
-// since the next containerd start loads it, and node.yaml naming the old
-// handlers would have that start labelled for them.
+// saves them to node.yaml when they changed, and then writes containerd's
+// drop-in, so an apply cut short between the two leaves node.yaml holding them
+// and the next start writes the drop-in from it.
 // A worker's are its saved handlers, replaced by o.Handlers or cleared by
 // o.Clear. A control plane rebuilds its handlers from spec.node.runtimeHandlers
 // at every `stratum up`, so it re-reads the config file it was started with
@@ -61,9 +58,7 @@ var (
 // containerd has loaded, so a RuntimeClass schedules onto the node without
 // waiting for its next start but not before containerd can run the handler;
 // a label update that fails only warns. It holds the node maintenance lock
-// from the read of node.yaml to the labels, so a second apply, a restart or
-// an upgrade refuses rather than interleaving its save and its drop-in with
-// this one's.
+// and the runtime-handlers lock from the read of node.yaml to the labels.
 func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResult, error) {
 	if o.Clear && o.Handlers != nil {
 		return RuntimeApplyResult{}, errors.New("--clear and --runtime-handler cannot be combined")
@@ -73,6 +68,11 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 		return RuntimeApplyResult{}, err
 	}
 	defer release()
+	releaseHandlers, err := lockRuntimeHandlers(context.Background(), w)
+	if err != nil {
+		return RuntimeApplyResult{}, err
+	}
+	defer releaseHandlers()
 	st, err := LoadState()
 	if err != nil {
 		return RuntimeApplyResult{}, fmt.Errorf("read the node state (has this node run `stratum up`?): %w", err)
@@ -98,22 +98,16 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 		return RuntimeApplyResult{}, err
 	}
 	out := RuntimeApplyResult{Handlers: want, Source: source}
+	if !maps.Equal(st.RuntimeHandlers, want) {
+		if err := nodestate.Mutate(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }); err != nil {
+			return out, fmt.Errorf("save runtime handlers: %w; nothing was changed", err)
+		}
+		out.Saved = true
+	}
 	res, err := applyHandlers(w, want, o.Restart)
 	out.ApplyHandlersResult = res
 	if err != nil {
-		if res.Written && !maps.Equal(st.RuntimeHandlers, want) {
-			if serr := nodestate.Mutate(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }); serr != nil {
-				return out, fmt.Errorf("%w; saving the runtime handlers the drop-in now declares failed too: %v", err, serr)
-			}
-			out.Saved = true
-		}
-		return out, err
-	}
-	if !maps.Equal(st.RuntimeHandlers, want) {
-		if err := nodestate.Mutate(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }); err != nil {
-			return out, fmt.Errorf("save runtime handlers: %w; the drop-in declares them, and the next start writes it again from node.yaml", err)
-		}
-		out.Saved = true
+		return out, fmt.Errorf("%w; node.yaml holds the new runtime handlers, and the next `stratum runtime apply` or start writes them", err)
 	}
 	applied := *st
 	applied.RuntimeHandlers = want
@@ -133,6 +127,11 @@ func RestartRuntime(w io.Writer) error {
 		return err
 	}
 	defer release()
+	releaseHandlers, err := lockRuntimeHandlers(context.Background(), w)
+	if err != nil {
+		return err
+	}
+	defer releaseHandlers()
 	if err := requireSharedConfD(); err != nil {
 		return err
 	}

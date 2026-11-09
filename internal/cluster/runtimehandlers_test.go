@@ -296,8 +296,8 @@ func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	oldLoaded, oldRestart := loadedHandlers, restartContainerd
 	t.Cleanup(func() { loadedHandlers, restartContainerd = oldLoaded, oldRestart })
-	loadedHandlers = func(names []string) []string {
-		return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n != "gvisor" })
+	loadedHandlers = func(_ context.Context, names []string) ([]string, error) {
+		return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n != "gvisor" }), nil
 	}
 	restartContainerd = func(io.Writer) error { return nil }
 	var labelled [][]string
@@ -356,20 +356,26 @@ func TestRuntimeApplyAndRestartRefuseWhileTheNodeIsLocked(t *testing.T) {
 	}
 }
 
-// A drop-in that could not be written leaves node.yaml as it was, so no later
-// start labels the node for handlers containerd was never given.
-func TestApplyRuntimeHandlersSavesNothingWhenTheDropInWriteFails(t *testing.T) {
-	saved := map[string]string{"gvisor": executable(t)}
-	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+// node.yaml is saved before the drop-in is written, so an apply cut short
+// between the two leaves node.yaml holding the new handlers for the next
+// start to write, never a drop-in node.yaml does not know.
+func TestApplyRuntimeHandlersSavesBeforeItWritesTheDropIn(t *testing.T) {
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"gvisor": executable(t)}})
+	kata := map[string]string{"kata": executable(t)}
+	var savedAtWrite map[string]string
 	applyHandlers = func(io.Writer, map[string]string, bool) (runtime.ApplyHandlersResult, error) {
+		savedAtWrite = savedHandlers(t)
 		return runtime.ApplyHandlersResult{}, errors.New("disk full")
 	}
-	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: map[string]string{"kata": executable(t)}})
-	if err == nil || res.Saved {
-		t.Fatalf("apply = %+v, %v; want the write's error and nothing saved", res, err)
+	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata})
+	if err == nil || !strings.Contains(err.Error(), "disk full") || !strings.Contains(err.Error(), "node.yaml holds the new runtime handlers") {
+		t.Fatalf("apply = %v, want the write's error and where the handlers are", err)
 	}
-	if got := savedHandlers(t); !maps.Equal(got, saved) {
-		t.Errorf("node.yaml declares %v after the failed write, want the earlier %v", got, saved)
+	if !maps.Equal(savedAtWrite, kata) {
+		t.Errorf("node.yaml declared %v when the drop-in was written, want %v saved first", savedAtWrite, kata)
+	}
+	if got := savedHandlers(t); !res.Saved || !maps.Equal(got, kata) {
+		t.Errorf("after the failed write node.yaml declares %v (saved %v), want %v", got, res.Saved, kata)
 	}
 }
 

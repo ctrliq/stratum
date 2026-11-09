@@ -30,6 +30,7 @@ func runtimeWorkerHost(t *testing.T) string {
 		{&version.ContainerdRuntimeConfD, filepath.Join(root, "containerd.d", "stratum-runtime.toml")},
 		{&version.ContainerdConfD, filepath.Join(root, "conf.d", "stratum-registry.toml")},
 		{&version.ControlSocket, filepath.Join(root, "absent.sock")},
+		{&version.RuntimeHandlersLockPath, filepath.Join(root, "runtime-handlers.lock")},
 	} {
 		old := *sw.p
 		*sw.p = sw.v
