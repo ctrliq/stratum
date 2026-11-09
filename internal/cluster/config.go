@@ -342,6 +342,17 @@ func WorkerSELinux(path string) (optOut, set bool, err error) {
 	return false, false, nil
 }
 
+// WorkerProfile is the profile a worker's config file names in spec.profile
+// or spec.cis, "" when it names none. A worker restart reads it only to refuse
+// a profile other than the one the worker joined with.
+func WorkerProfile(path string) (string, error) {
+	c, _, err := parseConfig(path)
+	if err != nil {
+		return "", err
+	}
+	return c.ProfileName(), nil
+}
+
 // LoadWorkerConfig is the config a --worker honours: spec.network.nodeIP,
 // spec.selinux and spec.node, and nothing else. The file is parsed as strictly as a control
 // plane parses it, and any other field that is set is an error naming it: a

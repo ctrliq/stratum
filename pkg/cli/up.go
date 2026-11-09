@@ -68,7 +68,7 @@ func newUpCommand(cfg rootConfig) *cobra.Command {
 	fs := cmd.Flags()
 	fs.StringVar(&o.configPath, "config", cluster.DefaultConfigPath, "cluster config file (only the default path may be missing, meaning defaults)")
 	fs.BoolVar(&o.worker, "worker", false, "run a workload-only node (no control plane)")
-	fs.StringVar(&o.profile, "profile", "", "node profile to run, by name (the binary must register it; a worker gets it from its join line)")
+	fs.StringVar(&o.profile, "profile", "", "node profile to run, by name (the binary must register it; a worker gets it from its join line, and a worker restart refuses a different one)")
 	fs.BoolVar(&o.cis, "cis", false, "the cis profile; the spelling every release reads, which the restart unit keeps (prefer --profile cis)")
 	_ = fs.MarkHidden("cis")
 	fs.StringVar(&o.join, "join", "", "HA join: existing control-plane URL (https://host:6443)")
@@ -309,11 +309,17 @@ func runUp(parent context.Context, o runUpOptions) error {
 		var token string
 		var wcfg cluster.WorkerConfig
 		var selinuxOptOut *bool
+		var configProfile string
 		if o.server == "" {
 			if v, set, err := cluster.WorkerSELinux(o.configPath); err != nil {
 				fmt.Printf("  WARN: spec.selinux not read: %v; keeping the setting this worker saved\n", err)
-			} else if set {
-				selinuxOptOut = &v
+			} else {
+				if set {
+					selinuxOptOut = &v
+				}
+				if configProfile, err = cluster.WorkerProfile(o.configPath); err != nil {
+					return err
+				}
 			}
 		}
 		if o.server != "" {
@@ -331,6 +337,12 @@ func runUp(parent context.Context, o runUpOptions) error {
 		profileName, err := o.profileName()
 		if err != nil {
 			return err
+		}
+		if configProfile != "" {
+			if profileName != "" && profileName != configProfile {
+				return fmt.Errorf("--profile %s and the config's spec.profile %s name two profiles", profileName, configProfile)
+			}
+			profileName = configProfile
 		}
 		st, err := prepareWorkerFn(ctx, cluster.WorkerOptions{
 			Server: o.server, Token: token, CAHash: o.caHash, NodeIP: o.nodeIP, ConfigNodeIP: wcfg.NodeIP,

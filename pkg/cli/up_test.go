@@ -2012,3 +2012,65 @@ func TestUpCISRefusesWithTheCisNoteWhenNoProfileIsRegistered(t *testing.T) {
 		t.Errorf("the refused start wrote under %s: %v", version.DataDir, statErr)
 	}
 }
+
+func TestRunUpWorkerRestartHandsTheConfigProfileToTheRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, config, want, wantErr string
+	}{
+		{"spec.profile alone", "", "spec:\n  profile: cis\n", "cis", ""},
+		{"spec.cis alone", "", "spec:\n  cis: true\n", "cis", ""},
+		{"the flag alone", "cis", "", "cis", ""},
+		{"neither", "", "", "", ""},
+		{"the flag and spec.profile disagree", "fips", "spec:\n  profile: cis\n", "", "--profile fips and the config's spec.profile cis name two profiles"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerProfilesForTest(t, profile.Profile{Name: "cis"}, profile.Profile{Name: "fips"})
+			tmp := t.TempDir()
+			for _, sw := range []struct {
+				p *string
+				v string
+			}{
+				{&version.DataDir, filepath.Join(tmp, "data")},
+				{&version.K8sConfDir, filepath.Join(tmp, "config")},
+				{&version.EtcdDataDir, filepath.Join(tmp, "etcd")},
+				{&startLockPath, filepath.Join(tmp, "start.lock")},
+			} {
+				old := *sw.p
+				*sw.p = sw.v
+				t.Cleanup(func() { *sw.p = old })
+			}
+			if err := cluster.SaveState(&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443"}); err != nil {
+				t.Fatal(err)
+			}
+			config := filepath.Join(tmp, "config.yaml")
+			if err := os.WriteFile(config, []byte(tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			oldInstall, oldRunWorker, oldPrepare := installUnit, runWorkerFn, prepareWorkerFn
+			t.Cleanup(func() { installUnit, runWorkerFn, prepareWorkerFn = oldInstall, oldRunWorker, oldPrepare })
+			installUnit = func([]string) error { return nil }
+			runWorkerFn = func(context.Context, *cluster.NodeState) error { return nil }
+			var got *cluster.WorkerOptions
+			prepareWorkerFn = func(_ context.Context, wo cluster.WorkerOptions) (*cluster.NodeState, error) {
+				got = &wo
+				return cluster.LoadState()
+			}
+			err := runUp(context.Background(), runUpOptions{worker: true, configPath: config, profile: tc.flag})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("runUp = %v, want a refusal containing %q", err, tc.wantErr)
+				}
+				if got != nil {
+					t.Error("the restart ran after the profiles disagreed")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runUp = %v", err)
+			}
+			if got == nil || got.Profile != tc.want {
+				t.Errorf("the restart got profile %v, want %q", got, tc.want)
+			}
+		})
+	}
+}

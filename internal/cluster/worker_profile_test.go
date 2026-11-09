@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -34,5 +35,40 @@ func TestWorkerJoinRefusesAnOptOutTheProfileForbids(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "spec.selinux: false") || !strings.Contains(err.Error(), name) {
 			t.Errorf("%s with spec.selinux: false: err = %v; want a refusal naming the profile and the setting", name, err)
 		}
+	}
+}
+
+func TestWorkerRestartRefusesAProfileOtherThanItsJoin(t *testing.T) {
+	for _, tc := range []struct {
+		name, saved, given, wantErr string
+	}{
+		{"cis on a default worker", "", "cis", `this worker joined with no profile, and a restart cannot change it to profile "cis"`},
+		{"default given to a cis worker keeps cis", "cis", "", ""},
+		{"cis given to a cis worker", "cis", "cis", ""},
+		{"another profile on a cis worker", "cis", "fips", `this worker joined with profile "cis", and a restart cannot change it to profile "fips"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workerScratchHost(t)
+			stubWorkerStartHost(t)
+			if err := SaveState(&NodeState{Role: "worker", Hostname: "w1", NodeIP: "192.0.2.8", KubeletNodeIP: "192.0.2.8", Profile: tc.saved}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := PrepareWorker(context.Background(), WorkerOptions{Profile: tc.given})
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("PrepareWorker = %v, want the restart to run", err)
+				}
+			} else {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("PrepareWorker = %v, want a refusal containing %q", err, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), "stratum token create") || !strings.Contains(err.Error(), "--profile "+tc.given) {
+					t.Errorf("refusal %q does not name the re-join with --profile %s", err, tc.given)
+				}
+			}
+			if got := mustLoadState(t).ProfileName(); got != tc.saved {
+				t.Errorf("saved profile = %q, want %q kept", got, tc.saved)
+			}
+		})
 	}
 }
