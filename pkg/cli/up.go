@@ -85,6 +85,7 @@ func newUpCommand(cfg rootConfig) *cobra.Command {
 	fs.StringVar(&o.clusterDomain, "cluster-domain", "", "--worker join: the cluster's DNS domain, when not cluster.local (stratum token create prints it)")
 	fs.StringVar(&o.podCIDR, "pod-cidr", "", "--worker join or legacy-worker migration: the cluster's pod CIDR (stratum token create prints a non-default range)")
 	fs.StringArrayVar(&o.nodeLabels, "node-label", nil, "--worker: a label for this node's Node object, key=value (repeatable); on a join it adds to spec.node.labels, on a restart the labels given replace the saved ones")
+	fs.BoolVar(&o.clearNodeLabels, "clear-node-labels", false, "--worker restart: remove every label this worker saved, and take them off its Node")
 	fs.StringArrayVar(&o.nodeTaints, "node-taint", nil, "--worker: a taint this node registers with, key[=value]:Effect (repeatable); on a join it adds to spec.node.taints; a node registers its taints only at its join, so a restart refuses a different set")
 	fs.StringArrayVar(&o.runtimeHandlers, "runtime-handler", nil, "--worker: an extra containerd runtime handler, name=/absolute/path/to/runtime (repeatable); on a join it adds to spec.node.runtimeHandlers, on a restart the handlers given replace the saved ones")
 	return cmd
@@ -112,6 +113,7 @@ type runUpOptions struct {
 	nodeLabels      []string
 	nodeTaints      []string
 	runtimeHandlers []string
+	clearNodeLabels bool
 	// confirmEtcdQuorumLost lifts the refusal to start a recorded etcd member on
 	// an empty data dir.
 	confirmEtcdQuorumLost bool
@@ -809,6 +811,7 @@ func upFlagConflict(o runUpOptions) error {
 			{"--node-label", strings.Join(o.nodeLabels, ","), "spec.node.labels"},
 			{"--node-taint", strings.Join(o.nodeTaints, ","), "spec.node.taints"},
 			{"--runtime-handler", strings.Join(o.runtimeHandlers, ","), "spec.node.runtimeHandlers"},
+			{"--clear-node-labels", map[bool]string{true: "true"}[o.clearNodeLabels], "spec.node.labels"},
 		} {
 			if f.value != "" {
 				bad = append(bad, fmt.Sprintf("%s %q (%s)", f.flag, f.value, f.field))
@@ -827,7 +830,7 @@ func upFlagConflict(o runUpOptions) error {
 			"add --worker and --server to join a workload-only node"
 		if o.join != "" {
 			network := o.podCIDR != "" || o.serviceCIDR != "" || o.clusterDomain != ""
-			node := len(o.nodeLabels)+len(o.nodeTaints)+len(o.runtimeHandlers) > 0
+			node := len(o.nodeLabels)+len(o.nodeTaints)+len(o.runtimeHandlers) > 0 || o.clearNodeLabels
 			const takesNetwork = "A control plane joining with --join takes its network from the cluster it joins, so remove "
 			const toSpecNode = "each node flag into the spec.node field named beside it in this node's --config file, " +
 				"which a control plane reads at its join and every start"
@@ -1228,6 +1231,17 @@ func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
 	labels, err := cluster.ParseKeyValues("--node-label", o.nodeLabels)
 	if err != nil {
 		return cluster.NodeSpec{}, fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+	}
+	if o.clearNodeLabels {
+		switch {
+		case labels != nil:
+			return cluster.NodeSpec{}, errors.New("stratum up: --clear-node-labels cannot be combined with --node-label: " +
+				"--node-label alone replaces the saved labels. Nothing on this host was changed")
+		case o.server != "":
+			return cluster.NodeSpec{}, errors.New("stratum up: --clear-node-labels is for a worker restart, and a join " +
+				"has no saved labels to clear: leave out --node-label and spec.node.labels instead. Nothing on this host was changed")
+		}
+		labels = map[string]string{}
 	}
 	handlers, err := cluster.ParseKeyValues("--runtime-handler", o.runtimeHandlers)
 	if err != nil {

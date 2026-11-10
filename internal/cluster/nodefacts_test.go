@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,6 +39,8 @@ func TestNodeSpecValidate(t *testing.T) {
 		"handler metacharacters": {RuntimeHandlers: map[string]string{"nvidia": "/usr/bin/$(id)"}},
 		"node-role label":        {Labels: map[string]string{"node-role.kubernetes.io/worker": ""}},
 		"node-restriction label": {Labels: map[string]string{"node-restriction.kubernetes.io/tenant": "a"}},
+		"deprecated zone label":  {Labels: map[string]string{"failure-domain.beta.kubernetes.io/zone": "r1"}},
+		"deprecated type label":  {Labels: map[string]string{"beta.kubernetes.io/instance-type": "h200"}},
 		"kubelet-owned hostname": {Labels: map[string]string{"kubernetes.io/hostname": "other"}},
 		"k8s.io namespace":       {Labels: map[string]string{"example.k8s.io/x": "y"}},
 	} {
@@ -310,7 +313,7 @@ func TestWorkerRestartNodeFacts(t *testing.T) {
 		}
 	})
 
-	t.Run("a missing binary only warns on a restart", func(t *testing.T) {
+	t.Run("a missing binary does not refuse a restart", func(t *testing.T) {
 		workerScratchHost(t)
 		stubWorkerStartHost(t)
 		if err := SaveState(saved); err != nil {
@@ -389,5 +392,68 @@ func TestControlPlaneRestartWarnsOnceWhenItsTaintsChange(t *testing.T) {
 				t.Errorf("NodeTaints = %q, want the file's %q: a Node that registers again takes it", st.NodeTaints, tc.cfg)
 			}
 		})
+	}
+}
+
+func TestWorkerRestartSaysWhatItReplaces(t *testing.T) {
+	bin := executable(t)
+	saved := &NodeState{Role: "worker", Hostname: "w1", NodeIP: "192.0.2.8", KubeletNodeIP: "192.0.2.8",
+		NodeLabels: map[string]string{"zone": "rack-1"}, RuntimeHandlers: map[string]string{"nvidia": bin}}
+	for name, tc := range map[string]struct {
+		node       NodeSpec
+		want       string
+		wantLabels map[string]string
+	}{
+		"--node-label": {
+			node:       NodeSpec{Labels: map[string]string{"zone": "rack-2"}},
+			want:       "stratum: --node-label replaces the labels this worker saved (zone=rack-1 -> zone=rack-2)\n",
+			wantLabels: map[string]string{"zone": "rack-2"},
+		},
+		"--runtime-handler": {
+			node:       NodeSpec{RuntimeHandlers: map[string]string{"gvisor": bin}},
+			want:       "stratum: --runtime-handler replaces the runtime handlers this worker saved (nvidia=" + bin + " -> gvisor=" + bin + ")\n",
+			wantLabels: saved.NodeLabels,
+		},
+		"--clear-node-labels": {
+			node:       NodeSpec{Labels: map[string]string{}},
+			want:       "stratum: --clear-node-labels removes the labels this worker saved (zone=rack-1)\n",
+			wantLabels: nil,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			workerScratchHost(t)
+			stubWorkerStartHost(t)
+			if err := SaveState(saved); err != nil {
+				t.Fatal(err)
+			}
+			out := captureWorkerOutput(t, func() {
+				if _, err := PrepareWorker(context.Background(), WorkerOptions{Node: tc.node}); err != nil {
+					t.Error(err)
+				}
+			})
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output %q does not say %q", out, tc.want)
+			}
+			if got := mustLoadState(t).NodeLabels; !reflect.DeepEqual(got, tc.wantLabels) {
+				t.Errorf("saved labels = %v, want %v", got, tc.wantLabels)
+			}
+		})
+	}
+}
+
+func TestWorkerRejoinKeepsTheLabelsItAppliedToPrune(t *testing.T) {
+	redirectJoinDirs(t)
+	stubJoinHost(t, "gpu-1", "10.80.0.5", []byte("-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"))
+	recordTrust(t)
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "gpu-1", AppliedNodeLabels: []string{"pool"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareWorker(context.Background(), WorkerOptions{
+		Server: "https://cp:6443", Token: "abcdef.0123456789abcdef", CAHash: "sha256:aa",
+	}); err != nil {
+		t.Fatalf("PrepareWorker = %v", err)
+	}
+	if got := mustLoadState(t).AppliedNodeLabels; !slices.Equal(got, []string{"pool"}) {
+		t.Errorf("AppliedNodeLabels = %v after a rejoin, want [pool] kept so the Node's old label is pruned", got)
 	}
 }

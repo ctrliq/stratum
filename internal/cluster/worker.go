@@ -146,6 +146,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 				strings.Join(o.Node.Taints, ","), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname)
 		}
 		labels, handlers, replaced := restartNodeFacts(st, o.Node)
+		if err := (NodeSpec{Labels: labels}).Validate(); err != nil {
+			return nil, fmt.Errorf("worker restart: the labels this worker saved: %w; replace them with --node-label "+
+				"or remove them with --clear-node-labels; nothing was saved", err)
+		}
 		// A restart keeps the address this worker registered with unless
 		// --node-ip moves it, by the rule every controller start uses: the
 		// saved address outranks $NODE_IP, which says only what the
@@ -394,6 +398,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {
 		st.ClusterDNSIP = cur.ClusterDNSIP
+		st.AppliedNodeLabels = cur.AppliedNodeLabels
 		*cur = *st
 		return nil
 	}); err != nil {
@@ -407,7 +412,12 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 // changes what the worker saved.
 func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
 	labels, handlers = st.NodeLabels, st.RuntimeHandlers
-	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+	switch {
+	case flags.Labels == nil || maps.Equal(flags.Labels, labels):
+	case len(flags.Labels) == 0:
+		replaced = append(replaced, fmt.Sprintf("--clear-node-labels removes the labels this worker saved (%s)", FormatKeyValues(labels)))
+		labels = flags.Labels
+	default:
 		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", FormatKeyValues(labels), FormatKeyValues(flags.Labels)))
 		labels = flags.Labels
 	}

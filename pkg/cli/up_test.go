@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math/big"
 	"os"
 	"os/exec"
@@ -415,6 +416,7 @@ func TestUpFlagConflict(t *testing.T) {
 		{"worker and join", runUpOptions{worker: true, join: "https://10.0.0.11:6443", server: "https://10.0.0.11:6443"}, []string{"--join"}},
 		{"worker and a certificate key", runUpOptions{worker: true, certKey: "k"}, []string{"--certificate-key"}},
 		{"worker and all three", runUpOptions{worker: true, join: "x", certKey: "k", certKeyFile: "/k"}, []string{"--join", "--certificate-key", "--certificate-key-file"}},
+		{"clear-node-labels without worker", runUpOptions{clearNodeLabels: true}, []string{"--clear-node-labels", "spec.node.labels"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := upFlagConflict(tc.o)
@@ -783,12 +785,12 @@ func TestUpRefusesTheNetworkFlagsWithoutWorker(t *testing.T) {
 	}
 }
 
-// TestUpJoinHandsSpecNetworkToTheJoin: a control plane's --join reads its
+// TestUpJoinHandsSpecNetworkAndSpecNodeToTheJoin: a control plane's --join reads its
 // network from spec.network, and the join refuses ranges or a domain that
 // differ from the cluster's only when runUp passes them in. A field runUp
 // leaves out reaches the join as unset, so the join takes the cluster's value
 // and the operator's is dropped with no word until the node's first restart.
-func TestUpJoinHandsSpecNetworkToTheJoin(t *testing.T) {
+func TestUpJoinHandsSpecNetworkAndSpecNodeToTheJoin(t *testing.T) {
 	const (
 		podCIDR = "10.50.0.0/16"
 		svcCIDR = "10.60.0.0/16"
@@ -809,8 +811,13 @@ func TestUpJoinHandsSpecNetworkToTheJoin(t *testing.T) {
 		t.Cleanup(func() { *sw.p = old })
 	}
 	config := filepath.Join(tmp, "config.yaml")
+	runtimeBin := filepath.Join(tmp, "fake-runtime")
+	if err := os.WriteFile(runtimeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(config, []byte("spec:\n  network:\n    podCIDR: "+podCIDR+
-		"\n    serviceCIDR: "+svcCIDR+"\n    clusterDomain: "+domain+"\n"), 0o600); err != nil {
+		"\n    serviceCIDR: "+svcCIDR+"\n    clusterDomain: "+domain+
+		"\n  node:\n    labels:\n      pool: h200\n    taints:\n    - gpu=true:NoSchedule\n    runtimeHandlers:\n      fake: "+runtimeBin+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -840,6 +847,15 @@ func TestUpJoinHandsSpecNetworkToTheJoin(t *testing.T) {
 		if f.got != f.want {
 			t.Errorf("the join got %s %q, want %q from the config", f.field, f.got, f.want)
 		}
+	}
+	if !maps.Equal(got.NodeLabels, map[string]string{"pool": "h200"}) {
+		t.Errorf("the join got spec.node.labels %v, want pool=h200 from the config", got.NodeLabels)
+	}
+	if !slices.Equal(got.NodeTaints, []string{"gpu=true:NoSchedule"}) {
+		t.Errorf("the join got spec.node.taints %v, want gpu=true:NoSchedule from the config", got.NodeTaints)
+	}
+	if !maps.Equal(got.RuntimeHandlers, map[string]string{"fake": runtimeBin}) {
+		t.Errorf("the join got spec.node.runtimeHandlers %v, want fake from the config", got.RuntimeHandlers)
 	}
 }
 
@@ -2010,5 +2026,25 @@ func TestUpCISRefusesWithTheCisNoteWhenNoProfileIsRegistered(t *testing.T) {
 	}
 	if _, statErr := os.Stat(version.DataDir); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Errorf("the refused start wrote under %s: %v", version.DataDir, statErr)
+	}
+}
+
+func TestUpClearNodeLabels(t *testing.T) {
+	node, err := runUpOptions{worker: true, clearNodeLabels: true}.nodeSpec()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Labels == nil || len(node.Labels) != 0 {
+		t.Errorf("labels = %#v, want an empty map, which a restart reads as clear", node.Labels)
+	}
+	for name, o := range map[string]runUpOptions{
+		"with --node-label": {worker: true, clearNodeLabels: true, nodeLabels: []string{"zone=r1"}},
+		"on a join":         {worker: true, clearNodeLabels: true, server: "https://10.0.0.11:6443"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := o.nodeSpec(); err == nil || !strings.Contains(err.Error(), "--clear-node-labels") {
+				t.Errorf("nodeSpec = %v, want a refusal naming --clear-node-labels", err)
+			}
+		})
 	}
 }

@@ -112,7 +112,8 @@ key=value`, `--node-taint key[=value]:Effect` and `--runtime-handler
 name=/path` flags add to it: a flag replaces the file's label or handler of the
 same name, and its taint with the same key and effect. A worker restart reads
 no `spec.node`. It keeps what the join saved, and `--node-label` or
-`--runtime-handler` given on a restart replaces that whole field. A node
+`--runtime-handler` given on a restart replaces that whole field.
+`--clear-node-labels` on a restart removes every saved label. A node
 registers its taints once, when it joins, so a restart refuses a `--node-taint`
 that changes them; change a joined node's taints from a control plane with
 `stratum kubectl taint node`.
@@ -137,9 +138,12 @@ gives the Node its `spec.node` labels and a
 `runtime.stratum.ciq.com/<handler>=true` label for each runtime handler, which
 that handler's RuntimeClass selects nodes by. Stratum owns every label under
 `runtime.stratum.ciq.com/`: it removes any there that is not one of the node's
-handlers, including a label set by hand. It leaves every other label alone, so
-a label you remove from `spec.node` stays on the Node until you remove it with
-`stratum kubectl label node <node> <key>-`.
+handlers, including a label set by hand. It also removes a label that the node
+declared earlier and no longer declares, so a label you remove from `spec.node`,
+or from a worker with `--node-label` or `--clear-node-labels`, leaves the Node at
+its next start. It leaves every other label alone. A label removed before
+Stratum began tracking the labels it applies stays on the Node until you remove
+it with `stratum kubectl label node <node> <key>-`.
 
 A node cannot declare:
 

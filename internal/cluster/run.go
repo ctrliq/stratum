@@ -681,12 +681,71 @@ var (
 // from st as its caller has it. A worker restart only warns about a missing
 // binary, so its handler stays unlabelled until a relabel after the binary is
 // installed. It is the one labelling rule for a kubelet or containerd start,
-// `stratum runtime apply` and `stratum runtime restart`.
+// `stratum runtime apply` and `stratum runtime restart`. It also removes a
+// label in AppliedNodeLabels that the node no longer declares.
 func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
 		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
 	})
-	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
+	declared := slices.Sorted(maps.Keys(st.NodeLabels))
+	owned, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string { return sortedUnion(cur, declared) })
+	switch {
+	case errors.Is(err, errNotThisNodeState):
+		return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), nil)
+	case err != nil:
+		return fmt.Errorf("record the labels %s declares before applying them: %w", st.Hostname, err)
+	}
+	if err := reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable), owned); err != nil {
+		return err
+	}
+	pruned := slices.DeleteFunc(slices.Clone(owned), func(k string) bool { _, ok := st.NodeLabels[k]; return ok })
+	if len(pruned) == 0 {
+		return nil
+	}
+	if _, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string {
+		return slices.DeleteFunc(slices.Clone(cur), func(k string) bool { return slices.Contains(pruned, k) })
+	}); err != nil {
+		return fmt.Errorf("record the labels removed from %s: %w", st.Hostname, err)
+	}
+	return nil
+}
+
+// errNotThisNodeState is recordAppliedNodeLabels' refusal of a node.yaml that
+// is missing or names another host: the labels are applied, but none recorded
+// or pruned.
+var errNotThisNodeState = errors.New("node.yaml is not this node's")
+
+// recordAppliedNodeLabels updates hostname's AppliedNodeLabels from the value
+// in node.yaml, under its mutation lock, and returns the record it leaves.
+func recordAppliedNodeLabels(hostname string, update func([]string) []string) ([]string, error) {
+	var record []string
+	err := nodestate.MutateSave(func(cur *NodeState) error {
+		if cur.Hostname != hostname {
+			return errNotThisNodeState
+		}
+		next := update(cur.AppliedNodeLabels)
+		if len(next) == 0 {
+			next = nil
+		}
+		record = next
+		if slices.Equal(next, cur.AppliedNodeLabels) {
+			return nodestate.ErrUnchanged
+		}
+		cur.AppliedNodeLabels = next
+		return nil
+	}, saveState)
+	return record, err
+}
+
+// sortedUnion is the sorted, deduplicated keys of a and b.
+func sortedUnion(a, b []string) []string {
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a

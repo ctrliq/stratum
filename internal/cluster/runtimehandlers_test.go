@@ -33,7 +33,7 @@ func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 	requireHandlersImport = func() error { return nil }
 	requireSharedConfD = func() error { return nil }
 	requireOwnDropIn = func(map[string]string) error { return nil }
-	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string) error { return nil }
+	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string, []string) error { return nil }
 	applyHandlers = func(_ io.Writer, h map[string]string, _ bool) (runtime.ApplyHandlersResult, error) {
 		written = append(written, h)
 		return runtime.ApplyHandlersResult{Changed: true}, nil
@@ -210,7 +210,7 @@ func TestApplyRuntimeHandlersRelabelsTheNode(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", NodeLabels: map[string]string{"zone": "a"}})
 	want := map[string]string{"nvidia": executable(t)}
 	var labelled [][]string
-	reconcileOwnNodeLabels = func(_ context.Context, host string, labels map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, host string, labels map[string]string, handlers, _ []string) error {
 		if host != "w1" || labels["zone"] != "a" {
 			t.Errorf("relabelled %s with %v, want the node's own state", host, labels)
 		}
@@ -251,7 +251,7 @@ func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	t.Cleanup(func() { restartContainerd = oldRestart })
 	var order []string
 	restartContainerd = func(io.Writer) error { order = append(order, "restart"); return nil }
-	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers, _ []string) error {
 		if !slices.Equal(handlers, []string{"nvidia"}) {
 			t.Errorf("relabelled with %v, want [nvidia]", handlers)
 		}
@@ -301,7 +301,7 @@ func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
 	}
 	restartContainerd = func(io.Writer) error { return nil }
 	var labelled [][]string
-	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers, _ []string) error {
 		labelled = append(labelled, handlers)
 		return nil
 	}
