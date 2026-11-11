@@ -60,10 +60,13 @@ a = shlex.split(sys.stdin.read())
 print(a[a.index("--token") + 1], a[a.index("--discovery-token-ca-cert-hash") + 1])
 ' <<<"$line") || { fail "no parseable worker join line in token output"; done_testing; exit 1; }
 node_up cp2 --worker --server "https://$HA_VIP:6443" --token "$token" \
-  --discovery-token-ca-cert-hash "$cahash" --node-ip "$(ip_of cp2)"
+  --discovery-token-ca-cert-hash "$cahash" --node-ip "$(ip_of cp2)" \
+  --runtime-handler fake=/inttest/fake-runtime
 wait_for "the worker to start" 600 node_started cp2 || { node_log cp2; exit 1; }
 wait_for "2 nodes Ready" 600 ready_at_least cp1 2 || { on cp1 "$K get nodes -o wide" || true; exit 1; }
 pass "cp2 joined as a worker"
+DROPIN=$ROOT/config/containerd.d/stratum-runtime.toml
+if on cp2 "test -f $DROPIN"; then pass "the worker has its runtime-handler drop-in"; else fail "the worker joined without its runtime-handler drop-in"; fi
 
 # Only a node may mark its own Node for removal: the operator deletes a marked
 # Node, so a mark from anyone else, the cluster admin included, is refused.
@@ -158,6 +161,7 @@ state_gone() { on "$1" "test ! -e $ROOT || test -z \"\$(ls -A $ROOT)\""; }
 # $ROOT is a volume here, as it is on a host with a dedicated disk, so it is
 # emptied rather than removed.
 if state_gone cp2; then pass "the worker's state is gone"; else fail "$ROOT still holds $(on cp2 "ls -A $ROOT")"; fi
+if on cp2 "test -e $DROPIN"; then fail "uninstall left the runtime-handler drop-in"; else pass "uninstall removed the runtime-handler drop-in"; fi
 assert_contains "the worker marked its Node for removal" "marked Node cp2 for removal" "$out"
 assert_contains "the worker says the control plane removes its Node" "removed by the control plane" "$out"
 check_clean cp2
