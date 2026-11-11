@@ -34,6 +34,7 @@ tainted() {
 }
 annotation() { on cp1 "$K get node cp2 -o jsonpath='{.metadata.annotations.stratum\.ciq\.com/$1}'" 2>/dev/null; }
 labels() { on cp1 "$K get node cp2 -o jsonpath='{.metadata.labels}'" 2>/dev/null; }
+unreadable() { fail "could not read $1"; done_testing; exit 1; }
 
 node_up cp1
 wait_for "cp1 to start" 600 node_started cp1 || { node_log cp1; exit 1; }
@@ -72,7 +73,8 @@ unschedulable() { on cp1 "$K get pod held -o jsonpath='{.status.conditions[?(@.t
 pending_for_taint() { unschedulable | grep -q "untolerated taint"; }
 wait_for "the pinned pod to be refused for the taint" 120 pending_for_taint || true
 assert_contains "a pod pinned to the tainted worker stays Pending for the taint" "untolerated taint" "$(unschedulable)"
-assert_eq "…and it is not scheduled" "" "$(on cp1 "$K get pod held -o jsonpath='{.spec.nodeName}'")"
+held_on=$(on cp1 "$K get pod held -o jsonpath='{.spec.nodeName}'") || unreadable "the held pod's nodeName"
+assert_eq "…and it is not scheduled" "" "$held_on"
 
 # --- the worker cannot release itself -------------------------------------------
 self=$(on cp2 "$ROOT/bin/kubectl --kubeconfig $ROOT/kubeconfig/kubelet.kubeconfig taint node cp2 $TAINT:NoSchedule-" 2>&1 || true)
@@ -96,9 +98,12 @@ out=$(on cp1 "/dist/stratum node hold cp2 --reason burn-in --by inttest" 2>&1) |
 if tainted; then pass "hold put the taint back"; else fail "hold did not taint the node: $(taints)"; fi
 assert_contains "hold recorded who held the node" "inttest@" "$(annotation held)"
 assert_eq "hold recorded the reason on its own" "burn-in" "$(annotation held-reason)"
-assert_eq "hold removed the verified record" "" "$(annotation verified)"
+verified=$(annotation verified) || unreadable "cp2's verified annotation"
+assert_eq "hold removed the verified record" "" "$verified"
 out=$(on cp1 "/dist/stratum node release cp2 --by inttest" 2>&1) || fail "release after hold failed: $out"
-assert_eq "release cleared the hold" " " "$(annotation held) $(annotation held-reason)"
+held=$(annotation held) || unreadable "cp2's held annotation"
+held_reason=$(annotation held-reason) || unreadable "cp2's held-reason annotation"
+assert_eq "release cleared the hold" " " "$held $held_reason"
 
 # --- a restarted worker does not taint itself again -----------------------------
 renewed() { on cp1 "$K -n kube-node-lease get lease cp2 -o jsonpath='{.spec.renewTime}'" 2>/dev/null; }
