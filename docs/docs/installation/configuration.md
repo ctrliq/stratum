@@ -284,6 +284,9 @@ own manifests to a directory of their own.
     control plane runs a release that renders RuntimeClasses: an older one
     renders none.
 
+[GPUs](../cluster-admin/gpus.md) uses a handler and its RuntimeClass to give
+pods an NVIDIA GPU.
+
 ## Node IP
 
 A node takes its IP from the first of these that is set:

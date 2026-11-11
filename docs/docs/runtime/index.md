@@ -191,6 +191,9 @@ reinstall a handler's binary or after `runtime_apply`, and then updates the
 node's handler labels. It refuses, and restarts nothing, when a file in
 `/etc/containerd/conf.d` does not parse.
 
+[GPUs](../cluster-admin/gpus.md) walks through the `nvidia` handler from the
+configuration file to a pod that runs `nvidia-smi`.
+
 ## A containerd Stratum did not start
 
 A containerd process left over from an earlier run can keep serving
