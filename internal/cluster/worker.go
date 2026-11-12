@@ -115,6 +115,9 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err != nil {
 			return nil, fmt.Errorf("this worker's saved state names a %w; run it with a binary that registers the profile", err)
 		}
+		if err := RefuseWorkerProfileChange(st, profileName); err != nil {
+			return nil, err
+		}
 		// Every refusal comes before the restart saves a setting or prepares
 		// the host, so a refused start leaves node.yaml and the host as they
 		// were: it does not save one setting it was given and then refuse
@@ -428,4 +431,26 @@ func FormatKeyValues(m map[string]string) string {
 		out = append(out, k+"="+m[k])
 	}
 	return strings.Join(out, ",")
+}
+
+// RefuseWorkerProfileChange refuses a worker restart that names a profile
+// other than the one st, the worker's saved state, records. No profile named
+// keeps the saved one.
+func RefuseWorkerProfileChange(st *NodeState, want string) error {
+	if want == "" || want == st.ProfileName() {
+		return nil
+	}
+	return fmt.Errorf("worker restart: this worker joined with %s, and a restart cannot change it to profile %q: "+
+		"a worker takes its profile from its join. To move it, remove spec.profile and spec.cis from this worker's "+
+		"config file, which a worker join refuses, then run `stratum token create` on a control plane and run the "+
+		"worker join line it prints on this node with --profile %s added; the join replaces this worker's saved "+
+		"state. Then restart the worker as before. Nothing was changed",
+		describeProfile(st.ProfileName()), want, want)
+}
+
+func describeProfile(name string) string {
+	if name == "" {
+		return "no profile"
+	}
+	return fmt.Sprintf("profile %q", name)
 }
