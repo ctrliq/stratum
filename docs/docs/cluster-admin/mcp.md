@@ -57,7 +57,9 @@ capability is there and invite it to look for another way to the same effect.
     `super-admin.conf`, and for them the tier flag and running the server as root are
     the only controls. The table under [The destructive tier](#the-destructive-tier)
     lists the destructive ones, and [Choosing a cluster](#choosing-a-cluster)
-    names the read-tier exceptions (`token_list`, `upgrade_plan`). `runtime_apply`
+    names the read-tier exceptions (`token_list`, `upgrade_plan`). `backup_evidence`
+    uses no credential at all: it reads this node's own files and the configured
+    S3 target, and returns no credentials. `runtime_apply`
     updates this node's own runtime-handler labels with the node's kubelet
     credential.
 
@@ -433,7 +435,6 @@ expect. One tool runs on the server's credential, and RBAC bounds it:
 | `upgrade_apply` with `scope: node`, `rollback`, `certs_rotate`, `snapshot_restore`, `snapshot_rejoin`, `snapshot_prune_restores`, `uninstall`, `ha_repoint` without `cilium` | this node's own: host work on this node, and API writes through `super-admin.conf` (`snapshot_restore` restarts the cluster's Stratum-managed workloads; a node upgrade cordons and uncordons this node) |
 | `certs_rotate_ca`, `certs_migrate_etcd_ca`, `certs_migrate_kubelet_client_ca` | this node's `super-admin.conf`, for every phase and for the cluster-wide run |
 | `token_create`, `token_list` (write and read tiers) | this node's `super-admin.conf` |
-| `backup_evidence` (read tier) | none — it reads this node's own files and the configured S3 target, and returns no credentials |
 
 For the tools on this node's credentials, RBAC on the server's credential
 neither enables nor limits what they do: the tier flag, and running the server

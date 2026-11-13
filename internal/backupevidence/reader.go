@@ -477,8 +477,15 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 		remote = Remote(ctx, RemoteOptions{
 			Target: tgt,
 			// The listing's own bounds are the shares of the overall
-			// budget that remain, never the full budget again.
-			MaxPages: entriesLeft, MaxBytes: bytesLeft, MaxTime: maxTime,
+			// budget that remain, never the full budget again. The
+			// page share follows the entry share: a page carries at
+			// most objstore.ListKeysPerPage keys, so the entries
+			// left to the listing need at most one page per
+			// ListKeysPerPage of them — never a page per entry,
+			// which would fetch a thousand times the budget's keys
+			// to keep a handful of them.
+			MaxPages: (entriesLeft + objstore.ListKeysPerPage - 1) / objstore.ListKeysPerPage,
+			MaxBytes: bytesLeft, MaxTime: maxTime,
 			RetentionCutoff: retentionCutoff(policy),
 		})
 		if len(remote.Copies) > entriesLeft {

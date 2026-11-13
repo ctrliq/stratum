@@ -266,8 +266,12 @@ const (
 // The built-in bounds of a bounded listing: a caller that passes no cap gets
 // these, never an unbounded listing.
 const (
-	// DefaultListMaxPages is the page cap. At the SDK's 1000 keys a page it
-	// bounds a listing at a million objects.
+	// ListKeysPerPage is the keys the S3 ListObjectsV2 API serves one page:
+	// the most a single page carries, and the grain every page cap below
+	// is counted in.
+	ListKeysPerPage = 1000
+	// DefaultListMaxPages is the page cap. At ListKeysPerPage keys a page
+	// it bounds a listing at a million objects.
 	DefaultListMaxPages = 1000
 	// DefaultListMaxBytes is the byte cap: how many object bytes one
 	// listing may account for.
@@ -358,10 +362,11 @@ list:
 		page, err := p.NextPage(ctx)
 		if err != nil {
 			// What the pages so far listed stands as a floor; the
-			// classification names what stopped the rest.
-			res.Objects = out
-			res.End = listEnd(err)
-			return res
+			// classification names what stopped the rest. The floor
+			// leaves through the same exit as every other end, so it
+			// keeps the sorted-by-name contract the result documents.
+			end = listEnd(err)
+			break list
 		}
 		pages++
 		for _, ob := range page.Contents {

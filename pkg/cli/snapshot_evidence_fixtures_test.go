@@ -231,3 +231,33 @@ func TestShippedFixturesComposeTheirWarnings(t *testing.T) {
 		}
 	}
 }
+
+// TestShippedFixturesHoldThePolicyProvenanceContract: retention and the
+// copy requirement resolve together — both from snapshot.conf when it
+// supplies the policy, both from the cluster config or the defaults
+// otherwise, both unknown when neither could be read — so a fixture that
+// pairs the provenances across that line documents a field combination the
+// binary cannot print.
+func TestShippedFixturesHoldThePolicyProvenanceContract(t *testing.T) {
+	for _, f := range shippedFixtures(t) {
+		p := f.doc.Policy
+		if (p.RetainFrom == "snapshot-conf") != (p.CopyFrom == "snapshot-conf") {
+			t.Errorf("%s: retainFrom = %q with copyFrom = %q, want both from snapshot-conf or neither: the provenances resolve together",
+				f.name, p.RetainFrom, p.CopyFrom)
+		}
+	}
+}
+
+// TestShippedFixturesHoldTheUnreadableConfContract: an unreadable
+// snapshot.conf leaves the remote target undetermined — the store may hold
+// the copies it already uploaded, so the remote catalog is unknown, never a
+// complete exact zero — and a fixture that marks it complete teaches the
+// one reader mistake the totals rule exists to prevent.
+func TestShippedFixturesHoldTheUnreadableConfContract(t *testing.T) {
+	for _, f := range shippedFixtures(t) {
+		if f.doc.Policy.State == "unreadable" && f.doc.Remote.Complete {
+			t.Errorf("%s: remote.complete is true under an unreadable snapshot config, want false: the target cannot be determined, so the remote catalog is unknown and not a complete total",
+				f.name)
+		}
+	}
+}

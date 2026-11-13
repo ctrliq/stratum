@@ -38,8 +38,10 @@
   "remote": {
     "copies": [],
     "old": [],
-    "complete": true,
-    "warnings": []
+    "complete": false,
+    "warnings": [
+      "WARN: the remote target could not be determined because the snapshot config or the recorded cluster config cannot be read; the remote catalog is unknown and not a complete total"
+    ]
   },
   "backups": {
     "node": "cp-1",
@@ -65,8 +67,11 @@
         }
       }
     ],
-    "complete": true,
-    "warnings": [],
+    "complete": false,
+    "warnings": [
+      "WARN: the remote target could not be determined because the snapshot config or the recorded cluster config cannot be read; the remote catalog is unknown and not a complete total",
+      "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total"
+    ],
     "retention": []
   },
   "maintenance": {
@@ -82,9 +87,11 @@
     ],
     "attemptsKnown": true
   },
-  "complete": true,
+  "complete": false,
   "warnings": [
     "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown",
+    "WARN: the remote target could not be determined because the snapshot config or the recorded cluster config cannot be read; the remote catalog is unknown and not a complete total",
+    "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total",
     "WARN: the recorded tick ran with a snapshot config it could not read; it kept every snapshot and uploaded nothing"
   ]
 }

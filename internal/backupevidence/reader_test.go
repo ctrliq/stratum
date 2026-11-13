@@ -546,6 +546,45 @@ func TestReaderEnforcesTheOverallPageBudgetAcrossReads(t *testing.T) {
 	})
 }
 
+// The page budget's remaining entries bound the listing's pages, not just
+// its results: a store's page carries at most objstore.ListKeysPerPage keys,
+// so the entries left to the remote half need at most one page per
+// ListKeysPerPage of them. A listing that asked for one page per entry would
+// fetch a thousand times the budget's keys to keep a handful of entries.
+func TestReaderBoundsTheRemoteListingPagesByTheRemainingEntryBudget(t *testing.T) {
+	pinEvidenceClock(t)
+	withEvidencePaths(t)
+	dir := t.TempDir()
+	s1 := etcdsnap.ScheduledName("cp-1", "20261112-090000")
+	s2 := etcdsnap.ScheduledName("cp-1", "20261112-100000")
+	r1 := etcdsnap.ScheduledName("cp-1", "20261112-110000")
+	r2 := etcdsnap.ScheduledName("cp-1", "20261112-120000")
+	writeSnapshot(t, dir, s1, 10, copyTime(0))
+	writeSnapshot(t, dir, s2, 10, copyTime(1))
+	tgt, listings := stubRemoteCounting(t,
+		[]remoteObj{ro(r1, 10, copyTime(0))},
+		[]remoteObj{ro(r2, 10, copyTime(1))},
+		[]remoteObj{ro(s2, 10, copyTime(2))},
+	)
+	recordedConfig(t, "spec:\n  snapshots:\n    retain: 3\n    intervalHours: 24\n    dir: "+dir+"\n")
+	snapshotConfSupplies(t, etcdsnap.Config{Retain: 3, S3: *tgt})
+
+	// Two of the four entries the budget names are left to the remote
+	// listing: one page carries them, so the listing asks for that page
+	// alone — never a page per entry.
+	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1", MaxEntries: 4})
+
+	if got := listings(); got != 1 {
+		t.Errorf("the listing asked for %d pages, want 1: the two entries left to the listing fit one page", got)
+	}
+	if len(res.Remote.Copies) != 1 || res.Remote.Copies[0].ID != r1 {
+		t.Errorf("Remote.Copies = %+v, want only %q: the one page the budget allowed", res.Remote.Copies, r1)
+	}
+	if res.Remote.Complete || res.Complete {
+		t.Error("the result claims completeness from a listing the page budget stopped early")
+	}
+}
+
 // The overall byte budget counts the artifact bytes both walks account
 // for. The local walk draws first; when it alone consumes the byte budget
 // the remote listing never runs, and the listing that does run gets what

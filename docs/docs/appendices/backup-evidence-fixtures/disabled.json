@@ -6,7 +6,7 @@
     "retain": 3,
     "retainFrom": "snapshot-conf",
     "copy": "local-only",
-    "copyFrom": "cluster-config",
+    "copyFrom": "snapshot-conf",
     "dir": "/var/backups/etcd",
     "dirFrom": "default",
     "warnings": []

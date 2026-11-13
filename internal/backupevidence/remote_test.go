@@ -57,12 +57,24 @@ func remoteXML(next string, objs ...remoteObj) string {
 // continuation token picks the page (no token is the first), and a page with
 // a successor is truncated carrying the successor's token.
 func stubRemote(t *testing.T, pages ...[]remoteObj) *objstore.Target {
+	tgt, _ := stubRemoteCounting(t, pages...)
+	return tgt
+}
+
+// stubRemoteCounting is stubRemote with a count of the listing requests the
+// store served, so a test can pin how many pages a bounded listing asked for.
+func stubRemoteCounting(t *testing.T, pages ...[]remoteObj) (*objstore.Target, func() int) {
 	t.Helper()
+	var mu sync.Mutex
+	listings := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "unexpected "+r.Method, http.StatusMethodNotAllowed)
 			return
 		}
+		mu.Lock()
+		listings++
+		mu.Unlock()
 		tok := r.URL.Query().Get("continuation-token")
 		i := 0
 		if tok != "" {
@@ -85,7 +97,11 @@ func stubRemote(t *testing.T, pages ...[]remoteObj) *objstore.Target {
 		_, _ = w.Write([]byte(remoteXML(next, pages[i]...)))
 	}))
 	t.Cleanup(srv.Close)
-	return &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
+	return &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return listings
+	}
 }
 
 // The remote catalog lists every remote copy the store holds with its stable

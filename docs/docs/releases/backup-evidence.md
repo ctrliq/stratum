@@ -64,12 +64,11 @@ no operator involvement (tools/inttest/check-upgrade-from-release.sh).
 The publisher samples the engine's evidence through the same read the
 surfaces serve, on the engine's built-in bounds (pkg/cli/up.go), on a
 one-minute cadence with the first sample at once
-(internal/cluster/run.go, internal/cluster/run.go), and
+(internal/cluster/run.go), and
 records a bounded summary — node, counts, whether the total is exact, safe
 warnings — durably at `/var/lib/stratum/config/backup-evidence.yaml`, written
 atomically at mode 0600 with a schema version a later revision can refuse
-instead of misreading (internal/cluster/run.go,
-internal/cluster/run.go). It shares the snapshot loop's gate: with
+instead of misreading (internal/cluster/run.go). It shares the snapshot loop's gate: with
 snapshots disabled in the cluster config there is no backup evidence to
 publish, and the publisher does not start (internal/cluster/run.go).
 The record is the node's own proof of what the publisher last saw, readable

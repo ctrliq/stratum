@@ -179,6 +179,39 @@ func TestListBoundedDeduplicatesKeysAcrossPages(t *testing.T) {
 	}
 }
 
+// A listing that fails midway still returns what the pages so far listed,
+// and that floor keeps the contract every other end keeps: sorted by name.
+// A floor that comes back shuffled reads as a different store than the same
+// floor sorted, and a consumer paging or diffing against the sorted order
+// misreads it.
+func TestListBoundedSortsTheFloorItReturnsWhenAListingFailsMidway(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "unexpected "+r.Method, http.StatusMethodNotAllowed)
+			return
+		}
+		if r.URL.Query().Get("continuation-token") != "" {
+			denyList(w)
+			return
+		}
+		// The first page carries its objects in an order that is not the
+		// name order, so only the listing's own sort can produce a sorted
+		// floor.
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(listPageXML("page1", listObj("z.db", 1), listObj("a.db", 1))))
+	}))
+	t.Cleanup(srv.Close)
+
+	r := targetAt(srv.URL).ListBounded(context.Background(), ListOptions{})
+
+	if r.End != ListEndedDenied {
+		t.Errorf("End = %q, want denied: the store refused the page after the first", r.End)
+	}
+	if got := names(r.Objects); !slices.Equal(got, []string{"a.db", "z.db"}) {
+		t.Errorf("Objects = %q, want the first page's objects sorted by name: a floor keeps the sorted contract every other end keeps", got)
+	}
+}
+
 // A store holding nothing under the target's prefix lists zero objects and
 // ends complete: an exact zero, never an unknown.
 func TestListBoundedEmptyBucketIsAnExactZero(t *testing.T) {

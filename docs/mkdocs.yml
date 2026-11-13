@@ -102,7 +102,7 @@ nav:
   - Stratum PRO: pro/index.md
   - Releases & Support:
       - releases/index.md
-      - Backup Evidence: releases/backup-evidence.md
+      - Backup Evidence Release Notes: releases/backup-evidence.md
   - Appendices:
       - appendices/index.md
       - Glossary: appendices/glossary.md
