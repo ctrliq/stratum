@@ -17,6 +17,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 
 	"github.com/ctrliq/stratum/internal/addons"
 	"github.com/ctrliq/stratum/internal/assets"
@@ -36,8 +37,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// RunController prepares (unless already prepared by a join) and supervises a
-// controller until ctx is cancelled.
 // processes is the roster seam: a var like pkg/cli's prepareControllerFn, so
 // a test can substitute the supervised children (whose real gates dial this
 // host's containerd socket) while RunController's own flow — the supervisor,
@@ -45,7 +44,19 @@ import (
 // for real.
 var processes = Processes
 
-func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState) error {
+// RunController prepares (unless already prepared by a join) and supervises a
+// controller until ctx is cancelled. The optional evidence sampler wires the
+// backup-evidence publisher's read of the engine's backup evidence from
+// above: the assembled reader lives in internal/backupevidence, which
+// imports this package, so the reader can only arrive here as a function
+// passed in — pkg/cli's runUp wiring passes backupevidence.Evidence behind
+// it. Absent, the sample seam keeps its no-op default and the publisher
+// records nothing. The parameter is optional so the callers and tests that
+// predate the publisher compile unchanged.
+func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampleEvidence ...EvidenceSampler) error {
+	if len(sampleEvidence) > 0 {
+		evidenceSampler = sampleEvidence[0]
+	}
 	if err := recordConfigPath(cfg, st, SaveState); err != nil {
 		// Best-effort: it only lets the CLI and MCP find a non-default config.
 		fmt.Fprintf(os.Stderr, "stratum: WARN: could not record the cluster config path: %v\n", err)
@@ -510,10 +521,21 @@ var (
 	snapshotInterval = func(c *ClusterConfig) time.Duration {
 		return time.Duration(c.Spec.Snapshot.IntervalHours) * time.Hour
 	}
-	snapshotSave = func(ctx context.Context, c *ClusterConfig) error {
+	// snapshotLoadConfig reads the operator-managed snapshot.conf over the
+	// cluster config's snapshot base — the read every scheduled tick resolves
+	// its retention and S3 target through. A seam, so a test can supply or
+	// break the conf without touching /etc.
+	snapshotLoadConfig = etcdsnap.LoadConfigOr
+	snapshotSave       = func(ctx context.Context, c *ClusterConfig) error {
 		// The save's prune warnings are the daemon's log: the controller's
 		// stdout is that log, so the writer is os.Stdout, passed explicitly.
-		opts := scheduledSaveOptions(c, etcdsnap.LoadConfigOr, os.Stdout)
+		// The same stream carries the tick's scheduling warnings into the
+		// evidence record: what scheduledSaveOptions prints for an unreadable
+		// snapshot.conf is the warning recorded beside the tick's attempts,
+		// captured on its way to the log rather than re-derived.
+		var warns tickWarnings
+		opts := scheduledSaveOptions(c, snapshotLoadConfig, io.MultiWriter(os.Stdout, &warns))
+		opts.EvidenceWarnings = warns.recorded()
 		_, err := etcdsnap.SaveContext(ctx, os.Stdout, opts)
 		return err
 	}
@@ -898,10 +920,12 @@ func restampOwnNodeWhenRegistered(ctx context.Context, hostname string) bool {
 
 // postStart starts the controller's post-start housekeeping: the etcd growth
 // recorder for an ungrown seed, the learner promotion for a joined member, the
-// node-registered task, and the long-lived cert-renew and snapshot loops the
-// config enables, each a run-group task with the controller's context. No task
+// node-registered task, the long-lived cert-renew and snapshot loops the
+// config enables, and the backup-evidence publisher beside the snapshot loop,
+// each a run-group task with the controller's context. No task
 // waits on the apiserver to start, and none needs it: renewal reads and
 // reissues local certificates only, a snapshot needs only the local etcd, the
+// publisher only the node's own stores and records, the
 // recorder and the learner promotion only etcd, and the node-registered task's
 // per-tick registration check is itself the apiserver wait.
 func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
@@ -923,6 +947,12 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	if !cfg.Spec.Snapshot.Disabled {
 		warnRelativeSnapshotDir(cfg, "stratum: WARN: ")
 		g.add("etcd snapshots", func(ctx context.Context) { snapshotLoop(ctx, cfg) })
+		// The publisher shares the snapshot loop's gate: with snapshots
+		// disabled there is no backup evidence to publish. Like every
+		// other task it needs no operator — the reader samples local
+		// artifacts, the remote store and the durable attempt record, all
+		// node-owned — so an operator-off controller publishes too.
+		g.add("backup evidence publisher", func(ctx context.Context) { publishEvidenceLoop(ctx, evidenceSampler) })
 	}
 	g.add("cluster-admins binding", reconcileTask("bind admin.conf's group to cluster-admin", clusterAdminsRetry, clusterAdminsResync,
 		func(ctx context.Context) error { return ensureClusterAdminsBinding(ctx, st.Hostname) }))
@@ -1455,7 +1485,10 @@ func loadSnapshotConfig(clusterPath string, mustExist bool, load func(etcdsnap.C
 // scheduledSaveOptions resolves one scheduled snapshot's options. The snapshot
 // config file wins when it exists; when it is absent the cluster config's
 // retain and s3 apply, so a config.yaml-only controller still offloads and
-// prunes as configured.
+// prunes as configured. The options it resolves are the scheduled ones:
+// Evidence is on, so the save records its attempts into the durable snapshot
+// evidence record — the one behaviour that tells a scheduled save from a
+// manual one beside the seams that drive it.
 //
 // An unreadable snapshot.conf is not fatal — the backup itself is still worth
 // taking — but its retention settings cannot be trusted, so the returned
@@ -1464,7 +1497,7 @@ func loadSnapshotConfig(clusterPath string, mustExist bool, load func(etcdsnap.C
 // fires on every tick, since each tick re-resolves the config.
 func scheduledSaveOptions(cfg *ClusterConfig, load func(etcdsnap.Config) (etcdsnap.Config, error), warn io.Writer) etcdsnap.SaveOptions {
 	base := cfg.SnapshotBase()
-	opts := etcdsnap.SaveOptions{Retain: base.Retain, S3: base.S3Target(), Dir: cfg.SnapshotDir()}
+	opts := etcdsnap.SaveOptions{Retain: base.Retain, S3: base.S3Target(), Dir: cfg.SnapshotDir(), Evidence: true}
 	sc, err := load(base)
 	if err == nil {
 		opts.Retain, opts.S3 = sc.Retain, sc.S3Target()
@@ -1474,6 +1507,26 @@ func scheduledSaveOptions(cfg *ClusterConfig, load func(etcdsnap.Config) (etcdsn
 	opts.Retain, opts.S3 = 0, nil
 	return opts
 }
+
+// tickWarnings collects the complete warning lines one scheduled tick
+// printed, trimmed: the tick's scheduling warnings — an unreadable
+// snapshot.conf — recorded beside its attempts in the snapshot evidence
+// record, the same lines the daemon's log carries.
+type tickWarnings struct {
+	lines []string
+}
+
+func (w *tickWarnings) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(string(p), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			w.lines = append(w.lines, line)
+		}
+	}
+	return len(p), nil
+}
+
+// recorded is the lines collected so far.
+func (w *tickWarnings) recorded() []string { return w.lines }
 
 // snapshotLoop saves etcd snapshots on the configured interval — the
 // supervisor-native stratum-etcd-snapshot.timer. Config precedence: the
@@ -1492,6 +1545,152 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 		if err := snapshotSave(ctx, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
 		}
+	}
+}
+
+// EvidenceSample is one publisher sample: the projection of one bounded
+// read of the engine's backup evidence the publisher records durably. It
+// carries no internal/backupevidence type — that package imports this one,
+// so the reader reaches the publisher only through the sampler seam wired
+// from above, never through an import — only the summary the durable record
+// holds.
+type EvidenceSample struct {
+	// Node is the node the sample's local half is scoped to.
+	Node string
+	// Complete says the whole read ran within its bounds.
+	Complete bool
+	// LocalArtifacts and RemoteCopies are the bounded counts of the local
+	// artifacts and remote copies the read described.
+	LocalArtifacts int
+	RemoteCopies   int
+	// Backups is the deduplicated total: each stable backup ID once across
+	// both locations. Exact says it is the exact total; false means it is
+	// a floor and the true total is unknown.
+	Backups int
+	Exact   bool
+	// Warnings are the read's typed safe diagnostics.
+	Warnings []string
+}
+
+// EvidenceSampler is the publisher's sample seam: one bounded read of the
+// engine's assembled backup evidence. ok false means nothing was sampled.
+type EvidenceSampler func(ctx context.Context) (sample EvidenceSample, ok bool)
+
+// The publisher's seams: the sampler stands where the assembled evidence
+// reader (internal/backupevidence.Evidence) stands, and a test drives it
+// with a stub the way the loop tests drive snapshotSave; the cadence is a
+// var so a test shrinks it the way it shrinks certRenewInterval.
+var (
+	evidenceSampler         = noopEvidenceSampler
+	evidencePublishInterval = time.Minute
+)
+
+// noopEvidenceSampler is the default sample seam: nothing is sampled and
+// nothing is recorded — a start that wired no sampler (every caller below
+// pkg/cli) runs a publisher that records no evidence.
+func noopEvidenceSampler(context.Context) (EvidenceSample, bool) {
+	return EvidenceSample{}, false
+}
+
+// evidenceRecordSchemaVersion is the schema version of the publisher's
+// durable record, stamped by every save so a later revision of the record
+// can refuse a newer one instead of misreading it.
+const evidenceRecordSchemaVersion = 1
+
+// evidenceRecordPath is where the publisher's durable record persists:
+// beside the snapshot evidence record under the node's config area, the
+// renewal-record precedent's location for a node-local record a start and
+// the CLI both read.
+func evidenceRecordPath() string {
+	return filepath.Join(version.K8sConfDir, "backup-evidence.yaml")
+}
+
+// evidenceRecord is the publisher's durable record: what the publisher's
+// last sample of the engine's backup evidence said and when it was taken,
+// persisted the way the snapshot evidence record persists so it survives
+// restarts. It holds the sample's bounded summary — the deduplicated census
+// with its exactness and the read's safe diagnostics — not the artifacts
+// themselves: the supported surfaces (pkg/cli's exported reader, the MCP
+// tool) describe those, and the record is the node's own proof of what the
+// publisher last saw, readable without calling any interface.
+type evidenceRecord struct {
+	SchemaVersion  int       `json:"schemaVersion"`
+	SampledAt      time.Time `json:"sampledAt"`
+	Node           string    `json:"node"`
+	Complete       bool      `json:"complete"`
+	LocalArtifacts int       `json:"localArtifacts"`
+	RemoteCopies   int       `json:"remoteCopies"`
+	Backups        int       `json:"backups"`
+	ExactTotal     bool      `json:"exactTotal"`
+	Warnings       []string  `json:"warnings,omitempty"`
+}
+
+// publishEvidenceLoop is the node-owned backup-evidence publisher: on the
+// contract cadence it samples the engine's assembled backup evidence
+// through the seam wired from above and refreshes the durable record. It is
+// a postStart loop like the snapshot and renewal loops: it parks on the
+// group's context — a sample in flight at shutdown finishes and its record
+// lands before the group's wait returns — and the run group recovers its
+// panics and backoff-restarts its early returns. The first sample lands at
+// once, not a whole cadence later: a node that just started shows a fresh
+// record immediately, and a restarted publisher replaces a stale one
+// without waiting out the interval.
+func publishEvidenceLoop(ctx context.Context, sample EvidenceSampler) {
+	if sample == nil {
+		sample = noopEvidenceSampler
+	}
+	publishEvidenceSample(ctx, sample)
+	t := time.NewTicker(evidencePublishInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			publishEvidenceSample(ctx, sample)
+		}
+	}
+}
+
+// publishEvidenceSample takes one sample through the seam and records it
+// durably. A sample that did not happen — the no-op default — records
+// nothing; one that did replaces the record whole, so the record is the
+// last sample by design, last-writer-wins with no lock and no
+// read-modify-write to lose. A sample whose context ended mid-flight — a
+// shutdown that reached it — records nothing, the renewal loop's own rule:
+// the work still finishes and joins, but a cancelled read describes a node
+// that is going down, not one that is up. A write that fails is a warning
+// in the daemon's log, never the end of the task: the next tick retries
+// with a fresh sample, and a config area that heals starts recording again
+// without a restart.
+func publishEvidenceSample(ctx context.Context, sample EvidenceSampler) {
+	if ctx.Err() != nil {
+		return
+	}
+	s, ok := sample(ctx)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	b, err := yaml.Marshal(evidenceRecord{
+		SchemaVersion:  evidenceRecordSchemaVersion,
+		SampledAt:      time.Now(),
+		Node:           s.Node,
+		Complete:       s.Complete,
+		LocalArtifacts: s.LocalArtifacts,
+		RemoteCopies:   s.RemoteCopies,
+		Backups:        s.Backups,
+		ExactTotal:     s.Exact,
+		Warnings:       s.Warnings,
+	})
+	if err == nil {
+		// The shared atomic writer at 0600, the discipline every node
+		// record follows: a torn record must never stand where a working
+		// one was, and a node-local record of what this node backs up
+		// must not be world-readable.
+		err = atomicfile.WriteFile(evidenceRecordPath(), b, 0o600)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stratum: record the backup evidence sample: %v (non-fatal)\n", err)
 	}
 }
 

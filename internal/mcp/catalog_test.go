@@ -40,6 +40,7 @@ var catalogReadTools = []string{
 	"runtime_check",
 	"upgrade_plan",
 	"snapshot_restore_copies",
+	"backup_evidence",
 	"uninstall_preview",
 	"context_list",
 	"resource_list",

@@ -1,0 +1,62 @@
+{
+  "policy": {
+    "state": "unconfigured",
+    "intervalSeconds": 43200,
+    "intervalFrom": "default",
+    "retain": 5,
+    "retainFrom": "default",
+    "copy": "local-only",
+    "copyFrom": "default",
+    "dir": "/var/backups/etcd",
+    "dirFrom": "default",
+    "warnings": []
+  },
+  "node": "cp-1",
+  "local": {
+    "node": "cp-1",
+    "artifacts": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-090000.db",
+        "location": "local",
+        "created": "2026-11-12T09:00:00Z",
+        "size": 21,
+        "digest": "unknown"
+      }
+    ],
+    "complete": true,
+    "warnings": []
+  },
+  "remote": {
+    "copies": [],
+    "old": [],
+    "complete": true,
+    "warnings": []
+  },
+  "backups": {
+    "node": "cp-1",
+    "entries": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-090000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261112-090000.db",
+          "location": "local",
+          "created": "2026-11-12T09:00:00Z",
+          "size": 21,
+          "digest": "unknown"
+        }
+      }
+    ],
+    "complete": true,
+    "warnings": [],
+    "retention": []
+  },
+  "maintenance": {
+    "save": {},
+    "upload": {},
+    "prune": {},
+    "warnings": [],
+    "attemptsKnown": true
+  },
+  "complete": true,
+  "warnings": []
+}

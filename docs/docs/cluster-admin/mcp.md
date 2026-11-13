@@ -32,7 +32,7 @@ What the server exposes is decided when you start it, not per call.
 
 | Started with | Tools available | What they can do |
 |---|---|---|
-| no flags | 19 | read cluster and node state |
+| no flags | 20 | read cluster and node state |
 | `--allow-write` | +9 | apply manifests, scale, snapshot, mint join tokens, rewrite containerd configuration |
 | `--allow-destructive` | +11 | upgrade, roll back, rotate CAs, restore etcd, remove restore copies, uninstall |
 
@@ -70,7 +70,8 @@ capability is there and invite it to look for another way to the same effect.
 **Stratum's own state, from the node.** `cluster_status` reports the supervised
 process table — what the supervisor *intends* to be running versus what is,
 which is not visible from the Kubernetes API at all. `certs_check`,
-`snapshot_list`, `snapshot_restore_copies`, `token_list`, `registry_check` and
+`snapshot_list`, `backup_evidence`, `snapshot_restore_copies`, `token_list`,
+`registry_check` and
 `runtime_check` report the rest. `upgrade_plan` and `uninstall_preview` show what a change would do without
 doing it.
 
@@ -432,6 +433,7 @@ expect. One tool runs on the server's credential, and RBAC bounds it:
 | `upgrade_apply` with `scope: node`, `rollback`, `certs_rotate`, `snapshot_restore`, `snapshot_rejoin`, `snapshot_prune_restores`, `uninstall`, `ha_repoint` without `cilium` | this node's own: host work on this node, and API writes through `super-admin.conf` (`snapshot_restore` restarts the cluster's Stratum-managed workloads; a node upgrade cordons and uncordons this node) |
 | `certs_rotate_ca`, `certs_migrate_etcd_ca`, `certs_migrate_kubelet_client_ca` | this node's `super-admin.conf`, for every phase and for the cluster-wide run |
 | `token_create`, `token_list` (write and read tiers) | this node's `super-admin.conf` |
+| `backup_evidence` (read tier) | none — it reads this node's own files and the configured S3 target, and returns no credentials |
 
 For the tools on this node's credentials, RBAC on the server's credential
 neither enables nor limits what they do: the tier flag, and running the server

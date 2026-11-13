@@ -3,6 +3,20 @@
 const github.com/ctrliq/stratum/pkg/cli.AuditException github.com/ctrliq/stratum/pkg/cli.AuditResult = 3
 const github.com/ctrliq/stratum/pkg/cli.AuditFail github.com/ctrliq/stratum/pkg/cli.AuditResult = 2
 const github.com/ctrliq/stratum/pkg/cli.AuditPass github.com/ctrliq/stratum/pkg/cli.AuditResult = 1
+const github.com/ctrliq/stratum/pkg/cli.BackupAttemptFailed github.com/ctrliq/stratum/pkg/cli.BackupAttemptOutcome = "failed"
+const github.com/ctrliq/stratum/pkg/cli.BackupAttemptSucceeded github.com/ctrliq/stratum/pkg/cli.BackupAttemptOutcome = "succeeded"
+const github.com/ctrliq/stratum/pkg/cli.BackupCopyLocalOnly github.com/ctrliq/stratum/pkg/cli.BackupCopyRequirement = "local-only"
+const github.com/ctrliq/stratum/pkg/cli.BackupCopyRemoteRequired github.com/ctrliq/stratum/pkg/cli.BackupCopyRequirement = "remote-required"
+const github.com/ctrliq/stratum/pkg/cli.BackupDigestUnknown untyped string = "unknown"
+const github.com/ctrliq/stratum/pkg/cli.BackupFromClusterConfig github.com/ctrliq/stratum/pkg/cli.BackupProvenance = "cluster-config"
+const github.com/ctrliq/stratum/pkg/cli.BackupFromDefault github.com/ctrliq/stratum/pkg/cli.BackupProvenance = "default"
+const github.com/ctrliq/stratum/pkg/cli.BackupFromSnapshotConf github.com/ctrliq/stratum/pkg/cli.BackupProvenance = "snapshot-conf"
+const github.com/ctrliq/stratum/pkg/cli.BackupFromUnknown github.com/ctrliq/stratum/pkg/cli.BackupProvenance = "unknown"
+const github.com/ctrliq/stratum/pkg/cli.BackupPolicyConfigured github.com/ctrliq/stratum/pkg/cli.BackupPolicyState = "configured"
+const github.com/ctrliq/stratum/pkg/cli.BackupPolicyDisabled github.com/ctrliq/stratum/pkg/cli.BackupPolicyState = "disabled"
+const github.com/ctrliq/stratum/pkg/cli.BackupPolicyUnconfigured github.com/ctrliq/stratum/pkg/cli.BackupPolicyState = "unconfigured"
+const github.com/ctrliq/stratum/pkg/cli.BackupPolicyUnknown github.com/ctrliq/stratum/pkg/cli.BackupPolicyState = "unknown"
+const github.com/ctrliq/stratum/pkg/cli.BackupPolicyUnreadable github.com/ctrliq/stratum/pkg/cli.BackupPolicyState = "unreadable"
 const github.com/ctrliq/stratum/pkg/cli.ProfileAdmissionConfiguration github.com/ctrliq/stratum/pkg/cli.ProfileFileKind = 2
 const github.com/ctrliq/stratum/pkg/cli.ProfileConfigFile github.com/ctrliq/stratum/pkg/cli.ProfileSource = 2
 const github.com/ctrliq/stratum/pkg/cli.ProfileLiteral github.com/ctrliq/stratum/pkg/cli.ProfileSource = 1
@@ -24,6 +38,7 @@ func github.com/ctrliq/stratum/pkg/cli.AddTool[In, Out any](r *github.com/ctrliq
 func github.com/ctrliq/stratum/pkg/cli.AuditEtcdTrust(ctx context.Context) github.com/ctrliq/stratum/pkg/cli.AuditVerdict
 func github.com/ctrliq/stratum/pkg/cli.AuditKubeletClientTrust() github.com/ctrliq/stratum/pkg/cli.AuditVerdict
 func github.com/ctrliq/stratum/pkg/cli.AuditKubeletsRefuseRoot(ctx context.Context, cs k8s.io/client-go/kubernetes.Interface) github.com/ctrliq/stratum/pkg/cli.AuditVerdict
+func github.com/ctrliq/stratum/pkg/cli.BackupEvidence(ctx context.Context, opts ...github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption) github.com/ctrliq/stratum/pkg/cli.BackupEvidenceResult
 func github.com/ctrliq/stratum/pkg/cli.DestructiveTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
 func github.com/ctrliq/stratum/pkg/cli.EngineAPIServerArgs() []string
 func github.com/ctrliq/stratum/pkg/cli.ExitCode(err error, stderr io.Writer) int
@@ -35,6 +50,10 @@ func github.com/ctrliq/stratum/pkg/cli.ProfileAPIServerArgs(p github.com/ctrliq/
 func github.com/ctrliq/stratum/pkg/cli.ReadTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
 func github.com/ctrliq/stratum/pkg/cli.StampedVersions() github.com/ctrliq/stratum/pkg/cli.ComponentVersions
 func github.com/ctrliq/stratum/pkg/cli.TLSCipherSuites() []string
+func github.com/ctrliq/stratum/pkg/cli.WithBackupEvidenceMaxBytes(maxBytes int64) github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption
+func github.com/ctrliq/stratum/pkg/cli.WithBackupEvidenceMaxEntries(maxEntries int) github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption
+func github.com/ctrliq/stratum/pkg/cli.WithBackupEvidenceMaxTime(maxTime time.Duration) github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption
+func github.com/ctrliq/stratum/pkg/cli.WithBackupEvidenceNode(node string) github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption
 func github.com/ctrliq/stratum/pkg/cli.WithComponentVersions(v github.com/ctrliq/stratum/pkg/cli.ComponentVersions) github.com/ctrliq/stratum/pkg/cli.Option
 func github.com/ctrliq/stratum/pkg/cli.WithProfiles(ps ...github.com/ctrliq/stratum/pkg/cli.Profile) github.com/ctrliq/stratum/pkg/cli.Option
 func github.com/ctrliq/stratum/pkg/cli.WithStacks(f github.com/ctrliq/stratum/pkg/cli.StackFunc) github.com/ctrliq/stratum/pkg/cli.Option
@@ -43,6 +62,20 @@ func github.com/ctrliq/stratum/pkg/cli.WithVersionOverride(display string) githu
 func github.com/ctrliq/stratum/pkg/cli.WriteTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
 type github.com/ctrliq/stratum/pkg/cli.AuditResult int
 type github.com/ctrliq/stratum/pkg/cli.AuditVerdict struct{Result github.com/ctrliq/stratum/pkg/cli.AuditResult; Detail string}
+type github.com/ctrliq/stratum/pkg/cli.BackupArtifact struct{ID string; Location string; Created time.Time; Size int64; Digest string}
+type github.com/ctrliq/stratum/pkg/cli.BackupAttempt struct{AttemptedAt time.Time; Outcome github.com/ctrliq/stratum/pkg/cli.BackupAttemptOutcome}
+type github.com/ctrliq/stratum/pkg/cli.BackupAttemptOutcome string
+type github.com/ctrliq/stratum/pkg/cli.BackupCensus struct{Node string; Entries []github.com/ctrliq/stratum/pkg/cli.BackupCensusEntry; Complete bool; Warnings []string; Retention []string}
+type github.com/ctrliq/stratum/pkg/cli.BackupCensusEntry struct{ID string; Local *github.com/ctrliq/stratum/pkg/cli.BackupArtifact; Remote *github.com/ctrliq/stratum/pkg/cli.BackupArtifact; OldRemote bool}
+type github.com/ctrliq/stratum/pkg/cli.BackupCopyRequirement string
+type github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption func(*github.com/ctrliq/stratum/pkg/cli.backupEvidenceOptions)
+type github.com/ctrliq/stratum/pkg/cli.BackupEvidenceResult struct{Policy github.com/ctrliq/stratum/pkg/cli.BackupPolicy; Node string; Local github.com/ctrliq/stratum/pkg/cli.BackupLocalCatalog; Remote github.com/ctrliq/stratum/pkg/cli.BackupRemoteCatalog; Backups github.com/ctrliq/stratum/pkg/cli.BackupCensus; Maintenance github.com/ctrliq/stratum/pkg/cli.BackupMaintenance; Complete bool; Warnings []string}
+type github.com/ctrliq/stratum/pkg/cli.BackupLocalCatalog struct{Node string; Artifacts []github.com/ctrliq/stratum/pkg/cli.BackupArtifact; Complete bool; Warnings []string}
+type github.com/ctrliq/stratum/pkg/cli.BackupMaintenance struct{Save github.com/ctrliq/stratum/pkg/cli.BackupAttempt; Upload github.com/ctrliq/stratum/pkg/cli.BackupAttempt; Prune github.com/ctrliq/stratum/pkg/cli.BackupAttempt; LastSaveSuccess time.Time; LastUploadSuccess time.Time; Warnings []string; AttemptsKnown bool}
+type github.com/ctrliq/stratum/pkg/cli.BackupPolicy struct{State github.com/ctrliq/stratum/pkg/cli.BackupPolicyState; Interval time.Duration; IntervalFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Retain int; RetainFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Copy github.com/ctrliq/stratum/pkg/cli.BackupCopyRequirement; CopyFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Dir string; DirFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Warnings []string}
+type github.com/ctrliq/stratum/pkg/cli.BackupPolicyState string
+type github.com/ctrliq/stratum/pkg/cli.BackupProvenance string
+type github.com/ctrliq/stratum/pkg/cli.BackupRemoteCatalog struct{Copies []github.com/ctrliq/stratum/pkg/cli.BackupArtifact; Old []github.com/ctrliq/stratum/pkg/cli.BackupArtifact; Complete bool; Warnings []string}
 type github.com/ctrliq/stratum/pkg/cli.ComponentVersions struct{Containerd string; Runc string; KubeVip string; Cilium string; CoreDNS string; Konnectivity string}
 type github.com/ctrliq/stratum/pkg/cli.ErrExitCode struct{Code int}
 type github.com/ctrliq/stratum/pkg/cli.ErrUsage struct{<private>}

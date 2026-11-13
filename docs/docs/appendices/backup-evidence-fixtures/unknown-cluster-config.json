@@ -1,0 +1,101 @@
+{
+  "policy": {
+    "state": "unknown",
+    "intervalSeconds": 0,
+    "intervalFrom": "unknown",
+    "retain": 3,
+    "retainFrom": "snapshot-conf",
+    "copy": "remote-required",
+    "copyFrom": "snapshot-conf",
+    "dir": "",
+    "dirFrom": "unknown",
+    "warnings": [
+      "WARN: cannot read the cluster config the controller was started with (/etc/stratum/config.yaml); the schedule, the snapshot directory and the disabled state are unknown and no defaults are invented for them"
+    ]
+  },
+  "node": "cp-1",
+  "local": {
+    "node": "cp-1",
+    "artifacts": [],
+    "complete": false,
+    "warnings": [
+      "WARN: the snapshot directory is unknown because the cluster config cannot be read; the local catalog is unknown and not a complete total"
+    ]
+  },
+  "remote": {
+    "copies": [
+      {
+        "id": "etcd-snapshot-cp-1-20261108-110000.db",
+        "location": "remote",
+        "created": "2026-11-08T11:00:00Z",
+        "size": 14,
+        "digest": "unknown"
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "location": "remote",
+        "created": "2026-11-12T11:00:00Z",
+        "size": 10,
+        "digest": "unknown"
+      }
+    ],
+    "old": [],
+    "complete": true,
+    "warnings": []
+  },
+  "backups": {
+    "node": "cp-1",
+    "entries": [
+      {
+        "id": "etcd-snapshot-cp-1-20261108-110000.db",
+        "remote": {
+          "id": "etcd-snapshot-cp-1-20261108-110000.db",
+          "location": "remote",
+          "created": "2026-11-08T11:00:00Z",
+          "size": 14,
+          "digest": "unknown"
+        }
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "remote": {
+          "id": "etcd-snapshot-cp-1-20261112-110000.db",
+          "location": "remote",
+          "created": "2026-11-12T11:00:00Z",
+          "size": 10,
+          "digest": "unknown"
+        }
+      }
+    ],
+    "complete": false,
+    "warnings": [
+      "WARN: the snapshot directory is unknown because the cluster config cannot be read; the local catalog is unknown and not a complete total",
+      "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total"
+    ],
+    "retention": []
+  },
+  "maintenance": {
+    "save": {
+      "attemptedAt": "2026-11-12T11:00:00Z",
+      "outcome": "succeeded"
+    },
+    "upload": {
+      "attemptedAt": "2026-11-12T11:00:30Z",
+      "outcome": "succeeded"
+    },
+    "prune": {
+      "attemptedAt": "2026-11-12T11:01:00Z",
+      "outcome": "succeeded"
+    },
+    "lastSaveSuccess": "2026-11-12T11:00:00Z",
+    "lastUploadSuccess": "2026-11-12T11:00:30Z",
+    "warnings": [],
+    "attemptsKnown": true
+  },
+  "complete": false,
+  "warnings": [
+    "WARN: cannot read the cluster config the controller was started with (/etc/stratum/config.yaml); the schedule, the snapshot directory and the disabled state are unknown and no defaults are invented for them",
+    "WARN: the snapshot directory is unknown because the cluster config cannot be read; the local catalog is unknown and not a complete total",
+    "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total"
+  ]
+}

@@ -833,6 +833,135 @@ func restoreCopyPage(copies []etcdsnap.RestoreCopy, limit int, cursor string) ([
 	return fingerprintPage(copies, paths, limit, cursor, "snapshot_restore_copies")
 }
 
+// ---------------------------------------------------------- backup_evidence
+
+// BackupEvidenceIn is backup_evidence's input: the caller's optional caps on
+// the one bounded read. Each cap reaches the engine read unchanged; zero or
+// negative means that budget's engine built-in, never an unbounded read.
+type BackupEvidenceIn struct {
+	MaxEntries int   `json:"max_entries,omitempty" jsonschema:"cap on how many backups — local artifacts and remote copies together — one read may describe; 0 means the engine's built-in page budget"`
+	MaxBytes   int64 `json:"max_bytes,omitempty" jsonschema:"cap on how many artifact bytes the read may account for across the local walk and the remote listing; 0 means the engine's built-in byte budget"`
+	MaxSeconds int   `json:"max_seconds,omitempty" jsonschema:"bound on how long the whole read may take, however patient the caller; 0 means the engine's built-in deadline"`
+}
+
+// BackupPolicyRow is the effective backup policy the scheduled snapshot loop
+// enforces, every resolved value paired with its provenance.
+type BackupPolicyRow struct {
+	State           string   `json:"state" jsonschema:"configured, disabled, unconfigured, unknown or unreadable"`
+	IntervalSeconds int64    `json:"intervalSeconds" jsonschema:"how often the scheduled loop takes a snapshot, in seconds; 0 with unknown provenance when the schedule is unknown"`
+	IntervalFrom    string   `json:"intervalFrom" jsonschema:"cluster-config, snapshot-conf, default or unknown"`
+	Retain          int      `json:"retain" jsonschema:"how many of this node's snapshots pruning keeps; 0 with unknown provenance means unknown, not keep-all"`
+	RetainFrom      string   `json:"retainFrom" jsonschema:"cluster-config, snapshot-conf, default or unknown"`
+	Copy            string   `json:"copy" jsonschema:"local-only or remote-required: what the loop does with every snapshot beyond the local file"`
+	CopyFrom        string   `json:"copyFrom" jsonschema:"cluster-config, snapshot-conf, default or unknown"`
+	Dir             string   `json:"dir" jsonschema:"the local snapshot directory, from the engine's own resolution"`
+	DirFrom         string   `json:"dirFrom" jsonschema:"cluster-config, snapshot-conf, default or unknown"`
+	Warnings        []string `json:"warnings" jsonschema:"the engine's WARN conditions that shaped this policy, as safe diagnostics"`
+}
+
+// BackupArtifactRow is one backup file the evidence enumerated — a local
+// snapshot or a remote copy.
+type BackupArtifactRow struct {
+	ID       string `json:"id" jsonschema:"the artifact's stable identity: its file name, shared by the local artifact and the remote copy of the same snapshot"`
+	Location string `json:"location" jsonschema:"local or remote"`
+	Created  string `json:"created" jsonschema:"RFC 3339: when the artifact came to be"`
+	Size     int64  `json:"size" jsonschema:"bytes"`
+	Digest   string `json:"digest" jsonschema:"the digest when one is cheaply known — a valid sha256 sidecar beside the local file — else unknown"`
+}
+
+// BackupLocalRow is the bounded local half of the evidence: the snapshot
+// files enumerated in the snapshot directory.
+type BackupLocalRow struct {
+	Node      string              `json:"node" jsonschema:"the node the local artifacts are scoped to"`
+	Artifacts []BackupArtifactRow `json:"artifacts"`
+	Complete  bool                `json:"complete" jsonschema:"false means the walk stopped early — a cap, a cancellation, an unreadable entry — and the rows are a floor, never the store's total"`
+	Warnings  []string            `json:"warnings" jsonschema:"the walk's WARN conditions as safe diagnostics"`
+}
+
+// BackupRemoteRow is the bounded remote half of the evidence: the copies
+// enumerated on the S3 target, and which predate the retention window.
+type BackupRemoteRow struct {
+	Copies   []BackupArtifactRow `json:"copies"`
+	Old      []BackupArtifactRow `json:"old" jsonschema:"the copies created before the retention cutoff: they predate the retention window or survived a failed prune"`
+	Complete bool                `json:"complete" jsonschema:"false means the listing stopped short — denied, timeout, a cancellation, a cap — and the rows are a floor while the store's total is unknown"`
+	Warnings []string            `json:"warnings" jsonschema:"the listing's WARN conditions: they name the condition, never the store's address or a raw error"`
+}
+
+// BackupCensusEntryRow is one stable backup ID counted once in the
+// deduplicated census: its local artifact, its remote copy, or both.
+type BackupCensusEntryRow struct {
+	ID        string             `json:"id"`
+	Local     *BackupArtifactRow `json:"local,omitempty" jsonschema:"the ID's local artifact, absent when the local store does not hold it"`
+	Remote    *BackupArtifactRow `json:"remote,omitempty" jsonschema:"the ID's remote copy, absent when the remote store does not hold it"`
+	OldRemote bool               `json:"oldRemote,omitempty" jsonschema:"the remote copy predates the retention cutoff"`
+}
+
+// BackupCensusRow is the deduplicated union of the local and remote catalogs:
+// every stable backup ID counted once, with whether the total is exact.
+type BackupCensusRow struct {
+	Node      string                 `json:"node"`
+	Entries   []BackupCensusEntryRow `json:"entries" jsonschema:"the distinct backups, sorted by id"`
+	Complete  bool                   `json:"complete" jsonschema:"true only when both catalogs were complete, so the entry count is the exact total of distinct backups; a partial catalog never yields an exact total"`
+	Warnings  []string               `json:"warnings"`
+	Retention []string               `json:"retention" jsonschema:"each old remote copy named with its creation time"`
+}
+
+// BackupAttemptRow is one recorded maintenance attempt as a safe diagnostic:
+// when it ran and the typed outcome, never the error text.
+type BackupAttemptRow struct {
+	AttemptedAt string `json:"attemptedAt,omitempty" jsonschema:"RFC 3339; absent when the loop has not run the attempt"`
+	Outcome     string `json:"outcome,omitempty" jsonschema:"succeeded or failed; absent when no attempt is recorded"`
+}
+
+// BackupMaintenanceRow is the scheduled loop's durable maintenance state as
+// safe diagnostics.
+type BackupMaintenanceRow struct {
+	Save              BackupAttemptRow `json:"save" jsonschema:"the latest recorded save attempt"`
+	Upload            BackupAttemptRow `json:"upload" jsonschema:"the latest recorded upload attempt"`
+	Prune             BackupAttemptRow `json:"prune" jsonschema:"the latest recorded prune attempt, independent of save and upload: a save that succeeded while pruning failed is a working backup with broken retention"`
+	LastSaveSuccess   string           `json:"lastSaveSuccess,omitempty" jsonschema:"RFC 3339; absent when no save has succeeded"`
+	LastUploadSuccess string           `json:"lastUploadSuccess,omitempty" jsonschema:"RFC 3339; absent when no upload has succeeded"`
+	Warnings          []string         `json:"warnings" jsonschema:"the record's scheduling and retention warnings, as typed safe reasons"`
+	AttemptsKnown     bool             `json:"attemptsKnown" jsonschema:"false means the diagnostics are unknown — the record could not be read — never that no attempt was made"`
+}
+
+// BackupEvidenceOut is backup_evidence's result: the shared machine-readable
+// backup-evidence contract, the same rows `stratum snapshot list -o json`
+// prints, so the two surfaces cannot drift.
+type BackupEvidenceOut struct {
+	Policy      BackupPolicyRow      `json:"policy"`
+	Node        string               `json:"node" jsonschema:"the node the local half of the evidence is scoped to"`
+	Local       BackupLocalRow       `json:"local"`
+	Remote      BackupRemoteRow      `json:"remote"`
+	Backups     BackupCensusRow      `json:"backups" jsonschema:"the deduplicated census: every stable backup ID counted once across both locations"`
+	Maintenance BackupMaintenanceRow `json:"maintenance"`
+	Complete    bool                 `json:"complete" jsonschema:"false means some stage's evidence is a floor or unknown, never that it is zero"`
+	Warnings    []string             `json:"warnings" jsonschema:"the read's own safe diagnostics"`
+}
+
+// BackupEvidenceRead serves backup_evidence with the engine's supported
+// pkg/cli evidence surface: the same bounded BackupEvidence read an external
+// pinned binary calls. This package cannot import pkg/cli — pkg/cli imports
+// this one — so the CLI wires the surface in at startup, the same
+// seam-wired-from-above shape the controller's evidence sampler uses; a
+// server whose host never wired a reader answers that the tool is unavailable
+// rather than inventing evidence.
+var BackupEvidenceRead func(ctx context.Context, in BackupEvidenceIn) BackupEvidenceOut
+
+// BackupEvidenceHandler reports the engine's own backup evidence.
+func BackupEvidenceHandler() sdk.ToolHandlerFor[BackupEvidenceIn, BackupEvidenceOut] {
+	return func(ctx context.Context, _ *sdk.CallToolRequest, in BackupEvidenceIn) (*sdk.CallToolResult, BackupEvidenceOut, error) {
+		if err := requireStratumHost(); err != nil {
+			return nil, BackupEvidenceOut{}, err
+		}
+		if BackupEvidenceRead == nil {
+			return nil, BackupEvidenceOut{}, errors.New(
+				"backup_evidence has no evidence reader: the MCP server must be built through the Stratum CLI, which wires the supported pkg/cli evidence surface in")
+		}
+		return nil, BackupEvidenceRead(ctx, in), nil
+	}
+}
+
 // fingerprintPage pages items by an offset cursor tied to a fingerprint of
 // key, the value that identifies the list: a change to it between pages makes
 // the cursor stale, forcing a restart rather than a skip or a repeat. tool

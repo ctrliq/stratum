@@ -1,0 +1,90 @@
+{
+  "policy": {
+    "state": "unreadable",
+    "intervalSeconds": 43200,
+    "intervalFrom": "cluster-config",
+    "retain": 0,
+    "retainFrom": "unknown",
+    "copy": "",
+    "copyFrom": "unknown",
+    "dir": "/var/backups/etcd",
+    "dirFrom": "default",
+    "warnings": [
+      "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown"
+    ]
+  },
+  "node": "cp-1",
+  "local": {
+    "node": "cp-1",
+    "artifacts": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-100000.db",
+        "location": "local",
+        "created": "2026-11-12T10:00:00Z",
+        "size": 9,
+        "digest": "unknown"
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "location": "local",
+        "created": "2026-11-12T11:00:00Z",
+        "size": 10,
+        "digest": "unknown"
+      }
+    ],
+    "complete": true,
+    "warnings": []
+  },
+  "remote": {
+    "copies": [],
+    "old": [],
+    "complete": true,
+    "warnings": []
+  },
+  "backups": {
+    "node": "cp-1",
+    "entries": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-100000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261112-100000.db",
+          "location": "local",
+          "created": "2026-11-12T10:00:00Z",
+          "size": 9,
+          "digest": "unknown"
+        }
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261112-110000.db",
+          "location": "local",
+          "created": "2026-11-12T11:00:00Z",
+          "size": 10,
+          "digest": "unknown"
+        }
+      }
+    ],
+    "complete": true,
+    "warnings": [],
+    "retention": []
+  },
+  "maintenance": {
+    "save": {
+      "attemptedAt": "2026-11-12T11:00:00Z",
+      "outcome": "succeeded"
+    },
+    "upload": {},
+    "prune": {},
+    "lastSaveSuccess": "2026-11-12T11:00:00Z",
+    "warnings": [
+      "WARN: the recorded tick ran with a snapshot config it could not read; it kept every snapshot and uploaded nothing"
+    ],
+    "attemptsKnown": true
+  },
+  "complete": true,
+  "warnings": [
+    "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown",
+    "WARN: the recorded tick ran with a snapshot config it could not read; it kept every snapshot and uploaded nothing"
+  ]
+}

@@ -84,6 +84,7 @@ layer4 github.com/ctrliq/stratum/internal/etcdsnap
 layer4 github.com/ctrliq/stratum/internal/uninstall
 layer4 github.com/ctrliq/stratum/internal/operator
 layer4 github.com/ctrliq/stratum/internal/cluster
+layer4 github.com/ctrliq/stratum/internal/backupevidence
 layer4 github.com/ctrliq/stratum/internal/upgrade
 
 # Layer 5 — interfaces: the user- and program-facing servers. They may

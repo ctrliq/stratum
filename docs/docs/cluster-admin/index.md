@@ -14,6 +14,7 @@ plane.
 | [Certificates](certificates.md) | Certificate expiry and renewal, CA rotation, and recovering a rotation that halted |
 | [Hardening](hardening.md) | The security controls every cluster runs. The Center for Internet Security (CIS) profile is in [Stratum PRO](../pro/index.md) |
 | [MCP Server](mcp.md) | Serving Stratum's tools to an AI agent over the Model Context Protocol (MCP), and the tiers that bound it |
+| [Backup Evidence](backup-evidence.md) | The backup-evidence read: the effective snapshot policy, the local and remote artifacts, and the maintenance diagnostics, served as one bounded JSON document |
 
 The rest of this page covers the day-2 tasks that have no page of their own:
 running `kubectl` and `etcdctl`, deploying manifests from a node, the cluster

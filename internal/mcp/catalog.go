@@ -218,6 +218,20 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			},
 		},
 		{
+			Name: "backup_evidence",
+			Description: "Report the engine's own backup evidence in one bounded read: the effective snapshot policy " +
+				"with every value's provenance, the local snapshot artifacts, the remote copies, the deduplicated " +
+				"census counting each backup once across both locations, and the maintenance diagnostics — the latest " +
+				"save, upload and prune attempts as typed outcomes, with when each last succeeded. A stage the bounds " +
+				"stop is a floor, never an exact total. No credentials, executable paths or raw storage errors are " +
+				"returned. The same rows `stratum snapshot list -o json` prints.",
+			Tier:       TierRead,
+			Credential: CredentialNone,
+			Add: func(srv *sdk.Server, t *sdk.Tool) {
+				sdk.AddTool(srv, t, BackupEvidenceHandler())
+			},
+		},
+		{
 			Name: "uninstall_preview",
 			Description: "Report exactly which paths an uninstall would delete from this node and which of them " +
 				"exist right now. Changes nothing. Read this before ever considering the uninstall tool.",
