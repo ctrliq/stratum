@@ -37,7 +37,7 @@ identically from three surfaces:
   any other value is refused, and the command's default output stays the
   text table it has always printed (pkg/cli/snapshot.go).
 - Over MCP, the `backup_evidence` tool, registered at the read tier with no
-  credential (internal/mcp/catalog.go) and served by the same read the
+  caller-supplied Kubernetes credential (internal/mcp/catalog.go) and served by the same read the
   CLI prints (internal/mcp/stratumread.go), so the surfaces cannot
   drift. A server started with no flags serves it, raising that set from
   19 to 20 tools; see [MCP Server](../cluster-admin/mcp.md).
@@ -49,6 +49,13 @@ A stage the bounds stop is a floor with the true total unknown, never zero
 and never an exact count; the census counts every stable backup ID once
 across both locations, which two separate store listings cannot reconstruct
 by summing or comparing totals (internal/backupevidence/remote.go).
+
+The evidence includes the immutable Kubernetes node UID and opaque location
+and copy IDs. Credential rotation preserves these IDs; changing the node
+UID or effective storage location changes the corresponding copy identity.
+An unavailable node UID leaves the catalogs usable while the whole read is
+incomplete. Count retention sets no maximum age, so old artifacts alone
+produce no age-based retention warning.
 
 ## The publisher
 
@@ -65,7 +72,7 @@ with no operator involvement
 The publisher samples the engine's evidence through the same read the
 surfaces serve, on the engine's built-in bounds (pkg/cli/up.go), once a
 minute with the first sample at once (internal/cluster/run.go). It records
-a bounded summary — node, counts, whether the total is exact, safe
+a bounded summary — node name and UID, counts, whether the total is exact, safe
 warnings — durably at `/var/lib/stratum/config/backup-evidence.yaml`. The
 record is written atomically at mode 0600, with a schema version a later
 revision can refuse instead of misreading (internal/cluster/run.go). It

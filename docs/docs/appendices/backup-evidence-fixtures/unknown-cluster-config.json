@@ -29,14 +29,18 @@
         "location": "remote",
         "created": "2026-11-08T11:00:00Z",
         "size": 14,
-        "digest": "unknown"
+        "digest": "unknown",
+        "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+        "copyID": "sha256:5b2495a318f507ecaa62988a1a0db3cb25d07b2260a132cc7fdc9777e6f8506f"
       },
       {
         "id": "etcd-snapshot-cp-1-20261112-110000.db",
         "location": "remote",
         "created": "2026-11-12T11:00:00Z",
         "size": 10,
-        "digest": "unknown"
+        "digest": "unknown",
+        "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+        "copyID": "sha256:b1681c29ca35c3276192867a61a322b6b534900f68aa66f813c8cd52dec8ef95"
       }
     ],
     "old": [],
@@ -53,7 +57,9 @@
           "location": "remote",
           "created": "2026-11-08T11:00:00Z",
           "size": 14,
-          "digest": "unknown"
+          "digest": "unknown",
+          "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+          "copyID": "sha256:5b2495a318f507ecaa62988a1a0db3cb25d07b2260a132cc7fdc9777e6f8506f"
         }
       },
       {
@@ -63,7 +69,9 @@
           "location": "remote",
           "created": "2026-11-12T11:00:00Z",
           "size": 10,
-          "digest": "unknown"
+          "digest": "unknown",
+          "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+          "copyID": "sha256:b1681c29ca35c3276192867a61a322b6b534900f68aa66f813c8cd52dec8ef95"
         }
       }
     ],
@@ -97,5 +105,6 @@
     "WARN: cannot read the cluster config the controller was started with (/etc/stratum/config.yaml); the schedule, the snapshot directory and the disabled state are unknown and no defaults are invented for them",
     "WARN: the snapshot directory is unknown because the cluster config cannot be read; the local catalog is unknown and not a complete total",
     "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total"
-  ]
+  ],
+  "nodeUID": "5e4f9a20-4af6-4d15-8c72-62b9c92223f3"
 }

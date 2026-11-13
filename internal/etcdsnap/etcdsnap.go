@@ -230,7 +230,7 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 			remote = nil
 		}
 	}
-	if o.Retain > 0 {
+	if o.Retain > 0 && ctx.Err() == nil {
 		// A failed prune is a warning, not an error: the snapshot itself
 		// succeeded. Each failure is printed through the writer the save was
 		// handed for the scheduled loop and `stratum snapshot save`, whose

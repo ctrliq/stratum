@@ -20,7 +20,9 @@
         "location": "local",
         "created": "2026-11-12T09:00:00Z",
         "size": 21,
-        "digest": "unknown"
+        "digest": "unknown",
+        "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+        "copyID": "sha256:678ed8804daf943ec964cd27a119cc586a627ecc1569f8b47ccdaf1dc934d62c"
       }
     ],
     "complete": true,
@@ -42,7 +44,9 @@
           "location": "local",
           "created": "2026-11-12T09:00:00Z",
           "size": 21,
-          "digest": "unknown"
+          "digest": "unknown",
+          "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+          "copyID": "sha256:678ed8804daf943ec964cd27a119cc586a627ecc1569f8b47ccdaf1dc934d62c"
         }
       }
     ],
@@ -58,5 +62,6 @@
     "attemptsKnown": true
   },
   "complete": true,
-  "warnings": []
+  "warnings": [],
+  "nodeUID": "5e4f9a20-4af6-4d15-8c72-62b9c92223f3"
 }

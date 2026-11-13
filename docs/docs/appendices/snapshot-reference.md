@@ -484,7 +484,7 @@ Otherwise it refuses with `not wiping this node's etcd: <reason> ... Nothing was
 |---|---|
 | `snapshot_save` | `stratum snapshot save`, but it prunes only when you pass `retain` (0, the default, keeps all). `name` must be a bare file name ending in `.db`. `skip_s3` skips the upload. |
 | `snapshot_list` | `stratum snapshot list` |
-| `backup_evidence` | `stratum snapshot list -o json`: the bounded backup-evidence read — policy, local and remote artifacts, and the maintenance diagnostics — with no credential |
+| `backup_evidence` | `stratum snapshot list -o json`: the bounded backup-evidence read — policy, local and remote artifacts, and the maintenance diagnostics — with no caller-supplied Kubernetes credential; the node UID uses the installed kubelet credential |
 | `snapshot_prune` | `stratum snapshot prune`; `keep` must be at least 1 |
 | `snapshot_schedule` | `stratum snapshot schedule`, for retention only; it reports the S3 target but cannot change it |
 | `snapshot_restore` | `stratum snapshot restore`; a bare name or an absolute path only |

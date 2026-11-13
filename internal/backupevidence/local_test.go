@@ -10,11 +10,63 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 )
+
+func TestLocalRejectsFIFOsWithoutBlocking(t *testing.T) {
+	for _, sidecar := range []bool{false, true} {
+		name := "directory"
+		if sidecar {
+			name = "digest sidecar"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			fifo := filepath.Join(dir, "store")
+			if sidecar {
+				writeSnapshot(t, dir, "snap.db", 10, snapTime(1))
+				fifo = filepath.Join(dir, "snap.db.sha256")
+			} else {
+				dir = fifo
+			}
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+			defer cancel()
+			done := make(chan LocalResult, 1)
+			go func() { done <- Local(ctx, LocalOptions{Dir: dir, Node: "cp-1"}) }()
+			var res LocalResult
+			select {
+			case res = <-done:
+			case <-time.After(300 * time.Millisecond):
+				t.Error("the FIFO blocked the local catalog past its deadline")
+				// Release a blocked open/read so the failing test leaves no reader.
+				f, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				if _, err := f.Write([]byte("invalid digest\n")); err != nil {
+					t.Fatal(err)
+				}
+				res = <-done
+			}
+			if len(res.Warnings) == 0 {
+				t.Error("a nonregular input must produce a safe diagnostic")
+			}
+			if sidecar && (len(res.Artifacts) != 1 || res.Artifacts[0].Digest != DigestUnknown) {
+				t.Errorf("the unusable sidecar lost the local artifact: %+v", res)
+			}
+			if !sidecar && res.Complete {
+				t.Error("a FIFO directory was reported as an exact catalog")
+			}
+		})
+	}
+}
 
 // snapTime is a fixed UTC time for the snapshots a test writes, so the
 // creation times the catalog reports assert exactly.

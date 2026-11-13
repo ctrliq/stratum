@@ -82,6 +82,10 @@ else
 fi
 wait_for "the record to describe the snapshot" 300 sh -c \
   "test \"\$(sed -n 's/^localArtifacts:[[:space:]]*//p' $REC 2>/dev/null)\" -ge 1 2>/dev/null"
+node_uid=$($K get node "$node" -o jsonpath='{.metadata.uid}')
+wait_for "the publisher to resolve the node UID" 120 sh -c \
+  "test \"\$(sed -n 's/^nodeUID:[[:space:]]*//p' $REC 2>/dev/null)\" = '$node_uid'"
+assert_eq "the record carries the immutable node UID" "$node_uid" "$(record_field nodeUID)"
 assert_eq "the record counts the snapshot" "1" "$(record_field localArtifacts)"
 assert_eq "the record's deduplicated total is exact" "true" "$(record_field exactTotal)"
 
@@ -99,6 +103,9 @@ else
 fi
 assert_eq "the evidence counts the snapshot the record described" \
   "1" "$(evidence_field "sum(1 for e in d['backups']['entries'] if e['local'] is not None)")"
+assert_eq "the evidence carries the immutable node UID" "$node_uid" "$(evidence_field "d['nodeUID']")"
+assert_eq "each local artifact has a location and copy identity" "True" \
+  "$(evidence_field "all(a['locationID'].startswith('sha256:') and a['copyID'].startswith('sha256:') for a in d['local']['artifacts'])")"
 if [[ $(evidence_field "d['backups']['complete']") == True ]]; then
   pass "the deduplicated census is a complete total"
 else

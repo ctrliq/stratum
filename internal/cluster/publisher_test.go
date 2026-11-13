@@ -44,6 +44,7 @@ func stubPublisherSeam(t *testing.T, interval time.Duration, sample EvidenceSamp
 type recordedPublisherEvidence struct {
 	SchemaVersion  int       `json:"schemaVersion"`
 	SampledAt      time.Time `json:"sampledAt"`
+	NodeUID        string    `json:"nodeUID"`
 	Node           string    `json:"node"`
 	Complete       bool      `json:"complete"`
 	LocalArtifacts int       `json:"localArtifacts"`
@@ -112,6 +113,7 @@ func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 	stubPublisherSeam(t, 10*time.Millisecond, func(context.Context) (EvidenceSample, bool) {
 		s := EvidenceSample{
 			Node:           "cp-1",
+			NodeUID:        "immutable-node-uid",
 			Complete:       true,
 			LocalArtifacts: 2,
 			RemoteCopies:   1,
@@ -147,6 +149,9 @@ func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 	}
 	if rec.SchemaVersion != 1 {
 		t.Errorf("SchemaVersion = %d, want 1", rec.SchemaVersion)
+	}
+	if rec.NodeUID != "immutable-node-uid" {
+		t.Errorf("NodeUID = %q, want the sample immutable identity", rec.NodeUID)
 	}
 	if rec.Node != "cp-1" {
 		t.Errorf("Node = %q, want the sample's cp-1", rec.Node)

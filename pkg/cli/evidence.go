@@ -96,7 +96,9 @@ const BackupDigestUnknown = "unknown"
 // enforces, every resolved value paired with its provenance. The engine
 // resolves it from its own configuration — the cluster config the
 // controller was started with, snapshot.conf winning outright over it — so
-// a consumer never re-derives the resolution.
+// a consumer never re-derives the resolution. The reader resolves current
+// files; cluster-config edits may differ from the running controller's
+// loaded copy until it restarts. Snapshot.conf is reloaded on every tick.
 type BackupPolicy struct {
 	// State says what a consumer can rely on in the fields below.
 	State BackupPolicyState
@@ -130,6 +132,10 @@ type BackupArtifact struct {
 	// local artifact and the remote copy of the same snapshot, so both count
 	// once in a deduplicated census.
 	ID string
+	// LocationID is an opaque identity of the effective store; empty means unknown.
+	LocationID string
+	// CopyID identifies this backup at that store; empty means unknown.
+	CopyID string
 	// Location is "local" or "remote": the store the artifact was enumerated
 	// in.
 	Location string
@@ -160,15 +166,13 @@ type BackupLocalCatalog struct {
 }
 
 // BackupRemoteCatalog is the bounded remote half of the evidence: the copies
-// enumerated on the S3 target, and which of them predate the retention
-// window.
+// enumerated on the S3 target.
 type BackupRemoteCatalog struct {
 	// Copies are the enumerated remote copies, sorted by ID, each carrying
 	// the remote location and an unknown digest. They are the remote
 	// store's exact total only when Complete is true.
 	Copies []BackupArtifact
-	// Old are the copies created before the retention cutoff: remote copies
-	// predating the retention window or surviving a failed prune.
+	// Old is reserved for age diagnostics. It is empty under count retention.
 	Old []BackupArtifact
 	// Complete says the listing covered the whole store within its bounds.
 	// False means it stopped short — denied, timeout, a cancellation, a cap
@@ -190,7 +194,7 @@ type BackupCensusEntry struct {
 	// nil when that location does not hold it.
 	Local  *BackupArtifact
 	Remote *BackupArtifact
-	// OldRemote says the remote copy predates the retention cutoff.
+	// OldRemote is reserved for age diagnostics; false under count retention.
 	OldRemote bool
 }
 
@@ -209,8 +213,7 @@ type BackupCensus struct {
 	Complete bool
 	// Warnings carry the union's WARN conditions as safe diagnostics.
 	Warnings []string
-	// Retention holds the retention diagnostics: every old remote copy,
-	// named with its creation time.
+	// Retention is reserved for age diagnostics; empty under count retention.
 	Retention []string
 }
 
@@ -262,6 +265,8 @@ type BackupEvidenceResult struct {
 	// Node scopes the local half: the node whose store the local catalog
 	// read.
 	Node string
+	// NodeUID is the immutable Kubernetes node identity; empty means unknown.
+	NodeUID string
 	// Local is the bounded local catalog, and Remote the bounded remote
 	// catalog, each exact only when its own Complete says so.
 	Local  BackupLocalCatalog
@@ -381,11 +386,13 @@ func backupPolicyFrom(p backupevidence.EffectivePolicy) BackupPolicy {
 // backupArtifactFrom restates one enumerated artifact.
 func backupArtifactFrom(a backupevidence.Artifact) BackupArtifact {
 	return BackupArtifact{
-		ID:       a.ID,
-		Location: a.Location,
-		Created:  a.Created,
-		Size:     a.Size,
-		Digest:   a.Digest,
+		ID:         a.ID,
+		Location:   a.Location,
+		LocationID: a.LocationID,
+		CopyID:     a.CopyID,
+		Created:    a.Created,
+		Size:       a.Size,
+		Digest:     a.Digest,
 	}
 }
 
@@ -477,6 +484,7 @@ func backupEvidenceResultFrom(r backupevidence.EvidenceResult) BackupEvidenceRes
 	return BackupEvidenceResult{
 		Policy:      backupPolicyFrom(r.Policy),
 		Node:        r.Node,
+		NodeUID:     r.NodeUID,
 		Local:       backupLocalFrom(r.Local),
 		Remote:      backupRemoteFrom(r.Remote),
 		Backups:     backupCensusFrom(r.Backups),

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/host"
@@ -51,6 +52,10 @@ type Artifact struct {
 	// uploaded off-box carries the same ID there and the two count once in a
 	// deduplicated union.
 	ID string
+	// LocationID identifies the effective store without exposing its settings.
+	LocationID string
+	// CopyID identifies this backup at that location. Empty means unknown.
+	CopyID string
 	// Location is "local": this node's snapshot directory. The result's Node
 	// names the node; a remote copy carries its own location.
 	Location string
@@ -109,7 +114,21 @@ var (
 	// scope the walk to a node.
 	localHostname = host.Hostname
 	// localOpen opens the snapshot directory for the paged walk.
-	localOpen = os.Open
+	localOpen = func(path string) (*os.File, error) {
+		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return nil, err
+		}
+		fi, err := f.Stat()
+		if err == nil && !fi.IsDir() {
+			err = errors.New("snapshot store is not a directory")
+		}
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return f, nil
+	}
 	// localEntryInfo reads one candidate snapshot's size and modification
 	// time, honouring the request context the walk passes down.
 	localEntryInfo = func(ctx context.Context, dir, name string) (int64, time.Time, error) {
@@ -130,7 +149,9 @@ var (
 		if err := ctx.Err(); err != nil {
 			return "", false, err
 		}
-		f, err := os.Open(filepath.Join(dir, name+".sha256"))
+		// A sidecar must be a regular file. Nonblocking open also handles a
+		// FIFO replaced between opening and checking its file type.
+		f, err := os.OpenFile(filepath.Join(dir, name+".sha256"), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return "", false, nil
@@ -138,6 +159,13 @@ var (
 			return "", true, err
 		}
 		defer f.Close()
+		fi, err := f.Stat()
+		if err != nil {
+			return "", true, err
+		}
+		if !fi.Mode().IsRegular() {
+			return "", true, errors.New("digest sidecar is not a regular file")
+		}
 		buf := make([]byte, localSidecarReadLimit)
 		n, rerr := f.Read(buf)
 		if rerr != nil && !errors.Is(rerr, io.EOF) {

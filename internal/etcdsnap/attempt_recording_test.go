@@ -333,3 +333,23 @@ func TestAttemptRecordIsAtomicAndPrivate(t *testing.T) {
 		t.Errorf("the save the record carries: %+v, want the successful attempt the loop made", rec.Save)
 	}
 }
+
+func TestCancelledUploadDoesNotRecordSkippedPrune(t *testing.T) {
+	redirectEvidence(t)
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { cancel(); w.WriteHeader(http.StatusForbidden) }))
+	defer srv.Close()
+	_, err := etcdsnap.SaveContext(ctx, io.Discard, etcdsnap.SaveOptions{Dir: t.TempDir(), Host: "cp1", Name: "snap.db", Retain: 1, Evidence: true, S3: &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}})
+	if err == nil {
+		t.Fatal("upload unexpectedly succeeded")
+	}
+	rec, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.Prune.IsZero() && rec.Prune.Result == "" {
+		t.Fatalf("cancelled tick recorded successful prune that never ran: %+v", rec.Prune)
+	}
+}

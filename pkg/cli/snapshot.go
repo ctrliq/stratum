@@ -563,6 +563,7 @@ func backupEvidenceRows(ctx context.Context, in mcpsrv.BackupEvidenceIn) mcpsrv.
 	return mcpsrv.BackupEvidenceOut{
 		Policy:      backupPolicyRow(res.Policy),
 		Node:        res.Node,
+		NodeUID:     res.NodeUID,
 		Local:       backupLocalRow(res.Local),
 		Remote:      backupRemoteRow(res.Remote),
 		Backups:     backupCensusRow(res.Backups),
@@ -610,11 +611,13 @@ func backupPolicyRow(p BackupPolicy) mcpsrv.BackupPolicyRow {
 // backupArtifactRow restates one enumerated artifact.
 func backupArtifactRow(a BackupArtifact) mcpsrv.BackupArtifactRow {
 	return mcpsrv.BackupArtifactRow{
-		ID:       a.ID,
-		Location: a.Location,
-		Created:  backupEvidenceStamp(a.Created),
-		Size:     a.Size,
-		Digest:   a.Digest,
+		ID:         a.ID,
+		Location:   a.Location,
+		LocationID: a.LocationID,
+		CopyID:     a.CopyID,
+		Created:    backupEvidenceStamp(a.Created),
+		Size:       a.Size,
+		Digest:     a.Digest,
 	}
 }
 

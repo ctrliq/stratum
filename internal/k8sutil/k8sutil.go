@@ -660,6 +660,24 @@ func StampOwnNode(node string) error {
 	})
 }
 
+// OwnNodeUID reads the immutable identity of this node using kubelet credentials.
+func OwnNodeUID(ctx context.Context, node string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	cs, err := kubeletClientset()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	n, err := cs.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return string(n.UID), nil
+}
+
 // OwnNodeTaints reads, as the kubelet, the taints its own Node carries.
 func OwnNodeTaints(ctx context.Context, node string) ([]corev1.Taint, error) {
 	cs, err := kubeletClientset()

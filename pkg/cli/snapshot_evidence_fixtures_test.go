@@ -12,6 +12,7 @@ package cli
 
 import (
 	"encoding/json"
+	"github.com/ctrliq/stratum/internal/version"
 	"os"
 	"path/filepath"
 	"slices"
@@ -241,6 +242,9 @@ func TestShippedFixturesComposeTheirWarnings(t *testing.T) {
 func TestShippedFixturesHoldThePolicyProvenanceContract(t *testing.T) {
 	for _, f := range shippedFixtures(t) {
 		p := f.doc.Policy
+		if p.IntervalSeconds == int64(version.SnapshotIntervalHours)*3600 && p.IntervalFrom != "default" {
+			t.Errorf("%s: the built-in interval must carry default provenance", f.name)
+		}
 		if (p.RetainFrom == "snapshot-conf") != (p.CopyFrom == "snapshot-conf") {
 			t.Errorf("%s: retainFrom = %q with copyFrom = %q, want both from snapshot-conf or neither: the provenances resolve together",
 				f.name, p.RetainFrom, p.CopyFrom)
@@ -258,6 +262,19 @@ func TestShippedFixturesHoldTheUnreadableConfContract(t *testing.T) {
 		if f.doc.Policy.State == "unreadable" && f.doc.Remote.Complete {
 			t.Errorf("%s: remote.complete is true under an unreadable snapshot config, want false: the target cannot be determined, so the remote catalog is unknown and not a complete total",
 				f.name)
+		}
+	}
+}
+
+func TestShippedFixturesCarryImmutableIdentities(t *testing.T) {
+	for _, f := range shippedFixtures(t) {
+		if f.doc.NodeUID == "" {
+			t.Errorf("%s: missing nodeUID", f.name)
+		}
+		for _, a := range append(f.doc.Local.Artifacts, f.doc.Remote.Copies...) {
+			if a.LocationID == "" || a.CopyID == "" {
+				t.Errorf("%s: artifact %s has no location/copy identity", f.name, a.ID)
+			}
 		}
 	}
 }

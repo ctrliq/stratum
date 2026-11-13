@@ -1,6 +1,7 @@
 package backupevidence
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -23,6 +24,9 @@ import (
 // test must redirect it or the read reaches the host's /var/lib/stratum.
 func withEvidencePaths(t *testing.T) {
 	t.Helper()
+	oldUID := readerNodeUID
+	readerNodeUID = func(context.Context, string) (string, error) { return "test-node-uid", nil }
+	t.Cleanup(func() { readerNodeUID = oldUID })
 	oldConf, oldData, oldEtcd := version.K8sConfDir, version.DataDir, version.EtcdDataDir
 	root := t.TempDir()
 	version.K8sConfDir = filepath.Join(root, "config")

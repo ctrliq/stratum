@@ -862,11 +862,13 @@ type BackupPolicyRow struct {
 // BackupArtifactRow is one backup file the evidence enumerated — a local
 // snapshot or a remote copy.
 type BackupArtifactRow struct {
-	ID       string `json:"id" jsonschema:"the artifact's stable identity: its file name, shared by the local artifact and the remote copy of the same snapshot"`
-	Location string `json:"location" jsonschema:"local or remote"`
-	Created  string `json:"created" jsonschema:"RFC 3339: when the artifact came to be"`
-	Size     int64  `json:"size" jsonschema:"bytes"`
-	Digest   string `json:"digest" jsonschema:"the digest when one is cheaply known — a valid sha256 sidecar beside the local file — else unknown"`
+	LocationID string `json:"locationID" jsonschema:"opaque effective store identity; empty means unknown"`
+	CopyID     string `json:"copyID" jsonschema:"stable backup identity at that location; empty means unknown"`
+	ID         string `json:"id" jsonschema:"the artifact's stable identity: its file name, shared by the local artifact and the remote copy of the same snapshot"`
+	Location   string `json:"location" jsonschema:"local or remote"`
+	Created    string `json:"created" jsonschema:"RFC 3339: when the artifact came to be"`
+	Size       int64  `json:"size" jsonschema:"bytes"`
+	Digest     string `json:"digest" jsonschema:"the digest when one is cheaply known — a valid sha256 sidecar beside the local file — else unknown"`
 }
 
 // BackupLocalRow is the bounded local half of the evidence: the snapshot
@@ -882,7 +884,7 @@ type BackupLocalRow struct {
 // enumerated on the S3 target, and which predate the retention window.
 type BackupRemoteRow struct {
 	Copies   []BackupArtifactRow `json:"copies"`
-	Old      []BackupArtifactRow `json:"old" jsonschema:"the copies created before the retention cutoff: they predate the retention window or survived a failed prune"`
+	Old      []BackupArtifactRow `json:"old" jsonschema:"reserved for age diagnostics; empty under count retention"`
 	Complete bool                `json:"complete" jsonschema:"false means the listing stopped short — denied, timeout, a cancellation, a cap — and the rows are a floor while the store's total is unknown"`
 	Warnings []string            `json:"warnings" jsonschema:"the listing's WARN conditions: they name the condition, never the store's address or a raw error"`
 }
@@ -893,7 +895,7 @@ type BackupCensusEntryRow struct {
 	ID        string             `json:"id"`
 	Local     *BackupArtifactRow `json:"local,omitempty" jsonschema:"the ID's local artifact, absent when the local store does not hold it"`
 	Remote    *BackupArtifactRow `json:"remote,omitempty" jsonschema:"the ID's remote copy, absent when the remote store does not hold it"`
-	OldRemote bool               `json:"oldRemote,omitempty" jsonschema:"the remote copy predates the retention cutoff"`
+	OldRemote bool               `json:"oldRemote,omitempty" jsonschema:"reserved for age diagnostics; false under count retention"`
 }
 
 // BackupCensusRow is the deduplicated union of the local and remote catalogs:
@@ -903,7 +905,7 @@ type BackupCensusRow struct {
 	Entries   []BackupCensusEntryRow `json:"entries" jsonschema:"the distinct backups, sorted by id"`
 	Complete  bool                   `json:"complete" jsonschema:"true only when both catalogs were complete, so the entry count is the exact total of distinct backups; a partial catalog never yields an exact total"`
 	Warnings  []string               `json:"warnings"`
-	Retention []string               `json:"retention" jsonschema:"each old remote copy named with its creation time"`
+	Retention []string               `json:"retention" jsonschema:"reserved for age diagnostics; empty under count retention"`
 }
 
 // BackupAttemptRow is one recorded maintenance attempt as a safe diagnostic:
@@ -929,6 +931,7 @@ type BackupMaintenanceRow struct {
 // backup-evidence contract, the same rows `stratum snapshot list -o json`
 // prints, so the two surfaces cannot drift.
 type BackupEvidenceOut struct {
+	NodeUID     string               `json:"nodeUID" jsonschema:"immutable Kubernetes node UID; empty means unknown"`
 	Policy      BackupPolicyRow      `json:"policy"`
 	Node        string               `json:"node" jsonschema:"the node the local half of the evidence is scoped to"`
 	Local       BackupLocalRow       `json:"local"`

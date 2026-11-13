@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ctrliq/stratum/internal/backupevidence"
+	mcpsrv "github.com/ctrliq/stratum/internal/mcp"
 )
 
 // useBackupEvidenceRead points the evidence read seam at fn, the same seam
@@ -322,5 +323,21 @@ func TestBackupEvidenceKeepsPartialEvidenceAFloorNotATotal(t *testing.T) {
 	}
 	if len(got.Warnings) != 1 || got.Warnings[0] != partial.Warnings[0] {
 		t.Errorf("Warnings = %q, want the read's own warnings restated", got.Warnings)
+	}
+}
+
+func TestBackupEvidenceIdentityReachesPublicAndWireContracts(t *testing.T) {
+	input := engineEvidence()
+	input.NodeUID = "immutable-node-uid"
+	input.Local.Artifacts[0].LocationID = "local-location"
+	input.Local.Artifacts[0].CopyID = "local-copy"
+	useBackupEvidenceRead(t, func(context.Context, backupevidence.EvidenceOptions) backupevidence.EvidenceResult { return input })
+	public := BackupEvidence(context.Background())
+	if public.NodeUID != input.NodeUID || public.Local.Artifacts[0].CopyID != "local-copy" || public.Local.Artifacts[0].LocationID != "local-location" {
+		t.Fatalf("public contract lost identity: %+v", public)
+	}
+	row := backupEvidenceRows(context.Background(), mcpsrv.BackupEvidenceIn{})
+	if row.NodeUID != input.NodeUID || row.Local.Artifacts[0].CopyID != "local-copy" || row.Local.Artifacts[0].LocationID != "local-location" {
+		t.Fatalf("wire contract lost identity: %+v", row)
 	}
 }

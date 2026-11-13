@@ -164,7 +164,7 @@ func Policy() EffectivePolicy {
 	// snapshot and uploads nothing rather than act on settings it could not
 	// read.
 	base := etcdsnap.DefaultConfig()
-	if ccErr == nil {
+	if ccErr == nil && stateKnown {
 		base = cc.SnapshotBase()
 	}
 	conf, fromFile, confErr := loadSnapshotConf(base)
@@ -175,7 +175,7 @@ func Policy() EffectivePolicy {
 	// The schedule and the disabled state come only from the cluster
 	// config: snapshot.conf carries no interval and cannot disable the
 	// loop. So does the directory, which no conf ever supplies.
-	if ccErr == nil {
+	if ccErr == nil && stateKnown {
 		p.Interval = time.Duration(cc.Spec.Snapshot.IntervalHours) * time.Hour
 		// A value equal to the built-in default is reported with default
 		// provenance: after the engine's own defaults pass an explicitly
@@ -208,7 +208,7 @@ func Policy() EffectivePolicy {
 		} else {
 			p.Copy, p.CopyFrom = CopyLocalOnly, FromSnapshotConf
 		}
-	case ccErr != nil:
+	case ccErr != nil || !stateKnown:
 		p.RetainFrom, p.CopyFrom = FromUnknown, FromUnknown
 	default:
 		p.Retain, p.RetainFrom = base.Retain, FromClusterConfig

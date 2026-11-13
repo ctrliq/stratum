@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -29,20 +30,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 	"sigs.k8s.io/yaml"
 )
-
-// evidenceTime is the fixed UTC clock the reader's retention window is
-// pinned to in these tests, so which remote copies predate the window —
-// Retain snapshots at the configured interval back from now — asserts
-// exactly, whenever the suite runs.
-var evidenceTime = time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
-
-// pinEvidenceClock points the reader's clock seam at evidenceTime.
-func pinEvidenceClock(t *testing.T) {
-	t.Helper()
-	old := evidenceNow
-	evidenceNow = func() time.Time { return evidenceTime }
-	t.Cleanup(func() { evidenceNow = old })
-}
 
 // copyTime is a fixed UTC creation time inside the retention windows these
 // tests draw from the pinned clock.
@@ -130,7 +117,6 @@ func refusingRemoteStore(t *testing.T, marker string) *objstore.Target {
 // reasons. Every read ran whole within the default bounds, so the result
 // is complete and exact.
 func TestReaderComposesPolicyArtifactsCopiesAndMaintenance(t *testing.T) {
-	pinEvidenceClock(t)
 	withEvidencePaths(t)
 	dir := t.TempDir()
 	s1 := etcdsnap.ScheduledName("cp-1", "20261112-110000") // local and remote
@@ -257,13 +243,9 @@ func TestReaderComposesPolicyArtifactsCopiesAndMaintenance(t *testing.T) {
 	}
 }
 
-// The census counts each backup once by its stable ID — the same snapshot
-// saved locally and uploaded off-box is one backup in two locations — and
-// a remote copy created before the retention window the effective policy
-// draws (Retain snapshots at the configured interval back from now) is
-// surfaced to the retention diagnostics with its creation time.
-func TestReaderCountsEachBackupOnceAndSurfacesOldRemoteCopies(t *testing.T) {
-	pinEvidenceClock(t)
+// Count-based retention permits old backups when fewer than Retain newer
+// snapshots exist. The reader must not infer a maximum age from the cadence.
+func TestReaderCountRetentionDoesNotInventAnAgeLimit(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
 	oldID := etcdsnap.ScheduledName("cp-1", "20261108-110000") // local and an old remote copy
@@ -283,17 +265,14 @@ func TestReaderCountsEachBackupOnceAndSurfacesOldRemoteCopies(t *testing.T) {
 		t.Fatalf("Backups.Entries = %+v, want 2: %q exists in both places and counts once", res.Backups.Entries, oldID)
 	}
 	e := res.Backups.Entries[0]
-	if e.ID != oldID || e.Local == nil || e.Remote == nil || !e.OldRemote {
-		t.Errorf("entry %s = %+v, want both locations and the old-remote flag", oldID, e)
+	if e.ID != oldID || e.Local == nil || e.Remote == nil || e.OldRemote {
+		t.Errorf("entry %s = %+v, want both locations without an invented age limit", oldID, e)
 	}
 	if e := res.Backups.Entries[1]; e.ID != newID || e.Local != nil || e.Remote == nil || e.OldRemote {
 		t.Errorf("entry %s = %+v, want the remote copy alone inside the window", newID, e)
 	}
-	if len(res.Backups.Retention) != 1 {
-		t.Fatalf("Backups.Retention = %q, want the one old copy's diagnostic", res.Backups.Retention)
-	}
-	if want := oldID + " was created " + oldCopyTime().UTC().Format(time.RFC3339); !strings.Contains(res.Backups.Retention[0], want) {
-		t.Errorf("Backups.Retention = %q, want it to name %s with its creation time", res.Backups.Retention[0], want)
+	if len(res.Backups.Retention) != 0 || len(res.Remote.Old) != 0 {
+		t.Errorf("count retention invented age warnings: %+v", res)
 	}
 }
 
@@ -492,7 +471,6 @@ func TestReaderEnforcesTheOverallPageBudgetAcrossReads(t *testing.T) {
 		}
 	})
 	t.Run("the remote listing shares what remains of the page budget", func(t *testing.T) {
-		pinEvidenceClock(t)
 		withEvidencePaths(t)
 		dir := t.TempDir()
 		s1 := etcdsnap.ScheduledName("cp-1", "20261112-090000")    // local only
@@ -552,7 +530,6 @@ func TestReaderEnforcesTheOverallPageBudgetAcrossReads(t *testing.T) {
 // ListKeysPerPage of them. A listing that asked for one page per entry would
 // fetch a thousand times the budget's keys to keep a handful of entries.
 func TestReaderBoundsTheRemoteListingPagesByTheRemainingEntryBudget(t *testing.T) {
-	pinEvidenceClock(t)
 	withEvidencePaths(t)
 	dir := t.TempDir()
 	s1 := etcdsnap.ScheduledName("cp-1", "20261112-090000")
@@ -971,5 +948,22 @@ func TestReaderWithAnUnreadableNodeStateReportsAnUnknownRemoteCatalog(t *testing
 	}
 	if res.Backups.Complete || res.Complete {
 		t.Error("the result claims completeness from a remote catalog the read could not determine")
+	}
+}
+
+func TestLocalOnlyCatalogExactlyAtBudgetIsComplete(t *testing.T) {
+	for _, o := range []EvidenceOptions{{MaxEntries: 1}, {MaxBytes: 1}} {
+		t.Run(fmt.Sprintf("entries=%d bytes=%d", o.MaxEntries, o.MaxBytes), func(t *testing.T) {
+			withEvidencePaths(t)
+			dir := t.TempDir()
+			writeSnapshot(t, dir, "only.db", 1, copyTime(0))
+			recordedConfig(t, "spec:\n  snapshots:\n    dir: "+dir+"\n")
+			noSnapshotConf(t)
+			o.Node = "cp1"
+			res := Evidence(context.Background(), o)
+			if !res.Local.Complete || !res.Remote.Complete || !res.Backups.Complete || !res.Complete {
+				t.Fatalf("known local-only catalog became incomplete at its exact budget: %+v", res)
+			}
+		})
 	}
 }

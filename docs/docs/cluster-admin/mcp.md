@@ -58,8 +58,9 @@ capability is there and invite it to look for another way to the same effect.
     the only controls. The table under [The destructive tier](#the-destructive-tier)
     lists the destructive ones, and [Choosing a cluster](#choosing-a-cluster)
     names the read-tier exceptions (`token_list`, `upgrade_plan`). `backup_evidence`
-    uses no credential at all: it reads this node's own files and the configured
-    S3 target, and returns no credentials. `runtime_apply`
+    takes no caller-supplied Kubernetes credential: it reads this node's files
+    and configured S3 target, and resolves its node UID with the installed
+    kubelet credential. It returns no credentials. `runtime_apply`
     updates this node's own runtime-handler labels with the node's kubelet
     credential.
 

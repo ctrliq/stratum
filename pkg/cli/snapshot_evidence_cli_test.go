@@ -68,8 +68,9 @@ type snapshotListJSON struct {
 		DirFrom         string   `json:"dirFrom"`
 		Warnings        []string `json:"warnings"`
 	} `json:"policy"`
-	Node  string `json:"node"`
-	Local struct {
+	NodeUID string `json:"nodeUID"`
+	Node    string `json:"node"`
+	Local   struct {
 		Node      string                `json:"node"`
 		Artifacts []snapshotListJSONArt `json:"artifacts"`
 		Complete  bool                  `json:"complete"`
@@ -102,11 +103,13 @@ type snapshotListJSON struct {
 }
 
 type snapshotListJSONArt struct {
-	ID       string `json:"id"`
-	Location string `json:"location"`
-	Created  string `json:"created"`
-	Size     int64  `json:"size"`
-	Digest   string `json:"digest"`
+	LocationID string `json:"locationID"`
+	CopyID     string `json:"copyID"`
+	ID         string `json:"id"`
+	Location   string `json:"location"`
+	Created    string `json:"created"`
+	Size       int64  `json:"size"`
+	Digest     string `json:"digest"`
 }
 
 type snapshotListJSONEntry struct {

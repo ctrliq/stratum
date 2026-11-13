@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ctrliq/stratum/internal/cluster"
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/objstore"
@@ -307,5 +308,18 @@ func TestPolicyUnreadableConfIsAWarnAndNeverInventsThresholds(t *testing.T) {
 	w := strings.Join(p.Warnings, "\n")
 	if !strings.Contains(w, "WARN") || !strings.Contains(w, "snapshot config") || !strings.Contains(w, "keeps every snapshot") {
 		t.Errorf("warnings do not carry the WARN about the unreadable conf and what the loop does anyway: %q", w)
+	}
+}
+
+func TestUnreadableNodeStateDoesNotInventFallbackPolicy(t *testing.T) {
+	oldNode, oldConfig := loadNodeState, loadClusterConfig
+	t.Cleanup(func() { loadNodeState, loadClusterConfig = oldNode, oldConfig })
+	loadNodeState = func() (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
+	missing := filepath.Join(t.TempDir(), "absent.yaml")
+	loadClusterConfig = func(string) (*cluster.ClusterConfig, error) { return cluster.LoadConfig(missing) }
+	noSnapshotConf(t)
+	p := Policy()
+	if p.IntervalFrom != FromUnknown || p.RetainFrom != FromUnknown || p.CopyFrom != FromUnknown || p.DirFrom != FromUnknown {
+		t.Fatalf("unknown original config path resolved invented fallback policy: %+v", p)
 	}
 }

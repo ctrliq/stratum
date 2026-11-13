@@ -1559,6 +1559,8 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 // from above, never through an import — only the summary the durable record
 // holds.
 type EvidenceSample struct {
+	// NodeUID is the immutable Kubernetes identity; empty means unknown.
+	NodeUID string
 	// Node is the node the sample's local half is scoped to.
 	Node string
 	// Complete says the whole read ran within its bounds.
@@ -1618,6 +1620,7 @@ func evidenceRecordPath() string {
 // tool) describe those, and the record is the node's own proof of what the
 // publisher last saw, readable without calling any interface.
 type evidenceRecord struct {
+	NodeUID        string    `json:"nodeUID"`
 	SchemaVersion  int       `json:"schemaVersion"`
 	SampledAt      time.Time `json:"sampledAt"`
 	Node           string    `json:"node"`
@@ -1680,6 +1683,7 @@ func publishEvidenceSample(ctx context.Context, sample EvidenceSampler) {
 		SchemaVersion:  evidenceRecordSchemaVersion,
 		SampledAt:      time.Now(),
 		Node:           s.Node,
+		NodeUID:        s.NodeUID,
 		Complete:       s.Complete,
 		LocalArtifacts: s.LocalArtifacts,
 		RemoteCopies:   s.RemoteCopies,

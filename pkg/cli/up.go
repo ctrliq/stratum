@@ -656,6 +656,7 @@ var backupEvidenceSampler = func(ctx context.Context) (cluster.EvidenceSample, b
 	res := backupevidence.Evidence(ctx, backupevidence.EvidenceOptions{})
 	return cluster.EvidenceSample{
 		Node:           res.Node,
+		NodeUID:        res.NodeUID,
 		Complete:       res.Complete,
 		LocalArtifacts: len(res.Local.Artifacts),
 		RemoteCopies:   len(res.Remote.Copies),

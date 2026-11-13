@@ -121,6 +121,8 @@ type EvidenceResult struct {
 	// Node scopes the local half: the node whose store the local catalog
 	// read.
 	Node string
+	// NodeUID is the immutable Kubernetes node identity; empty means unknown.
+	NodeUID string
 	// Local is the bounded local catalog, and Remote the bounded remote
 	// catalog, each exact only when its own Complete says so.
 	Local  LocalResult
@@ -147,9 +149,6 @@ type EvidenceResult struct {
 // follow). Each seam honours the request context: a context that already
 // ended launches no read, so the overall deadline bounds every stage.
 var (
-	// evidenceNow is the clock the retention window draws; the reads
-	// themselves use the times the artifacts and objects carry.
-	evidenceNow = time.Now
 	// readerPolicy resolves the effective policy under the request
 	// context; known is false when the context ended before the
 	// resolution, in which case the policy is the same unknown shape
@@ -329,24 +328,6 @@ func attemptEvidence(a Attempt) AttemptEvidence {
 	return e
 }
 
-// retentionCutoff draws the retention window's start from the effective
-// policy: Retain snapshots held at Interval cadence — the steady-schedule
-// age of the Retain-th newest snapshot — so a remote copy created before
-// it predates the retention window or survived a failed prune. A retention
-// or a schedule the policy does not know judges nothing: no window is
-// invented for values that cannot be read.
-func retentionCutoff(p EffectivePolicy) time.Time {
-	if p.Retain <= 0 || p.Interval <= 0 {
-		return time.Time{}
-	}
-	// The multiplication saturates rather than wraps: a window past every
-	// real clock is no window at all.
-	if time.Duration(p.Retain) > (1<<62)/p.Interval {
-		return time.Time{}
-	}
-	return evidenceNow().Add(-time.Duration(p.Retain) * p.Interval)
-}
-
 // artifactBytes totals the artifact bytes the local walk accounted for —
 // the part of the overall byte budget the local half spent.
 func artifactBytes(artifacts []Artifact) int64 {
@@ -400,8 +381,7 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 	ctx, cancel := context.WithTimeout(ctx, maxTime)
 	defer cancel()
 
-	// The policy, resolved first: its directory scopes the local catalog
-	// and its retention draws the remote listing's window.
+	// The policy, resolved first: its directory scopes the local catalog.
 	policy, policyKnown := readerPolicy(ctx)
 	if !policyKnown {
 		// The read's own diagnostics live in the stage they describe,
@@ -471,6 +451,8 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 	tgt, terr := readerTarget(ctx)
 	var remote RemoteResult
 	switch {
+	case terr == nil && !tgt.Enabled():
+		remote.Complete = true
 	case entriesLeft <= 0:
 		remote = RemoteResult{Complete: false, Warnings: []string{fmt.Sprintf(warningRemotePageSpent, maxEntries)}}
 	case bytesLeft <= 0:
@@ -496,7 +478,6 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 			// to keep a handful of them.
 			MaxPages: (entriesLeft + objstore.ListKeysPerPage - 1) / objstore.ListKeysPerPage,
 			MaxBytes: bytesLeft, MaxTime: maxTime,
-			RetentionCutoff: retentionCutoff(policy),
 		})
 		if len(remote.Copies) > entriesLeft {
 			// A listing page describes more copies than the budget left:
@@ -515,13 +496,15 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 			remote.Warnings = append(remote.Warnings, fmt.Sprintf(warningRemotePageTrim, maxEntries))
 		}
 	}
+	res.NodeUID = identifyLocations(ctx, local.Node, policy.Dir, tgt, &local, &remote)
+	res.Local = local
 	res.Remote = remote
 
 	// The census: each stable backup ID once, exact only when both halves
-	// are; the read is whole when the census is and the record was read.
+	// are; the whole read also requires known maintenance and node identity.
 	res.Backups = Union(local, remote)
 	res.Node = res.Backups.Node
-	res.Complete = res.Backups.Complete && m.AttemptsKnown
+	res.Complete = res.Backups.Complete && m.AttemptsKnown && res.NodeUID != ""
 	res.Warnings = append(res.Warnings, policy.Warnings...)
 	res.Warnings = append(res.Warnings, res.Backups.Warnings...)
 	res.Warnings = append(res.Warnings, m.Warnings...)

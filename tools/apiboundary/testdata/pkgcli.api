@@ -62,14 +62,14 @@ func github.com/ctrliq/stratum/pkg/cli.WithVersionOverride(display string) githu
 func github.com/ctrliq/stratum/pkg/cli.WriteTool(name string, description string) *github.com/modelcontextprotocol/go-sdk/mcp.Tool
 type github.com/ctrliq/stratum/pkg/cli.AuditResult int
 type github.com/ctrliq/stratum/pkg/cli.AuditVerdict struct{Result github.com/ctrliq/stratum/pkg/cli.AuditResult; Detail string}
-type github.com/ctrliq/stratum/pkg/cli.BackupArtifact struct{ID string; Location string; Created time.Time; Size int64; Digest string}
+type github.com/ctrliq/stratum/pkg/cli.BackupArtifact struct{ID string; LocationID string; CopyID string; Location string; Created time.Time; Size int64; Digest string}
 type github.com/ctrliq/stratum/pkg/cli.BackupAttempt struct{AttemptedAt time.Time; Outcome github.com/ctrliq/stratum/pkg/cli.BackupAttemptOutcome}
 type github.com/ctrliq/stratum/pkg/cli.BackupAttemptOutcome string
 type github.com/ctrliq/stratum/pkg/cli.BackupCensus struct{Node string; Entries []github.com/ctrliq/stratum/pkg/cli.BackupCensusEntry; Complete bool; Warnings []string; Retention []string}
 type github.com/ctrliq/stratum/pkg/cli.BackupCensusEntry struct{ID string; Local *github.com/ctrliq/stratum/pkg/cli.BackupArtifact; Remote *github.com/ctrliq/stratum/pkg/cli.BackupArtifact; OldRemote bool}
 type github.com/ctrliq/stratum/pkg/cli.BackupCopyRequirement string
 type github.com/ctrliq/stratum/pkg/cli.BackupEvidenceOption func(*github.com/ctrliq/stratum/pkg/cli.backupEvidenceOptions)
-type github.com/ctrliq/stratum/pkg/cli.BackupEvidenceResult struct{Policy github.com/ctrliq/stratum/pkg/cli.BackupPolicy; Node string; Local github.com/ctrliq/stratum/pkg/cli.BackupLocalCatalog; Remote github.com/ctrliq/stratum/pkg/cli.BackupRemoteCatalog; Backups github.com/ctrliq/stratum/pkg/cli.BackupCensus; Maintenance github.com/ctrliq/stratum/pkg/cli.BackupMaintenance; Complete bool; Warnings []string}
+type github.com/ctrliq/stratum/pkg/cli.BackupEvidenceResult struct{Policy github.com/ctrliq/stratum/pkg/cli.BackupPolicy; Node string; NodeUID string; Local github.com/ctrliq/stratum/pkg/cli.BackupLocalCatalog; Remote github.com/ctrliq/stratum/pkg/cli.BackupRemoteCatalog; Backups github.com/ctrliq/stratum/pkg/cli.BackupCensus; Maintenance github.com/ctrliq/stratum/pkg/cli.BackupMaintenance; Complete bool; Warnings []string}
 type github.com/ctrliq/stratum/pkg/cli.BackupLocalCatalog struct{Node string; Artifacts []github.com/ctrliq/stratum/pkg/cli.BackupArtifact; Complete bool; Warnings []string}
 type github.com/ctrliq/stratum/pkg/cli.BackupMaintenance struct{Save github.com/ctrliq/stratum/pkg/cli.BackupAttempt; Upload github.com/ctrliq/stratum/pkg/cli.BackupAttempt; Prune github.com/ctrliq/stratum/pkg/cli.BackupAttempt; LastSaveSuccess time.Time; LastUploadSuccess time.Time; Warnings []string; AttemptsKnown bool}
 type github.com/ctrliq/stratum/pkg/cli.BackupPolicy struct{State github.com/ctrliq/stratum/pkg/cli.BackupPolicyState; Interval time.Duration; IntervalFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Retain int; RetainFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Copy github.com/ctrliq/stratum/pkg/cli.BackupCopyRequirement; CopyFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Dir string; DirFrom github.com/ctrliq/stratum/pkg/cli.BackupProvenance; Warnings []string}
