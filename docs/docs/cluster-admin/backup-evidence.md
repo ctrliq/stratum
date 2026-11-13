@@ -202,8 +202,13 @@ Location and copy IDs are `sha256:` followed by 64 lowercase hex digits.
 The hash input is a compact JSON array of strings. A local location hashes
 `["backup-local-location-v1", nodeUID, absoluteDirectory]`; a remote location
 hashes `["backup-remote-location-v1", endpoint, region, bucket, prefix]`.
-The endpoint and prefix lose one trailing slash, and an empty region becomes
-`us-east-1`. A copy hashes `["backup-copy-v1", locationID, id]`. Access and
+The endpoint loses one trailing slash, and an empty region becomes
+`us-east-1`. The prefix is the store's effective prefix — `Key("")` on the
+target, spelled the way the store's own key computation spells it — so
+`backups` and `backups/` hash alike while an empty prefix (the bare bucket)
+and a `/` prefix hash apart: they hold different keys (`backup.db` versus
+`/backup.db`). A copy hashes
+`["backup-copy-v1", locationID, id]`. Access and
 secret keys never participate, so credential rotation preserves identity.
 The existing `id` remains the backup identity used by the census.
 

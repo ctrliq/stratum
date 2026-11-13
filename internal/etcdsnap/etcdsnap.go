@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
+	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/comps"
 	"github.com/ctrliq/stratum/internal/etcddata"
 	"github.com/ctrliq/stratum/internal/host"
@@ -391,9 +392,17 @@ func mutateEvidence(mutate func(*snapshotEvidence)) error {
 	return saveEvidence(rec)
 }
 
-// loadEvidence reads the record from disk.
+// loadEvidence reads the record from disk through the bounded regular-file
+// reader — the same rules the backup-evidence reader applies on its side of
+// the file — because this read runs under the etcd data lock: a FIFO or an
+// oversized stand-in swapped in at the record's path must refuse promptly,
+// never stall the single writer's read-modify-write — a read stalled under
+// the lock would hold it, refusing every rejoin, restore and `up` that
+// tries to take it. The read is not bounded by the save's own context: a
+// save that context ended still records its failed attempt, best-effort,
+// so loadEvidence reads with a fresh background context.
 func loadEvidence() (*snapshotEvidence, error) {
-	b, err := os.ReadFile(evidencePath())
+	b, err := boundedfile.Read(context.Background(), evidencePath())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return &snapshotEvidence{}, nil

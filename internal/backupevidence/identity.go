@@ -24,6 +24,13 @@ func identity(parts ...string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// remoteLocationID is the remote store's opaque identity. Credentials never
+// participate (rotating them cannot move a copy's ID), and the prefix
+// participates as the store's effective prefix — Key(""): the prefix spelled
+// the way the store's own key computation spells it. `backups` and `backups/`
+// name the same key space and hash alike, while the bare bucket ("") and a
+// "/" prefix name different key spaces ("backup.db" versus "/backup.db")
+// and must hash apart.
 func remoteLocationID(t *objstore.Target) string {
 	if !t.Enabled() {
 		return ""
@@ -32,7 +39,7 @@ func remoteLocationID(t *objstore.Target) string {
 	if region == "" {
 		region = "us-east-1"
 	}
-	return identity("backup-remote-location-v1", strings.TrimSuffix(t.Endpoint, "/"), region, t.Bucket, strings.TrimSuffix(t.Prefix, "/"))
+	return identity("backup-remote-location-v1", strings.TrimSuffix(t.Endpoint, "/"), region, t.Bucket, t.Key(""))
 }
 
 func identifyArtifacts(artifacts []Artifact, location string) {

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/backupevidence"
@@ -332,6 +333,48 @@ func TestAttemptRecordIsAtomicAndPrivate(t *testing.T) {
 	if rec.Save.AttemptedAt.IsZero() || rec.Save.Result != "" {
 		t.Errorf("the save the record carries: %+v, want the successful attempt the loop made", rec.Save)
 	}
+}
+
+// TestAttemptRecordingRefusesAFifoRecord pins the writer's bounded read:
+// a FIFO swapped in at the record's path must refuse the recording
+// promptly — the read runs under the etcd data lock, and a blocking read
+// there would stall the tick's save, upload and prune recording while
+// holding the lock, refusing every rejoin, restore and `up` that tries to
+// take it — while the save itself still succeeds
+// with its one WARN, the record is left untouched, and the lock comes back.
+func TestAttemptRecordingRefusesAFifoRecord(t *testing.T) {
+	redirectEvidence(t)
+	if err := os.MkdirAll(version.K8sConfDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	var buf strings.Builder
+	path, err := etcdsnap.SaveContext(context.Background(), &buf, etcdsnap.SaveOptions{
+		Dir: dir, Host: "cp1", Name: "snap.db", Evidence: true,
+	})
+	if err != nil {
+		t.Fatalf("the save must not be failed by its own evidence: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the snapshot the save took is missing: %v", err)
+	}
+	if !strings.Contains(buf.String(), "WARN: recording snapshot evidence") {
+		t.Errorf("the refused recording was not warned about beside the save's result: %q", buf.String())
+	}
+	// The refusal wrote nothing: the FIFO still stands at the record's path.
+	if fi, err := os.Lstat(filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml")); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		t.Errorf("the record path = %v, %v; want the FIFO untouched by the refused recording", fi, err)
+	}
+	// The data lock came back: the next operation can take it.
+	release, err := etcddata.Lock(version.EtcdDataDir)
+	if err != nil {
+		t.Fatalf("the etcd data lock was not released after the refused recording: %v", err)
+	}
+	release()
 }
 
 func TestCancelledUploadDoesNotRecordSkippedPrune(t *testing.T) {

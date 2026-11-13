@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ctrliq/stratum/internal/etcdsnap"
+	"github.com/ctrliq/stratum/internal/objstore"
 )
 
 func TestEvidenceIdentifiesNodeLocationsAndCopies(t *testing.T) {
@@ -60,6 +61,42 @@ func TestEvidenceIdentifiesNodeLocationsAndCopies(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(unknown.Warnings, "\n"), "secret raw failure") {
 		t.Fatal("node lookup exposed raw error")
+	}
+}
+
+// TestRemoteLocationIDHashesTheEffectivePrefix pins the location identity's
+// prefix input: the prefix participates as the store's effective prefix,
+// Key(""), so the bare bucket ("" — keys like backup.db) and a "/" prefix
+// (keys like /backup.db) hash apart instead of sharing identities for
+// different objects, while spellings of one key space ("backups" and
+// "backups/") hash alike so re-encoding the same store cannot move a copy's
+// ID.
+func TestRemoteLocationIDHashesTheEffectivePrefix(t *testing.T) {
+	base := objstore.Target{Bucket: "b", Endpoint: "https://s3.example", Region: "r"}
+	// The bare bucket and a "/" prefix list different key spaces — Key("x")
+	// is "x" versus "/x" — so they must not share a location identity.
+	bare, slash := base, base
+	slash.Prefix = "/"
+	bareID, slashID := remoteLocationID(&bare), remoteLocationID(&slash)
+	if bareID == "" || slashID == "" || bareID == slashID {
+		t.Fatalf("the bare bucket and a '/' prefix share a location identity: %q vs %q", bareID, slashID)
+	}
+	// The same key space spelled with and without its trailing slash hashes
+	// alike, so re-encoding the same store cannot move a copy's ID.
+	a, b := base, base
+	a.Prefix, b.Prefix = "backups", "backups/"
+	if remoteLocationID(&a) != remoteLocationID(&b) {
+		t.Fatal("the same key space with and without its trailing slash moved the location identity")
+	}
+	// Different key spaces must not share copy identities for same-named
+	// objects: backup.db and /backup.db are different objects.
+	var bareCopies, slashCopies []Artifact
+	bareCopies = append(bareCopies, Artifact{ID: "backup.db"})
+	slashCopies = append(slashCopies, Artifact{ID: "backup.db"})
+	identifyArtifacts(bareCopies, bareID)
+	identifyArtifacts(slashCopies, slashID)
+	if bareCopies[0].CopyID == "" || bareCopies[0].CopyID == slashCopies[0].CopyID {
+		t.Fatalf("backup.db and /backup.db share a copy identity: %q vs %q", bareCopies[0].CopyID, slashCopies[0].CopyID)
 	}
 }
 
