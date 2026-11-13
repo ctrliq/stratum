@@ -54,6 +54,10 @@ var processes = Processes
 // records nothing. The parameter is optional so the callers and tests that
 // predate the publisher compile unchanged.
 func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampleEvidence ...EvidenceSampler) error {
+	// The seam is reset on every call, not only wired: absent a sampler it
+	// stands at its no-op default again, so a later start never publishes
+	// through the sampler a previous call left behind.
+	evidenceSampler = noopEvidenceSampler
 	if len(sampleEvidence) > 0 {
 		evidenceSampler = sampleEvidence[0]
 	}
@@ -1629,12 +1633,13 @@ type evidenceRecord struct {
 // contract cadence it samples the engine's assembled backup evidence
 // through the seam wired from above and refreshes the durable record. It is
 // a postStart loop like the snapshot and renewal loops: it parks on the
-// group's context — a sample in flight at shutdown finishes and its record
-// lands before the group's wait returns — and the run group recovers its
-// panics and backoff-restarts its early returns. The first sample lands at
-// once, not a whole cadence later: a node that just started shows a fresh
-// record immediately, and a restarted publisher replaces a stale one
-// without waiting out the interval.
+// group's context — a sample in flight at shutdown finishes and joins
+// before the group's wait returns, and its record does not land: a read a
+// shutdown reached describes a node that is going down, not one that is up
+// — and the run group recovers its panics and backoff-restarts its early
+// returns. The first sample lands at once, not a whole cadence later: a
+// node that just started shows a fresh record immediately, and a restarted
+// publisher replaces a stale one without waiting out the interval.
 func publishEvidenceLoop(ctx context.Context, sample EvidenceSampler) {
 	if sample == nil {
 		sample = noopEvidenceSampler
@@ -1682,6 +1687,15 @@ func publishEvidenceSample(ctx context.Context, sample EvidenceSampler) {
 		ExactTotal:     s.Exact,
 		Warnings:       s.Warnings,
 	})
+	if err == nil {
+		// The config area first, the discipline every node-record writer
+		// follows (the snapshot evidence record, the renewal record, the
+		// node state): a start whose config area is missing — wiped under
+		// a running controller, a state save that failed — still records,
+		// instead of warning on every tick that the atomic write found no
+		// directory.
+		err = os.MkdirAll(filepath.Dir(evidenceRecordPath()), 0o755)
+	}
 	if err == nil {
 		// The shared atomic writer at 0600, the discipline every node
 		// record follows: a torn record must never stand where a working

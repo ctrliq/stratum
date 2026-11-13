@@ -172,6 +172,46 @@ func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 	}
 }
 
+// TestPublisherRecordsIntoAMissingConfigArea pins the record's durability
+// precondition: every node-record writer creates its directory before the
+// atomic write — the snapshot evidence record, the renewal record, the
+// node state — so a publisher whose config area is missing (wiped under a
+// running controller, a state save that failed at start) records into it
+// on its next tick instead of warning forever that the write found no
+// directory, the one condition the loop it shares a gate with heals by
+// itself.
+func TestPublisherRecordsIntoAMissingConfigArea(t *testing.T) {
+	fakeHostKubectl(t)
+	stubLoops(t, time.Hour)
+	// A config area that does not exist: redirectStateArea's temp dir is
+	// there, so point the record's directory one level deeper, at a path
+	// nothing has created.
+	missing := filepath.Join(t.TempDir(), "config")
+	oldConf := version.K8sConfDir
+	version.K8sConfDir = missing
+	t.Cleanup(func() { version.K8sConfDir = oldConf })
+
+	cfg := loadClusterConfig(t, "spec: {}\n")
+	joined := seedState()
+	joined.EtcdState = "existing"
+	stubPublisherSeam(t, 10*time.Millisecond, func(context.Context) (EvidenceSample, bool) {
+		return EvidenceSample{Node: "cp-1", Backups: 1, Exact: true}, true
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		g := newRunGroup(ctx)
+		postStart(g, cfg, joined)
+		time.Sleep(50 * time.Millisecond)
+		synctest.Wait()
+		cancel()
+		g.wait()
+	})
+	if _, err := os.Stat(publisherRecordPath()); err != nil {
+		t.Fatalf("the publisher's record did not land in a config area that did not exist: %v", err)
+	}
+}
+
 // TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample pins the
 // shutdown half: the publisher is a run-group task, not a stray goroutine,
 // so a sample in flight when the controller stops finishes — the group's
@@ -445,5 +485,62 @@ func TestPublisherKeepsSamplingWhenTheRecordCannotBeWritten(t *testing.T) {
 	}
 	if _, err := os.Stat(publisherRecordPath()); err == nil {
 		t.Error("a record landed although every write into the config area fails")
+	}
+}
+
+// TestRunControllerResetsTheSamplerSeamWhenNoSamplerIsPassed pins the
+// seam's reset: the sample seam is a package global, so a RunController
+// call that wires no sampler must leave the seam at its no-op default —
+// not keep the sampler a previous call left behind — exactly as the
+// parameter's doc promises ("Absent, the sample seam keeps its no-op
+// default and the publisher records nothing"). The supervisor stands in
+// for itself returning at once, the same stand-in the wiring test uses;
+// the assignment is the start's own first step, so the whole real start
+// path is what resets it.
+func TestRunControllerResetsTheSamplerSeamWhenNoSamplerIsPassed(t *testing.T) {
+	fakeHostKubectl(t)
+	redirectStateArea(t)
+	for _, sw := range []struct{ p *string }{
+		{&version.ManifestsDir},
+		{&version.CoreDNSUpstreamDir},
+		{&version.CiliumSettingsPath},
+		{&version.EtcdDataDir},
+		{&version.KubeconfigDir},
+	} {
+		dir := filepath.Join(t.TempDir(), "scratch")
+		old := *sw.p
+		*sw.p = dir
+		t.Cleanup(func() { *sw.p = old })
+	}
+	stubLoops(t, time.Hour)
+	cfg := loadClusterConfig(t, "spec: {}\n")
+	st := seedState()
+	st.EtcdState = "existing"
+	stubNodeTask(t, time.Millisecond, time.Hour, st.Hostname,
+		func(context.Context, string) bool { return true })
+
+	// A sampler a previous RunController call left behind: the seam must
+	// not keep it. It answers ok=true so a left-behind seam is tellable
+	// from the reset no-op default.
+	evidenceSampler = func(context.Context) (EvidenceSample, bool) {
+		return EvidenceSample{}, true
+	}
+	t.Cleanup(func() { evidenceSampler = noopEvidenceSampler })
+
+	oldRun := runSupervisor
+	t.Cleanup(func() { runSupervisor = oldRun })
+	runSupervisor = func(context.Context, []supervisor.Process, supervisor.Options) error { return nil }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- RunController(ctx, cfg, st) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("RunController did not return after its supervisor returned")
+	}
+	if _, ok := evidenceSampler(context.Background()); ok {
+		t.Error("the sample seam kept a previously wired sampler: a start with no sampler must reset it to the no-op default, as the parameter's doc promises")
 	}
 }

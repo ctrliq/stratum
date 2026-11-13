@@ -134,8 +134,10 @@ type EvidenceResult struct {
 	Maintenance Maintenance
 	// Complete says the whole read ran whole within its bounds.
 	Complete bool
-	// Warnings aggregate the policy's, the catalogs', the maintenance and
-	// the read's own safe diagnostics.
+	// Warnings aggregate the policy's, the census's and the maintenance
+	// record's safe diagnostics, in that order — the census's carry both
+	// catalogs' — so the top level alone shows every stage's; the read's
+	// own diagnostics stand in the stage they describe.
 	Warnings []string
 }
 
@@ -193,8 +195,9 @@ const (
 	warningRemotePageSpent  = "WARN: the overall page budget of %d entries was reached by the local walk alone; the remote catalog is unknown and not a complete total"
 	warningRemoteBytesSpent = "WARN: the overall byte budget of %d bytes was reached by the local walk alone; the remote catalog is unknown and not a complete total"
 	warningRemotePageTrim   = "WARN: the overall page budget of %d entries was reached across the local and remote reads; the remote catalog is not a complete total"
-	// warningNodeUnknown restates the local walk's own warning, so the
-	// read says the same thing wherever the node name fails to resolve.
+	// warningNodeUnknown restates the local walk's own warning — both
+	// stand in the local stage's warnings — so the read says the same
+	// thing, in the same place, wherever the node name fails to resolve.
 	warningNodeUnknown = "WARN: this node's name could not be determined; the local catalog's location is not node-scoped"
 )
 
@@ -381,7 +384,6 @@ func artifactBytes(artifacts []Artifact) int64 {
 // the cheap local file reads the engine itself performs for every tick.
 func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 	var res EvidenceResult
-	var warns []string
 
 	maxEntries, maxBytes, maxTime := o.MaxEntries, o.MaxBytes, o.MaxTime
 	if maxEntries <= 0 {
@@ -402,7 +404,12 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 	// and its retention draws the remote listing's window.
 	policy, policyKnown := readerPolicy(ctx)
 	if !policyKnown {
-		warns = append(warns, warningPolicyCancelled)
+		// The read's own diagnostics live in the stage they describe,
+		// where every stage's own warnings stand: a policy resolution a
+		// cancellation stopped warns in the policy's warnings, never in
+		// a group of its own at the top level — the composition the
+		// shipped fixtures and the consumer page pin.
+		policy.Warnings = append(policy.Warnings, warningPolicyCancelled)
 	}
 	res.Policy = policy
 
@@ -448,7 +455,10 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 		if hn, err := localHostname(); err == nil {
 			local.Node = hn
 		} else {
-			warns = append(warns, warningNodeUnknown)
+			// The same warning the walk would have put here, in the
+			// local stage's warnings where the walk puts its own —
+			// never a group of its own at the top level.
+			local.Warnings = append(local.Warnings, warningNodeUnknown)
 		}
 	}
 	res.Local = local
@@ -515,6 +525,5 @@ func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 	res.Warnings = append(res.Warnings, policy.Warnings...)
 	res.Warnings = append(res.Warnings, res.Backups.Warnings...)
 	res.Warnings = append(res.Warnings, m.Warnings...)
-	res.Warnings = append(res.Warnings, warns...)
 	return res
 }

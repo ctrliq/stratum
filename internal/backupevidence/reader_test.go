@@ -751,6 +751,39 @@ func TestReaderResolvesTheNodeForAnUnscopedRequestWhoseWalkNeverRan(t *testing.T
 	}
 }
 
+// The read's own diagnostics live in the stage they describe, never in a
+// group of their own at the top level: the shipped fixtures and the
+// consumer page pin the document's top-level warnings to exactly the
+// policy's, the census's and the maintenance record's, in that order, so
+// a warning the read itself produces — a policy resolution a cancellation
+// stopped, a node name that could not be resolved when the walk never ran —
+// must land in that stage's warnings like every other diagnostic the
+// stages carry, or the document grows a fourth composition no consumer is
+// told about and no fixture may ship.
+func TestReaderFoldsItsOwnWarningsIntoTheStagesTheyDescribe(t *testing.T) {
+	withEvidencePaths(t)
+	// A request that already ended — no stage ran, so the read's own
+	// diagnostics are the only ones it produces — with a hostname that
+	// cannot be resolved, so the non-walked node path warns too.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	old := localHostname
+	t.Cleanup(func() { localHostname = old })
+	localHostname = func() (string, error) { return "", errors.New("no name") }
+
+	res := Evidence(ctx, EvidenceOptions{})
+
+	if !slices.Contains(res.Policy.Warnings, warningPolicyCancelled) {
+		t.Errorf("Policy.Warnings = %q, want the read's cancelled-policy warning folded into the policy stage's own warnings", res.Policy.Warnings)
+	}
+	if !slices.Contains(res.Local.Warnings, warningNodeUnknown) {
+		t.Errorf("Local.Warnings = %q, want the node-name warning folded into the local stage's warnings, the same place the walk puts its own", res.Local.Warnings)
+	}
+	if want := slices.Concat(res.Policy.Warnings, res.Backups.Warnings, res.Maintenance.Warnings); !slices.Equal(res.Warnings, want) {
+		t.Errorf("Warnings = %q, want exactly the policy's, the census's and the maintenance's warnings composed in that order: %q", res.Warnings, want)
+	}
+}
+
 // A snapshot.conf that was readable for months with an S3 target and then
 // broke leaves the target undeterminable — while the copies it already
 // uploaded still sit on the store, the record's last successful upload

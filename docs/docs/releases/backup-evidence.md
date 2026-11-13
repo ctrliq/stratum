@@ -27,7 +27,7 @@ identically from three surfaces:
   (pkg/cli/evidence.go), with the `WithBackupEvidenceNode`,
   `WithBackupEvidenceMaxEntries`, `WithBackupEvidenceMaxBytes` and
   `WithBackupEvidenceMaxTime` options and the `Backup*` value types the
-  result is built from, all in pkg/cli/evidence.go.
+  result is built from.
   This is the sanctioned surface for an external pinned binary: it imports
   no engine internals and re-derives none of the engine's configuration
   resolution — the engine resolves its own policy
@@ -55,20 +55,21 @@ by summing or comparing totals (internal/backupevidence/remote.go).
 The release also starts a node-owned backup-evidence publisher beside the
 scheduled snapshot loop, as one of the controller's post-start tasks, so it
 runs wherever snapshots run and needs no operator
-(internal/cluster/run.go). An operator-disabled node starts and
-records it exactly as an operator-enabled one does — proved on a live node
-(tools/inttest/check-backup-evidence-operator-off.sh), and a node
-upgraded from a release that has no publisher activates one on its own with
-no operator involvement (tools/inttest/check-upgrade-from-release.sh).
+(internal/cluster/run.go). A node with the Stratum operator disabled
+starts and records the publisher exactly as one with it enabled — proved on
+a live node (tools/inttest/check-backup-evidence-operator-off.sh). A node
+upgraded from a release that has no publisher activates one on its own,
+with no operator involvement
+(tools/inttest/check-upgrade-from-release.sh).
 
 The publisher samples the engine's evidence through the same read the
-surfaces serve, on the engine's built-in bounds (pkg/cli/up.go), on a
-one-minute cadence with the first sample at once
-(internal/cluster/run.go), and
-records a bounded summary — node, counts, whether the total is exact, safe
-warnings — durably at `/var/lib/stratum/config/backup-evidence.yaml`, written
-atomically at mode 0600 with a schema version a later revision can refuse
-instead of misreading (internal/cluster/run.go). It shares the snapshot loop's gate: with
+surfaces serve, on the engine's built-in bounds (pkg/cli/up.go), once a
+minute with the first sample at once (internal/cluster/run.go). It records
+a bounded summary — node, counts, whether the total is exact, safe
+warnings — durably at `/var/lib/stratum/config/backup-evidence.yaml`. The
+record is written atomically at mode 0600, with a schema version a later
+revision can refuse instead of misreading (internal/cluster/run.go). It
+shares the snapshot loop's gate: with
 snapshots disabled in the cluster config there is no backup evidence to
 publish, and the publisher does not start (internal/cluster/run.go).
 The record is the node's own proof of what the publisher last saw, readable
