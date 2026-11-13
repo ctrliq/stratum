@@ -218,8 +218,8 @@ type BackupCensus struct {
 }
 
 // BackupAttempt is one recorded maintenance attempt as safe diagnostics:
-// when it ran and the typed outcome. A zero AttemptedAt means the loop has
-// not run the attempt yet, which is exact, not an unknown.
+// when it ran and the typed outcome. A zero AttemptedAt means no attempt is
+// recorded; when BackupMaintenance.AttemptsKnown is false the history is unknown.
 type BackupAttempt struct {
 	// AttemptedAt is when the loop started the attempt.
 	AttemptedAt time.Time
@@ -247,9 +247,9 @@ type BackupMaintenance struct {
 	// Warnings state the record's scheduling and retention warnings as typed
 	// safe reasons.
 	Warnings []string
-	// AttemptsKnown says the record was read. False means the diagnostics
-	// are unknown — a record that exists but cannot be read, or a read the
-	// request's bounds cut short — never that no attempt was made.
+	// AttemptsKnown says the record was read or does not exist. False means
+	// the diagnostics are unknown because the record is unreadable or the
+	// request ended — never that no attempt was made.
 	AttemptsKnown bool
 }
 

@@ -58,7 +58,7 @@ type RemoteResult struct {
 }
 
 // Remote lists the remote copies the target holds as a bounded catalog: every
-// object under the prefix with its stable name-derived ID, the remote
+// completed .db snapshot under the prefix with its stable name-derived ID, the remote
 // location, its creation time (the object's LastModified), its size and an
 // unknown digest. A listing that stops short — a hung or denied store, a
 // cancelled request, a cap — returns what it listed as a floor with unknown
@@ -83,6 +83,9 @@ func Remote(ctx context.Context, o RemoteOptions) RemoteResult {
 		MaxPages: o.MaxPages, MaxBytes: o.MaxBytes, MaxTime: o.MaxTime,
 	})
 	for _, ob := range lr.Objects {
+		if strings.HasSuffix(ob.Key, "/") || !strings.HasSuffix(ob.Name, ".db") {
+			continue
+		}
 		res.Copies = append(res.Copies, Artifact{
 			ID:       ob.Name,
 			Location: remoteLocation,

@@ -913,14 +913,14 @@ func TestReaderWithAnUnreadableNodeStateReportsAnUnknownRemoteCatalog(t *testing
 	withEvidencePaths(t)
 	old := loadNodeState
 	t.Cleanup(func() { loadNodeState = old })
-	loadNodeState = func() (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
+	loadNodeState = func(context.Context) (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
 	// The config the fallback path resolves is hermetic: an empty temp
 	// directory for the walk, no S3 target — the strongest case for a
 	// wrong exact zero, because the defaults hold no target at all.
 	dir := t.TempDir()
 	oldCC := loadClusterConfig
 	t.Cleanup(func() { loadClusterConfig = oldCC })
-	loadClusterConfig = func(path string) (*cluster.ClusterConfig, error) {
+	loadClusterConfig = func(_ context.Context, path string) (*cluster.ClusterConfig, error) {
 		return cluster.LoadConfig(filepath.Join(dir, "stratum.yaml"))
 	}
 	noSnapshotConf(t)

@@ -16,11 +16,12 @@
 package backupevidence
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/version"
 	"sigs.k8s.io/yaml"
 )
@@ -90,7 +91,11 @@ func EvidencePath() string {
 // binary's refuses to load: a newer revision may mean something else by a
 // field, and misreading the evidence is worse than not having it.
 func LoadAttempts() (*Attempts, error) {
-	b, err := os.ReadFile(EvidencePath())
+	return loadAttempts(context.Background())
+}
+
+func loadAttempts(ctx context.Context) (*Attempts, error) {
+	b, err := boundedfile.Read(ctx, EvidencePath())
 	if err != nil {
 		return nil, err
 	}

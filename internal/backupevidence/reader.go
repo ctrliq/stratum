@@ -35,9 +35,8 @@ const (
 )
 
 // AttemptEvidence is one recorded attempt as safe diagnostics: when it ran
-// and the typed outcome. A zero AttemptedAt means the loop has not run the
-// attempt yet, which is exact — the record's first attempt is its first
-// tick — not an unknown.
+// and the typed outcome. A zero AttemptedAt means no attempt is recorded;
+// when Maintenance.AttemptsKnown is false the history is unknown.
 type AttemptEvidence struct {
 	// AttemptedAt is when the loop started the attempt.
 	AttemptedAt time.Time
@@ -67,9 +66,9 @@ type Maintenance struct {
 	// Warnings state the record's scheduling and retention warnings as
 	// typed safe reasons.
 	Warnings []string
-	// AttemptsKnown says the record was read. False means the diagnostics
-	// are unknown — a record that exists but cannot be read, or a read the
-	// request's bounds cut short — never that no attempt was made.
+	// AttemptsKnown says the record was read or does not exist. False means
+	// the diagnostics are unknown because the record is unreadable or the
+	// request ended — never that no attempt was made.
 	AttemptsKnown bool
 }
 
@@ -157,7 +156,11 @@ var (
 		if err := ctx.Err(); err != nil {
 			return unknownPolicy(), false
 		}
-		return Policy(), true
+		p = policy(ctx)
+		if ctx.Err() != nil {
+			return unknownPolicy(), false
+		}
+		return p, true
 	}
 	// readerAttempts reads the durable attempt record under the request
 	// context.
@@ -165,7 +168,7 @@ var (
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return LoadAttempts()
+		return loadAttempts(ctx)
 	}
 	// readerTarget resolves the effective S3 target — the one the
 	// scheduled loop uploads to, credentials included for the listing
@@ -177,7 +180,11 @@ var (
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return effectiveTarget()
+		target, err := effectiveTarget(ctx)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return target, err
 	}
 )
 
@@ -281,15 +288,15 @@ var errTargetUndetermined = errors.New("the remote target could not be determine
 // replaced its say — settles the no-target case as a real zero. The
 // returned target carries the credentials the listing needs; neither it
 // nor the error reaches the result.
-func effectiveTarget() (*objstore.Target, error) {
+func effectiveTarget(ctx context.Context) (*objstore.Target, error) {
 	var sink []string
-	path, recorded, stateKnown := activePath(&sink)
-	cc, ccErr := loadActiveClusterConfig(path, recorded)
+	path, recorded, stateKnown := activePath(ctx, &sink)
+	cc, ccErr := loadActiveClusterConfig(ctx, path, recorded)
 	base := etcdsnap.DefaultConfig()
 	if ccErr == nil {
 		base = cc.SnapshotBase()
 	}
-	conf, fromFile, confErr := loadSnapshotConf(base)
+	conf, fromFile, confErr := loadSnapshotConf(ctx, base)
 	if confErr != nil {
 		return nil, errTargetUndetermined
 	}
@@ -348,10 +355,11 @@ func artifactBytes(artifacts []Artifact) int64 {
 //
 // The bounds are one overall budget the reads share. The time budget is a
 // deadline over every read the call makes: the request context propagates
-// into the local walk and the S3 listing, so a hung or denied store ends
-// when the bound ends it, and a stage whose context already ended launches
-// no read. The page budget counts every backup the call describes — each
-// local artifact and each remote copy — and the byte budget the artifact
+// into metadata reads, the local walk and the S3 listing. Cancellation stops
+// remote I/O and is checked between local filesystem operations; it cannot
+// interrupt a filesystem syscall stalled in the kernel. A stage whose context
+// already ended launches no read. The page budget counts every backup the
+// call describes — each local artifact and each remote copy — and the byte budget the artifact
 // bytes both walks account for: the local walk draws from the budget first
 // and the remote listing gets what remains, so the combined reads never
 // exceed the caps. A stage the budget stops is unknown, never zero: a

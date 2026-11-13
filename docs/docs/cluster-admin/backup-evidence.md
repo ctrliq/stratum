@@ -227,10 +227,11 @@ an executable path or a storage address.
 | `lastSaveSuccess` | `Maintenance.LastSaveSuccess` | when the save last succeeded, kept separate from the latest attempt so a streak of failures does not erase it |
 | `lastUploadSuccess` | `Maintenance.LastUploadSuccess` | when the upload last succeeded |
 | `warnings` | `Maintenance.Warnings` | the scheduling and retention warnings the loop's last tick ran with |
-| `attemptsKnown` | `Maintenance.AttemptsKnown` | the record was read; false means the diagnostics are unknown, never that no attempt was made |
+| `attemptsKnown` | `Maintenance.AttemptsKnown` | the record was read or does not exist; false means the diagnostics are unknown, never that no attempt was made |
 
-An attempt is `attemptedAt` and `outcome`. `attemptedAt` is absent when the
-loop has not run the attempt yet, and that absence is exact, not an unknown.
+An attempt is `attemptedAt` and `outcome`. An absent `attemptedAt` means no
+attempt is recorded. Interpret absence only when `attemptsKnown` is true;
+when false, attempt timestamps and outcomes are unknown.
 `outcome` is `succeeded` or `failed`, absent when no attempt is recorded.
 Prune is independent of save and upload: a save that
 succeeded while pruning failed is a working backup with broken retention.
@@ -261,11 +262,16 @@ passes no cap gets the built-ins, never an unbounded read
 | bytes — the artifact bytes both walks account for | 1 TiB | `WithBackupEvidenceMaxBytes` | `max_bytes` |
 | time — the deadline over every read the call makes | 20 s | `WithBackupEvidenceMaxTime` | `max_seconds` |
 
-The caller's context propagates into the local walk and the S3 listing: a
-cancelled request ends the underlying I/O, and a stage whose context has
-already ended launches no read. A hung or denied store ends when the bound ends
-it, and the read still returns, with the affected stage a floor and a warning
-naming the condition.
+The caller's context propagates into metadata reads, the local walk and the S3
+listing. Cancellation ends underlying remote I/O, and a stage whose context
+has already ended launches no read. A hung or denied remote store returns
+within the deadline, with the affected stage a floor and a safe warning.
+
+Configuration, attempt records and node credentials must be regular files of
+at most 1 MiB each. Nonblocking opens reject FIFOs, including files replaced
+during an open. Local reads check cancellation between filesystem operations;
+the kernel must return from a filesystem syscall before cancellation can be
+observed. Keep node metadata and snapshots on a responsive local filesystem.
 
 ## Compatibility
 

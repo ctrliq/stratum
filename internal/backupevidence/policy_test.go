@@ -1,6 +1,7 @@
 package backupevidence
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -24,7 +25,7 @@ func noSnapshotConf(t *testing.T) {
 	t.Helper()
 	old := loadSnapshotConf
 	t.Cleanup(func() { loadSnapshotConf = old })
-	loadSnapshotConf = func(base etcdsnap.Config) (etcdsnap.Config, bool, error) { return base, false, nil }
+	loadSnapshotConf = func(_ context.Context, base etcdsnap.Config) (etcdsnap.Config, bool, error) { return base, false, nil }
 }
 
 // snapshotConfSupplies pins the conf seam to a file that exists and wins
@@ -33,7 +34,7 @@ func snapshotConfSupplies(t *testing.T, c etcdsnap.Config) {
 	t.Helper()
 	old := loadSnapshotConf
 	t.Cleanup(func() { loadSnapshotConf = old })
-	loadSnapshotConf = func(etcdsnap.Config) (etcdsnap.Config, bool, error) { return c, true, nil }
+	loadSnapshotConf = func(context.Context, etcdsnap.Config) (etcdsnap.Config, bool, error) { return c, true, nil }
 }
 
 // unreadableSnapshotConf pins the conf seam to an existing file whose read
@@ -43,7 +44,7 @@ func unreadableSnapshotConf(t *testing.T) {
 	t.Helper()
 	old := loadSnapshotConf
 	t.Cleanup(func() { loadSnapshotConf = old })
-	loadSnapshotConf = func(etcdsnap.Config) (etcdsnap.Config, bool, error) {
+	loadSnapshotConf = func(context.Context, etcdsnap.Config) (etcdsnap.Config, bool, error) {
 		return etcdsnap.DefaultConfig(), false, errors.New("read /etc/stratum/snapshot.conf: is a directory")
 	}
 }
@@ -59,7 +60,7 @@ func recordedConfig(t *testing.T, y string) string {
 	}
 	old := loadNodeState
 	t.Cleanup(func() { loadNodeState = old })
-	loadNodeState = func() (*nodestate.NodeState, error) {
+	loadNodeState = func(context.Context) (*nodestate.NodeState, error) {
 		return &nodestate.NodeState{ConfigPath: p}, nil
 	}
 	return p
@@ -267,7 +268,7 @@ func TestPolicyIsUnknownWhenTheClusterConfigCannotBeRead(t *testing.T) {
 	t.Run("unreadable node state", func(t *testing.T) {
 		old := loadNodeState
 		t.Cleanup(func() { loadNodeState = old })
-		loadNodeState = func() (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
+		loadNodeState = func(context.Context) (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
 		noSnapshotConf(t)
 		p := Policy()
 		if p.State != StateUnknown {
@@ -314,9 +315,9 @@ func TestPolicyUnreadableConfIsAWarnAndNeverInventsThresholds(t *testing.T) {
 func TestUnreadableNodeStateDoesNotInventFallbackPolicy(t *testing.T) {
 	oldNode, oldConfig := loadNodeState, loadClusterConfig
 	t.Cleanup(func() { loadNodeState, loadClusterConfig = oldNode, oldConfig })
-	loadNodeState = func() (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
+	loadNodeState = func(context.Context) (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	loadClusterConfig = func(string) (*cluster.ClusterConfig, error) { return cluster.LoadConfig(missing) }
+	loadClusterConfig = func(context.Context, string) (*cluster.ClusterConfig, error) { return cluster.LoadConfig(missing) }
 	noSnapshotConf(t)
 	p := Policy()
 	if p.IntervalFrom != FromUnknown || p.RetainFrom != FromUnknown || p.CopyFrom != FromUnknown || p.DirFrom != FromUnknown {

@@ -15,6 +15,25 @@ import (
 	"github.com/ctrliq/stratum/internal/objstore"
 )
 
+func TestRemoteExcludesUnrelatedObjects(t *testing.T) {
+	tgt := stubRemote(t, []remoteObj{
+		ro("README", 1, remoteTime(0, 0)),
+		ro("snapshot.db.sha256", 64, remoteTime(0, 0)),
+	}, []remoteObj{
+		ro("unfinished.db.part", 10, remoteTime(0, 0)),
+		ro("folder.db/", 0, remoteTime(0, 0)),
+		ro("snapshot.db", 10, remoteTime(0, 0)),
+	})
+	res := Remote(context.Background(), RemoteOptions{Target: tgt, RetentionCutoff: remoteTime(1, 0)})
+	if !res.Complete || len(res.Copies) != 1 || res.Copies[0].ID != "snapshot.db" || len(res.Old) != 1 {
+		t.Fatalf("nonbackup objects changed the exact remote total: %+v", res)
+	}
+	census := Union(LocalResult{Complete: true}, res)
+	if !census.Complete || len(census.Entries) != 1 {
+		t.Fatalf("nonbackup objects changed the exact census: %+v", census)
+	}
+}
+
 // remoteTime is a fixed UTC time the stub remote store's LastModified values
 // parse to, so the creation times the remote catalog reports assert exactly.
 func remoteTime(hour, min int) time.Time {

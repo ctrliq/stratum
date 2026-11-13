@@ -204,6 +204,9 @@ func RemoveStaleTemps(root *os.Root, name string, olderThan time.Duration) error
 
 // Object is one item in the store.
 type Object struct {
+	// Key preserves trailing slashes for consumers distinguishing prefix markers.
+	// It is excluded from native machine-readable snapshot list output.
+	Key      string `json:"-"`
 	Name     string // base name (prefix stripped)
 	Size     int64
 	Modified time.Time
@@ -230,6 +233,7 @@ func (t *Target) List(ctx context.Context) ([]Object, error) {
 		}
 		for _, o := range page.Contents {
 			out = append(out, Object{
+				Key:      aws.ToString(o.Key),
 				Name:     path.Base(aws.ToString(o.Key)),
 				Size:     aws.ToInt64(o.Size),
 				Modified: aws.ToTime(o.LastModified),
@@ -370,13 +374,14 @@ list:
 		}
 		pages++
 		for _, ob := range page.Contents {
-			name := path.Base(aws.ToString(ob.Key))
-			if seen[name] {
+			key := aws.ToString(ob.Key)
+			name := path.Base(key)
+			if seen[key] {
 				// The store listed this key again on a later page:
 				// the same object, not a second one.
 				continue
 			}
-			seen[name] = true
+			seen[key] = true
 			size := aws.ToInt64(ob.Size)
 			if accounted+size > o.MaxBytes {
 				end = ListEndedCapped
@@ -384,6 +389,7 @@ list:
 			}
 			accounted += size
 			out = append(out, Object{
+				Key:      key,
 				Name:     name,
 				Size:     size,
 				Modified: aws.ToTime(ob.LastModified),

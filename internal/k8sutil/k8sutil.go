@@ -665,7 +665,7 @@ func OwnNodeUID(ctx context.Context, node string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	cs, err := kubeletClientset()
+	cs, err := kubeletClientsetContext(ctx)
 	if err != nil {
 		return "", err
 	}

@@ -135,9 +135,12 @@ var (
 		if err := ctx.Err(); err != nil {
 			return 0, time.Time{}, err
 		}
-		fi, err := os.Stat(filepath.Join(dir, name))
+		fi, err := os.Lstat(filepath.Join(dir, name))
 		if err != nil {
 			return 0, time.Time{}, err
+		}
+		if !fi.Mode().IsRegular() {
+			return 0, time.Time{}, errNotSnapshot
 		}
 		return fi.Size(), fi.ModTime(), nil
 	}
@@ -182,6 +185,8 @@ var (
 		return "sha256:" + hex.EncodeToString(b), true, nil
 	}
 )
+
+var errNotSnapshot = errors.New("snapshot entry is not a regular file")
 
 // isCancellation says the walk's own request ended — the bound the caller put
 // on it — rather than storage failing.
@@ -259,7 +264,7 @@ walk:
 			// Only snapshot files are artifacts: partial saves, sidecars,
 			// unrelated files and nested directories are not, and naming
 			// each would be noise, not evidence.
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".db") {
+			if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".db") {
 				continue
 			}
 			if err := ctx.Err(); err != nil {
@@ -278,9 +283,9 @@ walk:
 				warns = append(warns, cancelledWalkWarning)
 				complete = false
 				break walk
-			case errors.Is(ierr, fs.ErrNotExist):
+			case errors.Is(ierr, fs.ErrNotExist), errors.Is(ierr, errNotSnapshot):
 				// Vanished between the listing and the read: no longer an
-				// artifact, so not a diagnostic either.
+				// artifact. The same holds for a replacement with another type.
 				continue
 			case ierr != nil:
 				warns = append(warns, fmt.Sprintf("WARN: the local snapshot %s cannot be read; its size and creation time are unknown, and the local catalog is not a complete total", e.Name()))

@@ -5,6 +5,7 @@
 package backupevidence
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -116,17 +117,17 @@ const defaultSnapshotDir = "/var/backups/etcd"
 var (
 	// loadNodeState reads the node state that records the cluster config
 	// file the controller was started with.
-	loadNodeState = nodestate.LoadState
+	loadNodeState = nodestate.LoadStateContext
 	// loadClusterConfig reads the cluster config at a path; a missing file
 	// yields the pure defaults (cluster.LoadConfig).
-	loadClusterConfig = cluster.LoadConfig
+	loadClusterConfig = cluster.LoadConfigContext
 	// loadSnapshotConf reads the operator-managed snapshot.conf over the
 	// cluster-config base (etcdsnap.LoadConfigOr): an existing file wins
 	// outright, environment credentials included in the values it returns.
 	// fromFile reports whether the file supplied the result; the error is
 	// its read failure.
-	loadSnapshotConf = func(base etcdsnap.Config) (etcdsnap.Config, bool, error) {
-		c, err := etcdsnap.LoadConfigOr(base)
+	loadSnapshotConf = func(ctx context.Context, base etcdsnap.Config) (etcdsnap.Config, bool, error) {
+		c, err := etcdsnap.LoadConfigOrContext(ctx, base)
 		return c, c.FromFile(), err
 	}
 )
@@ -141,7 +142,9 @@ var (
 // threshold: the loop itself prunes nothing and uploads nothing when its
 // snapshot.conf cannot be read, and the controller keeps running with the
 // config it was started with when that config can no longer be read.
-func Policy() EffectivePolicy {
+func Policy() EffectivePolicy { return policy(context.Background()) }
+
+func policy(ctx context.Context) EffectivePolicy {
 	var p EffectivePolicy
 	var warns []string
 
@@ -151,8 +154,8 @@ func Policy() EffectivePolicy {
 	// state that cannot be read falls back to the default path with a
 	// warning, exactly as the engine resolver does, but the policy marks
 	// itself unknown: the controller may have been started with any config.
-	path, recorded, stateKnown := activePath(&warns)
-	cc, ccErr := loadActiveClusterConfig(path, recorded)
+	path, recorded, stateKnown := activePath(ctx, &warns)
+	cc, ccErr := loadActiveClusterConfig(ctx, path, recorded)
 	if ccErr != nil {
 		warns = append(warns, fmt.Sprintf("WARN: cannot read the cluster config the controller was started with (%s); the schedule, the snapshot directory and the disabled state are unknown and no defaults are invented for them", path))
 	}
@@ -167,7 +170,7 @@ func Policy() EffectivePolicy {
 	if ccErr == nil && stateKnown {
 		base = cc.SnapshotBase()
 	}
-	conf, fromFile, confErr := loadSnapshotConf(base)
+	conf, fromFile, confErr := loadSnapshotConf(ctx, base)
 	if confErr != nil {
 		warns = append(warns, "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown")
 	}
@@ -254,8 +257,8 @@ func Policy() EffectivePolicy {
 // path. A node state that does not exist yet is the ordinary uninitialised
 // case; any other read failure warns and falls back to the default path, and
 // known comes back false so the policy can mark itself unknown.
-func activePath(warns *[]string) (path string, recorded, known bool) {
-	st, err := loadNodeState()
+func activePath(ctx context.Context, warns *[]string) (path string, recorded, known bool) {
+	st, err := loadNodeState(ctx)
 	switch {
 	case err == nil && st.ConfigPath != "":
 		return st.ConfigPath, true, true
@@ -275,8 +278,11 @@ func activePath(warns *[]string) (path string, recorded, known bool) {
 // uploads — while a missing default-path config is simply no config. The
 // effective policy and the remote-target resolution share this step so the
 // two cannot drift on what the controller actually reads.
-func loadActiveClusterConfig(path string, recorded bool) (*cluster.ClusterConfig, error) {
-	cc, err := loadClusterConfig(path)
+func loadActiveClusterConfig(ctx context.Context, path string, recorded bool) (*cluster.ClusterConfig, error) {
+	cc, err := loadClusterConfig(ctx, path)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err == nil && recorded {
 		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%s: the cluster config this controller was started with no longer exists", path)

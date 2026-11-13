@@ -18,6 +18,7 @@
 # these; a layer-1 package may import only other layer-1 packages, and none
 # reaches higher.
 layer1 github.com/ctrliq/stratum/internal/bootstrap/clusterinfo
+layer1 github.com/ctrliq/stratum/internal/boundedfile
 layer1 github.com/ctrliq/stratum/internal/enginesettings
 layer1 github.com/ctrliq/stratum/internal/interrupt
 layer1 github.com/ctrliq/stratum/internal/k8sver

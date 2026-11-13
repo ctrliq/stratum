@@ -17,6 +17,46 @@ import (
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 )
 
+func TestLocalExcludesNonregularSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, "real.db", 10, snapTime(1))
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe.db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "nested.db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"directory-link.db": "nested.db", "file-link.db": "real.db"} {
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := Local(context.Background(), LocalOptions{Dir: dir, Node: "cp-1"})
+	if !res.Complete || len(res.Artifacts) != 1 || res.Artifacts[0].ID != "real.db" {
+		t.Fatalf("nonregular entries changed the exact snapshot total: %+v", res)
+	}
+}
+
+func TestLocalExcludesSnapshotReplacedWithSymlink(t *testing.T) {
+	dir := t.TempDir()
+	writeSnapshot(t, dir, "replaced.db", 10, snapTime(1))
+	old := localEntryInfo
+	t.Cleanup(func() { localEntryInfo = old })
+	localEntryInfo = func(ctx context.Context, dir, name string) (int64, time.Time, error) {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(dir, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+		return old(ctx, dir, name)
+	}
+	res := Local(context.Background(), LocalOptions{Dir: dir, Node: "cp-1"})
+	if !res.Complete || len(res.Artifacts) != 0 {
+		t.Fatalf("a replaced snapshot was counted: %+v", res)
+	}
+}
+
 func TestLocalRejectsFIFOsWithoutBlocking(t *testing.T) {
 	for _, sidecar := range []bool{false, true} {
 		name := "directory"
