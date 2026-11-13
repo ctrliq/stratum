@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,9 +22,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ctrliq/stratum/internal/cluster"
 	"github.com/ctrliq/stratum/internal/etcdsnap"
+	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/objstore"
 	"github.com/ctrliq/stratum/internal/version"
+	"sigs.k8s.io/yaml"
 )
 
 // evidenceTime is the fixed UTC clock the reader's retention window is
@@ -53,13 +57,25 @@ func oldCopyTime() time.Time {
 }
 
 // seedAttempts writes the durable attempt record the reader loads, through
-// the redirected evidence paths, the same file the loop's recording writes.
+// the redirected evidence paths, the same file the loop's recording writes:
+// the record's shape marshalled to the record's path at the record's mode.
+// It builds the file the way the reader's own contract reads it, not
+// through the loop's writer, which this package cannot reach without the
+// import the reader's design forbids.
 func seedAttempts(t *testing.T, seed func(*Attempts)) {
 	t.Helper()
 	withEvidencePaths(t)
 	a := &Attempts{}
 	seed(a)
-	if err := SaveAttempts(a); err != nil {
+	a.SchemaVersion = AttemptsSchemaVersion
+	b, err := yaml.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal the attempt record: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(EvidencePath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(EvidencePath(), b, 0o600); err != nil {
 		t.Fatalf("seed the attempt record: %v", err)
 	}
 }
@@ -132,13 +148,15 @@ func TestReaderComposesPolicyArtifactsCopiesAndMaintenance(t *testing.T) {
 	snapshotConfSupplies(t, etcdsnap.Config{Retain: 3, S3: *tgt})
 	saved := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	seedAttempts(t, func(a *Attempts) {
-		a.RecordSave(saved, nil)
-		a.RecordUpload(saved.Add(time.Minute), nil)
-		a.RecordPrune(saved.Add(2*time.Minute), errors.New("prune /var/backups/etcd: permission denied"))
-		a.SetWarnings(
+		a.Save = Attempt{AttemptedAt: saved}
+		a.LastSaveSuccess = saved
+		a.Upload = Attempt{AttemptedAt: saved.Add(time.Minute)}
+		a.LastUploadSuccess = saved.Add(time.Minute)
+		a.Prune = Attempt{AttemptedAt: saved.Add(2 * time.Minute), Result: "prune /var/backups/etcd: permission denied"}
+		a.Warnings = []string{
 			"stratum: WARN: cannot read snapshot config, pruning skipped this tick (snapshot still taken and kept, no S3 upload): read /etc/stratum/snapshot.conf: is a directory",
-			"WARN: S3 snapshot prune: delete "+s1+": 403 from the store",
-		)
+			"WARN: S3 snapshot prune: delete " + s1 + ": 403 from the store",
+		}
 	})
 
 	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"})
@@ -310,13 +328,13 @@ func TestReaderNeverLeaksCredentialsExecutablePathsOrRawErrors(t *testing.T) {
 	}})
 	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	seedAttempts(t, func(a *Attempts) {
-		a.RecordSave(at, errors.New("fork/exec /opt/stratum/bin/etcdctl: permission denied 0xfeedface"))
-		a.RecordUpload(at.Add(time.Minute), errors.New("PutObject https://127.0.0.1:1/b/key: 403 AKIA7QLEAKEDKEY"))
-		a.RecordPrune(at.Add(2*time.Minute), errors.New("S3 snapshot prune: delete refused 0xdeadbeef"))
-		a.SetWarnings(
+		a.Save = Attempt{AttemptedAt: at, Result: "fork/exec /opt/stratum/bin/etcdctl: permission denied 0xfeedface"}
+		a.Upload = Attempt{AttemptedAt: at.Add(time.Minute), Result: "PutObject https://127.0.0.1:1/b/key: 403 AKIA7QLEAKEDKEY"}
+		a.Prune = Attempt{AttemptedAt: at.Add(2 * time.Minute), Result: "S3 snapshot prune: delete refused 0xdeadbeef"}
+		a.Warnings = []string{
 			"WARN: S3 snapshot prune: AKIA7QLEAKEDKEY refused at /opt/stratum/bin/aws",
 			"WARN: something novel 0xfeedface",
-		)
+		}
 	})
 
 	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"})
@@ -711,8 +729,10 @@ func TestReaderWithAnUnreadableConfReportsAnUnknownRemoteCatalog(t *testing.T) {
 	unreadableSnapshotConf(t)
 	uploaded := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	seedAttempts(t, func(a *Attempts) {
-		a.RecordSave(uploaded, nil)
-		a.RecordUpload(uploaded.Add(time.Minute), nil)
+		a.Save = Attempt{AttemptedAt: uploaded}
+		a.LastSaveSuccess = uploaded
+		a.Upload = Attempt{AttemptedAt: uploaded.Add(time.Minute)}
+		a.LastUploadSuccess = uploaded.Add(time.Minute)
 	})
 
 	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"})
@@ -758,8 +778,10 @@ func TestReaderWithAnUnreadableClusterConfigAndNoConfReportsAnUnknownRemoteCatal
 	noSnapshotConf(t)
 	uploaded := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	seedAttempts(t, func(a *Attempts) {
-		a.RecordSave(uploaded, nil)
-		a.RecordUpload(uploaded.Add(time.Minute), nil)
+		a.Save = Attempt{AttemptedAt: uploaded}
+		a.LastSaveSuccess = uploaded
+		a.Upload = Attempt{AttemptedAt: uploaded.Add(time.Minute)}
+		a.LastUploadSuccess = uploaded.Add(time.Minute)
 	})
 
 	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"})
@@ -785,5 +807,97 @@ func TestReaderWithAnUnreadableClusterConfigAndNoConfReportsAnUnknownRemoteCatal
 	}
 	if strings.Contains(dump, "not a mapping") {
 		t.Errorf("the unreadable cluster config's raw error text escaped into the evidence:\n%s", dump)
+	}
+}
+
+// A cluster config the node state records — the one `stratum up --config`
+// started the controller with — that has since been deleted leaves the
+// remote target as undeterminable as an unreadable one does: the
+// controller keeps running with the config it was started with, so the
+// store that config's target uploaded to may still hold every copy, and
+// the reader must not resolve the missing file into the built-in defaults
+// and report the remote store as a complete exact zero. The engine
+// resolver's mustExist rule — the one the effective policy already
+// applies — settles this the same way for the target.
+func TestReaderWithADeletedRecordedConfigReportsAnUnknownRemoteCatalog(t *testing.T) {
+	withEvidencePaths(t)
+	p := recordedConfig(t, "spec:\n  snapshots:\n    retain: 3\n    intervalHours: 24\n")
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	noSnapshotConf(t)
+	uploaded := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	seedAttempts(t, func(a *Attempts) {
+		a.Save = Attempt{AttemptedAt: uploaded}
+		a.LastSaveSuccess = uploaded
+		a.Upload = Attempt{AttemptedAt: uploaded.Add(time.Minute)}
+		a.LastUploadSuccess = uploaded.Add(time.Minute)
+	})
+
+	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"})
+
+	if res.Policy.State != StateUnknown || res.Policy.CopyFrom != FromUnknown {
+		t.Errorf("Policy = %+v, want the unknown state with an unknown copy requirement: the recorded config is gone", res.Policy)
+	}
+	if res.Remote.Complete {
+		t.Error("Remote.Complete = true, want false: the deleted config's target cannot be determined, so the store may hold the copies it uploaded — an unknown catalog, never a complete exact zero")
+	}
+	if len(res.Remote.Copies) != 0 {
+		t.Errorf("Remote.Copies = %+v, want none: no target was resolved to list", res.Remote.Copies)
+	}
+	if w := strings.Join(res.Remote.Warnings, "\n"); !strings.Contains(w, "target") || !strings.Contains(w, "unknown and not a complete total") {
+		t.Errorf("the remote warnings do not name the target that could not be determined and the unknown catalog: %q", w)
+	}
+	if res.Backups.Complete || res.Complete {
+		t.Error("the result claims completeness from a remote catalog the read could not determine")
+	}
+}
+
+// A node state that cannot be read leaves the cluster config the
+// controller actually runs unknown — the default path is a guess, and the
+// config it points at may describe a node with no S3 target while the
+// controller was started with one that uploads. The remote catalog must
+// not settle the no-target case as a real zero over that guess: with no
+// snapshot.conf supplying a target outright, the catalog is unknown, the
+// same refusal the deleted and unreadable config arms make.
+func TestReaderWithAnUnreadableNodeStateReportsAnUnknownRemoteCatalog(t *testing.T) {
+	withEvidencePaths(t)
+	old := loadNodeState
+	t.Cleanup(func() { loadNodeState = old })
+	loadNodeState = func() (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
+	// The config the fallback path resolves is hermetic: an empty temp
+	// directory for the walk, no S3 target — the strongest case for a
+	// wrong exact zero, because the defaults hold no target at all.
+	dir := t.TempDir()
+	oldCC := loadClusterConfig
+	t.Cleanup(func() { loadClusterConfig = oldCC })
+	loadClusterConfig = func(path string) (*cluster.ClusterConfig, error) {
+		return cluster.LoadConfig(filepath.Join(dir, "stratum.yaml"))
+	}
+	noSnapshotConf(t)
+	uploaded := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	seedAttempts(t, func(a *Attempts) {
+		a.Save = Attempt{AttemptedAt: uploaded}
+		a.LastSaveSuccess = uploaded
+		a.Upload = Attempt{AttemptedAt: uploaded.Add(time.Minute)}
+		a.LastUploadSuccess = uploaded.Add(time.Minute)
+	})
+
+	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"})
+
+	if res.Policy.State != StateUnknown {
+		t.Errorf("Policy.State = %q, want unknown: the node state cannot be read", res.Policy.State)
+	}
+	if res.Remote.Complete {
+		t.Error("Remote.Complete = true, want false: the config the controller runs is unknown, so the target is undetermined — never a complete exact zero from the fallback path's word")
+	}
+	if len(res.Remote.Copies) != 0 {
+		t.Errorf("Remote.Copies = %+v, want none: no target was resolved to list", res.Remote.Copies)
+	}
+	if w := strings.Join(res.Remote.Warnings, "\n"); !strings.Contains(w, "target") || !strings.Contains(w, "unknown and not a complete total") {
+		t.Errorf("the remote warnings do not name the target that could not be determined and the unknown catalog: %q", w)
+	}
+	if res.Backups.Complete || res.Complete {
+		t.Error("the result claims completeness from a remote catalog the read could not determine")
 	}
 }

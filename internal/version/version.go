@@ -358,12 +358,14 @@ func nodeFileOwners() map[string]string {
 
 		// The scheduled snapshot loop's durable attempt record: what its
 		// last save, upload and prune attempts did and when the save and
-		// upload last succeeded. The backup-evidence interface owns the
-		// record's shape and reads it, and the loop's writer sits in
-		// internal/etcdsnap, which that reader resolves its policy
-		// through — so the owner here is the reader's package, the one
-		// answerable for the file's contract, not the writer's.
-		K8sConfDir + "/snapshot-evidence.yaml": "internal/backupevidence",
+		// upload last succeeded. The loop's writer sits in
+		// internal/etcdsnap — the scheduled save records its attempts
+		// through it — and the reader and the record's shape in
+		// internal/backupevidence, which the writer cannot import: the
+		// file is the contract between the two, pinned together by the
+		// recording tests. The owner here is the writer, the package
+		// whose writes the node-file rule must scan.
+		K8sConfDir + "/snapshot-evidence.yaml": "internal/etcdsnap",
 
 		// The node-owned backup-evidence publisher's durable record: what
 		// its last sample of the engine's backup evidence said and when it

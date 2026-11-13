@@ -238,3 +238,98 @@ func TestAttemptRecordingNeverFailsTheSaveItRecords(t *testing.T) {
 		t.Errorf("evidence record = %v, want none while the data lock is held (the next tick retries)", err)
 	}
 }
+
+// TestAttemptFailedRetriesPersistAfterRestart walks the loop's own record
+// across a restart: a tick whose save and upload both succeed, then a
+// second process whose save fails — the failed retry persists while the
+// previous successes survive it. That is the pair the record exists for:
+// an operator reading the node after a crash sees both that backups
+// stopped succeeding and when the last one that did, exactly what the
+// reader loads after the restart.
+func TestAttemptFailedRetriesPersistAfterRestart(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+
+	// The first tick: the save and the upload both succeed.
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+		Dir: dir, Host: "cp1", Name: "snap1.db", Evidence: true, S3: stubRefusingPrune(t),
+	}); err != nil {
+		t.Fatalf("the successful tick: %v", err)
+	}
+	first, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatalf("the record after the successful tick: %v", err)
+	}
+	if first.Save.Result != "" || first.Upload.Result != "" || first.LastSaveSuccess.IsZero() || first.LastUploadSuccess.IsZero() {
+		t.Fatalf("the successful tick did not record its successes: %+v", first)
+	}
+
+	// The restart: everything after this reads and writes only the file.
+	fakeEtcdctl(t, "exit 1")
+	if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+		Dir: dir, Host: "cp1", Name: "snap2.db", Evidence: true, S3: stubFailingUpload(t),
+	}); err == nil {
+		t.Fatal("a failing etcdctl reported a successful save")
+	}
+
+	rec, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatalf("the record after the failed retry: %v", err)
+	}
+	if rec.Save.Result == "" || !rec.Save.AttemptedAt.After(first.Save.AttemptedAt) {
+		t.Errorf("the failed save attempt did not persist: %+v", rec.Save)
+	}
+	if !rec.LastSaveSuccess.Equal(first.LastSaveSuccess) {
+		t.Errorf("the failed retry moved the last save success: %v, want the previous tick's %v", rec.LastSaveSuccess, first.LastSaveSuccess)
+	}
+	if !rec.Upload.AttemptedAt.Equal(first.Upload.AttemptedAt) || rec.Upload.Result != first.Upload.Result {
+		t.Errorf("the failed retry disturbed the recorded upload attempt: %+v, want the previous tick's %+v", rec.Upload, first.Upload)
+	}
+	if !rec.LastUploadSuccess.Equal(first.LastUploadSuccess) {
+		t.Errorf("the failed retry moved the last upload success: %v, want the previous tick's %v", rec.LastUploadSuccess, first.LastUploadSuccess)
+	}
+}
+
+// TestAttemptRecordIsAtomicAndPrivate pins the write itself to the
+// node-file rule through the loop's own save: the record lands at mode
+// 0600 — a node-local record of failures must not be world-readable —
+// stamped with the schema version the reader reads, and the config area
+// is left holding the record alone, no stray temp name beside it.
+func TestAttemptRecordIsAtomicAndPrivate(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+		Dir: dir, Host: "cp1", Name: "snap.db", Evidence: true,
+	}); err != nil {
+		t.Fatalf("the save: %v", err)
+	}
+
+	p := filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml")
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("the record the save should have written: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("the record was written as %04o, want 0600", perm)
+	}
+	entries, err := os.ReadDir(version.K8sConfDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "snapshot-evidence.yaml" {
+		t.Errorf("the config dir holds %v, want the record alone", entries)
+	}
+	rec, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatalf("the record the backup-evidence reader loads: %v", err)
+	}
+	if rec.SchemaVersion != backupevidence.AttemptsSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want the reader's %d: the loop must write the record the evidence interface reads",
+			rec.SchemaVersion, backupevidence.AttemptsSchemaVersion)
+	}
+	if rec.Save.AttemptedAt.IsZero() || rec.Save.Result != "" {
+		t.Errorf("the save the record carries: %+v, want the successful attempt the loop made", rec.Save)
+	}
+}

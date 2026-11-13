@@ -152,14 +152,7 @@ func Policy() EffectivePolicy {
 	// warning, exactly as the engine resolver does, but the policy marks
 	// itself unknown: the controller may have been started with any config.
 	path, recorded, stateKnown := activePath(&warns)
-	cc, ccErr := loadClusterConfig(path)
-	// A recorded config that has since been deleted is an unreadable one,
-	// not the ordinary no-config case (the resolver's mustExist rule).
-	if ccErr == nil && recorded {
-		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-			ccErr = fmt.Errorf("%s: the cluster config this controller was started with no longer exists", path)
-		}
-	}
+	cc, ccErr := loadActiveClusterConfig(path, recorded)
 	if ccErr != nil {
 		warns = append(warns, fmt.Sprintf("WARN: cannot read the cluster config the controller was started with (%s); the schedule, the snapshot directory and the disabled state are unknown and no defaults are invented for them", path))
 	}
@@ -272,4 +265,22 @@ func activePath(warns *[]string) (path string, recorded, known bool) {
 	default:
 		return cluster.DefaultConfigPath, false, true
 	}
+}
+
+// loadActiveClusterConfig reads the cluster config at the path the node
+// state resolved, applying the engine resolver's mustExist rule: a
+// recorded config that has since been deleted is an unreadable one, not
+// the ordinary no-config case, because the controller keeps running with
+// the config it was started with — its target may still be receiving
+// uploads — while a missing default-path config is simply no config. The
+// effective policy and the remote-target resolution share this step so the
+// two cannot drift on what the controller actually reads.
+func loadActiveClusterConfig(path string, recorded bool) (*cluster.ClusterConfig, error) {
+	cc, err := loadClusterConfig(path)
+	if err == nil && recorded {
+		if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%s: the cluster config this controller was started with no longer exists", path)
+		}
+	}
+	return cc, err
 }

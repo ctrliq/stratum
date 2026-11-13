@@ -28,6 +28,7 @@ func TestNodeFileOwnersCoverTheWriterPackages(t *testing.T) {
 		"internal/upgrade",
 		"internal/host",
 		"internal/cluster",
+		"internal/etcdsnap",
 	}
 	owned := make(map[string]bool, len(NodeFileOwners))
 	for _, pkg := range NodeFileOwners {

@@ -270,16 +270,19 @@ var errTargetUndetermined = errors.New("the remote target could not be determine
 // nothing it could not read the target of. A conf that exists but cannot be
 // read is an undetermined target, never "no target": the store may still
 // hold the copies that conf uploaded while it was readable. So is a cluster
-// config that cannot be read when no readable conf supplies a target: the
-// loop may still be uploading to the target that config carried while it
-// was readable, and the store may hold those copies. Only a cluster config
-// that was read — or a conf that replaced its say — settles the no-target
-// case as a real zero. The returned target carries the credentials the
-// listing needs; neither it nor the error reaches the result.
+// config that cannot be read when no readable conf supplies a target, and
+// so are the two ways the controller's own config is unknowable: a recorded
+// config that has since been deleted (the resolver's mustExist rule), and a
+// node state that cannot be read — the loop may still be uploading to the
+// target that config carried while it was readable, and the store may hold
+// those copies. Only a cluster config that was read — or a conf that
+// replaced its say — settles the no-target case as a real zero. The
+// returned target carries the credentials the listing needs; neither it
+// nor the error reaches the result.
 func effectiveTarget() (*objstore.Target, error) {
 	var sink []string
-	path, _, _ := activePath(&sink)
-	cc, ccErr := loadClusterConfig(path)
+	path, recorded, stateKnown := activePath(&sink)
+	cc, ccErr := loadActiveClusterConfig(path, recorded)
 	base := etcdsnap.DefaultConfig()
 	if ccErr == nil {
 		base = cc.SnapshotBase()
@@ -288,7 +291,7 @@ func effectiveTarget() (*objstore.Target, error) {
 	if confErr != nil {
 		return nil, errTargetUndetermined
 	}
-	if ccErr != nil && !fromFile {
+	if (ccErr != nil || !stateKnown) && !fromFile {
 		return nil, errTargetUndetermined
 	}
 	return conf.S3Target(), nil

@@ -17,14 +17,14 @@ the values reported here are in the
 
 Every surface serves the same document from one bounded read, so the fields
 cannot drift between them. The engine resolves the policy itself
-(internal/backupevidence/policy.go:144); a consumer never re-derives which
+(internal/backupevidence/policy.go); a consumer never re-derives which
 config file won.
 
 | Surface | How you call it | Where it is defined |
 |---|---|---|
-| CLI | `stratum snapshot list -o json`, as root on a node | pkg/cli/snapshot.go:106 |
-| Go | `cli.BackupEvidence(ctx, opts...)` in package `pkg/cli` | pkg/cli/evidence.go:348 |
-| MCP | the `backup_evidence` tool, read tier, no credential | internal/mcp/catalog.go:221 |
+| CLI | `stratum snapshot list -o json`, as root on a node | pkg/cli/snapshot.go |
+| Go | `cli.BackupEvidence(ctx, opts...)` in package `pkg/cli` | pkg/cli/evidence.go |
+| MCP | the `backup_evidence` tool, read tier, no credential | internal/mcp/catalog.go |
 
 ```console
 # /usr/local/bin/stratum snapshot list -o json
@@ -59,7 +59,7 @@ The output is one JSON object. This excerpt shows its shape; the
 
 `-o` takes `json` and nothing else: any other value is refused, and the
 command's default output stays the text table it has always printed
-(pkg/cli/snapshot.go:113-115).
+(pkg/cli/snapshot.go).
 
 From Go, an external binary compiled against a pinned Stratum release calls:
 
@@ -75,12 +75,12 @@ if !res.Complete {
 The options bound and scope the read:
 `WithBackupEvidenceNode`, `WithBackupEvidenceMaxEntries`,
 `WithBackupEvidenceMaxBytes` and `WithBackupEvidenceMaxTime`
-(pkg/cli/evidence.go:299-322). Zero or negative caps mean the engine's built-in
+(pkg/cli/evidence.go). Zero or negative caps mean the engine's built-in
 budgets, never an unbounded read.
 
 Over MCP, the tool takes the same caps as its input — `max_entries`,
 `max_bytes` and `max_seconds`, each `0` for the built-in budget
-(internal/mcp/stratumread.go:841) — and returns the document as its structured
+(internal/mcp/stratumread.go) — and returns the document as its structured
 content. The tool takes no Kubernetes credential: it reads this node's own
 files and the configured S3 target, and the S3 credentials the read resolves
 stay inside it, never in the result. See [MCP Server](mcp.md) for how to run
@@ -88,7 +88,7 @@ one.
 
 ## The document
 
-The Go result is `BackupEvidenceResult` (pkg/cli/evidence.go:259); the JSON
+The Go result is `BackupEvidenceResult` (pkg/cli/evidence.go); the JSON
 keys below are the same on the CLI and MCP. Timestamps are RFC 3339 UTC
 strings in JSON and `time.Time` values in Go; the interval is whole seconds
 (`intervalSeconds`) in JSON and a `time.Duration` in Go.
@@ -126,9 +126,9 @@ config file the controller was started with), `snapshot-conf` (the
 operator-managed `snapshot.conf`, which wins outright when it exists),
 `default` (the built-in default), or `unknown`. A zero or empty value beside
 `unknown` provenance carries no information — the engine invents no default
-for a value it cannot read (internal/backupevidence/policy.go:26-35).
+for a value it cannot read (internal/backupevidence/policy.go).
 
-The states (internal/backupevidence/policy.go:44-58):
+The states (internal/backupevidence/policy.go):
 
 | State | Meaning |
 |---|---|
@@ -159,7 +159,7 @@ The states (internal/backupevidence/policy.go:44-58):
 | `warnings` | `Remote.Warnings` | the listing's WARN conditions |
 
 One artifact, local or remote, is five fields
-(internal/backupevidence/local.go:48):
+(internal/backupevidence/local.go):
 
 | Key | Go field | Holds |
 |---|---|---|
@@ -167,10 +167,10 @@ One artifact, local or remote, is five fields
 | `location` | `Location` | `local` or `remote` |
 | `created` | `Created` | when the artifact came to be: the local file's modification time, the remote object's last-modified time |
 | `size` | `Size` | bytes |
-| `digest` | `Digest` | `sha256:...` from the sidecar beside a local file, else `unknown`; a remote listing exposes no digest |
+| `digest` | `Digest` | `sha256:...` from a `<name>.sha256` sidecar beside a local file, else `unknown`; a remote listing exposes no digest. The scheduled save itself does not write sidecars, so an engine-written snapshot reports `unknown` until a sidecar is placed beside it — by operator tooling or a future engine revision |
 
 `backups` is the *census*: the deduplicated union that counts every stable ID
-once, however many locations hold it (internal/backupevidence/remote.go:133):
+once, however many locations hold it (internal/backupevidence/remote.go):
 
 | Key | Go field | Holds |
 |---|---|---|
@@ -188,7 +188,7 @@ retention cutoff: it outlived the retention window or survived a failed prune.
 ### Maintenance
 
 `maintenance` is the scheduled loop's durable state, recorded so a restart
-keeps it (internal/backupevidence/state.go:54). Every diagnostic is a typed
+keeps it (internal/backupevidence/state.go). Every diagnostic is a typed
 condition: no error text crosses, because a raw error can carry a credential,
 an executable path or a storage address.
 
@@ -226,7 +226,7 @@ was exact and the maintenance record was read.
 One read carries one overall budget, shared by every stage: the local walk
 draws from it first and the remote listing gets what remains. A caller that
 passes no cap gets the built-ins, never an unbounded read
-(internal/backupevidence/reader.go:82-90):
+(internal/backupevidence/reader.go):
 
 | Budget | Built-in | Go option | MCP input |
 |---|---|---|---|
@@ -244,12 +244,12 @@ naming the condition.
 
 The interface is additive to the released pkg/cli surface: it adds the
 `BackupEvidence` call, its option and result types, and the `Backup*` value
-types (pkg/cli/evidence.go:25-281), and changes no existing identifier — the
+types (pkg/cli/evidence.go), and changes no existing identifier — the
 exported-surface golden list gained entries only
-(tools/apiboundary/testdata/pkgcli.api:41). The native `stratum snapshot list`
+(tools/apiboundary/testdata/pkgcli.api). The native `stratum snapshot list`
 text table stays byte-for-byte what it was; `-o json` is the only addition,
 and the JSON rows are additive, not a replacement
-(pkg/cli/snapshot_evidence_cli_test.go:266). The MCP server gains one tool at
+(pkg/cli/snapshot_evidence_cli_test.go). The MCP server gains one tool at
 the read tier; every existing tool and contract is unchanged. The read changes
 nothing on the node: it takes no locks, writes nothing, and returns no
 credentials, executable paths or raw storage errors — only typed conditions
@@ -260,10 +260,10 @@ and what is unknown about them.
 Complete documents in the shape `snapshot list -o json` prints, one per
 situation, live under `docs/docs/appendices/backup-evidence-fixtures/` in the
 repository. The wire format is pinned field for field by the tests
-(pkg/cli/snapshot_evidence_cli_test.go:55), and every shipped fixture is
+(pkg/cli/snapshot_evidence_cli_test.go), and every shipped fixture is
 itself pinned: the suite decodes each one against that contract and holds
 its sorted orders and structural invariants
-(pkg/cli/snapshot_evidence_fixtures_test.go:33), so a fixture that drifts
+(pkg/cli/snapshot_evidence_fixtures_test.go), so a fixture that drifts
 from the binary fails the suite.
 
 - [configured-remote-required.json](../appendices/backup-evidence-fixtures/configured-remote-required.json) — a working node: every stage complete, the census counting a snapshot held in both locations once, an old remote copy, and maintenance with typed attempts

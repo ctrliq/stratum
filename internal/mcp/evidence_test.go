@@ -95,7 +95,11 @@ func useBackupEvidenceRead(t *testing.T, fn func(context.Context, BackupEvidence
 
 // craftedBackupEvidence is one complete evidence document, built the way the
 // supported surface restates the engine's read: the fixed stamps make the
-// over-the-wire comparison exact, whenever the suite runs.
+// over-the-wire comparison exact, whenever the suite runs. The story is one
+// a working node produces at a daily interval: the 2026-11-12 11:00 tick
+// saves and uploads the shared snapshot, the next day's tick saves again
+// but fails its upload, and the maintenance record carries that tick's
+// attempts with the remote prune's failure as its warning.
 func craftedBackupEvidence() BackupEvidenceOut {
 	art := func(id, loc, created string, size int64, digest string) BackupArtifactRow {
 		return BackupArtifactRow{ID: id, Location: loc, Created: created, Size: size, Digest: digest}
@@ -114,15 +118,15 @@ func craftedBackupEvidence() BackupEvidenceOut {
 			Node: "cp-1",
 			Artifacts: []BackupArtifactRow{
 				art(shared, "local", "2026-11-12T11:00:00Z", 10, "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"),
-				art("etcd-snapshot-cp-1-20261112-120000.db", "local", "2026-11-12T11:01:00Z", 16, "unknown"),
+				art("etcd-snapshot-cp-1-20261113-110000.db", "local", "2026-11-13T11:00:00Z", 16, "unknown"),
 			},
 			Complete: true,
 			Warnings: []string{},
 		},
 		Remote: BackupRemoteRow{
 			Copies: []BackupArtifactRow{
-				art(shared, "remote", "2026-11-12T11:00:00Z", 10, "unknown"),
 				art("etcd-snapshot-cp-1-20261108-110000.db", "remote", "2026-11-08T11:00:00Z", 14, "unknown"),
+				art(shared, "remote", "2026-11-12T11:00:00Z", 10, "unknown"),
 			},
 			Old:      []BackupArtifactRow{art("etcd-snapshot-cp-1-20261108-110000.db", "remote", "2026-11-08T11:00:00Z", 14, "unknown")},
 			Complete: true,
@@ -132,14 +136,18 @@ func craftedBackupEvidence() BackupEvidenceOut {
 			Node: "cp-1",
 			Entries: []BackupCensusEntryRow{
 				{
+					ID:        "etcd-snapshot-cp-1-20261108-110000.db",
+					Remote:    &BackupArtifactRow{ID: "etcd-snapshot-cp-1-20261108-110000.db", Location: "remote", Created: "2026-11-08T11:00:00Z", Size: 14, Digest: "unknown"},
+					OldRemote: true,
+				},
+				{
 					ID:     shared,
 					Local:  &BackupArtifactRow{ID: shared, Location: "local", Created: "2026-11-12T11:00:00Z", Size: 10, Digest: "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"},
 					Remote: &BackupArtifactRow{ID: shared, Location: "remote", Created: "2026-11-12T11:00:00Z", Size: 10, Digest: "unknown"},
 				},
 				{
-					ID:        "etcd-snapshot-cp-1-20261108-110000.db",
-					Remote:    &BackupArtifactRow{ID: "etcd-snapshot-cp-1-20261108-110000.db", Location: "remote", Created: "2026-11-08T11:00:00Z", Size: 14, Digest: "unknown"},
-					OldRemote: true,
+					ID:    "etcd-snapshot-cp-1-20261113-110000.db",
+					Local: &BackupArtifactRow{ID: "etcd-snapshot-cp-1-20261113-110000.db", Location: "local", Created: "2026-11-13T11:00:00Z", Size: 16, Digest: "unknown"},
 				},
 			},
 			Complete:  true,
@@ -147,16 +155,19 @@ func craftedBackupEvidence() BackupEvidenceOut {
 			Retention: []string{"WARN: the remote copy etcd-snapshot-cp-1-20261108-110000.db was created 2026-11-08T11:00:00Z, before the retention cutoff; it predates the retention window or survived a failed prune"},
 		},
 		Maintenance: BackupMaintenanceRow{
-			Save:              BackupAttemptRow{AttemptedAt: "2026-11-12T10:00:00Z", Outcome: "succeeded"},
-			Upload:            BackupAttemptRow{AttemptedAt: "2026-11-12T10:01:00Z", Outcome: "failed"},
-			Prune:             BackupAttemptRow{AttemptedAt: "2026-11-12T10:02:00Z", Outcome: "failed"},
-			LastSaveSuccess:   "2026-11-12T10:00:00Z",
-			LastUploadSuccess: "2026-11-12T08:00:00Z",
+			Save:              BackupAttemptRow{AttemptedAt: "2026-11-13T11:00:00Z", Outcome: "succeeded"},
+			Upload:            BackupAttemptRow{AttemptedAt: "2026-11-13T11:01:00Z", Outcome: "failed"},
+			Prune:             BackupAttemptRow{AttemptedAt: "2026-11-13T11:02:00Z", Outcome: "failed"},
+			LastSaveSuccess:   "2026-11-13T11:00:00Z",
+			LastUploadSuccess: "2026-11-12T11:00:00Z",
 			Warnings:          []string{"WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"},
 			AttemptsKnown:     true,
 		},
 		Complete: true,
-		Warnings: []string{},
+		// The composed warnings a whole engine read emits: the policy's,
+		// the census's and the maintenance record's, in that order —
+		// here only the maintenance record's one.
+		Warnings: []string{"WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"},
 	}
 }
 

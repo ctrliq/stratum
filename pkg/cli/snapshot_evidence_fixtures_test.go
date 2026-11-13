@@ -216,3 +216,18 @@ func TestShippedFixturesComposeTheirCompletenessVerdicts(t *testing.T) {
 		}
 	}
 }
+
+// TestShippedFixturesComposeTheirWarnings: the document's top-level
+// warnings are what the engine composes — the policy's, the census's and
+// the maintenance record's, in that order — so a consumer alerting on the
+// top level alone sees every stage's safe diagnostics. A fixture that
+// drops a stage's warning from the top level teaches the opposite.
+func TestShippedFixturesComposeTheirWarnings(t *testing.T) {
+	for _, f := range shippedFixtures(t) {
+		want := slices.Concat(f.doc.Policy.Warnings, f.doc.Backups.Warnings, f.doc.Maintenance.Warnings)
+		if !slices.Equal(f.doc.Warnings, want) {
+			t.Errorf("%s: warnings = %q, want the policy's, census's and maintenance's warnings composed in that order: %q",
+				f.name, f.doc.Warnings, want)
+		}
+	}
+}

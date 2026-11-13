@@ -47,7 +47,7 @@ func runSnapshotList(t *testing.T, ctx context.Context, args ...string) (string,
 // retyped field fails here instead of silently moving the wire format.
 const (
 	jsonSharedID    = "etcd-snapshot-cp-1-20261112-110000.db"
-	jsonLocalOnlyID = "etcd-snapshot-cp-1-20261112-120000.db"
+	jsonLocalOnlyID = "etcd-snapshot-cp-1-20261113-110000.db"
 	jsonOldRemoteID = "etcd-snapshot-cp-1-20261108-110000.db"
 	jsonDigest      = "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 )
@@ -161,7 +161,7 @@ func TestSnapshotListJSONEmitsTheEvidenceRows(t *testing.T) {
 		t.Errorf("local.Artifacts[0] = %+v, want the shared snapshot with its stamp, size and sidecar digest", shared)
 	}
 	if localOnly := got.Local.Artifacts[1]; localOnly.ID != jsonLocalOnlyID || localOnly.Digest != "unknown" ||
-		localOnly.Created != "2026-11-12T11:01:00Z" || localOnly.Size != 16 {
+		localOnly.Created != "2026-11-13T11:00:00Z" || localOnly.Size != 16 {
 		t.Errorf("local.Artifacts[1] = %+v, want the local-only snapshot with the unknown digest", localOnly)
 	}
 
@@ -175,14 +175,18 @@ func TestSnapshotListJSONEmitsTheEvidenceRows(t *testing.T) {
 	if !got.Backups.Complete || got.Backups.Node != "cp-1" || len(got.Backups.Entries) != 3 {
 		t.Fatalf("backups = %+v, want the complete census counting the three distinct backup IDs once", got.Backups)
 	}
-	both := got.Backups.Entries[0]
+	remoteOnly := got.Backups.Entries[0]
+	if remoteOnly.ID != jsonOldRemoteID || remoteOnly.Local != nil || remoteOnly.Remote == nil || !remoteOnly.OldRemote {
+		t.Errorf("backups.Entries[0] = %+v, want the old remote-only copy flagged, first in the ID-sorted census", remoteOnly)
+	}
+	both := got.Backups.Entries[1]
 	if both.ID != jsonSharedID || both.Local == nil || both.Remote == nil || both.OldRemote ||
 		both.Local.Size != 10 || both.Remote.Location != "remote" {
-		t.Errorf("backups.Entries[0] = %+v, want the saved-and-uploaded snapshot with both halves, not old", both)
+		t.Errorf("backups.Entries[1] = %+v, want the saved-and-uploaded snapshot with both halves, not old", both)
 	}
-	remoteOnly := got.Backups.Entries[2]
-	if remoteOnly.ID != jsonOldRemoteID || remoteOnly.Local != nil || remoteOnly.Remote == nil || !remoteOnly.OldRemote {
-		t.Errorf("backups.Entries[2] = %+v, want the old remote-only copy flagged", remoteOnly)
+	localOnly := got.Backups.Entries[2]
+	if localOnly.ID != jsonLocalOnlyID || localOnly.Local == nil || localOnly.Remote != nil {
+		t.Errorf("backups.Entries[2] = %+v, want the newest snapshot local only: its tick's upload failed", localOnly)
 	}
 	if len(got.Backups.Retention) != 1 || !strings.Contains(got.Backups.Retention[0], jsonOldRemoteID) ||
 		!strings.Contains(got.Backups.Retention[0], "2026-11-08T11:00:00Z") {
@@ -190,16 +194,16 @@ func TestSnapshotListJSONEmitsTheEvidenceRows(t *testing.T) {
 	}
 
 	m := got.Maintenance
-	if m.Save != (snapshotListJSONAttempt{AttemptedAt: "2026-11-12T10:00:00Z", Outcome: "succeeded"}) {
+	if m.Save != (snapshotListJSONAttempt{AttemptedAt: "2026-11-13T11:00:00Z", Outcome: "succeeded"}) {
 		t.Errorf("maintenance.save = %+v, want the typed succeeded attempt", m.Save)
 	}
-	if m.Upload != (snapshotListJSONAttempt{AttemptedAt: "2026-11-12T10:01:00Z", Outcome: "failed"}) {
+	if m.Upload != (snapshotListJSONAttempt{AttemptedAt: "2026-11-13T11:01:00Z", Outcome: "failed"}) {
 		t.Errorf("maintenance.upload = %+v, want the typed failed attempt", m.Upload)
 	}
-	if m.Prune != (snapshotListJSONAttempt{AttemptedAt: "2026-11-12T10:02:00Z", Outcome: "failed"}) {
+	if m.Prune != (snapshotListJSONAttempt{AttemptedAt: "2026-11-13T11:02:00Z", Outcome: "failed"}) {
 		t.Errorf("maintenance.prune = %+v, want the independent typed failed prune", m.Prune)
 	}
-	if m.LastSaveSuccess != "2026-11-12T10:00:00Z" || m.LastUploadSuccess != "2026-11-12T08:00:00Z" {
+	if m.LastSaveSuccess != "2026-11-13T11:00:00Z" || m.LastUploadSuccess != "2026-11-12T11:00:00Z" {
 		t.Errorf("maintenance last-success stamps = %q/%q, want each success kept separate from the failing streak",
 			m.LastSaveSuccess, m.LastUploadSuccess)
 	}
@@ -208,8 +212,10 @@ func TestSnapshotListJSONEmitsTheEvidenceRows(t *testing.T) {
 		t.Errorf("maintenance = %+v, want the known record with its safe warning restated", m)
 	}
 
-	if !got.Complete || len(got.Warnings) != 0 {
-		t.Errorf("complete = %v with warnings %q, want the whole read's verdict restated", got.Complete, got.Warnings)
+	if !got.Complete || len(got.Warnings) != 1 ||
+		got.Warnings[0] != "WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held" {
+		t.Errorf("complete = %v with warnings %q, want the whole read's verdict restated beside the composed stage warnings",
+			got.Complete, got.Warnings)
 	}
 }
 

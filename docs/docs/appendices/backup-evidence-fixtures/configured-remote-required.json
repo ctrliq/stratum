@@ -23,9 +23,9 @@
         "digest": "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
       },
       {
-        "id": "etcd-snapshot-cp-1-20261112-120000.db",
+        "id": "etcd-snapshot-cp-1-20261113-110000.db",
         "location": "local",
-        "created": "2026-11-12T11:01:00Z",
+        "created": "2026-11-13T11:00:00Z",
         "size": 16,
         "digest": "unknown"
       }
@@ -94,11 +94,11 @@
         }
       },
       {
-        "id": "etcd-snapshot-cp-1-20261112-120000.db",
+        "id": "etcd-snapshot-cp-1-20261113-110000.db",
         "local": {
-          "id": "etcd-snapshot-cp-1-20261112-120000.db",
+          "id": "etcd-snapshot-cp-1-20261113-110000.db",
           "location": "local",
-          "created": "2026-11-12T11:01:00Z",
+          "created": "2026-11-13T11:00:00Z",
           "size": 16,
           "digest": "unknown"
         }
@@ -112,24 +112,26 @@
   },
   "maintenance": {
     "save": {
-      "attemptedAt": "2026-11-12T10:00:00Z",
+      "attemptedAt": "2026-11-13T11:00:00Z",
       "outcome": "succeeded"
     },
     "upload": {
-      "attemptedAt": "2026-11-12T10:01:00Z",
+      "attemptedAt": "2026-11-13T11:01:00Z",
       "outcome": "failed"
     },
     "prune": {
-      "attemptedAt": "2026-11-12T10:02:00Z",
+      "attemptedAt": "2026-11-13T11:02:00Z",
       "outcome": "failed"
     },
-    "lastSaveSuccess": "2026-11-12T10:00:00Z",
-    "lastUploadSuccess": "2026-11-12T08:00:00Z",
+    "lastSaveSuccess": "2026-11-13T11:00:00Z",
+    "lastUploadSuccess": "2026-11-12T11:00:00Z",
     "warnings": [
       "WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"
     ],
     "attemptsKnown": true
   },
   "complete": true,
-  "warnings": []
+  "warnings": [
+    "WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"
+  ]
 }

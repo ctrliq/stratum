@@ -196,46 +196,55 @@ func TestListBoundedEmptyBucketIsAnExactZero(t *testing.T) {
 // the store sees its request context end, and the listing returns within its
 // bound, classified by what stopped it — a time bound as timeout, a caller
 // cancellation as cancelled — with the objects it already listed as a floor.
+// Each subtest runs against its own store and its own proof channel, so the
+// cancellation it asserts is its own request's: a channel shared between the
+// subtests is closed once, by whichever ran first, and the later subtest
+// would read the first one's proof — a vacuous check that cannot fail.
 func TestListBoundedHungListingIsBounded(t *testing.T) {
-	sawCancel := make(chan struct{})
-	var once sync.Once
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done() // parked: the store never answers
-		once.Do(func() { close(sawCancel) })
-	}))
-	t.Cleanup(srv.Close)
-	tgt := targetAt(srv.URL)
-
-	run := func(ctx context.Context, o ListOptions) ListResult {
-		done := make(chan ListResult, 1)
-		go func() { done <- tgt.ListBounded(ctx, o) }()
-		select {
-		case r := <-done:
-			return r
-		case <-time.After(10 * time.Second):
-			t.Fatal("the listing did not return within its bound")
-			return ListResult{}
+	hungStore := func(t *testing.T) (list func(ctx context.Context, o ListOptions) ListResult, sawTheStoreGiveUp func()) {
+		t.Helper()
+		sawCancel := make(chan struct{})
+		var once sync.Once
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done() // parked: the store never answers
+			once.Do(func() { close(sawCancel) })
+		}))
+		t.Cleanup(srv.Close)
+		tgt := targetAt(srv.URL)
+		list = func(ctx context.Context, o ListOptions) ListResult {
+			done := make(chan ListResult, 1)
+			go func() { done <- tgt.ListBounded(ctx, o) }()
+			select {
+			case r := <-done:
+				return r
+			case <-time.After(10 * time.Second):
+				t.Fatal("the listing did not return within its bound")
+				return ListResult{}
+			}
 		}
-	}
-	sawTheStoreGiveUp := func() {
-		select {
-		case <-sawCancel:
-		case <-time.After(5 * time.Second):
-			t.Error("the store never saw its request context end: the caller's context did not reach the S3 call")
+		sawTheStoreGiveUp = func() {
+			select {
+			case <-sawCancel:
+			case <-time.After(5 * time.Second):
+				t.Error("the store never saw its request context end: the caller's context did not reach the S3 call")
+			}
 		}
+		return list, sawTheStoreGiveUp
 	}
 
 	t.Run("time bound", func(t *testing.T) {
-		r := run(context.Background(), ListOptions{MaxTime: 100 * time.Millisecond})
+		list, sawTheStoreGiveUp := hungStore(t)
+		r := list(context.Background(), ListOptions{MaxTime: 100 * time.Millisecond})
 		if r.End != ListEndedTimeout {
 			t.Errorf("End = %q, want timeout: the time bound ended the listing", r.End)
 		}
 		sawTheStoreGiveUp()
 	})
 	t.Run("caller cancellation", func(t *testing.T) {
+		list, sawTheStoreGiveUp := hungStore(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		time.AfterFunc(100*time.Millisecond, cancel)
-		r := run(ctx, ListOptions{MaxTime: time.Minute})
+		r := list(ctx, ListOptions{MaxTime: time.Minute})
 		if r.End != ListEndedCancelled {
 			t.Errorf("End = %q, want cancelled: the caller cancelled the request", r.End)
 		}

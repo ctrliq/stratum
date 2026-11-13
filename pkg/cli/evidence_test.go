@@ -29,12 +29,22 @@ func useBackupEvidenceRead(t *testing.T, fn func(context.Context, backupevidence
 }
 
 // evidenceTimes are the fixed UTC stamps the crafted evidence carries, so
-// the restatement asserts exactly, whenever the suite runs.
+// the restatement asserts exactly, whenever the suite runs. The story is
+// one a working node produces at a daily interval: the 2026-11-12 11:00
+// tick saves and uploads the shared snapshot, the next day's 11:00 tick
+// saves again but fails its upload — so the newest artifact is local
+// only — and the 3-snapshot retention window places the 2026-11-08
+// remote copy before its cutoff.
 var (
-	evidenceSaveAttempt = time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
-	evidenceUploadLast  = time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)
 	evidenceCreated     = time.Date(2026, 11, 12, 11, 0, 0, 0, time.UTC)
 	evidenceOldCreated  = time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
+	evidenceNextCreated = time.Date(2026, 11, 13, 11, 0, 0, 0, time.UTC)
+	// The recorded tick is the next day's: its save succeeded, its upload
+	// and its remote prune failed.
+	evidenceSaveAttempt = evidenceNextCreated
+	// The upload that last succeeded is the shared copy's, the day
+	// before the recorded tick.
+	evidenceUploadLast = evidenceCreated
 )
 
 // engineEvidence is the engine's assembled read over one working node: a
@@ -45,7 +55,7 @@ var (
 func engineEvidence() backupevidence.EvidenceResult {
 	const (
 		shared   = "etcd-snapshot-cp-1-20261112-110000.db" // local and remote
-		localNew = "etcd-snapshot-cp-1-20261112-120000.db" // local only
+		localNew = "etcd-snapshot-cp-1-20261113-110000.db" // local only: its tick's upload failed
 		remote   = "etcd-snapshot-cp-1-20261108-110000.db" // remote only, old
 		digest   = "sha256:" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 	)
@@ -69,14 +79,14 @@ func engineEvidence() backupevidence.EvidenceResult {
 			Node: "cp-1",
 			Artifacts: []backupevidence.Artifact{
 				art(shared, "local", evidenceCreated, 10, digest),
-				art(localNew, "local", evidenceCreated.Add(time.Minute), 16, backupevidence.DigestUnknown),
+				art(localNew, "local", evidenceNextCreated, 16, backupevidence.DigestUnknown),
 			},
 			Complete: true,
 		},
 		Remote: backupevidence.RemoteResult{
 			Copies: []backupevidence.Artifact{
-				art(shared, "remote", evidenceCreated, 10, backupevidence.DigestUnknown),
 				art(remote, "remote", evidenceOldCreated, 14, backupevidence.DigestUnknown),
+				art(shared, "remote", evidenceCreated, 10, backupevidence.DigestUnknown),
 			},
 			Old:      []backupevidence.Artifact{art(remote, "remote", evidenceOldCreated, 14, backupevidence.DigestUnknown)},
 			Complete: true,
@@ -84,9 +94,9 @@ func engineEvidence() backupevidence.EvidenceResult {
 		Backups: backupevidence.Census{
 			Node: "cp-1",
 			Entries: []backupevidence.CensusEntry{
-				{ID: shared, Local: &backupevidence.Artifact{ID: shared, Location: "local", Created: evidenceCreated, Size: 10, Digest: digest}, Remote: &backupevidence.Artifact{ID: shared, Location: "remote", Created: evidenceCreated, Size: 10, Digest: backupevidence.DigestUnknown}},
-				{ID: localNew, Local: &backupevidence.Artifact{ID: localNew, Location: "local", Created: evidenceCreated.Add(time.Minute), Size: 16, Digest: backupevidence.DigestUnknown}},
 				{ID: remote, Remote: &backupevidence.Artifact{ID: remote, Location: "remote", Created: evidenceOldCreated, Size: 14, Digest: backupevidence.DigestUnknown}, OldRemote: true},
+				{ID: shared, Local: &backupevidence.Artifact{ID: shared, Location: "local", Created: evidenceCreated, Size: 10, Digest: digest}, Remote: &backupevidence.Artifact{ID: shared, Location: "remote", Created: evidenceCreated, Size: 10, Digest: backupevidence.DigestUnknown}},
+				{ID: localNew, Local: &backupevidence.Artifact{ID: localNew, Location: "local", Created: evidenceNextCreated, Size: 16, Digest: backupevidence.DigestUnknown}},
 			},
 			Complete:  true,
 			Retention: []string{"WARN: the remote copy " + remote + " was created " + evidenceOldCreated.UTC().Format(time.RFC3339) + ", before the retention cutoff; it predates the retention window or survived a failed prune"},
@@ -101,6 +111,10 @@ func engineEvidence() backupevidence.EvidenceResult {
 			AttemptsKnown:     true,
 		},
 		Complete: true,
+		// The composed warnings a whole engine read emits: the policy's,
+		// the census's and the maintenance record's, in that order —
+		// here only the maintenance record's one.
+		Warnings: []string{"WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"},
 	}
 }
 
@@ -163,16 +177,19 @@ func TestBackupEvidenceRestatesTheEngineEvidence(t *testing.T) {
 	if !got.Backups.Complete || len(got.Backups.Entries) != 3 {
 		t.Fatalf("Backups = {Entries: %d, Complete: %v}, want the three distinct backup IDs counted once", len(got.Backups.Entries), got.Backups.Complete)
 	}
-	shared := got.Backups.Entries[0]
+	remoteOnly := got.Backups.Entries[0]
+	if remoteOnly.ID != "etcd-snapshot-cp-1-20261108-110000.db" || remoteOnly.Local != nil || remoteOnly.Remote == nil || !remoteOnly.OldRemote {
+		t.Errorf("Backups.Entries[0] = %+v, want the old remote-only copy flagged, first in the ID-sorted census", remoteOnly)
+	}
+	shared := got.Backups.Entries[1]
 	if shared.ID != "etcd-snapshot-cp-1-20261112-110000.db" || shared.Local == nil || shared.Remote == nil || shared.OldRemote {
-		t.Errorf("Backups.Entries[0] = %+v, want the snapshot saved and uploaded: both halves, not old", shared)
+		t.Errorf("Backups.Entries[1] = %+v, want the snapshot saved and uploaded: both halves, not old", shared)
 	}
 	if shared.Local != nil && (shared.Local.Location != "local" || shared.Local.Size != 10) {
-		t.Errorf("Backups.Entries[0].Local = %+v, want the local half with its location and size", *shared.Local)
+		t.Errorf("Backups.Entries[1].Local = %+v, want the local half with its location and size", *shared.Local)
 	}
-	remoteOnly := got.Backups.Entries[2]
-	if remoteOnly.ID != "etcd-snapshot-cp-1-20261108-110000.db" || remoteOnly.Local != nil || remoteOnly.Remote == nil || !remoteOnly.OldRemote {
-		t.Errorf("Backups.Entries[2] = %+v, want the old remote-only copy flagged", remoteOnly)
+	if localOnly := got.Backups.Entries[2]; localOnly.ID != "etcd-snapshot-cp-1-20261113-110000.db" || localOnly.Remote != nil || localOnly.Local == nil {
+		t.Errorf("Backups.Entries[2] = %+v, want the newest snapshot local only: its tick's upload failed", localOnly)
 	}
 	if len(got.Backups.Retention) != 1 || got.Backups.Retention[0] != want.Backups.Retention[0] {
 		t.Errorf("Backups.Retention = %q, want the old remote copy named with its creation time", got.Backups.Retention)
