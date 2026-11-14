@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/ctrliq/stratum/internal/assets"
+	"github.com/ctrliq/stratum/internal/backupevidence"
 	"github.com/ctrliq/stratum/internal/bootstrap/clusterinfo"
 	"github.com/ctrliq/stratum/internal/cluster"
 	"github.com/ctrliq/stratum/internal/comps"
@@ -620,11 +621,13 @@ func missingSharedSecret(prof profile.Profile) bool {
 // blocking supervisor call and the host-mutating prepare step (real PKI
 // generation, host.Prereqs' sysctls/modprobe/swapoff — not something a unit
 // test may run) and observe the exact argv InstallUnit was given, without
-// starting a real supervisor or faking a systemd host.
+// starting a real supervisor or faking a systemd host. runControllerFn wraps
+// the controller call to hand it the backup-evidence sampler below — the one
+// thing it cannot take by import.
 var (
 	installUnit         = host.InstallUnit
 	runWorkerFn         = cluster.RunWorker
-	runControllerFn     = cluster.RunController
+	runControllerFn     = runControllerWithEvidenceSampler
 	prepareControllerFn = cluster.PrepareControllerWithLease
 	// prepareWorkerFn is the worker setup seam for runUp wiring tests.
 	prepareWorkerFn = cluster.PrepareWorker
@@ -633,6 +636,35 @@ var (
 	// JoinOptions runUp builds from the flags and the config without a join.
 	prepareControlPlaneJoinFn = ha.PrepareControlPlaneJoin
 )
+
+// runControllerWithEvidenceSampler runs the controller with the engine's
+// backup-evidence reader wired into its publisher: the reader's package
+// (internal/backupevidence) imports internal/cluster — the engine's config
+// resolution lives there — so this is the one place above both that can join
+// them, and the controller takes the reader as the sampler function it
+// samples its publisher on.
+func runControllerWithEvidenceSampler(ctx context.Context, cfg *cluster.ClusterConfig, st *cluster.NodeState) error {
+	return cluster.RunController(ctx, cfg, st, backupEvidenceSampler)
+}
+
+// backupEvidenceSampler adapts the engine's assembled backup-evidence reader
+// to the controller's sampler seam, carrying the reader's bounded summary
+// into the publisher's durable record. The read runs on the engine's
+// built-in bounds — the publisher is a heartbeat, not a full fetch: the
+// supported surfaces (BackupEvidence below, the MCP tool) serve whole reads.
+var backupEvidenceSampler = func(ctx context.Context) (cluster.EvidenceSample, bool) {
+	res := backupevidence.Evidence(ctx, backupevidence.EvidenceOptions{})
+	return cluster.EvidenceSample{
+		Node:           res.Node,
+		NodeUID:        res.NodeUID,
+		Complete:       res.Complete,
+		LocalArtifacts: len(res.Local.Artifacts),
+		RemoteCopies:   len(res.Remote.Copies),
+		Backups:        len(res.Backups.Entries),
+		Exact:          res.Backups.Complete,
+		Warnings:       res.Warnings,
+	}, true
+}
 
 // selfExePath is the absolute path the reboot-persistence unit's ExecStart
 // re-execs — os.Args[0] is not reliably absolute (a relative "./stratum" or a

@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io/fs"
 	"math/rand/v2"
+	"net"
+	"net/http"
 	"os"
 	"path"
 	"slices"
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -201,6 +204,9 @@ func RemoveStaleTemps(root *os.Root, name string, olderThan time.Duration) error
 
 // Object is one item in the store.
 type Object struct {
+	// Key preserves trailing slashes for consumers distinguishing prefix markers.
+	// It is excluded from native machine-readable snapshot list output.
+	Key      string `json:"-"`
 	Name     string // base name (prefix stripped)
 	Size     int64
 	Modified time.Time
@@ -227,6 +233,7 @@ func (t *Target) List(ctx context.Context) ([]Object, error) {
 		}
 		for _, o := range page.Contents {
 			out = append(out, Object{
+				Key:      aws.ToString(o.Key),
 				Name:     path.Base(aws.ToString(o.Key)),
 				Size:     aws.ToInt64(o.Size),
 				Modified: aws.ToTime(o.LastModified),
@@ -235,6 +242,187 @@ func (t *Target) List(ctx context.Context) ([]Object, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// ListEnd classifies how a bounded listing ended. Only ListEndedComplete
+// says the objects are the store's exact total; every other end stopped the
+// listing before the end, so the objects returned are a floor and the
+// store's total is unknown — never zero.
+type ListEnd string
+
+const (
+	// ListEndedComplete: every page was listed to the end.
+	ListEndedComplete ListEnd = "complete"
+	// ListEndedCapped: a page or byte cap stopped the listing before the end.
+	ListEndedCapped ListEnd = "capped"
+	// ListEndedDenied: the store refused the listing (403) — access denied
+	// on the bucket, a wrong key, a policy — distinct from an ordinary
+	// failure because it is the store's answer, not a broken request.
+	ListEndedDenied ListEnd = "denied"
+	// ListEndedTimeout: the listing's time bound ran out mid-listing.
+	ListEndedTimeout ListEnd = "timeout"
+	// ListEndedCancelled: the caller cancelled the listing mid-listing.
+	ListEndedCancelled ListEnd = "cancelled"
+	// ListEndedFailed: the listing failed any other way.
+	ListEndedFailed ListEnd = "failed"
+)
+
+// The built-in bounds of a bounded listing: a caller that passes no cap gets
+// these, never an unbounded listing.
+const (
+	// ListKeysPerPage is the keys the S3 ListObjectsV2 API serves one page:
+	// the most a single page carries, and the grain every page cap below
+	// is counted in.
+	ListKeysPerPage = 1000
+	// DefaultListMaxPages is the page cap. At ListKeysPerPage keys a page
+	// it bounds a listing at a million objects.
+	DefaultListMaxPages = 1000
+	// DefaultListMaxBytes is the byte cap: how many object bytes one
+	// listing may account for.
+	DefaultListMaxBytes = int64(1) << 40
+	// DefaultListMaxTime is the time cap: how long one listing may take,
+	// however patient the caller's context is.
+	DefaultListMaxTime = 30 * time.Second
+)
+
+// ListOptions carries the finite bounds of a bounded listing. A zero or
+// negative cap means the built-in default, never an unbounded listing.
+type ListOptions struct {
+	// MaxPages caps how many pages the listing may request (the page cap).
+	MaxPages int
+	// MaxBytes caps how many object bytes the listing may account for.
+	MaxBytes int64
+	// MaxTime caps how long the listing may take, on top of whatever
+	// deadline the caller's context already carries (the shorter bound
+	// wins).
+	MaxTime time.Duration
+}
+
+// ListResult is a bounded listing's objects and how the listing ended. The
+// end classification is safe by construction: it names the condition —
+// denied, timeout, cancellation, a cap — and never carries the store's raw
+// error text.
+type ListResult struct {
+	// Objects are the objects listed, sorted by name. They are the store's
+	// exact total only when End is ListEndedComplete; otherwise they are a
+	// floor.
+	Objects []Object
+	// End says how the listing ended.
+	End ListEnd
+}
+
+// ListBounded lists the objects under the target's prefix under finite page,
+// byte and time bounds, ending complete when it reached the end and
+// classified — denied, timeout, cancelled, capped, failed — when it stopped
+// short. The caller's context is propagated into the S3 calls, so a hung or
+// denied store returns when the bound or the caller ends it, not when the
+// store does. A key the store lists again on a later page is one object: a
+// duplicate across pages is the same object, listed once.
+func (t *Target) ListBounded(ctx context.Context, o ListOptions) ListResult {
+	if o.MaxPages <= 0 {
+		o.MaxPages = DefaultListMaxPages
+	}
+	if o.MaxBytes <= 0 {
+		o.MaxBytes = DefaultListMaxBytes
+	}
+	if o.MaxTime <= 0 {
+		o.MaxTime = DefaultListMaxTime
+	}
+	// The time cap on top of the caller's own deadline: whichever bound is
+	// shorter ends the listing, so it is finite however patient the caller
+	// is — and however silent the store is.
+	ctx, cancel := context.WithTimeout(ctx, o.MaxTime)
+	defer cancel()
+
+	var res ListResult
+	if t == nil || t.Bucket == "" {
+		res.End = ListEndedFailed
+		return res
+	}
+	cli, err := t.client(ctx)
+	if err != nil {
+		res.End = ListEndedFailed
+		return res
+	}
+	var prefix *string
+	if t.Prefix != "" {
+		prefix = aws.String(strings.TrimSuffix(t.Prefix, "/") + "/")
+	}
+
+	var out []Object
+	var accounted int64
+	pages := 0
+	end := ListEndedComplete
+	seen := make(map[string]bool)
+	p := s3.NewListObjectsV2Paginator(cli, &s3.ListObjectsV2Input{
+		Bucket: aws.String(t.Bucket), Prefix: prefix, Delimiter: aws.String("/"),
+	})
+list:
+	for p.HasMorePages() {
+		if pages == o.MaxPages {
+			end = ListEndedCapped
+			break list
+		}
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			// What the pages so far listed stands as a floor; the
+			// classification names what stopped the rest. The floor
+			// leaves through the same exit as every other end, so it
+			// keeps the sorted-by-name contract the result documents.
+			end = listEnd(err)
+			break list
+		}
+		pages++
+		for _, ob := range page.Contents {
+			key := aws.ToString(ob.Key)
+			name := path.Base(key)
+			if seen[key] {
+				// The store listed this key again on a later page:
+				// the same object, not a second one.
+				continue
+			}
+			seen[key] = true
+			size := aws.ToInt64(ob.Size)
+			if accounted+size > o.MaxBytes {
+				end = ListEndedCapped
+				break list
+			}
+			accounted += size
+			out = append(out, Object{
+				Key:      key,
+				Name:     name,
+				Size:     size,
+				Modified: aws.ToTime(ob.LastModified),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	res.Objects = out
+	res.End = end
+	return res
+}
+
+// listEnd classifies how a listing error ended the listing. It is safe by
+// construction: it names the condition — a denial, a timeout, a cancellation,
+// a failure — and never carries the store's raw error text.
+func listEnd(err error) ListEnd {
+	switch {
+	case err == nil:
+		return ListEndedComplete
+	case errors.Is(err, context.Canceled):
+		return ListEndedCancelled
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded):
+		return ListEndedTimeout
+	}
+	var re *awshttp.ResponseError
+	if errors.As(err, &re) && re.HTTPStatusCode() == http.StatusForbidden {
+		return ListEndedDenied
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return ListEndedTimeout
+	}
+	return ListEndedFailed
 }
 
 // Prune deletes objects whose base name owned accepts, keeping the newest

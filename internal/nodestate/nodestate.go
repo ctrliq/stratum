@@ -5,6 +5,7 @@
 package nodestate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
+	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/etcddata"
 	"github.com/ctrliq/stratum/internal/netcfg/netdefault"
 	"github.com/ctrliq/stratum/internal/profile"
@@ -259,7 +261,16 @@ func stateForMutation() (*NodeState, error) {
 
 // LoadState reads the persisted node state.
 func LoadState() (*NodeState, error) {
-	b, err := os.ReadFile(StatePath())
+	return loadState(os.ReadFile)
+}
+
+// LoadStateContext bounds the metadata read before parsing the persisted state.
+func LoadStateContext(ctx context.Context) (*NodeState, error) {
+	return loadState(func(path string) ([]byte, error) { return boundedfile.Read(ctx, path) })
+}
+
+func loadState(read func(string) ([]byte, error)) (*NodeState, error) {
+	b, err := read(StatePath())
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,8 @@ package etcdsnap
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/objstore"
 	"github.com/ctrliq/stratum/internal/version"
@@ -91,12 +94,21 @@ func (c Config) S3Target() *objstore.Target {
 // into it. It is the read the resolver (cluster.LoadSnapshotConfig) is built on.
 func LoadConfigOr(base Config) (Config, error) { return loadConfigFrom(ConfigPath, base) }
 
+// LoadConfigOrContext bounds the read while preserving conf-over-base precedence.
+func LoadConfigOrContext(ctx context.Context, base Config) (Config, error) {
+	return loadConfigFromContext(ctx, ConfigPath, base)
+}
+
 // loadConfigFrom is LoadConfig against an explicit path (ConfigPath is a fixed
 // absolute path, so tests need a seam). missing is what a nonexistent path
 // yields; the file is opened once, so a delete racing the load cannot swap it
 // for the built-in defaults. An existing file always starts from DefaultConfig.
 func loadConfigFrom(path string, missing Config) (Config, error) {
-	f, err := os.Open(path)
+	return loadConfigFromContext(context.Background(), path, missing)
+}
+
+func loadConfigFromContext(ctx context.Context, path string, missing Config) (Config, error) {
+	b, err := boundedfile.Read(ctx, path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			applyEnv(&missing)
@@ -106,8 +118,7 @@ func loadConfigFrom(path string, missing Config) (Config, error) {
 	}
 	c := DefaultConfig()
 	c.fromFile = true
-	defer f.Close()
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(bytes.NewReader(b))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" || strings.HasPrefix(line, "#") {

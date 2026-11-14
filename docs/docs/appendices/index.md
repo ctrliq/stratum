@@ -8,6 +8,7 @@ exact value rather than a procedure.
 - **[Paths and Names](paths-and-names.md)**: where Stratum keeps things on a node, the Kubernetes objects it creates, and its default timings
 - **[Snapshot Reference](snapshot-reference.md)**: snapshot files, retention, settings, restore rules, the controller backup and rejoin behaviour
 - **[Upgrade Reference](upgrade-reference.md)**: the flags, refusals, objects and timings behind `stratum upgrade` and `stratum rollback`, and the checks for clusters on an earlier build
+- **[Backup Evidence Fixtures](../cluster-admin/backup-evidence.md#fixtures)**: the pinned JSON evidence documents behind [Backup Evidence](../cluster-admin/backup-evidence.md), one complete example per situation the read reports
 
 ## Commands and flags
 

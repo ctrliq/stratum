@@ -30,6 +30,7 @@ import (
 // engineReadTools is every read-tier tool the engine registers: version_get
 // plus the generic Kubernetes toolset.
 var engineReadTools = []string{
+	"backup_evidence",
 	"certs_check",
 	"cluster_status",
 	"context_list",
@@ -920,6 +921,7 @@ var (
 	}
 
 	toolsOnNoKubernetesCredential = []string{
+		"backup_evidence",
 		"certs_check",
 		"certs_rotate",
 		"cluster_status",

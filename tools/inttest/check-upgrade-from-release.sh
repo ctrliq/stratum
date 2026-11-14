@@ -11,8 +11,11 @@
 # it; the control plane and the node come back; containerd runs with Stratum's
 # own --config and no legacy /etc/containerd/config.toml is left; the CRI
 # serves the installed containerd, as containerd and as the kubelet report it;
-# after a kill -9 of containerd the CRI runs new pods again; and a ConfigMap
-# written before the upgrade survives.
+# after a kill -9 of containerd the CRI runs new pods again; a ConfigMap
+# written before the upgrade survives; and the node-owned backup-evidence
+# publisher — absent from the installed release — activates on the upgraded
+# node and its evidence describes the prior release's backup artifacts that
+# the upgrade carried over.
 #
 # previous= is the newest published release of this line. Move it forward when
 # a newer one is published.
@@ -63,6 +66,23 @@ containerd_version() {  # the version containerd's own API reports on the socket
     awk '$1=="Server:"{s=1} s&&$1=="Version:"{print $2; exit}'
 }
 
+# --- the backup evidence the upgrade carried over ----------------------------
+# A backup artifact the INSTALLED (previous) release wrote: its survival is
+# the prior evidence that must cross the upgrade, beside the pre-upgrade
+# snapshot the upgrade itself takes below.
+PREV_SNAP=upgrade-prior-evidence.db
+out=$("$STRATUM" snapshot save --name "$PREV_SNAP" 2>&1) \
+  || { fail "snapshot save on $PREV_VERSION failed: $out"; done_testing; exit 1; }
+pass "$PREV_VERSION saved a snapshot locally"
+# The installed release predates the backup-evidence publisher: nothing on
+# the node records evidence yet, and what appears after the upgrade is this
+# build's publisher activating on its own.
+if [[ -e $ROOT/config/backup-evidence.yaml ]]; then
+  fail "a backup-evidence record exists before the upgrade: $PREV_VERSION was expected to have no publisher"
+else
+  pass "no backup-evidence record before the upgrade ($PREV_VERSION has no publisher)"
+fi
+
 # --- the upgrade, from the installed release -------------------------------
 rc=0
 out=$(timeout 900 "$STRATUM" upgrade --from "$NEW" --soak 10 2>&1) || rc=$?
@@ -94,6 +114,63 @@ done
 wait_for "node Ready after the upgrade" 300 sh -c "$K get node $node --no-headers | grep -vq NotReady"
 pass "control plane and node back after the upgrade"
 assert_eq "canary ConfigMap survived the upgrade" "$CANARY" "$(read_canary)"
+
+# --- the backup-evidence publisher after the upgrade -------------------------
+# The installed release had no publisher (asserted above: no record existed
+# before the upgrade), and the upgraded node must activate one on its own —
+# the publisher is node-owned, started by `stratum up` with no operator
+# involvement.
+REC=$ROOT/config/backup-evidence.yaml
+wait_for "the publisher's evidence record after the upgrade" 60 sh -c "test -s $REC"
+record_field() {  # record_field KEY -> the YAML scalar's value
+  sed -n "s/^$1:[[:space:]]*//p" "$REC" 2>/dev/null
+}
+if [[ $(record_field schemaVersion) == 1 ]]; then
+  pass "the record is schema version 1"
+else
+  fail "the record's schemaVersion is '$(record_field schemaVersion)', want 1"
+fi
+if [[ -n $(record_field sampledAt) ]]; then
+  pass "the publisher sampled after the upgrade ($(record_field sampledAt))"
+else
+  fail "the record carries no sampled-at: no publisher ran on the upgraded node"
+fi
+
+# The prior release's backup evidence survived: the artifact the old binary
+# saved and the pre-upgrade snapshot the upgrade took are both still on disk
+# and the publisher's record describes them.
+n_artifacts=0
+for f in "/var/backups/etcd/$PREV_SNAP" /var/backups/etcd/pre-upgrade-*.db; do
+  if [[ -s $f ]]; then n_artifacts=$((n_artifacts + 1)); pass "survived the upgrade: $f"; else fail "lost by the upgrade: $f"; fi
+done
+wait_for "the record to describe the survived artifacts" 300 sh -c \
+  "test \"\$(sed -n 's/^localArtifacts:[[:space:]]*//p' $REC 2>/dev/null)\" -ge $n_artifacts 2>/dev/null"
+node_uid=$($K get node "$node" -o jsonpath='{.metadata.uid}')
+wait_for "the publisher to resolve the node UID" 120 sh -c \
+  "test \"\$(sed -n 's/^nodeUID:[[:space:]]*//p' $REC 2>/dev/null)\" = '$node_uid'"
+assert_eq "the record carries the immutable node UID" "$node_uid" "$(record_field nodeUID)"
+assert_eq "the record counts every survived artifact" "$n_artifacts" "$(record_field localArtifacts)"
+assert_eq "the record's deduplicated total is exact" "true" "$(record_field exactTotal)"
+
+# The machine-readable surface on the upgraded node serves the same evidence:
+# the census counts the prior release's artifact by its stable ID, exact.
+json=$("$STRATUM" snapshot list -o json 2>&1) || { fail "snapshot list -o json: $json"; done_testing; exit 1; }
+evidence_field() {  # evidence_field PY-EXPR
+  printf '%s' "$json" | python3 -c "import json,sys; d=json.load(sys.stdin); print($1)" 2>/dev/null
+}
+assert_eq "the census counts the prior release's artifact" \
+  "1" "$(evidence_field "sum(1 for e in d['backups']['entries'] if e['id'] == '$PREV_SNAP' and e['local'] is not None)")"
+assert_eq "the census counts the pre-upgrade snapshot" \
+  "1" "$(evidence_field "sum(1 for e in d['backups']['entries'] if e['id'].startswith('pre-upgrade-') and e['local'] is not None)")"
+assert_eq "the evidence carries the immutable node UID" "$node_uid" "$(evidence_field "d['nodeUID']")"
+assert_eq "each local artifact has a location and copy identity" "True" \
+  "$(evidence_field "all(a['locationID'].startswith('sha256:') and a['copyID'].startswith('sha256:') for a in d['local']['artifacts'])")"
+if [[ $(evidence_field "d['backups']['complete']") == True ]]; then
+  pass "the deduplicated census is a complete total on the upgraded node"
+else
+  fail "the census is not complete on the upgraded node"
+fi
+assert_eq "the evidence's node scope is the upgraded node" "$node" "$(evidence_field "d['node']")"
 
 # --- containerd after the upgrade --------------------------------------------
 pid=$(containerd_pid)

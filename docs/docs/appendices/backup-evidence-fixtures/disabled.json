@@ -1,0 +1,44 @@
+{
+  "policy": {
+    "state": "disabled",
+    "intervalSeconds": 21600,
+    "intervalFrom": "cluster-config",
+    "retain": 3,
+    "retainFrom": "snapshot-conf",
+    "copy": "local-only",
+    "copyFrom": "snapshot-conf",
+    "dir": "/var/backups/etcd",
+    "dirFrom": "default",
+    "warnings": []
+  },
+  "node": "cp-1",
+  "local": {
+    "node": "cp-1",
+    "artifacts": [],
+    "complete": true,
+    "warnings": []
+  },
+  "remote": {
+    "copies": [],
+    "old": [],
+    "complete": true,
+    "warnings": []
+  },
+  "backups": {
+    "node": "cp-1",
+    "entries": [],
+    "complete": true,
+    "warnings": [],
+    "retention": []
+  },
+  "maintenance": {
+    "save": {},
+    "upload": {},
+    "prune": {},
+    "warnings": [],
+    "attemptsKnown": true
+  },
+  "complete": true,
+  "warnings": [],
+  "nodeUID": "5e4f9a20-4af6-4d15-8c72-62b9c92223f3"
+}

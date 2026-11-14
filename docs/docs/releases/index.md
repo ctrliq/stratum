@@ -240,3 +240,10 @@ Before upgrading a node that serves MCP over HTTP, create a token file of mode
 `--token-file` to the command or unit that starts the server, and have each
 client send `Authorization: Bearer <token>`. The stdio transport is unchanged.
 See [Running it over HTTP](../cluster-admin/mcp.md#running-it-over-http).
+
+This release exposes the engine's backup evidence — the effective snapshot
+policy, the local and remote catalogs, the deduplicated census that counts
+every backup once across both stores, and the maintenance diagnostics — as
+one bounded read from the CLI, the Go API and MCP, and starts a node-owned
+publisher that records a summary of it every minute. See the
+[prepared release notes](backup-evidence.md).
