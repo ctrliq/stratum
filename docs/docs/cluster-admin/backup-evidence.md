@@ -158,7 +158,12 @@ The states describe that file-based resolution (internal/backupevidence/policy.g
 | `complete` | `Local.Complete` | the walk covered the whole directory |
 | `warnings` | `Local.Warnings` | the walk's WARN conditions |
 
-`remote` is the bounded listing of the S3 target:
+`remote` is the bounded listing of the S3 target. On a multi-controller
+cluster the target's prefix is shared — every controller uploads its own
+snapshots under it and prunes only its own — so the catalog holds every
+controller's copies, not only this node's: the remote half is the cluster's
+off-box inventory, and the census counts another controller's snapshot as a
+remote-only entry:
 
 | Key | Go field | Holds |
 |---|---|---|
@@ -186,7 +191,7 @@ once, however many locations hold it (internal/backupevidence/remote.go):
 | Key | Go field | Holds |
 |---|---|---|
 | `node` | `Backups.Node` | the node the local half is scoped to |
-| `entries` | `Backups.Entries` | the distinct backups, sorted by ID |
+| `entries` | `Backups.Entries` | the distinct backups, sorted by ID; a remote-only entry can be another controller's snapshot, held by the cluster's shared remote store |
 | `complete` | `Backups.Complete` | both catalogs were complete, so the entry count is the exact total |
 | `warnings` | `Backups.Warnings` | the union's WARN conditions |
 | `retention` | `Backups.Retention` | reserved age diagnostics; empty under count retention |

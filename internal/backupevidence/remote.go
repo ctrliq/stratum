@@ -60,9 +60,13 @@ type RemoteResult struct {
 // Remote lists the remote copies the target holds as a bounded catalog: every
 // completed .db snapshot under the prefix with its stable name-derived ID, the remote
 // location, its creation time (the object's LastModified), its size and an
-// unknown digest. A listing that stops short — a hung or denied store, a
-// cancelled request, a cap — returns what it listed as a floor with unknown
-// completeness and a safe warning, never a raw error.
+// unknown digest. The listing spans the target's whole shared prefix: on a
+// multi-controller cluster every controller uploads under it and prunes only
+// its own, so the catalog holds every controller's copies, not only this
+// node's — the cluster's off-box inventory. A listing that stops short — a
+// hung or denied store, a cancelled request, a cap — returns what it listed
+// as a floor with unknown completeness and a safe warning, never a raw
+// error.
 func Remote(ctx context.Context, o RemoteOptions) RemoteResult {
 	var res RemoteResult
 

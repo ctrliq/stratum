@@ -31,11 +31,15 @@ func useBackupEvidenceRead(t *testing.T, fn func(context.Context, backupevidence
 
 // evidenceTimes are the fixed UTC stamps the crafted evidence carries, so
 // the restatement asserts exactly, whenever the suite runs. The story is
-// one a working node produces at a daily interval: the 2026-11-12 11:00
+// one a working node produces at a daily interval — the 2026-11-12 11:00
 // tick saves and uploads the shared snapshot, the next day's 11:00 tick
 // saves again but fails its upload — so the newest artifact is local
-// only — and the 3-snapshot retention window places the 2026-11-08
-// remote copy before its cutoff.
+// only. The 2026-11-08 remote copy predating its cutoff is the document's
+// one departure from a working node: under count retention no cutoff
+// exists, the reserved age fields stay empty, and no caller supplies one
+// today — so the old copy and the retention lines it produces pin the
+// restatement's mapping of the reserved fields before anything can fill
+// them.
 var (
 	evidenceCreated     = time.Date(2026, 11, 12, 11, 0, 0, 0, time.UTC)
 	evidenceOldCreated  = time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
@@ -50,9 +54,11 @@ var (
 
 // engineEvidence is the engine's assembled read over one working node: a
 // configured policy with every provenance, two local artifacts (one with a
-// known digest), two remote copies of which one is old, the census counting
-// the shared snapshot once, and maintenance with typed attempts, separate
-// last-success stamps and safe warnings. Every stage ran whole.
+// known digest), two remote copies, the census counting the shared snapshot
+// once, and maintenance with typed attempts, separate last-success stamps and
+// safe warnings. Every stage ran whole — except the old copy: a working node
+// under count retention reports no old copies, so that one exercises the
+// reserved age fields a read's caller can flag, which none does today.
 func engineEvidence() backupevidence.EvidenceResult {
 	const (
 		shared   = "etcd-snapshot-cp-1-20261112-110000.db" // local and remote

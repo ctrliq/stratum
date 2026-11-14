@@ -166,11 +166,15 @@ type BackupLocalCatalog struct {
 }
 
 // BackupRemoteCatalog is the bounded remote half of the evidence: the copies
-// enumerated on the S3 target.
+// enumerated on the S3 target. On a multi-controller cluster the target's
+// prefix is shared — every controller uploads under it and prunes only its
+// own — so the copies span every controller, not only this node's: the
+// cluster's off-box inventory.
 type BackupRemoteCatalog struct {
 	// Copies are the enumerated remote copies, sorted by ID, each carrying
 	// the remote location and an unknown digest. They are the remote
-	// store's exact total only when Complete is true.
+	// store's exact total only when Complete is true. On a multi-controller
+	// cluster they include the other controllers' copies.
 	Copies []BackupArtifact
 	// Old is reserved for age diagnostics. It is empty under count retention.
 	Old []BackupArtifact
@@ -206,7 +210,9 @@ type BackupCensusEntry struct {
 type BackupCensus struct {
 	// Node scopes the union's local half to the node whose store it is.
 	Node string
-	// Entries are the distinct backups, sorted by ID.
+	// Entries are the distinct backups, sorted by ID. A remote-only entry
+	// can be another controller's snapshot: the remote half spans the
+	// cluster's shared store while the local half is this node's.
 	Entries []BackupCensusEntry
 	// Complete says both catalogs covered their stores within their bounds,
 	// so the entry count is the exact total of distinct backups.

@@ -881,9 +881,12 @@ type BackupLocalRow struct {
 }
 
 // BackupRemoteRow is the bounded remote half of the evidence: the copies
-// enumerated on the S3 target, and which predate the retention window.
+// enumerated on the S3 target, and which predate the retention window. On a
+// multi-controller cluster the target's prefix is shared — every controller
+// uploads under it and prunes only its own — so the copies span every
+// controller, not only this node's: the cluster's off-box inventory.
 type BackupRemoteRow struct {
-	Copies   []BackupArtifactRow `json:"copies"`
+	Copies   []BackupArtifactRow `json:"copies" jsonschema:"every completed .db copy the target holds; on a multi-controller cluster the shared prefix holds every controller's copies, not only this node's"`
 	Old      []BackupArtifactRow `json:"old" jsonschema:"reserved for age diagnostics; empty under count retention"`
 	Complete bool                `json:"complete" jsonschema:"false means the listing stopped short — denied, timeout, a cancellation, a cap — and the rows are a floor while the store's total is unknown"`
 	Warnings []string            `json:"warnings" jsonschema:"the listing's WARN conditions: they name the condition, never the store's address or a raw error"`
@@ -902,7 +905,7 @@ type BackupCensusEntryRow struct {
 // every stable backup ID counted once, with whether the total is exact.
 type BackupCensusRow struct {
 	Node      string                 `json:"node"`
-	Entries   []BackupCensusEntryRow `json:"entries" jsonschema:"the distinct backups, sorted by id"`
+	Entries   []BackupCensusEntryRow `json:"entries" jsonschema:"the distinct backups, sorted by id; a remote-only entry can be another controller's snapshot, held by the cluster's shared remote store"`
 	Complete  bool                   `json:"complete" jsonschema:"true only when both catalogs were complete, so the entry count is the exact total of distinct backups; a partial catalog never yields an exact total"`
 	Warnings  []string               `json:"warnings"`
 	Retention []string               `json:"retention" jsonschema:"reserved for age diagnostics; empty under count retention"`

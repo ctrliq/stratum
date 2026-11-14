@@ -96,10 +96,15 @@ func useBackupEvidenceRead(t *testing.T, fn func(context.Context, BackupEvidence
 // craftedBackupEvidence is one complete evidence document, built the way the
 // supported surface restates the engine's read: the fixed stamps make the
 // over-the-wire comparison exact, whenever the suite runs. The story is one
-// a working node produces at a daily interval: the 2026-11-12 11:00 tick
+// a working node produces at a daily interval — the 2026-11-12 11:00 tick
 // saves and uploads the shared snapshot, the next day's tick saves again
 // but fails its upload, and the maintenance record carries that tick's
-// attempts with the remote prune's failure as its warning.
+// attempts with the remote prune's failure as its warning — except the old
+// remote copy and the retention lines it produces: those exercise the
+// reserved age fields, which a working node leaves empty under count
+// retention. They stand in for a read whose caller supplied a retention
+// cutoff — no caller does today — so the restatement's mapping of the
+// reserved fields is pinned before anything can fill them.
 func craftedBackupEvidence() BackupEvidenceOut {
 	art := func(id, loc, created string, size int64, digest string) BackupArtifactRow {
 		return BackupArtifactRow{ID: id, Location: loc, Created: created, Size: size, Digest: digest}
