@@ -1,0 +1,21 @@
+.signIn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+  margin-inline: auto;
+  max-inline-size: var(--quantic-spacing-96);
+  padding-block: var(--quantic-spacing-12);
+}
+
+.heading {
+  color: var(--quantic-text-primary);
+  font-family: var(--quantic-font-family-display);
+  font-size: var(--quantic-font-size-display-xs);
+  font-weight: var(--quantic-font-weight-semibold);
+}
+
+.version {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  text-align: center;
+}

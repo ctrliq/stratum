@@ -1,0 +1,22 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.needs {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  margin: 0;
+  padding: var(--quantic-spacing-3) var(--quantic-spacing-4);
+}
+
+.placeholder {
+  color: var(--quantic-text-secondary);
+  display: grid;
+  flex: 1;
+  font-size: var(--quantic-font-size-body-xs);
+  margin: 0;
+  place-items: center;
+}

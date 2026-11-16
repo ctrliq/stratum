@@ -1,0 +1,35 @@
+.note {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.events {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.event {
+  align-items: center;
+  color: var(--quantic-text-secondary);
+  display: flex;
+  gap: var(--quantic-spacing-2);
+
+  strong {
+    color: var(--quantic-text-primary);
+  }
+}
+
+.warning {
+  color: var(--quantic-fg-warning-primary);
+}
+
+.object {
+  margin-inline-start: auto;
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,10 @@
+.main {
+  align-items: center;
+  color: var(--accent, var(--quantic-text-secondary));
+  display: inline-flex;
+  flex-shrink: 0;
+  height: var(--quantic-spacing-8);
+  justify-content: center;
+  object-fit: contain;
+  width: var(--quantic-spacing-8);
+}

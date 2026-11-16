@@ -1,0 +1,11 @@
+.tickBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-1);
+}
+
+.help {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}

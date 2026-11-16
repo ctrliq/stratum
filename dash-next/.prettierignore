@@ -1,0 +1,17 @@
+dist
+coverage
+pnpm-lock.yaml
+src/routeTree.gen.ts
+
+# Generated from a template whose Scripts table gains and loses rows per preset, so
+# the column widths Prettier wants depend on which options were selected.
+README.md
+
+# generated API clients
+src/api/*/*Components.ts
+src/api/*/*Schemas.ts
+src/api/*/*Utils.ts
+openapi/k8s/k8s.subset.json
+src/api/*/*Responses.ts
+src/api/*/*Parameters.ts
+src/api/*/*RequestBodies.ts

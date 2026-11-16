@@ -1,0 +1,41 @@
+.finding {
+  align-items: center;
+  border-block-end: 1px solid var(--quantic-border-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  padding: var(--quantic-spacing-2);
+
+  code {
+    font-family: var(--quantic-font-family-mono);
+  }
+}
+
+.stateOpen {
+  background: var(--quantic-bg-secondary);
+}
+
+.message {
+  color: var(--quantic-text-secondary);
+  flex: 1;
+  min-width: 0;
+}
+
+.detail {
+  color: var(--quantic-text-secondary);
+  font-family: var(--quantic-font-family-mono);
+  font-size: var(--quantic-font-size-body-xs);
+}
+
+.collection {
+  color: var(--quantic-text-secondary);
+  display: grid;
+  flex-basis: 100%;
+  font-size: var(--quantic-font-size-body-xs);
+  gap: var(--quantic-spacing-1);
+
+  p {
+    margin: 0;
+  }
+}

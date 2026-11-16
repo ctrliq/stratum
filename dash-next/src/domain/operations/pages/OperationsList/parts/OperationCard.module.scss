@@ -1,0 +1,24 @@
+.note {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0 0 var(--quantic-spacing-3);
+}
+
+.progress {
+  display: grid;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-1) var(--quantic-spacing-6);
+  grid-auto-flow: column;
+  grid-template-rows: auto auto;
+  justify-content: start;
+  margin: 0 0 var(--quantic-spacing-4);
+
+  dt {
+    color: var(--quantic-text-secondary);
+    font-size: var(--quantic-font-size-body-xs);
+  }
+
+  dd {
+    margin: 0;
+  }
+}

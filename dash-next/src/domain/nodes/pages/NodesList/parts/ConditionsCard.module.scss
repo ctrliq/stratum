@@ -1,0 +1,23 @@
+.note {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.conditions {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  margin: 0;
+
+  dd {
+    margin: 0;
+  }
+}
+
+.condition {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}

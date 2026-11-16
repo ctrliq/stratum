@@ -1,0 +1,74 @@
+# dash-next
+
+The unified Stratum dashboard: one React app for the single-cluster dashboard server and the
+fleet hub. Conventions are in [AGENTS.md](AGENTS.md); behavior is specified in `../spec`.
+
+## Run against the fleet mock
+
+```sh
+node ../../stratum-pro/stratum-dash/mock/fleet-mock.mjs   # the hub mock, http://127.0.0.1:8443
+DASH_BACKEND=http://127.0.0.1:8443 pnpm dev               # the app, http://localhost:7750
+```
+
+Sign in as `admin` / `admin` (read-only: `viewer` / `viewer`). The dev server proxies `/api`
+and `/k8s` to `DASH_BACKEND` (default `http://127.0.0.1:8443`); point it at a real dashboard
+server or hub the same way. The mock forwards Kubernetes calls to `kubectl proxy` on port 8001.
+
+## Run against a real Stratum, beside the current dashboard
+
+A single-node cluster runs in a Docker container, the way the integration tests run a node.
+Run these from the repository root. Stage a Linux binary for Docker's architecture in `dist/`
+(`make package`, or a release asset), then start the node:
+
+```sh
+ARCH=$(docker version --format '{{.Server.Arch}}')
+gh release download <tag> -R ctrliq/stratum -p "stratum-linux-$ARCH" -O dist/stratum && chmod +x dist/stratum
+
+docker build -t ske-inttest-harness:local \
+  --build-arg "ALPINE_VERSION=$(sed -n 's/^alpine_version *= *//p' build/versions.mk)" tools/inttest/
+docker run -d --privileged --cgroupns=private --name stratum-dev --hostname stratum-dev \
+  -p 127.0.0.1:30443:30443 -p 127.0.0.1:6443:6443 -p 127.0.0.1:8443:8443 \
+  -v "$PWD/dist:/dist:ro" -v "$PWD/tools/inttest:/inttest:ro" -v stratum-dev:/var/lib/stratum \
+  --tmpfs /run:exec,mode=755 --entrypoint bash ske-inttest-harness:local -c '
+    . /inttest/harness.sh; setup_cgroups
+    (until /dist/stratum dash --listen 0.0.0.0:8443 --insecure-http \
+        --public-url http://localhost:7750 \
+        --kubeconfig /var/lib/stratum/kubeconfig/admin.conf; do sleep 3; done) &
+    exec /dist/stratum up'
+
+(cd dash-next && DASH_BACKEND=http://127.0.0.1:8443 pnpm dev)
+```
+
+| Dashboard | URL | Served by |
+| --- | --- | --- |
+| current (`dash`) | `https://127.0.0.1:30443` | the cluster's own dashboard, as the binary ships it |
+| `dash-next` | `http://localhost:7750` | `pnpm dev`, proxying to the second server on port 8443 |
+
+Both sign in with the same token:
+
+```sh
+docker exec stratum-dev /var/lib/stratum/bin/kubectl --kubeconfig /var/lib/stratum/kubeconfig/admin.conf \
+  -n stratum-dashboard get secret stratum-dashboard-admin-token -o jsonpath='{.data.token}' | base64 -d; echo
+```
+
+The second server exists because the dashboard server refuses a sign-in whose `Origin` is not
+its own: `--public-url http://localhost:7750` names the dev server as that origin. Open the two
+on different hosts as above (`127.0.0.1` and `localhost`): the session cookie has one name and
+cookies ignore the port, so on one host each sign-in would replace the other's.
+
+`docker rm -f stratum-dev` stops the node; the `stratum-dev` volume keeps the cluster, and
+`docker volume rm stratum-dev` discards it.
+
+## Checks
+
+```sh
+pnpm typecheck && pnpm exec eslint . && pnpm lint:css && pnpm test && pnpm build
+```
+
+## Adding a screen
+
+Screens are listed in `src/domain/shell/constants.ts` (`screens`). To build one, add a route
+file `src/routes/c.$cluster.<segment>.tsx` that renders the domain's page; the shell supplies
+the frame, `ClusterContext`, `NamespaceContext`, `WriteAccessContext` and `LiveRefreshContext`.
+A fleet page (`/clusters`, `/operations`) is a top-level route that wraps its page in
+`FleetShell`.

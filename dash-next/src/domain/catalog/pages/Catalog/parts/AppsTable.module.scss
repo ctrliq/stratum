@@ -1,0 +1,20 @@
+.application {
+  align-items: center;
+  display: flex;
+  gap: var(--quantic-spacing-3);
+}
+
+.identity {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.openControl {
+  justify-content: flex-start;
+}
+
+.description {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+}

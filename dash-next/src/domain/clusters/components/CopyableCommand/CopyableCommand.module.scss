@@ -1,0 +1,26 @@
+.main {
+  align-items: start;
+  display: grid;
+  gap: var(--quantic-spacing-2);
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin: 0;
+}
+
+.label {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  grid-column: 1 / -1;
+}
+
+.command {
+  background: var(--quantic-bg-secondary);
+  border-radius: var(--quantic-radius-md);
+  font-family: var(--quantic-font-family-mono);
+  font-size: var(--quantic-font-size-body-xs);
+  margin: 0;
+  min-block-size: var(--quantic-spacing-8);
+  overflow-wrap: anywhere;
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+  user-select: text;
+  white-space: pre-wrap;
+}

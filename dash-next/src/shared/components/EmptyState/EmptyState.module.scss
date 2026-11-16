@@ -1,0 +1,28 @@
+.main {
+  align-items: center;
+  color: var(--quantic-text-secondary);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-1);
+  justify-content: center;
+  padding: var(--quantic-spacing-20) var(--quantic-spacing-4);
+  text-align: center;
+}
+
+.variantFill {
+  height: 100%;
+}
+
+.title {
+  color: var(--quantic-text-primary);
+  font-size: var(--quantic-font-size-body-lg);
+  font-weight: var(--quantic-font-weight-semibold);
+}
+
+.actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-2);
+}

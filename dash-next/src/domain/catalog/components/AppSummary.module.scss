@@ -1,0 +1,11 @@
+.description {
+  color: var(--quantic-text-primary);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+
+  p {
+    margin: 0;
+  }
+}

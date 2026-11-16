@@ -1,0 +1,15 @@
+.heading {
+  align-items: center;
+  display: flex;
+  gap: var(--quantic-spacing-2);
+}
+
+.footing {
+  align-items: center;
+  color: var(--quantic-text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  justify-content: space-between;
+}

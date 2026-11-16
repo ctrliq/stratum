@@ -1,0 +1,17 @@
+.supervisor {
+  display: grid;
+  font-size: var(--quantic-font-size-body-xs);
+  gap: var(--quantic-spacing-2);
+
+  h4,
+  p {
+    margin: 0;
+  }
+}
+
+.children {
+  font-family: var(--quantic-font-family-mono);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}

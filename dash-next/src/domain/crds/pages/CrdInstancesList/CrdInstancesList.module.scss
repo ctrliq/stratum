@@ -1,0 +1,30 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-3);
+  height: 100%;
+  min-height: 0;
+}
+
+.bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-3);
+}
+
+.note {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.resolving {
+  color: var(--quantic-text-secondary);
+  margin: 0;
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+}

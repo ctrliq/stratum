@@ -1,0 +1,10 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-3);
+}
+
+.facts {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+}

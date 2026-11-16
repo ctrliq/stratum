@@ -1,0 +1,53 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+}
+
+.heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.title {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  font-weight: var(--quantic-font-weight-semibold);
+  margin: 0;
+}
+
+.credentials {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-2);
+}
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-2);
+
+  summary {
+    color: var(--quantic-text-secondary);
+    cursor: pointer;
+    font-size: var(--quantic-font-size-body-sm);
+    font-weight: var(--quantic-font-weight-semibold);
+  }
+}
+
+.previewControl {
+  align-self: flex-start;
+}
+
+.note,
+.required,
+.caption {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.required {
+  color: var(--quantic-text-error-primary);
+}

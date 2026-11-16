@@ -1,0 +1,35 @@
+.panel {
+  display: grid;
+  gap: var(--quantic-spacing-3);
+
+  header {
+    align-items: baseline;
+    color: var(--quantic-text-secondary);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: var(--quantic-font-size-body-xs);
+    gap: var(--quantic-spacing-2);
+  }
+
+  h4 {
+    color: var(--quantic-text-primary);
+    margin: 0;
+  }
+}
+
+.certificate {
+  border: 1px solid var(--quantic-border-secondary);
+  border-radius: var(--quantic-radius-md);
+  display: grid;
+  font-size: var(--quantic-font-size-body-xs);
+  gap: var(--quantic-spacing-2);
+  padding: var(--quantic-spacing-3);
+
+  p {
+    margin: 0;
+  }
+}
+
+.cause {
+  color: var(--quantic-fg-warning-primary);
+}

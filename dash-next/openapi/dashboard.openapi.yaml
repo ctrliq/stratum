@@ -1,0 +1,397 @@
+openapi: 3.0.3
+info:
+  title: Stratum dashboard server API
+  version: 1.0.0
+  description: |
+    The open (single-cluster) Stratum dashboard server's own endpoints, as served by
+    `internal/dashboard` (binary `stratum-dash`). Hand-written from the Go handlers.
+
+    Not described here: the Kubernetes API proxy under `/k8s/*` (covered by the upstream
+    Kubernetes spec), `GET /healthz`, and the static SPA handler.
+
+    **Authentication.** A user signs in by POSTing a Kubernetes ServiceAccount bearer token
+    in the JSON body of `POST /api/v1/login`. The server validates it with a
+    SelfSubjectReview issued as that token, then seals the token (AES-GCM) into the
+    HttpOnly, SameSite=Strict session cookie `stratum_session`. The browser never holds
+    the token afterwards and never sends an `Authorization` header: every later request
+    is authenticated by the cookie alone, and the server unseals the token and forwards
+    it to the apiserver itself. Default session lifetime is 12 hours (`--session-ttl`).
+
+    **CSRF.** Every non-GET/HEAD/OPTIONS request behind the session (here: `POST
+    /api/v1/logout`, and every write through `/k8s`) must carry the header
+    `X-Stratum-CSRF` with the `csrfToken` returned by `POST /api/v1/login` or `GET
+    /api/v1/me`. The same middleware also rejects a request whose `Sec-Fetch-Site` is not
+    `same-origin`/`none` or whose `Origin` is foreign. `POST /api/v1/login` has no session
+    and so no CSRF token, but it is still Origin / Sec-Fetch-Site guarded.
+
+    **Errors.** Every error body is `{"error": "<code>", "message": "..."}`. Any
+    unmatched path under `/api/` answers `404 {"error":"not-found","message":"no such
+    route"}`. All JSON responses carry `Cache-Control: no-store`.
+servers:
+  - url: /
+    description: Same origin as the SPA.
+tags:
+  - name: config
+    description: Unauthenticated server configuration; decides what the SPA shows.
+  - name: auth
+    description: Session lifecycle and identity.
+  - name: secrets
+    description: Redacted Secret listing served by the dashboard itself.
+security:
+  - sessionCookie: []
+paths:
+  /api/v1/config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      summary: Server mode, version, auth providers and feature flags
+      description: Unauthenticated. The SPA reads it before deciding whether to show a login screen.
+      security: []
+      responses:
+        '200':
+          description: The server configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardConfig'
+  /api/v1/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Sign in with a Kubernetes bearer token
+      description: |
+        Validates the token against the apiserver (SelfSubjectReview) and, on success,
+        sets the `stratum_session` cookie and returns the identity plus the CSRF token for
+        the new session. A leading `Bearer ` in the pasted token is tolerated. The body is
+        limited to 64 KiB. No session and no CSRF header are required, but a cross-site
+        `Sec-Fetch-Site` or a foreign `Origin` is refused with 403 `csrf`. Sign-ins are
+        rate limited by one global limiter (not per user or address).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenLoginRequest'
+      responses:
+        '200':
+          description: Signed in. The session cookie is set.
+          headers:
+            Set-Cookie:
+              description: '`stratum_session=<value>; Path=/; HttpOnly; SameSite=Strict; Max-Age=<ttl>` (plus `Secure` when served over TLS).'
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardLoginResponse'
+        '400':
+          description: '`bad-request`: missing, malformed or trailing-data JSON body, or an empty token.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: '`invalid_token`: the cluster did not accept the token.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: '`csrf`: cross-site request or foreign origin.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: '`rate-limited`: too many sign-in attempts.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`internal`: the token was valid but no session could be issued.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: '`auth-unavailable`: the apiserver could not be reached, or it refused the SelfSubjectReview (the default `system:basic-user` binding is missing).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End the session
+      description: |
+        Clears the session cookie. The session is stateless (a signed cookie), so there is
+        no server-side revocation. Requires the `X-Stratum-CSRF` header. The SPA sends an
+        empty JSON object as the body; the server ignores the body.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '204':
+          description: Signed out. The session cookie is expired.
+          headers:
+            Set-Cookie:
+              description: '`stratum_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`.'
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/CsrfRefused'
+  /api/v1/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: The signed-in identity and the session's CSRF token
+      description: |
+        Re-asks the apiserver who the session's token belongs to on every call, so a token
+        revoked mid-session ends the session. If the apiserver cannot be reached for any
+        reason other than an authentication failure, the identity is answered from the
+        cookie instead (still 200).
+
+        Two different 401s exist. A missing, tampered or expired cookie answers the plain
+        error body. A cookie that is still valid but whose token the cluster no longer
+        accepts answers the error body **plus `csrfToken`**, and leaves the cookie in
+        place, so the client can still call `POST /api/v1/logout` to clear it.
+      responses:
+        '200':
+          description: The identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardMe'
+        '401':
+          description: '`unauthenticated`: no valid session ("login required"), or the cluster no longer accepts the session''s token (then `csrfToken` is present).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeUnauthenticatedError'
+  /api/v1/secret-summaries:
+    get:
+      operationId: listSecretSummaries
+      tags: [secrets]
+      summary: Every Secret the caller may list, without its data
+      description: |
+        Lists Secrets cluster-wide as the session's own user (the server asks the
+        apiserver for a metadata-only Table) and returns name, namespace, type, key count,
+        creation time and, for `helm.sh/release.v1` Secrets, the Helm release labels. No
+        Secret data ever reaches the browser. Advertised by `features.secretSummaries` in
+        the config. When the apiserver refuses the list, its own status code is passed
+        through with error code `upstream` (typically 403).
+      responses:
+        '200':
+          description: The summaries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecretSummaryList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '502':
+          description: '`upstream-error`: the apiserver could not be reached.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          description: '`upstream`: the apiserver answered the list with this status (for example 403 when the user may not list Secrets cluster-wide); `message` is the apiserver''s own.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: stratum_session
+      description: |
+        HttpOnly, SameSite=Strict session cookie set by `POST /api/v1/login`. It carries
+        the user's Kubernetes bearer token, sealed. Send requests with
+        `credentials: 'same-origin'`.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-Stratum-CSRF
+      description: |
+        Per-session CSRF token from `POST /api/v1/login` or `GET /api/v1/me`
+        (`csrfToken`). Required on every non-GET/HEAD/OPTIONS request behind the session.
+  responses:
+    Unauthenticated:
+      description: '`unauthenticated`: the session cookie is missing, tampered or expired.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    CsrfRefused:
+      description: '`csrf`: missing or invalid `X-Stratum-CSRF`, a cross-site request, or a foreign origin.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Error:
+      type: object
+      description: The error body every endpoint answers with.
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable code, e.g. `unauthenticated`, `csrf`, `bad-request`, `not-found`.
+        message:
+          type: string
+          description: Human-readable explanation.
+    MeUnauthenticatedError:
+      description: The 401 body of `GET /api/v1/me`.
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          properties:
+            csrfToken:
+              type: string
+              description: Present only when the cookie itself is still valid but the cluster rejected its token. Use it to call logout.
+    ConfigAuth:
+      type: object
+      required: [required, providers]
+      properties:
+        required:
+          type: boolean
+          description: Always `true` on this server.
+        providers:
+          type: array
+          description: Sign-in mechanisms the login screen should offer. This server always answers `["token"]`.
+          items:
+            type: string
+    DashboardFeatures:
+      type: object
+      required: [nodeShell, nodeShellImage, secretSummaries]
+      properties:
+        nodeShell:
+          type: boolean
+          description: Whether the node-shell control should be offered (`--enable-node-shell`). The server still enforces it.
+        nodeShellImage:
+          type: string
+          description: Container image the SPA must use for the node-shell debug pod. Empty when the feature is off.
+        secretSummaries:
+          type: boolean
+          description: Always `true`; `GET /api/v1/secret-summaries` is available.
+    DashboardLinks:
+      type: object
+      required: [docs, pro]
+      properties:
+        docs:
+          type: string
+        pro:
+          type: string
+    DashboardConfig:
+      type: object
+      required: [mode, version, k8sBase, auth, features, links]
+      properties:
+        mode:
+          type: string
+          enum: [standalone]
+          description: Always `standalone` on this server.
+        version:
+          type: string
+        k8sBase:
+          type: string
+          description: Same-origin prefix for Kubernetes API paths. Always `/k8s`.
+        auth:
+          $ref: '#/components/schemas/ConfigAuth'
+        features:
+          $ref: '#/components/schemas/DashboardFeatures'
+        links:
+          $ref: '#/components/schemas/DashboardLinks'
+    TokenLoginRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: A Kubernetes bearer token (typically a ServiceAccount token). Surrounding whitespace and a leading `Bearer ` are stripped.
+    DashboardUser:
+      type: object
+      required: [username, groups, provider]
+      properties:
+        username:
+          type: string
+        groups:
+          type: array
+          nullable: true
+          description: Groups the apiserver reported. In the login response this is `null` when the apiserver reported none; `GET /api/v1/me` always answers an array.
+          items:
+            type: string
+        provider:
+          type: string
+          enum: [kubernetes]
+    DashboardLoginResponse:
+      type: object
+      required: [user, csrfToken]
+      properties:
+        user:
+          $ref: '#/components/schemas/DashboardUser'
+        csrfToken:
+          type: string
+    DashboardMe:
+      type: object
+      required: [username, groups, provider, csrfToken]
+      properties:
+        username:
+          type: string
+        groups:
+          type: array
+          description: Never null here.
+          items:
+            type: string
+        provider:
+          type: string
+          enum: [kubernetes]
+        csrfToken:
+          type: string
+    HelmRelease:
+      type: object
+      description: The release identity from a Helm release Secret's labels.
+      required: [name, version, status]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        status:
+          type: string
+    SecretSummary:
+      type: object
+      required: [name, namespace, type, keys, creationTimestamp]
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        type:
+          type: string
+          description: The Secret type, e.g. `Opaque` or `helm.sh/release.v1`.
+        keys:
+          type: integer
+          format: int64
+          description: Number of data keys.
+        creationTimestamp:
+          type: string
+          format: date-time
+          nullable: true
+        helm:
+          $ref: '#/components/schemas/HelmRelease'
+    SecretSummaryList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretSummary'

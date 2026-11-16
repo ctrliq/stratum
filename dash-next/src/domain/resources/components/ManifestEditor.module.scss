@@ -1,0 +1,11 @@
+.main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 20rem;
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+}

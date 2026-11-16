@@ -1,0 +1,14 @@
+.identity {
+  align-items: center;
+  color: var(--quantic-text-primary);
+  display: flex;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+}
+
+.version {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+}

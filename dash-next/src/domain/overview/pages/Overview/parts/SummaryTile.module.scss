@@ -1,0 +1,19 @@
+.label {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  font-weight: var(--quantic-font-weight-medium);
+  margin: 0;
+}
+
+.value {
+  color: var(--quantic-text-primary);
+  font-size: var(--quantic-font-size-display-xs);
+  font-weight: var(--quantic-font-weight-semibold);
+  margin: var(--quantic-spacing-1) 0;
+}
+
+.caption {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: var(--quantic-spacing-1) 0 0;
+}

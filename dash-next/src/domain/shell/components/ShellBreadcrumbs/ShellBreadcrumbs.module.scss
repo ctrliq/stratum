@@ -1,0 +1,26 @@
+.trail {
+  align-items: center;
+  color: var(--quantic-text-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.crumb {
+  align-items: center;
+  display: flex;
+  gap: var(--quantic-spacing-2);
+
+  & + &::before {
+    content: '›';
+  }
+
+  &:last-child {
+    color: var(--quantic-text-primary);
+    font-weight: var(--quantic-font-weight-semibold);
+  }
+}

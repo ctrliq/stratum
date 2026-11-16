@@ -1,0 +1,16 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.page {
+  --inset: var(--quantic-component-page-padding, var(--quantic-spacing-4));
+
+  flex: 1;
+  margin-inline: calc(-1 * var(--inset));
+  min-height: 0;
+  overflow: auto;
+  padding-inline: var(--inset);
+}

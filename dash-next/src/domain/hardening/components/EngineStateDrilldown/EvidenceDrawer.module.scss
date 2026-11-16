@@ -1,0 +1,25 @@
+.drawer {
+  border-block-start: 1px solid var(--quantic-border-primary);
+  display: grid;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-3);
+  padding-block-start: var(--quantic-spacing-3);
+
+  h3,
+  h4,
+  p {
+    margin: 0;
+  }
+
+  pre {
+    font-family: var(--quantic-font-family-mono);
+    font-size: var(--quantic-font-size-body-xs);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+}
+
+.rawItem {
+  color: var(--quantic-text-secondary);
+  margin: 0;
+}

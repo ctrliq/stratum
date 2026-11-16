@@ -1,0 +1,22 @@
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-1);
+  min-inline-size: 0;
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-4);
+  text-align: start;
+}
+
+.caption {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+}
+
+.name {
+  color: var(--quantic-text-primary);
+  font-size: var(--quantic-font-size-body-sm);
+  font-weight: var(--quantic-font-weight-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

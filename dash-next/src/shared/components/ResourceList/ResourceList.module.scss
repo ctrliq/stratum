@@ -1,0 +1,38 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+  height: 100%;
+  min-height: 0;
+}
+
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-1);
+}
+
+.title {
+  margin: 0;
+}
+
+.summary {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.content {
+  flex: 1;
+  margin-inline: calc(-1 * var(--quantic-component-page-padding, var(--quantic-spacing-4)));
+  min-height: 0;
+}
+
+.search {
+  max-width: 24rem;
+  width: 100%;
+}
+
+.openControl {
+  justify-content: flex-start;
+}

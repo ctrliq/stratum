@@ -1,0 +1,31 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+}
+
+.heading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-1);
+}
+
+.title {
+  margin: 0;
+}
+
+.summary {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.degraded {
+  color: var(--quantic-text-error-primary);
+  font-weight: inherit;
+}
+
+.search {
+  max-width: 24rem;
+  width: 100%;
+}

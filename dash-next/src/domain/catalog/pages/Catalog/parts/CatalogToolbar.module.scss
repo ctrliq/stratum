@@ -1,0 +1,15 @@
+.main {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-3);
+}
+
+.search {
+  flex: 1 1 14rem;
+  max-width: 24rem;
+}
+
+.layout {
+  margin-inline-start: auto;
+}

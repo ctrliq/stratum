@@ -1,0 +1,11 @@
+.wordmark {
+  align-items: center;
+  color: var(--quantic-text-primary);
+  display: flex;
+  font-family: var(--quantic-font-family-display);
+  font-size: var(--quantic-font-size-body-lg);
+  font-weight: var(--quantic-font-weight-semibold);
+  gap: var(--quantic-spacing-2);
+  margin-inline: var(--quantic-spacing-4);
+  white-space: nowrap;
+}

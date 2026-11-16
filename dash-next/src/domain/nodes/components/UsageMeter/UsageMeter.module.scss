@@ -1,0 +1,9 @@
+.main {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--quantic-spacing-2);
+}
+
+.bar {
+  min-width: 3rem;
+}

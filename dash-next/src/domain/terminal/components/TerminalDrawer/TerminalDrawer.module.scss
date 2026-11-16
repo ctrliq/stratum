@@ -1,0 +1,55 @@
+.main {
+  background: var(--quantic-bg-primary);
+  border-top: 1px solid var(--quantic-border-primary);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  height: var(--drawer-height);
+  min-height: 0;
+}
+
+.handle {
+  cursor: ns-resize;
+  flex: none;
+  height: var(--quantic-spacing-1);
+  touch-action: none;
+}
+
+.bar {
+  align-items: center;
+  border-bottom: 1px solid var(--quantic-border-primary);
+  display: flex;
+  gap: var(--quantic-spacing-3);
+  padding: var(--quantic-spacing-1) var(--quantic-spacing-3);
+}
+
+.tabs {
+  display: flex;
+  flex: 1;
+  gap: var(--quantic-spacing-2);
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 0;
+}
+
+.tab {
+  align-items: center;
+  display: flex;
+  flex: none;
+}
+
+.caption {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+}
+
+.pane {
+  flex: 1;
+  min-height: 0;
+
+  &[hidden] {
+    display: none;
+  }
+}

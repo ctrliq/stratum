@@ -1,0 +1,37 @@
+@use '@ctrliq/quantic-css/mixins/breakpoints' as breakpoints;
+
+.page {
+  display: grid;
+  gap: var(--quantic-spacing-4);
+}
+
+.header {
+  align-items: start;
+  display: flex;
+  gap: var(--quantic-spacing-4);
+  justify-content: space-between;
+
+  p {
+    color: var(--quantic-text-secondary);
+    font-size: var(--quantic-font-size-body-sm);
+    margin: 0;
+  }
+
+  code {
+    font-family: var(--quantic-font-family-mono);
+  }
+}
+
+.title {
+  margin-block-end: var(--quantic-spacing-1);
+}
+
+.details {
+  align-items: start;
+  display: grid;
+  gap: var(--quantic-spacing-4);
+
+  @include breakpoints.above-tablet-landscape {
+    grid-template-columns: 1fr 1.4fr;
+  }
+}

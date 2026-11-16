@@ -1,0 +1,14 @@
+.main {
+  align-items: center;
+  background: var(--quantic-bg-secondary);
+  border-bottom: 1px solid var(--quantic-border-primary);
+  display: flex;
+  gap: var(--quantic-spacing-3);
+  padding: var(--quantic-spacing-2) var(--quantic-spacing-3);
+}
+
+.label {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  overflow-wrap: anywhere;
+}

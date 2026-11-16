@@ -1,0 +1,4 @@
+// Quantic design tokens as SCSS variables.
+// These mirror the CSS custom properties — use whichever fits your context.
+// In most cases, prefer CSS custom properties (var(--quantic-*)) directly.
+@use '@ctrliq/quantic-tokens/light-mode.scss' as tokens;

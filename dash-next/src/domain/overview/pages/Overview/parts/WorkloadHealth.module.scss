@@ -1,0 +1,26 @@
+.groups {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-3);
+  margin: 0;
+
+  dt {
+    color: var(--quantic-text-secondary);
+  }
+
+  dd {
+    font-weight: var(--quantic-font-weight-semibold);
+    margin: 0;
+  }
+}
+
+.group {
+  display: grid;
+  gap: var(--quantic-spacing-1);
+  grid-template-columns: 1fr auto;
+}
+
+.share {
+  grid-column: 1 / -1;
+}

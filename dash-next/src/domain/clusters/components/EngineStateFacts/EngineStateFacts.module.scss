@@ -1,0 +1,32 @@
+.facts {
+  display: grid;
+  gap: var(--quantic-spacing-4);
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  margin: 0;
+}
+
+.fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-1);
+}
+
+.term {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+}
+
+.detail {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  margin: 0;
+}
+
+.note {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}

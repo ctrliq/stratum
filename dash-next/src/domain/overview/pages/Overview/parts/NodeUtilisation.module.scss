@@ -1,0 +1,11 @@
+.identity {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--quantic-spacing-2);
+}
+
+.note {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}

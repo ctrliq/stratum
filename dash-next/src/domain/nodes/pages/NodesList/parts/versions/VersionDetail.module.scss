@@ -1,0 +1,20 @@
+.facts {
+  display: grid;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2) var(--quantic-spacing-4);
+  grid-template-columns: max-content 1fr;
+  margin: 0;
+
+  dt {
+    color: var(--quantic-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.fact {
+  display: contents;
+}

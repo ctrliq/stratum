@@ -1,0 +1,19 @@
+.roles {
+  display: grid;
+  font-size: var(--quantic-font-size-body-xs);
+  gap: var(--quantic-spacing-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  li {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--quantic-spacing-2);
+  }
+}
+
+.counts {
+  color: var(--quantic-text-secondary);
+  font-family: var(--quantic-font-family-mono);
+}

@@ -1,0 +1,23 @@
+.main {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--quantic-spacing-3);
+  justify-content: space-between;
+}
+
+.identity {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-2);
+}
+
+.title {
+  margin: 0;
+}
+
+.line {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: var(--quantic-spacing-1) 0 0;
+}

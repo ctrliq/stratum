@@ -1,0 +1,21 @@
+.picker {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-2);
+}
+
+.pod {
+  flex: 1;
+  min-width: 16rem;
+}
+
+.terminal {
+  height: 25rem;
+  margin-top: var(--quantic-spacing-3);
+}
+
+.guide {
+  color: var(--quantic-text-secondary);
+  margin: var(--quantic-spacing-5) 0;
+}

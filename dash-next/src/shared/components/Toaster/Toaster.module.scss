@@ -1,0 +1,9 @@
+.toaster {
+  bottom: var(--quantic-spacing-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-2);
+  position: fixed;
+  right: var(--quantic-spacing-6);
+  z-index: 9999;
+}

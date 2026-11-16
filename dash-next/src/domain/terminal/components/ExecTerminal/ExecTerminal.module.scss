@@ -1,0 +1,15 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.screen {
+  background: var(--quantic-bg-primary);
+  color: var(--quantic-text-primary);
+  flex: 1;
+  font-family: var(--quantic-font-family-mono);
+  min-height: 0;
+  padding: var(--quantic-spacing-2);
+}

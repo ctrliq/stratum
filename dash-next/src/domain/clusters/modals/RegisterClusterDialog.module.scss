@@ -1,0 +1,18 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+}
+
+.method {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-2);
+}
+
+.notice {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+  overflow-wrap: anywhere;
+}

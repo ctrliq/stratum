@@ -1,0 +1,29 @@
+.signals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.signal {
+  border-block-end: 1px solid var(--quantic-border-secondary);
+  column-gap: var(--quantic-spacing-3);
+  display: grid;
+  font-size: var(--quantic-font-size-body-sm);
+  grid-template-columns: max-content 1fr;
+  padding: var(--quantic-spacing-3) 0;
+}
+
+.mark {
+  color: var(--quantic-fg-success-primary);
+  grid-row: span 2;
+}
+
+.stateWarning {
+  color: var(--quantic-fg-warning-primary);
+}
+
+.detail {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  grid-column: 2;
+}

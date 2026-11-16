@@ -1,0 +1,13 @@
+# Supply-chain cooldown: refuse to install any dependency version published
+# less than 7 days ago (value in minutes), so a compromised release has time
+# to be detected and pulled before it can enter the lockfile.
+minimumReleaseAge: 10080
+# Quantic packages are first-party — exempt them from the cooldown so
+# design-system updates are available immediately.
+minimumReleaseAgeExclude:
+  - '@ctrliq/*'
+
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
+  '@swc/core': false

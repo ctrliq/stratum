@@ -1,0 +1,18 @@
+.essentials {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-3);
+}
+
+.title {
+  color: var(--quantic-text-primary);
+  font-size: var(--quantic-font-size-body-lg);
+  font-weight: var(--quantic-font-weight-semibold);
+  margin: 0;
+}
+
+.caption {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}

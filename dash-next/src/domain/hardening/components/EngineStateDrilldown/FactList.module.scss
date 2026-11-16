@@ -1,0 +1,24 @@
+.facts {
+  display: grid;
+  font-size: var(--quantic-font-size-body-xs);
+  gap: var(--quantic-spacing-1);
+  margin: 0;
+}
+
+.fact {
+  display: flex;
+  gap: var(--quantic-spacing-4);
+  justify-content: space-between;
+
+  dt {
+    color: var(--quantic-text-secondary);
+  }
+
+  dd {
+    color: var(--quantic-text-primary);
+    font-family: var(--quantic-font-family-mono);
+    margin: 0;
+    overflow-wrap: anywhere;
+    text-align: end;
+  }
+}

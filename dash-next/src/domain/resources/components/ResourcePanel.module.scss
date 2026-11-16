@@ -1,0 +1,33 @@
+.subtitle {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+
+  > * {
+    flex-shrink: 0;
+  }
+}
+
+.actions {
+  --quantic-component-action-group-gap: var(--quantic-spacing-1-5);
+
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-1-5);
+  justify-content: space-between;
+}
+
+.title {
+  color: var(--quantic-text-primary);
+  font-size: var(--quantic-font-size-body-lg);
+  font-weight: var(--quantic-font-weight-semibold);
+  margin: 0;
+  overflow-wrap: anywhere;
+}

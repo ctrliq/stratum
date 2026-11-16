@@ -1,0 +1,24 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-4);
+}
+
+.providers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--quantic-spacing-2);
+}
+
+.caption {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-xs);
+  font-weight: var(--quantic-font-weight-semibold);
+  margin: 0;
+}
+
+.notice {
+  color: var(--quantic-text-secondary);
+  font-size: var(--quantic-font-size-body-sm);
+  margin: 0;
+}

@@ -1,0 +1,24 @@
+.facts {
+  display: grid;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-1) var(--quantic-spacing-4);
+  grid-auto-flow: column;
+  grid-template-rows: auto auto;
+  margin: 0;
+
+  dt {
+    color: var(--quantic-text-secondary);
+    font-size: var(--quantic-font-size-body-xs);
+  }
+
+  dd {
+    margin: 0;
+  }
+}
+
+.controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--quantic-spacing-2);
+}

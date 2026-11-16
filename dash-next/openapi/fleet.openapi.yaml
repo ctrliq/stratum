@@ -1,0 +1,3150 @@
+openapi: 3.0.3
+info:
+  title: Stratum fleet manager (hub) REST API
+  version: 1.0.0
+  description: |
+    The browser-facing REST API of the `fleet-manager` hub, as served by `internal/api`
+    (route table `internal/api/routes.go`) and mounted by `internal/hub/routes.go`.
+    Hand-written from the Go handlers and structs.
+
+    Not described here: the per-cluster Kubernetes proxy (`/api/v1/clusters/{id}/k8s/*`
+    in fleet mode, `/k8s/*` in standalone mode; covered by the upstream Kubernetes spec),
+    the agent and node routes (`/agent/*`), the CLI device-flow routes
+    (`/api/v1/cli/*`), the OIDC callback, health probes and the static SPA handler.
+
+    **Modes.** The same binary runs as a fleet hub (`mode: fleet`) or as a single-cluster
+    server (`mode: standalone`); `GET /api/v1/config` says which. Every route below is
+    registered in both modes. A capability the running hub has not wired answers `501`
+    with a plain error body (see each operation).
+
+    **Authentication.** A cookie session: `POST /api/v1/login` (local accounts) or the
+    OIDC redirect flow sets the HttpOnly, SameSite=Strict cookie `fleet_session`
+    (12-hour lifetime). Logout revokes the session server-side. Two roles exist, `admin`
+    and `viewer`; every read below needs any session, every mutation and a few sensitive
+    reads need `admin` (noted per operation as "Admin").
+
+    **CSRF.** Every non-GET/HEAD/OPTIONS request behind a session must carry the header
+    `X-Fleet-CSRF` with the `csrfToken` from `POST /api/v1/login` or `GET /api/v1/me`.
+    The same check rejects a `Sec-Fetch-Site` other than `same-origin`/`none` and a
+    foreign `Origin`. GET requests need the cookie only.
+
+    **Errors.** Two shapes. The classic routes answer `Error`:
+    `{"error": "<code>", "message": "..."}`. The engine-state, support-archive and
+    operation routes answer `TypedError`, which is `Error` plus `requestID` and
+    `retryable` (and `currentReportGeneration` on some 409s), so every error body can be
+    read as `Error`. On those typed routes the session, CSRF and admin gates run first
+    and still answer the plain `Error` shape (401 `unauthenticated`, 403 `csrf`, 403
+    `insufficient-role`).
+
+    Responses every route can produce and that are not repeated per operation: `503
+    {"error":"shutting-down"}` with `Retry-After: 1` while the hub drains, and `404
+    {"error":"not-found","message":"no such route"}` for an unmatched `/api/` path.
+
+    **Forward compatibility.** Engine-state, evidence and archive objects are written by
+    components that may be newer than the hub; they can carry fields not listed here, and
+    their classification strings (severity, freshness, states, outcomes) can take values
+    not listed here. Listed values are the ones this build produces.
+servers:
+  - url: /
+    description: Same origin as the SPA.
+tags:
+  - name: config
+    description: Unauthenticated hub configuration; decides which features the SPA shows.
+  - name: auth
+    description: Session lifecycle and identity.
+  - name: catalog
+    description: The App Catalog index the hub ships.
+  - name: clusters
+    description: Cluster records, provisioning, and member manifests.
+  - name: registration
+    description: Registration tokens and the agent manifest a new member applies.
+  - name: engine-state
+    description: Server-side health classification, findings and evidence (feeds the hardening, certificate and backup evidence views).
+  - name: operations
+    description: Typed remote actions; target selections, idempotency intents, operations and capability discovery.
+  - name: support
+    description: Support (evidence) archive collections.
+security:
+  - sessionCookie: []
+paths:
+  /api/v1/config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      summary: Hub mode, version, auth providers, feature flags and the CIS profile
+      description: Unauthenticated.
+      security: []
+      responses:
+        '200':
+          description: The hub configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetConfig'
+  /api/v1/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Sign in with a local username and password
+      description: |
+        Sets the `fleet_session` cookie and returns the identity and the session's CSRF
+        token. No session, CSRF header or Origin check applies. Unknown JSON fields are
+        rejected; the body is limited to 1 MiB. Failed logins are rate limited per
+        username (5/min) and per client address (30/min).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordLoginRequest'
+      responses:
+        '200':
+          description: Signed in. The session cookie is set.
+          headers:
+            Set-Cookie:
+              description: '`fleet_session=<value>; Path=/; HttpOnly; SameSite=Strict; Max-Age=<ttl>` (plus `Secure` unless the hub runs with insecure HTTP).'
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetLoginResponse'
+        '400':
+          description: '`bad-request`: missing or invalid JSON, unknown fields, or an empty username or password.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: '`invalid_credentials`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: '`rate-limited`: too many failed logins.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`internal`: the credentials were right but no session could be issued.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: '`auth-unavailable`: the authentication backend is unavailable.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End and revoke the session
+      description: |
+        Revokes the session server-side (and every CLI session it approved) and clears
+        the cookie. Any role. Requires `X-Fleet-CSRF`. The SPA sends an empty JSON object
+        as the body; the server ignores the body.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '204':
+          description: Signed out. The session cookie is expired.
+          headers:
+            Set-Cookie:
+              description: '`fleet_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`.'
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: The signed-in identity and the session's CSRF token
+      description: Answered from the session itself; never proxied to a member cluster, so a 401 here always means the hub session ended.
+      responses:
+        '200':
+          description: The identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetMe'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/auth/oidc/start:
+    get:
+      operationId: startOidcLogin
+      tags: [auth]
+      summary: Begin an OIDC sign-in (browser navigation)
+      description: |
+        A top-level browser navigation, not a fetch: it always answers a redirect. The
+        route exists only when the hub has an OIDC issuer configured, which
+        `auth.providers` in the config reports as `oidc`; otherwise the path answers the
+        generic JSON 404. On success the browser is sent to the identity provider; when
+        the provider is unreachable or state cannot be generated it is sent to
+        `/login?error=oidc_unavailable`. After the provider redirects back, the hub's
+        callback sets the session cookie and redirects to `/`, or to
+        `/login?error=oidc_failed` on failure; the SPA then calls `GET /api/v1/me` to
+        obtain the CSRF token.
+      security: []
+      parameters:
+        - name: return
+          in: query
+          required: false
+          description: Name of a hub page to land on after sign-in. Only `cli-authorize` is recognized; any other value is dropped.
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to the identity provider, or back to the login page with an `error` query parameter.
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              description: The short-lived (5 minute) `fleet_oidc_state` cookie, when redirecting to the provider.
+              schema:
+                type: string
+  /api/v1/catalog:
+    get:
+      operationId: getCatalog
+      tags: [catalog]
+      summary: The App Catalog index this hub ships
+      description: |
+        The fallback catalog for a cluster that has no `kube-system/stratum-catalog`
+        ConfigMap. Served verbatim from the index file built into the hub. Advertised as
+        `links.catalog` in the config when present.
+      responses:
+        '200':
+          description: The catalog index.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogIndex'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: '`catalog-not-found`: this hub serves no App Catalog.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/clusters:
+    get:
+      operationId: listClusters
+      tags: [clusters]
+      summary: List clusters
+      description: In standalone mode the list holds the one local cluster.
+      responses:
+        '200':
+          description: The clusters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        default:
+          $ref: '#/components/responses/StoreError'
+    post:
+      operationId: createCluster
+      tags: [clusters]
+      summary: Provision a new cluster through ClusterAPI
+      description: |
+        Admin. Creates machines; distinct from registering an existing cluster. Answers
+        202 because the record exists before the cluster does. Available only when
+        `features.capi` is true. Unknown JSON fields are rejected.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClusterRequest'
+      responses:
+        '202':
+          description: Provisioning started; the new cluster record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '400':
+          description: '`bad-request`: invalid JSON or an invalid provisioning request.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: '`name-taken`: a cluster with that name already exists.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          description: '`capi-not-enabled`: cluster provisioning is not enabled on this hub.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/kubeconfig:
+    post:
+      operationId: registerKubeconfigCluster
+      tags: [clusters]
+      summary: Register an existing cluster by kubeconfig
+      description: |
+        Admin. For members that cannot run the agent: the hub stores the kubeconfig and
+        reaches the cluster directly. The kubeconfig is never returned by any endpoint.
+        Available only when `features.kubeconfigSource` is true. Unknown JSON fields are
+        rejected.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterKubeconfigClusterRequest'
+      responses:
+        '201':
+          description: Registered; the new cluster record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '400':
+          description: '`bad-request`: invalid JSON, a missing `name` or `kubeconfig`, or an unusable kubeconfig.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: '`name-taken`: a cluster with that name already exists.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          description: '`kubeconfig-not-enabled`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '502':
+          description: '`member-unreachable`: the member cluster could not be reached or refused the credential.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    get:
+      operationId: getCluster
+      tags: [clusters]
+      summary: Get one cluster
+      responses:
+        '200':
+          description: The cluster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cluster'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/ClusterNotFound'
+        default:
+          $ref: '#/components/responses/StoreError'
+    delete:
+      operationId: unregisterCluster
+      tags: [clusters]
+      summary: Unregister a cluster (remove the record, leave the cluster running)
+      description: |
+        Admin. Removes the hub's record only. For an agent-sourced member the answer
+        carries the command to run on the member to uninstall the agent; for other
+        sources `cleanupCommand` is an empty string.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '200':
+          description: Unregistered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnregisterClusterResponse'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: |
+            `csrf` or `insufficient-role` from the gates; `fleet-manager-cluster` (the
+            hub's own cluster, or the standalone cluster, cannot be removed);
+            `cluster-provisioned` (a ClusterAPI-provisioned cluster must be destroyed, not
+            unregistered).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/ClusterNotFound'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/{id}/facts:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    get:
+      operationId: getClusterFacts
+      tags: [clusters]
+      summary: Hub-owned facts for one cluster
+      description: Version drift, operator lease, kubelet-serving CSR, node Ready and Deployment READY verdicts with their observation time. Served the same way in fleet and standalone modes.
+      responses:
+        '200':
+          description: The facts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterFacts'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/ClusterNotFound'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/{id}/destroy:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    post:
+      operationId: destroyCluster
+      tags: [clusters]
+      summary: Destroy a provisioned cluster and its machines
+      description: |
+        Admin. The only endpoint that deletes machines. The body must repeat the cluster
+        name from the path. Answers 202: the ClusterAPI objects are being deleted and the
+        record disappears once the machines are gone. Available only when `features.capi`
+        is true.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DestroyClusterRequest'
+      responses:
+        '202':
+          description: Teardown started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DestroyClusterResponse'
+        '400':
+          description: '`confirmation-mismatch`: `confirm` does not equal the cluster name; or `bad-request`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`csrf` or `insufficient-role` from the gates; `deletion-protected`; `fleet-manager-cluster`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/ClusterNotFound'
+        '409':
+          description: '`not-provisioned` (the hub did not provision this cluster) or `cluster-orphaned`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          description: '`capi-not-enabled`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/{id}/deletion-protection:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    put:
+      operationId: setClusterDeletionProtection
+      tags: [clusters]
+      summary: Turn deletion protection on or off
+      description: Admin. Only meaningful for provisioned clusters. Available only when `features.capi` is true.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeletionProtection'
+      responses:
+        '200':
+          description: The value now set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletionProtection'
+        '400':
+          description: '`bad-request`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ClusterNotFound'
+        '501':
+          description: '`capi-not-enabled` (in standalone mode the message says the control does not apply to the local cluster).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/{id}/rbac.yaml:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    get:
+      operationId: getClusterRbacBundle
+      tags: [clusters]
+      summary: The member upgrade bundle (RBAC objects only) as YAML
+      description: |
+        Admin. The agent's RBAC re-rendered for an explicitly chosen profile, for an
+        operator to `kubectl apply` on the member. Served for agent-registered members
+        only. `profile` may not exceed the member's recorded profile (a `full` member may
+        be given `readonly`, not the reverse). With `node`, the bundle also carries that
+        one enrolled node's executor Role and RoleBinding. Never contains a Secret or a
+        token.
+      parameters:
+        - name: profile
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/AgentProfile'
+        - name: node
+          in: query
+          required: false
+          description: UID of one enrolled node. At most once, and not empty.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The bundle.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        '400':
+          description: '`no-recorded-profile` (not an agent-registered member) or `bad-request` (missing or excessive `profile`, repeated or empty `node`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`cluster-not-found`, or `node-not-enrolled` when `node` names a node the hub holds no grant for.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          description: '`upgrade-unavailable` (for example in standalone mode).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/clusters/{id}/node-checker.yaml:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    get:
+      operationId: getClusterNodeChecker
+      tags: [clusters]
+      summary: The per-node certificate checker manifests as YAML
+      description: |
+        Admin. The checker's ServiceAccount and DaemonSet for an already-registered
+        member, for an operator to `kubectl apply` there. Served for agent- and
+        kubeconfig-sourced members and the hub's own cluster.
+      responses:
+        '200':
+          description: The manifests.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        '400':
+          description: '`not-a-member` (unsupported cluster source) or `readonly-profile` (the member''s agent profile is readonly).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/ClusterNotFound'
+        '501':
+          description: '`node-checker-unavailable` (for example in standalone mode).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/providers:
+    get:
+      operationId: listProviders
+      tags: [clusters]
+      summary: Infrastructure providers this hub can provision with
+      description: Empty when provisioning is not enabled.
+      responses:
+        '200':
+          description: The providers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /api/v1/registration-tokens:
+    get:
+      operationId: listRegistrationTokens
+      tags: [registration]
+      summary: List registration tokens
+      description: Token secrets are never listed; only metadata.
+      responses:
+        '200':
+          description: The tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationTokenList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '501':
+          $ref: '#/components/responses/RegistrationUnavailable'
+        default:
+          $ref: '#/components/responses/StoreError'
+    post:
+      operationId: createRegistrationToken
+      tags: [registration]
+      summary: Create a registration token for a new member cluster
+      description: Admin. The token value is returned exactly once. Unknown JSON fields are rejected.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRegistrationTokenRequest'
+      responses:
+        '201':
+          description: The token, its manifest URL and the command to apply it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationTokenSecret'
+        '400':
+          description: '`bad-request`: invalid JSON, missing `clusterName`, an unknown `profile`, or a negative `ttlSeconds`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: '`name-taken`: a cluster or active token with that name already exists.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          $ref: '#/components/responses/RegistrationUnavailable'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/registration-tokens/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: The token's name (not its secret value).
+        schema:
+          type: string
+    delete:
+      operationId: deleteRegistrationToken
+      tags: [registration]
+      summary: Revoke a registration token
+      description: Admin.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '204':
+          description: Deleted.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`token-not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          $ref: '#/components/responses/RegistrationUnavailable'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/registration/{token}/manifest.yaml:
+    parameters:
+      - name: token
+        in: path
+        required: true
+        description: The registration token's secret value.
+        schema:
+          type: string
+    get:
+      operationId: getRegistrationManifest
+      tags: [registration]
+      summary: The agent install manifest for a registration token, as YAML
+      description: |
+        Unauthenticated: the token in the path is the credential (this is the URL in
+        `manifestURL` / `applyCommand`, fetched by `kubectl` on the member). Rate limited
+        per client address (10/min). Unknown, expired and redeemed tokens all answer the
+        same 404.
+      security: []
+      parameters:
+        - name: profile
+          in: query
+          required: false
+          description: Render for this agent profile; may not exceed the token's own.
+          schema:
+            $ref: '#/components/schemas/AgentProfile'
+        - name: executor
+          in: query
+          required: false
+          description: Opt into the node executor's host wiring. Only the value `true` is accepted, at most once; omit the parameter otherwise.
+          schema:
+            type: string
+            enum: ['true']
+      responses:
+        '200':
+          description: The manifest.
+          content:
+            application/yaml:
+              schema:
+                type: string
+        '400':
+          description: '`bad-request`: malformed query, unknown `profile`, or an invalid or repeated `executor`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`token-not-found`: no active registration token.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: '`rate-limited`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '501':
+          $ref: '#/components/responses/RegistrationUnavailable'
+        default:
+          $ref: '#/components/responses/StoreError'
+  /api/v1/fleet/engine-state:
+    get:
+      operationId: getFleetEngineState
+      tags: [engine-state]
+      summary: Severity counts across every readable cluster
+      description: Counts one frozen set of clusters, each once. A cluster whose summary cannot be read counts as `unknown` and makes the fleet incomplete.
+      responses:
+        '200':
+          description: The fleet summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetSummary'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/clusters/{id}/engine-state:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    get:
+      operationId: getClusterEngineState
+      tags: [engine-state]
+      summary: The engine-state summary of one cluster
+      description: |
+        Before its first evidence a connected cluster answers 200 with severity
+        `unknown`, never a fabricated healthy summary. The summary names the
+        `reportGeneration` to pass to the findings and evidence routes.
+      responses:
+        '200':
+          description: The summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSummary'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`source-denied`: the member''s grant does not permit the read.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '404':
+          description: '`not-found`: no such cluster, or the hub''s access to it has ended.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '503':
+          description: '`source-disconnected` (the cluster''s source is not connected or its member cannot be identified), `detail-unavailable` or `incomplete`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/clusters/{id}/reports/{reportGeneration}/findings:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+      - $ref: '#/components/parameters/ReportGeneration'
+    get:
+      operationId: listClusterReportFindings
+      tags: [engine-state]
+      summary: One page of findings (and the observations they link) of a pinned report generation
+      description: A repeated query parameter, a malformed query or an out-of-range `pageSize` is 400 `invalid`.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/DetailCursor'
+        - name: signal
+          in: query
+          required: false
+          description: Only findings of this signal.
+          schema:
+            type: string
+        - name: nodeUID
+          in: query
+          required: false
+          description: Only findings whose subject is this node.
+          schema:
+            type: string
+        - name: minimumSeverity
+          in: query
+          required: false
+          description: Only findings at or above this severity (`healthy`, `info`, `unknown`, `warning`, `critical`). An unknown value is 400.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportDetail'
+        '400':
+          description: '`invalid`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`source-denied`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '404':
+          description: '`not-found`: no such cluster or report generation.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '409':
+          description: '`generation-changed` (may carry `currentReportGeneration`) or `source-replaced`: reload the summary.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '410':
+          $ref: '#/components/responses/DetailExpired'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '503':
+          description: '`incomplete` (the cluster has no committed report generation yet), `detail-unavailable` or `source-disconnected`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/clusters/{id}/reports/{reportGeneration}/evidence/{evidenceRef}:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+      - $ref: '#/components/parameters/ReportGeneration'
+      - name: evidenceRef
+        in: path
+        required: true
+        description: An evidence reference the hub issued in a finding or observation of this generation (`evidenceRef`). Anything else is 400.
+        schema:
+          type: string
+    get:
+      operationId: getClusterReportEvidence
+      tags: [engine-state]
+      summary: One page of the evidence fragments behind an evidence reference
+      description: A cursor is valid only for the caller, cluster, generation, reference and page size it was issued for.
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/DetailCursor'
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidencePage'
+        '400':
+          description: '`invalid`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`source-denied`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '409':
+          description: '`generation-changed` (may carry `currentReportGeneration`) or `source-replaced`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '410':
+          $ref: '#/components/responses/DetailExpired'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '503':
+          description: '`detail-unavailable`, `source-disconnected` or `incomplete`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/clusters/{id}/capabilities:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    get:
+      operationId: getClusterCapabilities
+      tags: [operations]
+      summary: Per-action availability of remote actions on one cluster
+      description: Discovery only; one row per action the hub supports. Never an execution grant.
+      responses:
+        '200':
+          description: One row per supported action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilityList'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/target-selections:
+    post:
+      operationId: createTargetSelection
+      tags: [operations]
+      summary: Freeze a target set for a later operation
+      description: |
+        Admin. Freezes either an explicitly listed target set or every linked cluster's
+        targets, and returns the first page with the identity and digest a submission
+        later pins. The freeze expires after ten minutes. Executes nothing. Body limit
+        128 KiB; unknown JSON fields are rejected.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTargetSelectionRequest'
+      responses:
+        '201':
+          description: The frozen selection, first page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetSelection'
+        '400':
+          description: '`invalid`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: '`too-large`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/target-selections/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The `selectionID` of a frozen selection.
+        schema:
+          type: string
+    get:
+      operationId: getTargetSelection
+      tags: [operations]
+      summary: One page of a frozen target selection
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page. Omit for the first page.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TargetSelection'
+        '400':
+          description: '`invalid`: a cursor the freeze never issued.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/operation-intents:
+    post:
+      operationId: createOperationIntent
+      tags: [operations]
+      summary: Mint the idempotency key one operation submission will present
+      description: |
+        Admin. Binds the signed-in actor, an allowlisted action with its parameters and a
+        frozen selection into a key that expires after ten minutes. Executes nothing.
+        Body limit 128 KiB; unknown JSON fields are rejected.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOperationIntentRequest'
+      responses:
+        '201':
+          description: The receipt, carrying the `idempotencyKey` and the `operationID` it will create.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationReceipt'
+        '400':
+          description: '`invalid`: malformed body, or a parameter the action does not admit.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`not-found`: the hub holds no such selection.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '409':
+          description: '`precondition-changed`: `selectionDigest` does not match the frozen selection.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '413':
+          description: '`too-large`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '422':
+          description: '`unsupported-action`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/operations:
+    post:
+      operationId: createOperation
+      tags: [operations]
+      summary: Submit an operation from a held intent
+      description: |
+        Admin. Accepts one operation and answers 202 with the same bounded projection
+        `getOperation` serves. Submitting the same key with the same intent again returns
+        the same operation (safe retry); the same key with a different intent is 409
+        `idempotency-conflict`. Body limit 128 KiB; unknown fields and duplicate JSON
+        keys are rejected.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandSubmission'
+      responses:
+        '202':
+          description: Accepted; the operation projection, first page of targets.
+          headers:
+            Location:
+              description: '`/api/v1/operations/{operationID}`.'
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          description: '`invalid`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`csrf` or `insufficient-role` from the gates (plain `Error`); `insufficient-role` or `source-denied` from the service (`TypedError`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '409':
+          description: '`idempotency-conflict` or `precondition-changed`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '410':
+          description: '`intent-expired`: the idempotency key expired; mint a new intent.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '413':
+          description: '`too-large`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '422':
+          description: '`unsupported-action` or `schema-mismatch`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/operations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/OperationId'
+    get:
+      operationId: getOperation
+      tags: [operations]
+      summary: Poll an operation
+      description: |
+        The parent state and outcome, counts over the whole frozen target set, and one
+        page (at most 50) of per-target results. Follow `nextCursor` to read every
+        target. Any role may poll.
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: The `nextCursor` of the previous page. Omit for the first page.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The operation projection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '400':
+          description: '`invalid`: a cursor the projection never issued.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '410':
+          description: '`operation-expired`: retention of the settled operation has ended. Do not resubmit.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/operations/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/OperationId'
+    post:
+      operationId: cancelOperation
+      tags: [operations]
+      summary: Request cancellation of an operation
+      description: |
+        Admin. Records the cancellation intent; the first request's timestamp is kept, so
+        a retry is safe. Never a rollback: committed targets keep their state. Already
+        settled work refuses with 409. Takes no request body (the SPA sends `{}`, which
+        is ignored).
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '202':
+          description: Cancellation recorded; the operation projection, first page of targets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Operation'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`csrf` or `insufficient-role` from the gates (plain `Error`); `insufficient-role` from the service (`TypedError`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '409':
+          description: '`precondition-changed`: the operation already settled.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '410':
+          description: '`operation-expired`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '501':
+          $ref: '#/components/responses/OperationsUnavailable'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/clusters/{id}/support-archives:
+    parameters:
+      - $ref: '#/components/parameters/ClusterId'
+    post:
+      operationId: createSupportArchive
+      tags: [support]
+      summary: Start a support-archive collection for one cluster
+      description: |
+        Admin. Answers 202 with a receipt as soon as the collection has begun; the
+        collection runs in the background. Poll `getSupportArchive` for its state. Takes
+        no request body (the SPA sends `{}`, which is ignored).
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      responses:
+        '202':
+          description: Collection started.
+          headers:
+            Location:
+              description: Same value as `statusURL`.
+              schema:
+                type: string
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportArchiveReceipt'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: '`csrf` or `insufficient-role` from the gates (plain `Error`); `source-denied` (`TypedError`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '`not-found`: no such cluster, or access to it has ended.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '429':
+          $ref: '#/components/responses/TypedRateLimited'
+        '503':
+          description: '`source-disconnected`, `detail-unavailable` or `incomplete`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/support-archives/{collectionID}:
+    parameters:
+      - $ref: '#/components/parameters/CollectionId'
+    get:
+      operationId: getSupportArchive
+      tags: [support]
+      summary: The state of a support-archive collection
+      description: |
+        Admin. Served only to the admin who started the collection; anyone else gets 404.
+        Stays readable after the binary's download window has passed.
+      responses:
+        '200':
+          description: The collection record.
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveCollection'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        default:
+          $ref: '#/components/responses/TypedError'
+  /api/v1/support-archives/{collectionID}/download:
+    parameters:
+      - $ref: '#/components/parameters/CollectionId'
+    get:
+      operationId: downloadSupportArchive
+      tags: [support]
+      summary: Download the collected archive (gzip-compressed tar)
+      description: |
+        Admin, and only the admin who started the collection. The binary is available for
+        fifteen minutes after the collection completes (`downloadExpiresAt`). Fetch it as
+        a Blob; error answers are still JSON.
+      responses:
+        '200':
+          description: The archive.
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="<collectionID>.tar.gz"`.'
+              schema:
+                type: string
+            Content-Length:
+              schema:
+                type: integer
+            X-Stratum-Archive-SHA256:
+              description: Digest of the body (same as `archiveSha256`).
+              schema:
+                type: string
+            X-Stratum-Archive-Collection:
+              description: The collection ID.
+              schema:
+                type: string
+            X-Stratum-Archive-Outcome:
+              description: The collection's outcome.
+              schema:
+                type: string
+            X-Stratum-Archive-Manifest-SHA256:
+              description: Digest of the collection's manifest.
+              schema:
+                type: string
+            X-Request-ID:
+              schema:
+                type: string
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '`not-found`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '410':
+          description: '`detail-expired`: the collection failed or was canceled (no binary will ever exist), or the download window has passed.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        '503':
+          description: '`detail-unavailable` (retryable): the collection is still running.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TypedError'
+        default:
+          $ref: '#/components/responses/TypedError'
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: fleet_session
+      description: |
+        HttpOnly, SameSite=Strict session cookie set by `POST /api/v1/login` or the OIDC
+        callback. Send requests with `credentials: 'same-origin'`.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-Fleet-CSRF
+      description: Per-session CSRF token from `POST /api/v1/login` or `GET /api/v1/me` (`csrfToken`). Required on every non-GET/HEAD/OPTIONS request behind a session.
+  parameters:
+    ClusterId:
+      name: id
+      in: path
+      required: true
+      description: The cluster's name (`Cluster.id`).
+      schema:
+        type: string
+    ReportGeneration:
+      name: reportGeneration
+      in: path
+      required: true
+      description: The `reportGeneration` a cluster's engine-state summary names (`r-` followed by 64 hex characters).
+      schema:
+        type: string
+    OperationId:
+      name: id
+      in: path
+      required: true
+      description: The `operationID`.
+      schema:
+        type: string
+    CollectionId:
+      name: collectionID
+      in: path
+      required: true
+      description: The `collectionID` from the start receipt.
+      schema:
+        type: string
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Items per page; default and maximum 50. Must be a base-10 integer.
+      schema:
+        type: integer
+        default: 50
+        maximum: 50
+    DetailCursor:
+      name: cursor
+      in: query
+      required: false
+      description: The `nextCursor` of the previous page. Omit for the first page; an empty value is refused.
+      schema:
+        type: string
+  responses:
+    Unauthenticated:
+      description: '`unauthenticated`: the session cookie is missing, invalid, expired or revoked.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: '`csrf` (missing or invalid `X-Fleet-CSRF`, cross-site request or foreign origin; unsafe methods only) or `insufficient-role` (the route needs the admin role).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ClusterNotFound:
+      description: '`cluster-not-found`.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RegistrationUnavailable:
+      description: '`registration-unavailable`: cluster registration is not available on this hub (for example in standalone mode).'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    OperationsUnavailable:
+      description: '`operations-unavailable`: the operation capability is not wired on this hub. Plain `Error` body.'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StoreError:
+      description: |
+        Any other failure of the hub's store or a member, in the plain `Error` shape:
+        400 `bad-request`, 401 `unauthorized`, 403 `forbidden`, 404 (route-specific
+        code), 409 `conflict`, 502 `member-unreachable`, 503 `backend-unavailable` (the
+        hub's own Kubernetes access was refused) or 500 `internal`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TypedError:
+      description: |
+        Any other error of the typed error table, including 500 `internal`. Engine-state
+        and support-archive routes also set the `X-Request-ID` response header.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TypedError'
+    TypedRateLimited:
+      description: '`quota-exceeded` (retryable): the budget is exhausted.'
+      headers:
+        Retry-After:
+          description: Whole seconds to wait before retrying.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TypedError'
+    DetailExpired:
+      description: '`detail-expired`: this report detail is no longer retained; the summary remains available.'
+      headers:
+        X-Stratum-Retained-From:
+          description: Creation time of the oldest generation whose detail is still retained. Absent when none is.
+          schema:
+            type: string
+            format: date-time
+        X-Stratum-Retained-To:
+          description: Creation time of the newest generation whose detail is still retained. Absent when none is.
+          schema:
+            type: string
+            format: date-time
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TypedError'
+  schemas:
+    Error:
+      type: object
+      description: The error body every endpoint answers with.
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable code, e.g. `unauthenticated`, `csrf`, `bad-request`, `not-found`.
+        message:
+          type: string
+          description: Human-readable explanation.
+    TypedError:
+      description: The error body of the engine-state, support-archive and operation routes. Messages are fixed per code.
+      allOf:
+        - $ref: '#/components/schemas/Error'
+        - type: object
+          required: [requestID, retryable]
+          properties:
+            requestID:
+              type: string
+            retryable:
+              type: boolean
+              description: Whether repeating the same request later can succeed.
+            currentReportGeneration:
+              type: string
+              description: Only on some 409 `generation-changed` answers of the engine-state routes; the generation to reload.
+    ConfigAuth:
+      type: object
+      required: [required, providers]
+      properties:
+        required:
+          type: boolean
+          description: Always `true` on the hub.
+        providers:
+          type: array
+          description: Sign-in mechanisms the login screen should offer. The hub answers a subset of `local` (username and password) and `oidc` (redirect flow); may be empty.
+          items:
+            type: string
+    FleetFeatures:
+      type: object
+      required: [capi, kubeconfigSource]
+      properties:
+        capi:
+          type: boolean
+          description: ClusterAPI provisioning is wired (create, destroy, deletion protection, providers).
+        kubeconfigSource:
+          type: boolean
+          description: Registering a cluster by kubeconfig is wired.
+    CisControl:
+      type: object
+      description: One CIS control the Hardening screen lists.
+      required: [id, desc, group, source]
+      properties:
+        id:
+          type: string
+        desc:
+          type: string
+        note:
+          type: string
+        group:
+          type: string
+        source:
+          type: string
+        tag:
+          type: string
+          enum: [exception, cis]
+          description: '`exception` for a documented exception, `cis` for a control that needs the CIS profile; absent otherwise.'
+    FleetConfig:
+      type: object
+      required: [mode, version, auth, features, k8sBase, links, cisProfile]
+      properties:
+        mode:
+          type: string
+          enum: [fleet, standalone]
+        version:
+          type: string
+        auth:
+          $ref: '#/components/schemas/ConfigAuth'
+        features:
+          $ref: '#/components/schemas/FleetFeatures'
+        k8sBase:
+          type: string
+          description: 'Kubernetes proxy prefix. Fleet mode: the template `/api/v1/clusters/{id}/k8s` (replace `{id}`). Standalone mode: `/k8s`.'
+        links:
+          type: object
+          description: Named URLs. `docs` is always present; `catalog` (the path of `getCatalog`) when the hub ships a catalog; plus any links the operator configured (for example `grafana`).
+          additionalProperties:
+            type: string
+        cisProfile:
+          type: array
+          items:
+            $ref: '#/components/schemas/CisControl'
+    PasswordLoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+    FleetUser:
+      type: object
+      required: [username, provider, roles]
+      properties:
+        username:
+          type: string
+        provider:
+          type: string
+          description: '`local` or `oidc`.'
+        roles:
+          type: array
+          description: '`admin` and/or `viewer`. The SPA treats a user as admin when this includes `admin`.'
+          items:
+            type: string
+    FleetLoginResponse:
+      type: object
+      required: [user, csrfToken]
+      properties:
+        user:
+          $ref: '#/components/schemas/FleetUser'
+        csrfToken:
+          type: string
+    FleetMe:
+      type: object
+      required: [username, provider, roles, csrfToken]
+      properties:
+        username:
+          type: string
+        provider:
+          type: string
+          description: '`local` or `oidc`.'
+        roles:
+          type: array
+          description: '`admin` and/or `viewer`. Never null.'
+          items:
+            type: string
+        csrfToken:
+          type: string
+    CatalogIndex:
+      type: object
+      description: The App Catalog index file, served verbatim. The hub does not parse it; the entry shape is defined by the catalog format, not by this API.
+      properties:
+        apiVersion:
+          type: string
+          description: '`catalog.stratum.ciq.com/v1`.'
+        generated:
+          type: string
+          format: date-time
+        apps:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
+    AgentProfile:
+      type: string
+      enum: [full, readonly]
+    ClusterTunnel:
+      type: object
+      required: [connected]
+      properties:
+        connected:
+          type: boolean
+        connectedSince:
+          type: string
+          format: date-time
+    ClusterCondition:
+      type: object
+      required: [type, status]
+      properties:
+        type:
+          type: string
+        status:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+    Coverage:
+      type: object
+      description: What was expected against what was evaluated; expected = evaluated + unknown, with notApplicable counted outside expected.
+      required: [expectationRevision, expected, evaluated, unknown, notApplicable, complete]
+      properties:
+        expectationRevision:
+          type: string
+        expected:
+          type: integer
+          format: int64
+        evaluated:
+          type: integer
+          format: int64
+        unknown:
+          type: integer
+          format: int64
+        notApplicable:
+          type: integer
+          format: int64
+        complete:
+          type: boolean
+    SeverityCounts:
+      type: object
+      description: Count per severity (`healthy`, `info`, `unknown`, `warning`, `critical`, or a value a newer component introduced). Absent keys mean zero.
+      additionalProperties:
+        type: integer
+        format: int64
+    FindingCounts:
+      type: object
+      required: [total, required, optional, bySeverity]
+      properties:
+        total:
+          type: integer
+          format: int64
+        required:
+          type: integer
+          format: int64
+        optional:
+          type: integer
+          format: int64
+        bySeverity:
+          $ref: '#/components/schemas/SeverityCounts'
+    DetailRef:
+      type: object
+      description: Reference to the stored report detail behind a summary or result.
+      required: [reportGeneration, manifestID, sha256, totalItems, totalBytes, complete, expiresAt]
+      properties:
+        reportGeneration:
+          type: string
+        manifestID:
+          type: string
+        sha256:
+          type: string
+        totalItems:
+          type: integer
+          format: int64
+        totalBytes:
+          type: integer
+          format: int64
+        complete:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+    ClusterEngineState:
+      type: object
+      description: The engine-state classification the hub last stored on the cluster record. A projection of `StateSummary` without its envelope; reading it costs no engine-state read.
+      required: [reportGeneration, policyRevision, evaluatedAt, severity, freshness, coverage, findingCounts, detail]
+      properties:
+        reportGeneration:
+          type: string
+        policyRevision:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+          description: Newest genuine source sample; absent until one exists.
+        evaluatedAt:
+          type: string
+          format: date-time
+        severity:
+          type: string
+          description: '`healthy`, `info`, `unknown`, `warning` or `critical`.'
+        freshness:
+          type: string
+          description: '`fresh`, `stale`, `warning`, `degraded` or `unknown`.'
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        findingCounts:
+          $ref: '#/components/schemas/FindingCounts'
+        detail:
+          $ref: '#/components/schemas/DetailRef'
+    Cluster:
+      type: object
+      required:
+        - id
+        - uid
+        - name
+        - displayName
+        - labels
+        - source
+        - provider
+        - region
+        - k8sVersion
+        - stratumVersion
+        - nodeCount
+        - readyNodes
+        - controlPlaneNodes
+        - status
+        - fleetManager
+        - provisioned
+        - deletionProtected
+        - lastHeartbeat
+        - conditions
+        - k8sBase
+      properties:
+        id:
+          type: string
+          description: Same as `name`; the value for `{id}` path parameters.
+        uid:
+          type: string
+        name:
+          type: string
+        displayName:
+          type: string
+          description: Falls back to `name`.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        source:
+          type: string
+          enum: [local, agent, kubeconfig]
+          description: How the hub reaches the cluster. `local` is the hub's own cluster.
+        provider:
+          type: string
+          description: May be empty.
+        region:
+          type: string
+          description: May be empty.
+        k8sVersion:
+          type: string
+          description: Empty until inventory has been collected.
+        stratumVersion:
+          type: string
+          description: Empty until inventory has been collected.
+        nodeCount:
+          type: integer
+        readyNodes:
+          type: integer
+        controlPlaneNodes:
+          type: integer
+        status:
+          type: string
+          enum: [healthy, degraded, disconnected, pending, provisioning, deleting]
+        fleetManager:
+          type: boolean
+          description: This is the hub's own cluster.
+        provisioned:
+          type: boolean
+          description: The hub provisioned this cluster through ClusterAPI; only such a cluster can be destroyed.
+        deletionProtected:
+          type: boolean
+        lastHeartbeat:
+          type: string
+          format: date-time
+          nullable: true
+        tunnel:
+          allOf:
+            - $ref: '#/components/schemas/ClusterTunnel'
+          description: Present only for `agent`-sourced clusters.
+        conditions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterCondition'
+        k8sBase:
+          type: string
+          description: Kubernetes proxy prefix for this cluster, e.g. `/api/v1/clusters/member-1/k8s`, or `/k8s` in standalone mode.
+        engineState:
+          allOf:
+            - $ref: '#/components/schemas/ClusterEngineState'
+          description: Absent until the hub has stored a classification.
+    ClusterList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Cluster'
+    CreateClusterRequest:
+      type: object
+      required: [name, provider, kubernetesVersion, controlPlane, workers]
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        provider:
+          type: string
+          description: One of the ids `listProviders` returns.
+        kubernetesVersion:
+          type: string
+        controlPlane:
+          type: integer
+          format: int32
+          description: Control-plane node count.
+        workers:
+          type: integer
+          format: int32
+          description: Worker node count.
+        values:
+          type: object
+          description: Site-specific placement values for the provider.
+          additionalProperties:
+            type: string
+    RegisterKubeconfigClusterRequest:
+      type: object
+      required: [name, kubeconfig]
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        provider:
+          type: string
+        region:
+          type: string
+        context:
+          type: string
+          description: The kubeconfig context to use; the kubeconfig's current context when omitted.
+        kubeconfig:
+          type: string
+          description: The kubeconfig file's text.
+    UnregisterClusterResponse:
+      type: object
+      required: [cleanupCommand]
+      properties:
+        cleanupCommand:
+          type: string
+          description: Shell command to run on an agent-sourced member to remove the agent. Empty string for other sources.
+    DestroyClusterRequest:
+      type: object
+      required: [confirm]
+      properties:
+        confirm:
+          type: string
+          description: Must equal the cluster name in the path.
+    DestroyClusterResponse:
+      type: object
+      required: [status, cluster, message]
+      properties:
+        status:
+          type: string
+          enum: [deleting]
+        cluster:
+          type: string
+        message:
+          type: string
+    DeletionProtection:
+      type: object
+      required: [protected]
+      properties:
+        protected:
+          type: boolean
+    Provider:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+    ProviderList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Provider'
+    NodeFact:
+      type: object
+      required: [name, ready, schedulable]
+      properties:
+        name:
+          type: string
+        ready:
+          type: boolean
+        schedulable:
+          type: boolean
+        readyCondition:
+          type: boolean
+          description: The node's Ready condition; absent when it is Unknown, unreadable or not reported.
+    OperatorLeaseFact:
+      type: object
+      required: [state, holder, renewTime]
+      properties:
+        state:
+          type: string
+          description: '`active`, `inactive`, `missing` or `unknown`.'
+        holder:
+          type: string
+        renewTime:
+          type: string
+          format: date-time
+          nullable: true
+    DeploymentFact:
+      type: object
+      required: [namespace, name, replicas, readyReplicas, availableReplicas, minReadySeconds, status]
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        replicas:
+          type: integer
+          format: int32
+        readyReplicas:
+          type: integer
+          format: int32
+        availableReplicas:
+          type: integer
+          format: int32
+        minReadySeconds:
+          type: integer
+          format: int32
+        status:
+          type: string
+          description: '`Scheduled`, `Running`, `Progressing` or `Degraded`.'
+    ClusterFacts:
+      type: object
+      required:
+        - id
+        - name
+        - observedAt
+        - kubernetesVersion
+        - versionDrift
+        - nodes
+        - operatorLease
+        - kubeletServingCSRPending
+        - deployments
+        - complete
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the inventory behind this answer was collected; null before the first observation.
+        kubernetesVersion:
+          type: string
+        versionDrift:
+          type: boolean
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/NodeFact'
+        operatorLease:
+          $ref: '#/components/schemas/OperatorLeaseFact'
+        kubeletServingCSRPending:
+          type: integer
+          nullable: true
+          description: Pending kubelet-serving CSRs; null when the read was not available (unknown, never zero).
+        kubeletServingCSRAvailability:
+          type: string
+          description: Distinguishes a real zero from an unobserved probe (`available`, `missing`, `corrupt`, `unreadable`, `forbidden`, `timeout`, `unsupported`, `unknown`). Absent on older senders; treat as unknown.
+        deployments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentFact'
+        deploymentsOmitted:
+          type: integer
+          description: Nonzero means `deployments` is partial.
+        complete:
+          type: boolean
+          description: False until the hub knows every input was whole.
+        totalNodes:
+          type: integer
+          description: How many nodes the cluster reported; absent when unknown.
+    CreateRegistrationTokenRequest:
+      type: object
+      required: [clusterName]
+      properties:
+        clusterName:
+          type: string
+        displayName:
+          type: string
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+        ttlSeconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Token lifetime; 0 or omitted means the default (1 hour). Capped at 24 hours.
+        profile:
+          $ref: '#/components/schemas/AgentProfile'
+    RegistrationTokenSecret:
+      type: object
+      description: The answer to creating a token. `token` is returned exactly once.
+      required: [name, token, expiresAt, manifestURL, applyCommand]
+      properties:
+        name:
+          type: string
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        manifestURL:
+          type: string
+          description: Absolute URL of `getRegistrationManifest` for this token.
+        applyCommand:
+          type: string
+          description: The `kubectl apply` command to run on the member.
+    RegistrationToken:
+      type: object
+      required: [name, clusterName, phase, expiresAt, createdBy]
+      properties:
+        name:
+          type: string
+        clusterName:
+          type: string
+        phase:
+          type: string
+          enum: [Active, Redeemed, Expired]
+        expiresAt:
+          type: string
+          format: date-time
+        createdBy:
+          type: string
+    RegistrationTokenList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegistrationToken'
+    ClusterIdentity:
+      type: object
+      required: [name, uid, memberUID]
+      properties:
+        name:
+          type: string
+        uid:
+          type: string
+          description: The hub's immutable Cluster UID.
+        memberUID:
+          type: string
+          description: The member's kube-system Namespace UID. Empty when not yet known.
+    FleetSummary:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - snapshotRevision
+        - evaluatedAt
+        - clusterCount
+        - countsBySeverity
+        - requiredUnknownClusters
+        - complete
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        snapshotRevision:
+          type: string
+          description: Names the frozen set of summaries counted (`fleet-` followed by hex). The same set yields the same revision.
+        evaluatedAt:
+          type: string
+          format: date-time
+        clusterCount:
+          type: integer
+          format: int64
+        countsBySeverity:
+          $ref: '#/components/schemas/SeverityCounts'
+        requiredUnknownClusters:
+          type: integer
+          format: int64
+        complete:
+          type: boolean
+    StateSummary:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - cluster
+        - reportGeneration
+        - observedAt
+        - evaluatedAt
+        - severity
+        - freshness
+        - coverage
+        - findingCounts
+        - detail
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        cluster:
+          $ref: '#/components/schemas/ClusterIdentity'
+        reportGeneration:
+          type: string
+          description: Pass to the findings and evidence routes.
+        observedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Newest genuine source sample; null until one exists.
+        evaluatedAt:
+          type: string
+          format: date-time
+        severity:
+          type: string
+          description: '`healthy`, `info`, `unknown`, `warning` or `critical`.'
+        freshness:
+          type: string
+          description: '`fresh`, `stale`, `warning`, `degraded` or `unknown`.'
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        findingCounts:
+          $ref: '#/components/schemas/FindingCounts'
+        detail:
+          $ref: '#/components/schemas/DetailRef'
+    Subject:
+      type: object
+      description: What a finding or observation is about.
+      required: [scope, component, key]
+      properties:
+        scope:
+          type: string
+          description: '`node` or `cluster`.'
+        nodeUID:
+          type: string
+          description: Present for a node-scoped subject.
+        component:
+          type: string
+        key:
+          type: string
+    Source:
+      type: object
+      description: The writer identity of an observation.
+      required:
+        - bindingUID
+        - memberUID
+        - nodeUID
+        - producer
+        - build
+        - processInstance
+        - processEpoch
+        - sequence
+        - startedAt
+      properties:
+        bindingUID:
+          type: string
+        memberUID:
+          type: string
+        nodeUID:
+          type: string
+        producer:
+          type: string
+        build:
+          type: string
+        processInstance:
+          type: string
+        processEpoch:
+          type: string
+          description: Positive decimal string.
+        sequence:
+          type: string
+          description: Positive decimal string.
+        startedAt:
+          type: string
+          format: date-time
+    ObservationTimes:
+      type: object
+      required: [sampledAt, attemptedAt, completedAt, lastSuccessAt]
+      properties:
+        sampledAt:
+          type: string
+          format: date-time
+          nullable: true
+        attemptedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        lastSuccessAt:
+          type: string
+          format: date-time
+          nullable: true
+    Reason:
+      type: object
+      description: A bounded, safe explanation.
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        retryable:
+          type: boolean
+    Evidence:
+      type: object
+      description: Typed evidence carried verbatim from its producer. `type` names the evidence shape; the remaining fields depend on it and are not defined by this API.
+      properties:
+        type:
+          type: string
+      additionalProperties: true
+    FindingOrigin:
+      type: object
+      description: How the hub derived a finding no source reported.
+      required: [kind, policyRevision, expectationRevision, evaluatedAt]
+      properties:
+        kind:
+          type: string
+          description: '`hub-policy`.'
+        policyRevision:
+          type: string
+        expectationRevision:
+          type: string
+        evaluatedAt:
+          type: string
+          format: date-time
+    Finding:
+      type: object
+      required:
+        - id
+        - signal
+        - subject
+        - source
+        - severity
+        - required
+        - active
+        - applicable
+        - code
+        - message
+        - sampledAt
+        - evidenceRef
+      properties:
+        id:
+          type: string
+        signal:
+          type: string
+        subject:
+          $ref: '#/components/schemas/Subject'
+        source:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Source'
+          description: Null for a finding the hub derived itself.
+        severity:
+          type: string
+          description: '`healthy`, `info`, `unknown`, `warning` or `critical`.'
+        required:
+          type: boolean
+        active:
+          type: boolean
+        applicable:
+          type: boolean
+        code:
+          type: string
+        message:
+          type: string
+        sampledAt:
+          type: string
+          format: date-time
+          nullable: true
+        evidenceRef:
+          type: string
+          nullable: true
+          description: Pass to `getClusterReportEvidence`; null when there is no stored evidence.
+        origin:
+          $ref: '#/components/schemas/FindingOrigin'
+    Observation:
+      type: object
+      required:
+        - cluster
+        - id
+        - subject
+        - source
+        - signal
+        - times
+        - availability
+        - applicability
+        - nativeOutcome
+        - coverage
+        - evidence
+        - reason
+        - evidenceRef
+      properties:
+        cluster:
+          $ref: '#/components/schemas/ClusterIdentity'
+        id:
+          type: string
+        subject:
+          $ref: '#/components/schemas/Subject'
+        source:
+          $ref: '#/components/schemas/Source'
+        signal:
+          type: string
+        times:
+          $ref: '#/components/schemas/ObservationTimes'
+        availability:
+          type: string
+          description: Whether the sample could be taken. A free string set by the producer, e.g. `available`.
+        applicability:
+          type: string
+          description: '`applicable` or `not-applicable`.'
+        nativeOutcome:
+          type: string
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        evidence:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Evidence'
+          description: Inline evidence; null when absent or stored behind `evidenceRef`.
+        reason:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Reason'
+        evidenceRef:
+          type: string
+          nullable: true
+    ReportDetail:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - cluster
+        - reportGeneration
+        - pageSize
+        - cursor
+        - nextCursor
+        - totalFindings
+        - complete
+        - state
+        - findings
+        - observations
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        cluster:
+          $ref: '#/components/schemas/ClusterIdentity'
+        reportGeneration:
+          type: string
+        pageSize:
+          type: integer
+        cursor:
+          type: string
+          nullable: true
+          description: The cursor this page was read with; null for the first page.
+        nextCursor:
+          type: string
+          nullable: true
+          description: Null on the last page.
+        totalFindings:
+          type: integer
+          format: int64
+          description: Total across all pages.
+        complete:
+          type: boolean
+          description: False when the snapshot behind the page is partial.
+        state:
+          type: string
+          description: '`available` or `partial`.'
+        findings:
+          type: array
+          items:
+            $ref: '#/components/schemas/Finding'
+        observations:
+          type: array
+          description: The observations the findings on this page link to.
+          items:
+            $ref: '#/components/schemas/Observation'
+    EvidencePage:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - cluster
+        - reportGeneration
+        - evidenceRef
+        - source
+        - pageSize
+        - items
+        - totalItems
+        - complete
+        - nextCursor
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        cluster:
+          $ref: '#/components/schemas/ClusterIdentity'
+        reportGeneration:
+          type: string
+        evidenceRef:
+          type: string
+        source:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Source'
+          description: Null for hub-derived evidence.
+        pageSize:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Evidence'
+        totalItems:
+          type: integer
+          format: int64
+          description: Total evidence fragments across all pages.
+        complete:
+          type: boolean
+        nextCursor:
+          type: string
+          nullable: true
+          description: Null on the last page.
+    CapabilityDenialReason:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [no-installed-handler, permission-refused, disconnected, unavailable]
+        message:
+          type: string
+    Capability:
+      type: object
+      required: [action, state, handlerVersion, executorID, supportedParameters, reason]
+      properties:
+        action:
+          type: string
+          description: The action name (see `CommandSubmission.action`).
+        state:
+          type: string
+          enum: [available, unavailable]
+        handlerVersion:
+          type: string
+          nullable: true
+          description: Version of the handler installed on the cluster; null when unknown or when nodes disagree.
+        executorID:
+          type: string
+          nullable: true
+          description: Always null; reserved.
+        supportedParameters:
+          type: object
+          description: The parameter names the action admits, each mapped to `true`.
+          additionalProperties:
+            type: boolean
+        reason:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/CapabilityDenialReason'
+          description: Why the action is unavailable; null when available.
+    CapabilityList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Capability'
+    CommandCluster:
+      type: object
+      required: [name, uid, memberUID]
+      properties:
+        name:
+          type: string
+        uid:
+          type: string
+        memberUID:
+          type: string
+    OperationTarget:
+      type: object
+      description: One frozen target; every member by immutable identity.
+      required: [cluster, nodeUID, bindingUID, sourceRevision]
+      properties:
+        cluster:
+          $ref: '#/components/schemas/CommandCluster'
+        nodeUID:
+          type: string
+        bindingUID:
+          type: string
+        sourceRevision:
+          type: string
+    CreateTargetSelectionRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [selected, all-linked]
+          description: '`selected` freezes the listed `targets`; `all-linked` freezes every linked cluster''s targets.'
+        targets:
+          type: array
+          description: Required for `selected`.
+          items:
+            $ref: '#/components/schemas/OperationTarget'
+    TargetSelection:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - selectionID
+        - selectionDigest
+        - snapshotRevision
+        - targetCount
+        - targets
+        - nextCursor
+        - expiresAt
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        selectionID:
+          type: string
+        selectionDigest:
+          type: string
+        snapshotRevision:
+          type: string
+        targetCount:
+          type: integer
+          description: Size of the whole frozen set, not of this page.
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationTarget'
+        nextCursor:
+          type: string
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+    CreateOperationIntentRequest:
+      type: object
+      required: [action, parameters, selectionID, selectionDigest]
+      properties:
+        action:
+          type: string
+          description: See `CommandSubmission.action`.
+        parameters:
+          type: object
+          description: The action's parameters; only names the action admits (see `Capability.supportedParameters`).
+          additionalProperties: true
+        selectionID:
+          type: string
+        selectionDigest:
+          type: string
+    OperationIntent:
+      type: object
+      description: The signed, expiring idempotency receipt.
+      required:
+        - schemaVersion
+        - kind
+        - idempotencyKey
+        - operationID
+        - action
+        - parameterDigest
+        - selectionDigest
+        - expiresAt
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        idempotencyKey:
+          type: string
+          description: Present this in `CommandSubmission.idempotencyKey`.
+        operationID:
+          type: string
+          description: The identity of the operation this key will create.
+        action:
+          type: string
+        parameterDigest:
+          type: string
+        selectionDigest:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+    CommandActor:
+      type: object
+      description: Who the hub resolved the request to. Server-derived.
+      required: [subject, provider, authorizationRevision]
+      properties:
+        subject:
+          type: string
+        provider:
+          type: string
+        authorizationRevision:
+          type: string
+    OperationReceipt:
+      type: object
+      required: [intent, actor]
+      properties:
+        intent:
+          $ref: '#/components/schemas/OperationIntent'
+        actor:
+          $ref: '#/components/schemas/CommandActor'
+    SubmissionSelection:
+      type: object
+      description: Which targets an operation runs on. The fields that apply depend on `mode`.
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [selected, all-linked, snapshot]
+          description: '`snapshot` pins a frozen selection by `selectionID` and `selectionDigest`; `selected` lists `targets`; `all-linked` resolves through `snapshotRevision`.'
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationTarget'
+        snapshotRevision:
+          type: string
+        selectionID:
+          type: string
+        selectionDigest:
+          type: string
+    CommandSubmission:
+      type: object
+      required: [schemaVersion, kind, idempotencyKey, selection, action, parameters]
+      properties:
+        schemaVersion:
+          type: string
+          enum: [v1]
+        kind:
+          type: string
+          enum: [CommandSubmission]
+        idempotencyKey:
+          type: string
+          description: From `createOperationIntent`.
+        selection:
+          $ref: '#/components/schemas/SubmissionSelection'
+        deadline:
+          type: string
+          format: date-time
+          description: Optional. Omit to take the action's default; `null` or a zero time is refused.
+        action:
+          type: string
+          description: |
+            One of the hub's allowlisted actions: `certificates.check`,
+            `certificates.rotate`, `cis.check`, `release.rollback`, `release.upgrade`,
+            `snapshot.restore`, `snapshot.save`. Anything else is 422.
+        parameters:
+          type: object
+          description: Must equal the parameters the intent was minted with.
+          additionalProperties: true
+    TargetSetRef:
+      type: object
+      required: [selectionID, selectionDigest, memberCount]
+      properties:
+        selectionID:
+          type: string
+        selectionDigest:
+          type: string
+        memberCount:
+          type: integer
+    OperationTargetResult:
+      type: object
+      required:
+        - childOperationID
+        - target
+        - state
+        - outcome
+        - phase
+        - committed
+        - resultRefs
+        - causes
+        - targetSet
+      properties:
+        childOperationID:
+          type: string
+        target:
+          $ref: '#/components/schemas/OperationTarget'
+        state:
+          type: string
+          description: '`accepted`, `queued`, `running`, `reconciling`, `completed`, `canceled` or `expired`.'
+        outcome:
+          type: string
+          description: '`unknown` (not settled), `queued`, `success`, `partial`, `denied`, `unsupported`, `failed`, `disconnected`, `canceled` or `expired`.'
+        phase:
+          type: string
+          description: The executor's phase; `pending` for live work and `settled` for terminal work that reported none.
+        committed:
+          type: boolean
+          description: The target passed its commit point; a cancel will not undo it.
+        resultRefs:
+          type: array
+          items:
+            $ref: '#/components/schemas/DetailRef'
+        causes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reason'
+        completedAt:
+          type: string
+          format: date-time
+        targetSet:
+          $ref: '#/components/schemas/TargetSetRef'
+    Operation:
+      type: object
+      description: The bounded projection of one operation. Counts describe the whole frozen target set; `targets` is one page of it.
+      required:
+        - schemaVersion
+        - kind
+        - operationID
+        - action
+        - acceptedAt
+        - deadline
+        - state
+        - outcome
+        - targets
+        - nextCursor
+        - targetCount
+        - terminalCount
+        - committedCount
+        - countsByState
+        - countsByOutcome
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        operationID:
+          type: string
+        action:
+          type: string
+        acceptedAt:
+          type: string
+          format: date-time
+        deadline:
+          type: string
+          format: date-time
+        state:
+          type: string
+          description: '`accepted`, `queued`, `running`, `reconciling`, `completed`, `canceled` or `expired`.'
+        outcome:
+          type: string
+          description: '`unknown` (not settled), `queued`, `success`, `partial`, `denied`, `unsupported`, `failed`, `disconnected`, `canceled` or `expired`.'
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/OperationTargetResult'
+        cancelRequestedAt:
+          type: string
+          format: date-time
+          description: When cancellation was first requested; absent if never.
+        completedAt:
+          type: string
+          format: date-time
+          description: Present once the operation is terminal.
+        nextCursor:
+          type: string
+          nullable: true
+          description: Null on the last page.
+        targetCount:
+          type: integer
+        terminalCount:
+          type: integer
+        committedCount:
+          type: integer
+        countsByState:
+          type: object
+          additionalProperties:
+            type: integer
+        countsByOutcome:
+          type: object
+          additionalProperties:
+            type: integer
+    SupportArchiveReceipt:
+      type: object
+      required: [collectionID, statusURL]
+      properties:
+        collectionID:
+          type: string
+        statusURL:
+          type: string
+          description: Path of `getSupportArchive` for this collection (`/api/v1/support-archives/{collectionID}`).
+    ArchiveSection:
+      type: object
+      required: [name, state, sourceSampledAt, bytes, sha256, reason]
+      properties:
+        name:
+          type: string
+        state:
+          type: string
+          description: '`complete`, `missing`, `denied`, `stale`, `failed`, `truncated` or `not-reported`.'
+        sourceSampledAt:
+          type: string
+          format: date-time
+          nullable: true
+        bytes:
+          type: integer
+          format: int64
+        sha256:
+          type: string
+          nullable: true
+        reason:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/Reason'
+    ArchiveManifest:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - collectionID
+        - cluster
+        - reportGeneration
+        - startedAt
+        - completedAt
+        - outcome
+        - policyVersion
+        - sections
+        - totalBytes
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        collectionID:
+          type: string
+        cluster:
+          $ref: '#/components/schemas/ClusterIdentity'
+        reportGeneration:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+        outcome:
+          type: string
+        policyVersion:
+          type: string
+        sections:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArchiveSection'
+        totalBytes:
+          type: integer
+          format: int64
+    ArchiveCollection:
+      type: object
+      required:
+        - schemaVersion
+        - kind
+        - collectionID
+        - cluster
+        - reportGeneration
+        - state
+        - outcome
+        - manifest
+        - compressedBytes
+        - archiveSha256
+        - downloadExpiresAt
+      properties:
+        schemaVersion:
+          type: string
+        kind:
+          type: string
+        collectionID:
+          type: string
+        cluster:
+          $ref: '#/components/schemas/ClusterIdentity'
+        reportGeneration:
+          type: string
+        state:
+          type: string
+          description: '`staging` (still collecting), `completed`, `failed` or `canceled`.'
+        outcome:
+          type: string
+          description: '`staging` while collecting; `complete`, `partial`, `failed` or `canceled` once settled.'
+        manifest:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/ArchiveManifest'
+          description: Null until the collection has one.
+        compressedBytes:
+          type: integer
+          format: int64
+          nullable: true
+          description: Size of the downloadable binary; null until one exists, and for a failed or canceled collection.
+        archiveSha256:
+          type: string
+          nullable: true
+        downloadExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the download window closes.

@@ -1,0 +1,28 @@
+.main {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--quantic-font-size-body-sm);
+  gap: var(--quantic-spacing-2);
+  margin: 0;
+
+  dt {
+    color: var(--quantic-text-secondary);
+  }
+
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+    text-align: end;
+  }
+}
+
+.fact {
+  align-items: center;
+  display: flex;
+  gap: var(--quantic-spacing-3);
+  justify-content: space-between;
+}
+
+.stateWarning {
+  color: var(--quantic-fg-warning-primary);
+}
