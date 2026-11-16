@@ -6,6 +6,7 @@ import { isDashboardServer } from '~/domain/auth/utils/predicates';
 import { toListMessage, toStaleNotice } from '~/domain/resources/utils/formatters';
 import { DataTable, type DataTableColumns } from '~/shared/components/DataTable/DataTable';
 import { EmptyState } from '~/shared/components/EmptyState/EmptyState';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 import { ToneBadge } from '~/shared/components/ToneBadge/ToneBadge';
 import { ClusterContext } from '~/shared/context/ClusterContext';
@@ -115,27 +116,29 @@ function EventsListIn() {
         </p>
       </header>
       {notice ? <Alert type="warning">{notice}</Alert> : null}
-      {isGrouped ? (
-        <DataTable
-          aria-label="Events by reason"
-          data={toEventGroups(rows)}
-          columns={groupColumns}
-          isLoading={state === 'loading'}
-          isSortable={false}
-          toolbar={toolbar}
-          empty={empty}
-        />
-      ) : (
-        <DataTable
-          aria-label="Events"
-          data={rows}
-          columns={eventColumns}
-          isLoading={state === 'loading'}
-          isSortable={false}
-          toolbar={toolbar}
-          empty={empty}
-        />
-      )}
+      <PageBleed>
+        {isGrouped ? (
+          <DataTable
+            aria-label="Events by reason"
+            data={toEventGroups(rows)}
+            columns={groupColumns}
+            isLoading={state === 'loading'}
+            isSortable={false}
+            toolbar={toolbar}
+            empty={empty}
+          />
+        ) : (
+          <DataTable
+            aria-label="Events"
+            data={rows}
+            columns={eventColumns}
+            isLoading={state === 'loading'}
+            isSortable={false}
+            toolbar={toolbar}
+            empty={empty}
+          />
+        )}
+      </PageBleed>
     </section>
   );
 }

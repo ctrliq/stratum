@@ -6,6 +6,7 @@ import { loadingSummary } from '~/domain/resources/constants';
 import { useScreenNavigation } from '~/domain/shell/hooks/useScreenNavigation';
 import { DataTable, type DataTableColumns } from '~/shared/components/DataTable/DataTable';
 import { EmptyState } from '~/shared/components/EmptyState/EmptyState';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 import { StatusCell } from '~/shared/components/ToneBadge/StatusCell';
 import { ClusterContext } from '~/shared/context/ClusterContext';
@@ -82,37 +83,39 @@ export function WorkloadsOverview() {
           {toUnreadableNotice(read)}
         </Alert>
       ))}
-      <DataTable
-        aria-label={overviewTitle}
-        data={visible}
-        columns={columns}
-        isLoading={isLoading}
-        isSortable={false}
-        onRowClick={(row) => onOpened(toWorkloadHref(row, clusterId, namespace))}
-        empty={
-          isWhollyRead(reads) ? <EmptyState>{toEmptyWorkloadsMessage(kind)}</EmptyState> : null
-        }
-        toolbar={
-          <>
-            <KindFilter
-              chosen={kind}
-              counts={countsByKind(rows)}
-              total={rows.length}
-              onChosen={setKind}
-            />
-            <TextInput
-              className={styles.search}
-              type="search"
-              aria-label={workloadSearchName}
-              placeholder={workloadSearchPlaceholder}
-              value={search}
-              onValueChanged={(event) => setSearch(event.detail.value)}
-            >
-              <LucideIconSearch slot="prefix" size="sm" />
-            </TextInput>
-          </>
-        }
-      />
+      <PageBleed>
+        <DataTable
+          aria-label={overviewTitle}
+          data={visible}
+          columns={columns}
+          isLoading={isLoading}
+          isSortable={false}
+          onRowClick={(row) => onOpened(toWorkloadHref(row, clusterId, namespace))}
+          empty={
+            isWhollyRead(reads) ? <EmptyState>{toEmptyWorkloadsMessage(kind)}</EmptyState> : null
+          }
+          toolbar={
+            <>
+              <KindFilter
+                chosen={kind}
+                counts={countsByKind(rows)}
+                total={rows.length}
+                onChosen={setKind}
+              />
+              <TextInput
+                className={styles.search}
+                type="search"
+                aria-label={workloadSearchName}
+                placeholder={workloadSearchPlaceholder}
+                value={search}
+                onValueChanged={(event) => setSearch(event.detail.value)}
+              >
+                <LucideIconSearch slot="prefix" size="sm" />
+              </TextInput>
+            </>
+          }
+        />
+      </PageBleed>
     </section>
   );
 }

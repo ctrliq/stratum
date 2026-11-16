@@ -11,6 +11,7 @@ import { useContext, useEffect, useState } from 'react';
 import { isDashboardServer } from '~/domain/auth/utils/predicates';
 import { ScreenNotFound } from '~/domain/shell/components/NotFound/ScreenNotFound';
 import { EmptyState } from '~/shared/components/EmptyState/EmptyState';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 import { ClusterContext } from '~/shared/context/ClusterContext';
 import { useServerConfig } from '~/shared/context/ConfigContext';
@@ -192,7 +193,9 @@ function CatalogOfCluster() {
                   ) : layout === 'cards' ? (
                     <AppCards apps={matching} {...listing} />
                   ) : (
-                    <AppsTable apps={matching} {...listing} />
+                    <PageBleed>
+                      <AppsTable apps={matching} {...listing} />
+                    </PageBleed>
                   )}
                 </>
               )}

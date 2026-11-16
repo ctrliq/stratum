@@ -5,6 +5,7 @@ import { useContext } from 'react';
 import { toListMessage, toStaleNotice } from '~/domain/resources/utils/formatters';
 import { DataTable, type DataTableColumns } from '~/shared/components/DataTable/DataTable';
 import { EmptyState } from '~/shared/components/EmptyState/EmptyState';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 import { ToneBadge } from '~/shared/components/ToneBadge/ToneBadge';
 import { NamespaceContext } from '~/shared/context/NamespaceContext';
@@ -52,14 +53,16 @@ export function HelmReleasesList() {
         <p className={styles.summary}>{toReleaseSummary(releases.length)}</p>
       </header>
       {notice ? <Alert type="warning">{notice}</Alert> : null}
-      <DataTable
-        aria-label="Helm releases"
-        data={releases}
-        columns={columns}
-        isLoading={state === 'loading'}
-        isSortable={false}
-        empty={message ? <EmptyState>{message}</EmptyState> : null}
-      />
+      <PageBleed>
+        <DataTable
+          aria-label="Helm releases"
+          data={releases}
+          columns={columns}
+          isLoading={state === 'loading'}
+          isSortable={false}
+          empty={message ? <EmptyState>{message}</EmptyState> : null}
+        />
+      </PageBleed>
     </section>
   );
 }

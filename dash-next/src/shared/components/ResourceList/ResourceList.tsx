@@ -3,6 +3,7 @@ import type { MouseEvent, ReactNode } from 'react';
 
 import { DataTable, type DataTableColumns } from '~/shared/components/DataTable/DataTable';
 import { EmptyState } from '~/shared/components/EmptyState/EmptyState';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 
 import styles from './ResourceList.module.scss';
@@ -112,7 +113,7 @@ export function ResourceList<TRow>({
         <p className={styles.summary}>{summary}</p>
       </header>
       {notice ? <Alert type="warning">{notice}</Alert> : null}
-      <div className={styles.content}>
+      <PageBleed className={styles.content}>
         <DataTable
           aria-label={title}
           data={rows}
@@ -138,7 +139,7 @@ export function ResourceList<TRow>({
             </>
           }
         />
-      </div>
+      </PageBleed>
       {panel}
     </section>
   );

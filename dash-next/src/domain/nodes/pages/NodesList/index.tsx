@@ -6,6 +6,7 @@ import { loadingSummary } from '~/domain/resources/constants';
 import { toListMessage, toStaleNotice } from '~/domain/resources/utils/formatters';
 import { useManualRefresh } from '~/domain/shell/hooks/useManualRefresh';
 import { useTerminal } from '~/domain/terminal/hooks/useTerminal';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 import { ToneBadge } from '~/shared/components/ToneBadge/ToneBadge';
 import { ClusterContext } from '~/shared/context/ClusterContext';
@@ -82,7 +83,7 @@ function NodesListIn({ selectedName, onSelected }: Props) {
         </Button>
       </header>
       {notice ? <Alert type="warning">{notice}</Alert> : null}
-      <div className={styles.content}>
+      <PageBleed className={styles.content}>
         <NodeTable
           rows={rows}
           readAt={nodeList.dataUpdatedAt}
@@ -99,7 +100,7 @@ function NodesListIn({ selectedName, onSelected }: Props) {
           onHostShellRequested={onNodeShellOpened}
           onCordonToggled={onCordonToggled}
         />
-      </div>
+      </PageBleed>
       {selected ? (
         <NodeDetail
           row={selected}

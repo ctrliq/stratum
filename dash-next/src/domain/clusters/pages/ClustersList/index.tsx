@@ -5,6 +5,7 @@ import { useCallback, useContext, useState } from 'react';
 import type { Cluster } from '~/api/fleet/fleetSchemas';
 import { EvidenceArchiveFlows } from '~/domain/support/components/EvidenceArchiveFlows/EvidenceArchiveFlows';
 import { EmptyState } from '~/shared/components/EmptyState/EmptyState';
+import { PageBleed } from '~/shared/components/PageBleed/PageBleed';
 import { PageTitle } from '~/shared/components/PageTitle/PageTitle';
 import { useServerConfig } from '~/shared/context/ConfigContext';
 import { WriteAccessContext } from '~/shared/context/WriteAccessContext';
@@ -140,7 +141,9 @@ export function ClustersList({ search, onSearchChanged }: Props) {
           view === 'grid' ? (
             <ClusterCards clusters={shown} actionsFor={actionsFor} />
           ) : (
-            <ClusterTable clusters={shown} actionsFor={actionsFor} />
+            <PageBleed>
+              <ClusterTable clusters={shown} actionsFor={actionsFor} />
+            </PageBleed>
           )
         ) : clusters.length > 0 ? (
           <EmptyState>{toNoMatchText(query)}</EmptyState>
