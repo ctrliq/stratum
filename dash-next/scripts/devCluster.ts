@@ -132,6 +132,9 @@ const withRefusal = (response: ServerResponse, reason: string) =>
 const withSession = (response: ServerResponse, cookies: string[]) =>
   response.writeHead(302, { 'set-cookie': cookies, location: '/' }).end();
 
+const toSignInNotice = (token: string) =>
+  `  ➜  Sign in: ${originTheNodeAccepts}${signInPath}\n  ➜  Token:   ${token}`;
+
 export const devCluster = (): Plugin => ({
   name: 'stratum:dev-cluster',
   apply: (_config, { command, mode }) => command === 'serve' && mode === 'cluster',
@@ -142,6 +145,11 @@ export const devCluster = (): Plugin => ({
     return { server: { port: acceptedPort, strictPort: true, open: signInPath } };
   },
   configureServer: (server) => {
+    const printUrls = server.printUrls.bind(server);
+    server.printUrls = () => {
+      printUrls();
+      server.config.logger.info(toSignInNotice(tokenOf() ?? ''));
+    };
     server.middlewares.use(signInPath, (_request, response) => {
       void toSessionCookies(tokenOf() ?? '').then(
         (cookies) => withSession(response, cookies),
