@@ -5,6 +5,7 @@ import { defineConfig, type ProxyOptions } from 'vite';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 
 import { bundledPackagesPlugin } from '../dash/bundled-packages.js';
+import { devLogin } from './scripts/devLogin';
 
 const backend = process.env.DASH_BACKEND ?? 'http://127.0.0.1:8443';
 
@@ -21,6 +22,7 @@ export default defineConfig({
     tanstackRouter({ target: 'react', autoCodeSplitting: true }),
     react(),
     bundledPackagesPlugin(),
+    devLogin(backend, process.env.DASH_DEV_TOKEN),
     viteStaticCopy({
       targets: [
         {

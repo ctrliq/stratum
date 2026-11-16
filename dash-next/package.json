@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:cluster": "node scripts/dev-cluster.mjs",
     "build": "tsr generate && tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsr generate && tsc",
