@@ -435,6 +435,70 @@ jobs:
           pnpm publish --no-git-checks --tag "$DIST_TAG"
 
   # ---------------------------------------------------------------------------
+  # The rewritten dashboard (dash-next/) as an importer asset. An importer of
+  # pkg/cli embeds it in a hub of its own and may not link this module's
+  # packages there, so it takes the build as a file: one archive holding the
+  # SPA, the npm packages bundled into it and the hub API it was generated
+  # against (see `make dashboard-asset`). The same for every architecture, so
+  # it is built once, here, rather than in each leg of `build`.
+  #
+  # Signed and pushed the way the per-arch importer assets are: the blob
+  # signature travels inside the single-layer image, beside the archive, and
+  # the importer verifies the same .sig/.pem it would have downloaded.
+  #
+  # Nothing downstream waits on this, for the reason dash-publish gives.
+  dashboard-asset:
+    needs: [meta, draft-release]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/node-prep
+      - run: make dashboard-asset
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          # v2, as in `build`: cosign v3 ignores sign-blob's
+          # --output-signature/--output-certificate.
+          cosign-release: v2.6.5
+      - name: sign the archive
+        run: make sign
+      - name: upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --clobber \
+            dist/stratum-dashboard.tar.gz \
+            dist/stratum-dashboard.tar.gz.sig \
+            dist/stratum-dashboard.tar.gz.pem
+      - id: pins
+        run: echo "crane=$(sed -n 's/^crane_version *= *//p' build/versions.mk | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - name: install crane
+        run: |
+          set -euo pipefail
+          v=${{ steps.pins.outputs.crane }}
+          [ -n "$v" ] || { echo "::error::no crane_version in this tag's versions.mk"; exit 1; }
+          want=$(sed -n 's/^crane_sha256_linux_amd64 *= *//p' build/versions.mk | tr -d ' ')
+          [ -n "$want" ] || { echo "::error::no crane_sha256_linux_amd64 pin in this tag's versions.mk — backport the digest pins"; exit 1; }
+          curl -fsSL --retry 3 --retry-delay 5 --retry-all-errors -o "$RUNNER_TEMP/crane.tgz" \
+            "https://github.com/google/go-containerregistry/releases/download/v$v/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "$want  $RUNNER_TEMP/crane.tgz" | sha256sum -c -
+          tar -xz -C /usr/local/bin crane < "$RUNNER_TEMP/crane.tgz"
+      - name: login
+        run: |
+          crane auth login ghcr.io -u '${{ github.actor }}' -p '${{ secrets.GITHUB_TOKEN }}'
+      # On ghcr too, because a draft release's assets need write on this
+      # repository to read and an importer's CI holds only read:packages.
+      - name: push the archive to ghcr
+        run: |
+          set -euo pipefail
+          f=stratum-dashboard.tar.gz
+          for part in "$f" "$f.sig" "$f.pem"; do
+            [ -s "dist/$part" ] || { echo "::error::dist/$part is missing or empty; nothing was pushed"; exit 1; }
+          done
+          tar -C dist -cf - "$f" "$f.sig" "$f.pem" | crane append -f - -t "$GHCR_IMAGE:$TAG-dashboard"
+
+  # ---------------------------------------------------------------------------
   # Conformance against the artifacts that were just built, on real
   # provisioned infrastructure. Hours long, and nothing above waits for it: the
   # release page has its artifacts long before this resolves.

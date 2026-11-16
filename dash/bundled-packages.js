@@ -90,6 +90,15 @@ function bundleIds(bundle, root) {
     : output.originalFileNames.map((name) => path.resolve(root, name).split(path.sep).join('/'))));
 }
 
+// Sass compiles a package's partial (@use, @forward) into the stylesheet that
+// names it without making it a module, so no chunk's moduleIds hold it. Vite
+// registers each file Sass loaded as a watched file, which a Rollup plugin
+// context can read back; a Rolldown one cannot, and answers with none.
+const SASS = /\.(?:scss|sass)$/;
+function sassIds(context) {
+  return [...(context.getWatchFiles?.() ?? [])].filter((id) => SASS.test(id)).map((id) => id.split(path.sep).join('/'));
+}
+
 // The stylesheets checkImports reads: plain CSS, which Vite compiles with
 // PostCSS. Vite's CSS plugin skips the special queries (a ?raw stylesheet is
 // a string, never compiled), and a \0 id is a plugin's virtual module, not a
@@ -271,7 +280,7 @@ export function bundledPackagesPlugin() {
     },
     transform: sourceCheck(),
     async generateBundle(_options, bundle) {
-      const ids = [...bundleIds(bundle, root), ...[...workerIds.values()].flat(), ...inlinedIds];
+      const ids = [...bundleIds(bundle, root), ...[...workerIds.values()].flat(), ...inlinedIds, ...sassIds(this)];
       const file = path.join(root, '.bundle', 'packages.json');
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, `${JSON.stringify(await bundledPackages(ids), null, 2)}\n`);

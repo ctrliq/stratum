@@ -307,6 +307,29 @@ dash-bundle:
 	  echo "           The bundle has no entry point; nothing would be served." >&2; \
 	  exit 1; }
 
+# The rewritten dashboard (dash-next/), packed for an importer of pkg/cli to
+# embed in its own hub: an importer may not link this module's packages into
+# that binary, so the build reaches it as a file. One archive, so the three
+# parts cannot come from different builds: dist/ is the SPA, packages.json the
+# npm packages bundled into it (what the importer's license check reads), and
+# fleet.openapi.yaml the hub API the SPA's client was generated from (what the
+# importer checks its own routes against). Nothing in this repository embeds
+# dash-next yet; dash/ stays the dashboard `stratum dash` serves.
+DASHBOARD_ASSET := $(DIST)/$(stratum_name)-dashboard.tar.gz
+
+.PHONY: dashboard-asset
+dashboard-asset:
+	cd dash-next && pnpm install --frozen-lockfile && pnpm test && pnpm run build
+	@test -s dash-next/dist/index.html || { \
+	  echo "make dashboard-asset: pnpm run build left no dash-next/dist/index.html." >&2; exit 1; }
+	@mkdir -p $(DIST)
+	# COPYFILE_DISABLE keeps macOS tar from adding ._ resource-fork entries.
+	COPYFILE_DISABLE=1 tar -czf $(DASHBOARD_ASSET) \
+	  -C $(CURDIR)/dash-next dist \
+	  -C $(CURDIR)/dash-next/.bundle packages.json \
+	  -C $(CURDIR)/dash-next/openapi fleet.openapi.yaml
+	@echo "wrote $(DASHBOARD_ASSET)"
+
 # --- the public documentation site --------------------------------------------
 
 # docs/ is the user-facing site (MkDocs Material). The target is what a
@@ -907,12 +930,12 @@ sign:
 	if ! command -v cosign >/dev/null; then \
 	  echo "sign: cosign not installed — skipping (install: mise install; CI signs keylessly via GitHub OIDC)"; exit 0; \
 	fi; \
-	for a in $(BIN) $(PAYLOAD_ASSET) $(LDFLAGS_ASSET) $(DIST)/*.spdx.json; do \
+	for a in $(BIN) $(PAYLOAD_ASSET) $(LDFLAGS_ASSET) $(DASHBOARD_ASSET) $(DIST)/*.spdx.json; do \
 	  [ -e "$$a" ] || continue; \
 	  echo "cosign $$a"; cosign sign-blob --yes "$$a" --output-signature "$$a.sig" --output-certificate "$$a.pem"; \
 	done
 
 .PHONY: clean
 clean:
-	rm -rf $(DIST) staging .stamps build-info.json dash/dist dash/.bundle
+	rm -rf $(DIST) staging .stamps build-info.json dash/dist dash/.bundle dash-next/dist dash-next/.bundle
 	$(MAKE) -C build/components clean TARGET_ARCH=$(TARGET_ARCH)

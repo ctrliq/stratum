@@ -59,6 +59,24 @@ cookies ignore the port, so on one host each sign-in would replace the other's.
 `docker rm -f stratum-dev` stops the node; the `stratum-dev` volume keeps the cluster, and
 `docker volume rm stratum-dev` discards it.
 
+## How a hub embeds it
+
+A fleet hub is built outside this repository and may not link this module's packages
+into its binary, so it takes the dashboard as a file. `make dashboard-asset` (from the
+repository root) writes `dist/stratum-dashboard.tar.gz`:
+
+| Entry | What | Read by |
+| --- | --- | --- |
+| `dist/` | the built SPA | the hub's embed |
+| `packages.json` | the npm packages bundled into it | the hub's license check |
+| `fleet.openapi.yaml` | the hub API the client was generated from | the hub's route check |
+
+The release workflow signs the archive and pushes it to
+`ghcr.io/ctrliq/stratum:<tag>-dashboard`, beside the other importer assets. A hub pinned to
+that tag embeds exactly those bytes, so a change to `openapi/fleet.openapi.yaml` reaches a
+hub with the release that carries it, and that hub's build fails if it does not serve a
+route the contract names.
+
 ## Checks
 
 ```sh
