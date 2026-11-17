@@ -356,6 +356,23 @@ func nodeFileOwners() map[string]string {
 		K8sConfDir + "/rotation-incomplete": "internal/certs",
 		PKIDir + "/carotate-run-id":         "internal/certs",
 
+		// The scheduled snapshot loop's durable attempt record: what its
+		// last save, upload and prune attempts did and when the save and
+		// upload last succeeded. The loop's writer sits in
+		// internal/etcdsnap — the scheduled save records its attempts
+		// through it — and the reader and the record's shape in
+		// internal/backupevidence, which the writer cannot import: the
+		// file is the contract between the two, pinned together by the
+		// recording tests. The owner here is the writer, the package
+		// whose writes the node-file rule must scan.
+		K8sConfDir + "/snapshot-evidence.yaml": "internal/etcdsnap",
+
+		// The node-owned backup-evidence publisher's durable record: what
+		// its last sample of the engine's backup evidence said and when it
+		// was taken. The publisher (publishEvidenceLoop) sits in
+		// internal/cluster, which owns the record's contract and writes it.
+		K8sConfDir + "/backup-evidence.yaml": "internal/cluster",
+
 		// The component kubeconfigs (admin, kubelet, controller-manager, ...),
 		// the kubectl admin.conf, and the bootstrap kubeconfig — which
 		// internal/bootstrap writes (kubelet's TLS bootstrap), not the
