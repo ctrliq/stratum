@@ -335,8 +335,8 @@ docs-venv:
 docs: docs-venv
 	cd $(DOCS_DIR) && .venv/bin/mkdocs build --strict
 	@n=$$(find $(DOCS_DIR)/site -name index.html | wc -l | tr -d ' '); \
-	  [ "$$n" = 21 ] || { \
-	    echo "make docs: built $$n pages, expected 21." >&2; \
+	  [ "$$n" = 23 ] || { \
+	    echo "make docs: built $$n pages, expected 23." >&2; \
 	    echo "           A page was added or dropped — update the count if that was intended." >&2; \
 	    exit 1; }
 

@@ -54,6 +54,12 @@ To print the version of each component a binary carries, run
     Day-2 operations: high availability, upgrades and rollback, snapshots and
     restore, and the security controls every cluster runs.
 
+-   ### [Backup Evidence](cluster-admin/backup-evidence.md)
+
+    The engine's own backup evidence — the effective snapshot policy, the
+    local and remote artifacts, and the maintenance diagnostics — as one
+    bounded read.
+
 </div>
 
 The other sections:

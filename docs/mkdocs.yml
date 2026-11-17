@@ -93,16 +93,26 @@ nav:
       - High Availability: cluster-admin/high-availability.md
       - Upgrades & Rollback: cluster-admin/upgrades.md
       - Snapshot & Restore: cluster-admin/snapshot-restore.md
+      - Backup Evidence: cluster-admin/backup-evidence.md
       - Certificates: cluster-admin/certificates.md
       - Hardening: cluster-admin/hardening.md
       - MCP Server: cluster-admin/mcp.md
   - Container Runtime: runtime/index.md
   - Networking & Storage: networking-storage/index.md
   - Stratum PRO: pro/index.md
-  - Releases & Support: releases/index.md
+  - Releases & Support:
+      - releases/index.md
+      - Backup Evidence Release Notes: releases/backup-evidence.md
   - Appendices:
       - appendices/index.md
       - Glossary: appendices/glossary.md
       - Paths and Names: appendices/paths-and-names.md
       - Snapshot Reference: appendices/snapshot-reference.md
       - Upgrade Reference: appendices/upgrade-reference.md
+      - Backup Evidence Fixtures:
+          - Complete read: appendices/backup-evidence-fixtures/configured-remote-required.json
+          - Unconfigured defaults: appendices/backup-evidence-fixtures/unconfigured-defaults.json
+          - Disabled: appendices/backup-evidence-fixtures/disabled.json
+          - Unreadable snapshot conf: appendices/backup-evidence-fixtures/unreadable-snapshot-conf.json
+          - Unknown cluster config: appendices/backup-evidence-fixtures/unknown-cluster-config.json
+          - Partial listing, unknown totals: appendices/backup-evidence-fixtures/partial-listing-unknown-totals.json

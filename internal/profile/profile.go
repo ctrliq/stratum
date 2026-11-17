@@ -234,6 +234,7 @@ func (p Profile) Validate() error {
 var engineConfigNames = map[string]bool{
 	"admin.conf":                true,
 	"admission-webhook.yaml":    true,
+	"backup-evidence.yaml":      true,
 	"certs.d":                   true,
 	"cilium.json":               true,
 	"components":                true,
@@ -253,6 +254,7 @@ var engineConfigNames = map[string]bool{
 	"resolv.conf":               true,
 	"rotation-incomplete":       true,
 	"selinux-confined-since":    true,
+	"snapshot-evidence.yaml":    true,
 	"webhook-client.kubeconfig": true,
 }
 
