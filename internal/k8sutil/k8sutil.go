@@ -654,6 +654,24 @@ func StampOwnNode(node string) error {
 	})
 }
 
+// OwnNodeUID reads the immutable identity of this node using kubelet credentials.
+func OwnNodeUID(ctx context.Context, node string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	cs, err := kubeletClientsetContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	n, err := cs.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	return string(n.UID), nil
+}
+
 // WaitOwnNodeRegistered polls, as the kubelet, until its Node exists, giving
 // up at timeout: one deadline covers every attempt, sleep and request.
 func WaitOwnNodeRegistered(node string, timeout time.Duration) error {
