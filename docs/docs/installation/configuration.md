@@ -698,7 +698,7 @@ sets the restriction:
   kernel's hash of its `runc` profile is no longer the one it loaded.
 - `stratum runtime check` exits 1 while the setting is `1` and the kernel's
   `runc` profile does not cover `/var/lib/stratum/bin/runc`, and while any
-  process still runs with a stacked label.
+  container process still runs with a stacked label.
 - A cluster upgrade checks on each node, before it changes the node, that the
   profile can be built and compiled there, and refuses the node when it cannot.
 - `stratum uninstall` loads the host's own `runc` profile again, or removes the

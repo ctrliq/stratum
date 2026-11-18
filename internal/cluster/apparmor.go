@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,20 +30,26 @@ var (
 // created after that is stacked for good. So it looks as soon as the kernel's
 // policy changes, once the change has settled, as a reload of every profile
 // changes it many times, and every interval besides. A look loads only when
-// the profile is gone, so its own load does not make the next one load again.
-// A failure is logged when it first happens and when it changes, not on every
-// look.
+// the profile is gone, so its own load does not make the next one load again;
+// but a load that leaves runc uncovered, as when another profile attaches to
+// it first, would, so after one the loop waits for the interval. A failure is
+// logged when it first happens and when it changes, not on every look.
 func appArmorProfileLoop(ctx context.Context) {
 	t := time.NewTicker(appArmorProfileInterval)
 	defer t.Stop()
 	changes := watchAppArmorPolicy(ctx)
 	var failing string
+	backedOff := false
 	for {
+		wake := changes
+		if backedOff {
+			wake = nil
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-		case <-changes:
+		case <-wake:
 			select {
 			case <-ctx.Done():
 				return
@@ -50,6 +57,7 @@ func appArmorProfileLoop(ctx context.Context) {
 			}
 		}
 		reload, err := reconcileAppArmor(ctx)
+		backedOff = reload != apparmor.NotLoaded && errors.Is(err, apparmor.ErrNotCovered)
 		switch {
 		case err != nil:
 			if err.Error() != failing {

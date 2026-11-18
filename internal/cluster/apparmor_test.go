@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -152,4 +153,43 @@ func TestAppArmorProfileLoopLooksAtEveryChange(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+// A load that leaves runc uncovered, as when another profile attaches to it
+// first, changes the policy too; the loop must not answer its own change with
+// another load, so it waits for the interval.
+func TestAppArmorProfileLoopBacksOffALoadThatDoesNotCover(t *testing.T) {
+	oldInterval, oldReconcile, oldLog, oldWatch, oldSettle := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle
+	t.Cleanup(func() {
+		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle = oldInterval, oldReconcile, oldLog, oldWatch, oldSettle
+	})
+	appArmorProfileInterval = time.Hour
+	appArmorSettle = time.Millisecond
+	appArmorLog = &syncBuffer{}
+	changes := make(chan struct{}, 1)
+	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return changes }
+	var mu sync.Mutex
+	looks := 0
+	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
+		mu.Lock()
+		looks++
+		mu.Unlock()
+		select {
+		case changes <- struct{}{}: // the load's own change
+		default:
+		}
+		return apparmor.Loaded, fmt.Errorf("give it the profile: loaded, but %w", apparmor.ErrNotCovered)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { appArmorProfileLoop(ctx); close(done) }()
+	changes <- struct{}{}
+	time.Sleep(300 * time.Millisecond)
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if looks != 1 {
+		t.Errorf("the loop looked %d times, want once: a load that left runc uncovered must wait for the interval", looks)
+	}
 }
