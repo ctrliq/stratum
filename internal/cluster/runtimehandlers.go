@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"strings"
 
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/runtime"
@@ -182,16 +184,61 @@ func declaredRuntimeHandlers(st *NodeState, o RuntimeApplyOptions, w io.Writer) 
 	return cfg.Spec.Node.RuntimeHandlers, "spec.node.runtimeHandlers in " + path, nil
 }
 
-// CheckRuntimeHandlers reports on this node's runtime handlers. On a control
-// plane it also reports a config file whose spec.node.runtimeHandlers differ
-// from what node.yaml saved, which the next `stratum up` or `stratum runtime
-// apply` would write.
+// checkAppArmor and stackedAppArmor are apparmor.Check and apparmor.Stacked;
+// vars so a test can answer for the host's AppArmor.
+var (
+	checkAppArmor   = apparmor.Check
+	stackedAppArmor = apparmor.Stacked
+)
+
+// stackedMessage names the processes the kernel stacked and what recreates
+// them, listing the first few.
+func stackedMessage(procs []apparmor.StackedProcess) string {
+	const listed = 5
+	var names []string
+	for _, p := range procs[:min(len(procs), listed)] {
+		names = append(names, fmt.Sprintf("%s (pid %d, %s)", p.Comm, p.PID, p.Label))
+	}
+	if len(procs) > listed {
+		names = append(names, fmt.Sprintf("and %d more", len(procs)-listed))
+	}
+	return fmt.Sprintf("%d container processes run with an AppArmor label stacked on unconfined, so they cannot signal their own processes: %s; "+
+		"those runc started before it ran under the runc profile keep that label until their pods are recreated, "+
+		"and rebooting the node recreates every one, the control plane's static pods included; "+
+		"a pod whose runtime handler runs its own OCI runtime is stacked again unless /etc/apparmor.d/runc also attaches to that runtime", len(procs), strings.Join(names, ", "))
+}
+
+// CheckRuntimeHandlers reports on this node's runtime handlers, and on the
+// AppArmor runc profile the default handler's containers need where the
+// kernel would otherwise stack their profile, and on the containers it
+// stacked already. On a control plane it also
+// reports a config file whose spec.node.runtimeHandlers differ from what
+// node.yaml saved, which the next `stratum up` or `stratum runtime apply`
+// would write.
 func CheckRuntimeHandlers(w io.Writer) (runtime.HandlerReport, error) {
 	st, err := LoadState()
 	if err != nil {
 		return runtime.HandlerReport{}, fmt.Errorf("read the node state (has this node run `stratum up`?): %w", err)
 	}
 	r := runtime.CheckHandlers(st.RuntimeHandlers)
+	switch err := checkAppArmor(); {
+	case errors.Is(err, apparmor.ErrHostProfileNotWidened):
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: err.Error()})
+	case errors.Is(err, apparmor.ErrNotCovered):
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
+			Message: fmt.Sprintf("%v; a running stratum loads the profile again within %v, and `journalctl -u stratum` says why when it cannot", err, appArmorProfileInterval)})
+	case err != nil:
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn,
+			Message: fmt.Sprintf("cannot check the AppArmor runc profile: %v", err)})
+	}
+	switch procs, err := stackedAppArmor(); {
+	case err != nil:
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn,
+			Message: fmt.Sprintf("cannot list the processes whose AppArmor label is stacked: %v", err)})
+	case len(procs) > 0:
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
+			Message: stackedMessage(procs)})
+	}
 	if st.Role == "worker" {
 		return r, nil
 	}

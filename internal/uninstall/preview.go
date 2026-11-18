@@ -1,6 +1,7 @@
 package uninstall
 
 import (
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/runtime"
 	"github.com/ctrliq/stratum/internal/selinux"
@@ -27,6 +28,7 @@ const (
 	firewalldSourceDetail        = "firewalld trusted-zone source stratum added so pods can reach this node"
 	firewalldInterfaceDetail     = "firewalld interface binding stratum added"
 	selinuxContextsDetail        = "the SELinux file contexts stratum registered (listed by `semanage fcontext -l -C`)"
+	apparmorRuncDetail           = "the kernel's runc AppArmor profile, which stratum extended to its own runc: reloaded from the host's own profile, or removed when the host loads none"
 )
 
 // PreviewItem is one effect an uninstall would have beyond deleting the
@@ -36,7 +38,7 @@ const (
 // preview cannot vouch for is one the run could leave in place, so it is
 // reported, never dropped.
 type PreviewItem struct {
-	Kind    string `json:"kind" jsonschema:"what the effect is: netns, cilium, cgroups, legacy-kubelet, local-path-dir, legacy-containerd-config, firewalld-source, firewalld-interface or selinux-contexts"`
+	Kind    string `json:"kind" jsonschema:"what the effect is: netns, cilium, cgroups, legacy-kubelet, local-path-dir, legacy-containerd-config, firewalld-source, firewalld-interface, selinux-contexts or apparmor-runc-profile"`
 	Path    string `json:"path,omitempty" jsonschema:"the path, CIDR or interface the effect touches; empty for an effect with none, such as the registered SELinux contexts"`
 	Detail  string `json:"detail" jsonschema:"what the effect is and why an uninstall touches it, rendered as-is by both the CLI dry run and this tool"`
 	Unknown string `json:"unknown,omitempty" jsonschema:"the probe error, when the probe that should have answered could not; the effect would be left in place"`
@@ -66,6 +68,9 @@ type Probes struct {
 	// SELinuxRegistered reports whether stratum registered SELinux file
 	// contexts on this node.
 	SELinuxRegistered func() bool
+	// AppArmorWidened reports whether the kernel's runc AppArmor profile
+	// covers stratum's runc.
+	AppArmorWidened func() bool
 }
 
 // PreviewProbes is the preview's one host seam, with the production probes
@@ -75,6 +80,7 @@ var PreviewProbes = Probes{
 	TrustedPodCIDRs:          host.TrustedPodCIDRs,
 	OwnedFirewalldInterfaces: host.OwnedFirewalldInterfaces,
 	SELinuxRegistered:        selinux.Registered,
+	AppArmorWidened:          apparmor.Widened,
 }
 
 // Preview returns what an uninstall would do as data: Targets() plus the
@@ -125,6 +131,12 @@ func Preview() PreviewReport {
 		add("selinux-contexts", "", selinuxContextsDetail, "the probe is not wired")
 	case PreviewProbes.SELinuxRegistered():
 		add("selinux-contexts", "", selinuxContextsDetail, "")
+	}
+	switch {
+	case PreviewProbes.AppArmorWidened == nil:
+		add("apparmor-runc-profile", "", apparmorRuncDetail, "the probe is not wired")
+	case PreviewProbes.AppArmorWidened():
+		add("apparmor-runc-profile", "", apparmorRuncDetail, "")
 	}
 	return report
 }

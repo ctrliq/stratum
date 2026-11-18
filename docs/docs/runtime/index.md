@@ -181,10 +181,14 @@ running containerd has not loaded the file, when a handler's binary is missing,
 when containerd's configuration does not import the file, when another file in
 `/etc/containerd/conf.d` does not parse, which containerd refuses to start with,
 or, on a control plane, when its configuration file declares other handlers than
-the ones it saved. It warns when there are no CDI specs in `/etc/cdi` or
-`/var/run/cdi`, when another file in `/etc/containerd/conf.d` defines one of the
-node's runtimes, and when one changes containerd's default runtime, which would
-run every pod without a `runtimeClassName` under it.
+the ones it saved. It also exits 1 when
+`kernel.apparmor_restrict_unprivileged_unconfined` is `1` and Stratum's runc
+does not run under the AppArmor profile `runc` (see
+[AppArmor](../installation/configuration.md#apparmor)). It warns when there are
+no CDI specs in `/etc/cdi` or `/var/run/cdi`, when another file in
+`/etc/containerd/conf.d` defines one of the node's runtimes, and when one
+changes containerd's default runtime, which would run every pod without a
+`runtimeClassName` under it.
 
 `stratum runtime restart` restarts containerd on its own, for example after you
 reinstall a handler's binary or after `runtime_apply`, and then updates the

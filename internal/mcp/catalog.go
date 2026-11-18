@@ -187,7 +187,8 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			Name: "runtime_check",
 			Description: "Report whether containerd will run this node's runtime handlers: the drop-in against the " +
 				"handlers the node saved, each handler's binary, containerd's import of the drop-in, CDI specs, " +
-				"and other containerd drop-ins that define the same runtime or change the default runtime.",
+				"and other containerd drop-ins that define the same runtime or change the default runtime; and, where " +
+				"kernel.apparmor_restrict_unprivileged_unconfined is set, whether runc runs under the AppArmor runc profile.",
 			Tier:       TierRead,
 			Credential: CredentialNone,
 			Add: func(srv *sdk.Server, t *sdk.Tool) {

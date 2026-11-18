@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/comps"
 	"github.com/ctrliq/stratum/internal/etcddata"
 	"github.com/ctrliq/stratum/internal/host"
@@ -86,6 +87,10 @@ type hostEffects struct {
 	// delete loop removes the record it reads. Run wires host.UntrustPodCIDRs
 	// as its default; tests stub the field on their effects value.
 	untrustPodCIDRs func() error
+	// restoreAppArmor puts the kernel's runc AppArmor profile back as the host
+	// has it, once every container is stopped. Run wires
+	// apparmor.RestoreWithWriter as its default.
+	restoreAppArmor func() error
 	// removeSELinuxContexts deletes the SELinux file contexts stratum
 	// registered, before the delete loop: the record of what stratum
 	// registered lives under DataDir. Run wires selinux.RemoveContexts as its
@@ -579,6 +584,7 @@ func RunWithOptions(w io.Writer, o Options) error {
 		allowRestartFn:         host.AllowRestart,
 		untrustPodCIDRs:        func() error { return host.UntrustPodCIDRsWithWriter(w) },
 		removeSELinuxContexts:  func() error { return selinux.RemoveContextsWithWriter(w) },
+		restoreAppArmor:        func() error { return apparmor.RestoreWithWriter(w) },
 		unmountFn:              umountMount,
 		putManifestFn:          staticpod.Put,
 		stopStaticPodFn:        func(name string) error { return staticpod.Stop(name, 90*time.Second) },
@@ -1049,11 +1055,11 @@ func commitTeardown(w io.Writer, fx *hostEffects) error {
 }
 
 // removeState is the commit-and-removal phase: the datapath teardown, the
-// firewalld untrust, the SELinux removal, the delete loop, the legacy-config
-// heal and the systemd reload, then the worker's Node mark. Its declared
-// error class is accumulated: past the commit boundary nothing is rolled
-// back, so each failure is kept apart, the rest of the teardown still runs,
-// and the joined errors are reported at the end; only the heal, the
+// firewalld untrust, the SELinux removal, the AppArmor restore, the delete
+// loop, the legacy-config heal and the systemd reload, then the worker's Node
+// mark. Its declared error class is accumulated: past the commit boundary
+// nothing is rolled back, so each failure is kept apart, the rest of the
+// teardown still runs, and the joined errors are reported at the end; only the heal, the
 // credential read and the Node mark are warning-only, being best-effort or
 // self-logging steps.
 func removeState(w io.Writer, fx *hostEffects) error {
@@ -1069,6 +1075,9 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	}
 	if fx.removeSELinuxContexts == nil {
 		return unsetEffect("removeSELinuxContexts")
+	}
+	if fx.restoreAppArmor == nil {
+		return unsetEffect("restoreAppArmor")
 	}
 	if fx.removeAll == nil {
 		return unsetEffect("removeAll")
@@ -1129,6 +1138,10 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	var selinuxErr error
 	if err := fx.removeSELinuxContexts(); err != nil {
 		selinuxErr = fmt.Errorf("the SELinux file contexts stratum registered were not all removed: %w", err)
+	}
+	var apparmorErr error
+	if err := fx.restoreAppArmor(); err != nil {
+		apparmorErr = fmt.Errorf("the host's runc AppArmor profile was not restored: %w", err)
 	}
 	// Whether the node's state, DataDir (the node state file and kubelet's
 	// credential), was deleted is what decides the Node mark below, apart from
@@ -1199,7 +1212,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 			notice = markedNotice
 		}
 	}
-	if err := errors.Join(firstErr, datapathErr, selinuxErr); err != nil {
+	if err := errors.Join(firstErr, datapathErr, selinuxErr, apparmorErr); err != nil {
 		if !stateRemoved {
 			return fmt.Errorf("uninstall: %w", err)
 		}

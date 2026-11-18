@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/selinux"
 	"github.com/ctrliq/stratum/internal/version"
@@ -547,11 +548,11 @@ func selinuxOptions(o PrereqOptions) selinux.Options {
 }
 
 // Prereqs registers Stratum's SELinux file contexts and relabels its files,
-// loads kernel modules, applies sysctls, and disables swap. It also writes the
-// node profile's sysctl set; a profile that declares one depends on it (the
-// cis profile's kubelet protectKernelDefaults is a hard boot gate), so a
-// sysctl-apply failure is then FATAL rather than an opaque kubelet crash-loop
-// later.
+// loads kernel modules, applies sysctls, gives Stratum's runc the host's
+// AppArmor runc profile, and disables swap. It also writes the node profile's
+// sysctl set; a profile that declares one depends on it (the cis profile's
+// kubelet protectKernelDefaults is a hard boot gate), so a sysctl-apply
+// failure is then FATAL rather than an opaque kubelet crash-loop later.
 func Prereqs(o PrereqOptions) error {
 	if err := CheckFloor(); err != nil {
 		return err
@@ -592,6 +593,12 @@ func Prereqs(o PrereqOptions) error {
 			return fmt.Errorf("sysctl --system failed under the %s profile: %w (the kubelet may refuse to start until the profile's sysctls apply)", o.Profile.Name, err)
 		}
 		fmt.Printf("  WARN: sysctl --system failed: %v (ip_forward/bridge-nf may be off — pod networking can break)\n", err)
+	}
+	// After the sysctls: sysctl --system sets
+	// kernel.apparmor_restrict_unprivileged_unconfined from the host's own
+	// sysctl.d files, and that setting decides whether runc needs the profile.
+	if err := apparmor.Ensure(os.Stdout); err != nil {
+		return err
 	}
 	_ = exec.Command("swapoff", "-a").Run()
 	return nil
