@@ -211,6 +211,10 @@ import { age, cpuToM, memToMi, podStatus, podReady, jobStatus, workloadReady } f
       const onNode = pods.filter((p) => p.spec.nodeName === n.metadata.name && !["Succeeded", "Failed"].includes(p.status && p.status.phase));
       const allocCpu = cpuToM(n.status.allocatable && n.status.allocatable.cpu);
       const allocMem = memToMi(n.status.allocatable && n.status.allocatable.memory);
+      // Allocatable core count for the details panel: allocatable.cpu first,
+      // capacity.cpu as fallback, unknown (null) when neither reports a
+      // quantity. cpuToM reads millicores, so a present quantity needs /1000.
+      const cpuQty = (n.status.allocatable && n.status.allocatable.cpu) ?? (n.status.capacity && n.status.capacity.cpu);
       const req = onNode.reduce((s, p) => { const r = podReq(p); s.cpu += r.cpu; s.mem += r.mem; return s; }, { cpu: 0, mem: 0 });
       const use = nodeUse[n.metadata.name] || null;   // real usage if available, else fall back to requests
       const isCp = ("node-role.kubernetes.io/control-plane" in labels) || ("node-role.kubernetes.io/master" in labels) || (labels["stratum.ciq.com/control-plane"] === "true");
@@ -223,6 +227,8 @@ import { age, cpuToM, memToMi, podStatus, podReady, jobStatus, workloadReady } f
         ready: isReady,
         status: !isReady ? "NotReady" : (n.spec.unschedulable ? "SchedulingDisabled" : "Ready"),
         cpu: allocCpu ? Math.min(100, Math.round((use ? use.cpu : req.cpu) / allocCpu * 100)) : 0,
+        cores: cpuQty == null ? null : cpuToM(cpuQty) / 1000,
+        addresses: (n.status.addresses || []).map((a) => ({ type: a.type, address: a.address })),
         mem: allocMem ? Math.min(100, Math.round((use ? use.mem : req.mem) / allocMem * 100)) : 0,
         pods: onNode.length, podCap: parseInt((n.status.allocatable && n.status.allocatable.pods) || "110", 10),
         version: (n.status.nodeInfo || {}).kubeletVersion || "—",

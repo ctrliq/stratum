@@ -236,7 +236,7 @@ export function NodeDetail({ node, data, onClose, onAction }) {
         <div>
           <div className="card-sub" style={{ marginBottom: 8, fontWeight: 600 }}>Capacity</div>
           <div className="col" style={{ gap: 10 }}>
-            <ResRow label="CPU" pct={node.ready ? node.cpu : 0} detail={`${node.instance} vCPU`} />
+            <ResRow label="CPU" pct={node.ready ? node.cpu : 0} detail={node.cores == null ? '—' : `${node.cores} vCPU`} />
             <ResRow label="Memory" pct={node.ready ? node.mem : 0} detail="of allocatable" />
             <div className="row-between"><span style={{ fontSize: 12.5 }}>Pods</span>
               <span className="mono" style={{ fontSize: 12 }}>{node.pods}<span className="dim">/{node.podCap}</span></span></div>
@@ -247,6 +247,7 @@ export function NodeDetail({ node, data, onClose, onAction }) {
         <div>
           <div className="card-sub" style={{ marginBottom: 8, fontWeight: 600 }}>System info</div>
           <div className="col" style={{ gap: 0, border: '1px solid var(--quantic-border-secondary, #1f2127)', borderRadius: 8, overflow: 'hidden' }}>
+            {(node.addresses || []).map((a) => <KvP key={`${a.type}:${a.address}`} k={a.type} v={a.address} />)}
             <KvP k="Instance type" v={node.instance} />
             <KvP k="Zone" v={node.zone} />
             <KvP k="Kubelet" v={node.version} />
