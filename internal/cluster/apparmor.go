@@ -67,6 +67,9 @@ func appArmorProfileLoop(ctx context.Context) {
 		case reload == apparmor.Loaded:
 			failing = ""
 			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile no longer covered Stratum's runc; loaded it again")
+		case reload == apparmor.LoadedUnchecked:
+			// Loaded where runc's label cannot be read: nothing says it covers.
+			failing = ""
 		case failing != "":
 			failing = ""
 			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile covers Stratum's runc again")

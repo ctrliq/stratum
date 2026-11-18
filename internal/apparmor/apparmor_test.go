@@ -675,3 +675,21 @@ func TestRestoreWhereRuncCannotBeTraced(t *testing.T) {
 		t.Errorf("RestoreWithWriter() with no runc profile loaded = %v and parser runs %v, want nil and none", err, h.calls)
 	}
 }
+
+// Where runc cannot be traced, a host profile Stratum cannot widen is still
+// reported on every look and by Check, not only at start.
+func TestWhereRuncCannotBeTracedANotWidenedProfileIsStillReported(t *testing.T) {
+	h := newFakeHost(t)
+	h.restricted()
+	h.write(hostProfile, "profile runc flags=(unconfined) {\n}\n")
+	h.labelErr = &fs.PathError{Op: "fork/exec", Path: "/var/lib/stratum/bin/runc", Err: syscall.EPERM}
+	for i, want := range []Reload{LoadedUnchecked, NotLoaded} {
+		got, err := Reconcile(context.Background())
+		if got != want || !errors.Is(err, ErrHostProfileNotWidened) || errors.Is(err, errCannotProbe) {
+			t.Errorf("look %d: Reconcile() = %v, %v; want %v and only ErrHostProfileNotWidened", i, got, err, want)
+		}
+	}
+	if err := Check(); !errors.Is(err, ErrHostProfileNotWidened) || !errors.Is(err, errCannotProbe) {
+		t.Errorf("Check() = %v, want both that it cannot read runc's label and that the host profile was not widened", err)
+	}
+}

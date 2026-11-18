@@ -218,6 +218,8 @@ func TestCheckRuntimeHandlersReportsAnUncoveredRunc(t *testing.T) {
 	}{
 		{fmt.Errorf("/var/lib/stratum/bin/runc: %w", apparmor.ErrNotCovered), runtime.SeverityError},
 		{fmt.Errorf("/etc/apparmor.d/runc has 2 profile runc lines naming an attachment, want 1: %w", apparmor.ErrHostProfileNotWidened), runtime.SeverityWarn},
+		// Joined, each gets its own finding: here the second.
+		{errors.Join(errors.New("read the label: not permitted"), fmt.Errorf("one line: %w", apparmor.ErrHostProfileNotWidened)), runtime.SeverityWarn},
 		// A label it cannot read is a warning: the check does not know.
 		{errors.New("operation not permitted"), runtime.SeverityWarn},
 	} {
@@ -226,7 +228,8 @@ func TestCheckRuntimeHandlersReportsAnUncoveredRunc(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		i := slices.IndexFunc(r.Findings, func(f runtime.HandlerFinding) bool { return strings.Contains(f.Message, tc.err.Error()) })
+		last := joined(tc.err)[len(joined(tc.err))-1]
+		i := slices.IndexFunc(r.Findings, func(f runtime.HandlerFinding) bool { return strings.Contains(f.Message, last.Error()) })
 		if i < 0 || r.Findings[i].Severity != tc.severity {
 			t.Errorf("findings %+v, want a %s carrying %q", r.Findings, tc.severity, tc.err)
 		}

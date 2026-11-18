@@ -191,6 +191,18 @@ var (
 	stackedAppArmor = apparmor.Stacked
 )
 
+// joined splits an error errors.Join made into the errors it joined, so each
+// gets a finding of its own.
+func joined(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		return j.Unwrap()
+	}
+	return []error{err}
+}
+
 // stackedMessage names the processes the kernel stacked and what recreates
 // them, listing the first few.
 func stackedMessage(procs []apparmor.StackedProcess) string {
@@ -221,15 +233,17 @@ func CheckRuntimeHandlers(w io.Writer) (runtime.HandlerReport, error) {
 		return runtime.HandlerReport{}, fmt.Errorf("read the node state (has this node run `stratum up`?): %w", err)
 	}
 	r := runtime.CheckHandlers(st.RuntimeHandlers)
-	switch err := checkAppArmor(); {
-	case errors.Is(err, apparmor.ErrHostProfileNotWidened):
-		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: err.Error()})
-	case errors.Is(err, apparmor.ErrNotCovered):
-		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
-			Message: fmt.Sprintf("%v; a running stratum loads the profile again within %v, and `journalctl -u stratum` says why when it cannot", err, appArmorProfileInterval)})
-	case err != nil:
-		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn,
-			Message: fmt.Sprintf("cannot check the AppArmor runc profile: %v", err)})
+	for _, err := range joined(checkAppArmor()) {
+		switch {
+		case errors.Is(err, apparmor.ErrHostProfileNotWidened):
+			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: err.Error()})
+		case errors.Is(err, apparmor.ErrNotCovered):
+			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
+				Message: fmt.Sprintf("%v; a running stratum loads the profile again within %v, and `journalctl -u stratum` says why when it cannot", err, appArmorProfileInterval)})
+		default:
+			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn,
+				Message: fmt.Sprintf("cannot check the AppArmor runc profile: %v", err)})
+		}
 	}
 	switch procs, err := stackedAppArmor(); {
 	case err != nil:

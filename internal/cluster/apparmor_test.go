@@ -193,3 +193,36 @@ func TestAppArmorProfileLoopBacksOffALoadThatDoesNotCover(t *testing.T) {
 		t.Errorf("the loop looked %d times, want once: a load that left runc uncovered must wait for the interval", looks)
 	}
 }
+
+// A load where runc's label cannot be read says nothing about coverage, so it
+// must not be logged as covering runc again after a failure.
+func TestAppArmorProfileLoopClaimsNothingAfterAnUncheckedLoad(t *testing.T) {
+	oldInterval, oldReconcile, oldLog, oldWatch := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy
+	t.Cleanup(func() {
+		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy = oldInterval, oldReconcile, oldLog, oldWatch
+	})
+	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return nil }
+	appArmorProfileInterval = time.Millisecond
+	log := &syncBuffer{}
+	appArmorLog = log
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	looks := 0
+	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		looks++
+		switch looks {
+		case 1:
+			return apparmor.NotLoaded, errors.New("apparmor_parser: syntax error")
+		case 2:
+			return apparmor.LoadedUnchecked, nil
+		}
+		cancel()
+		return apparmor.NotLoaded, nil
+	}
+	appArmorProfileLoop(ctx)
+	if strings.Contains(log.String(), "covers Stratum's runc again") {
+		t.Errorf("the loop claimed coverage after a load it could not check:\n%s", log.String())
+	}
+}

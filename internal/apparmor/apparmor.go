@@ -354,11 +354,16 @@ func Reconcile(ctx context.Context) (Reload, error) {
 		warning, err := load(ctx)
 		return Loaded, errors.Join(err, warning)
 	case errors.Is(err, errCannotProbe):
+		// Not being able to read runc's label is expected here and is not
+		// reported on every look; a host profile it cannot widen still is.
+		_, notWidened, _ := Profile()
 		if !loaded.replaced() {
-			return NotLoaded, nil
+			return NotLoaded, notWidened
 		}
-		_, err := load(ctx)
-		return LoadedUnchecked, err
+		if _, err := load(ctx); err != nil {
+			return LoadedUnchecked, err
+		}
+		return LoadedUnchecked, notWidened
 	}
 	return NotLoaded, err
 }
@@ -440,8 +445,9 @@ var ErrNotCovered = errors.New("it does not run under the runc AppArmor profile"
 // Check reports what keeps containers from running under their own profile
 // alone: ErrNotCovered, with the consequence, when the kernel is Restricted
 // and its runc profile does not cover Stratum's runc, or the error that leaves
-// either unknown; and, once it covers it, ErrHostProfileNotWidened when that
-// took a profile of Stratum's own. A host without the restriction has nothing
+// either unknown; and, once it covers it or when that cannot be read,
+// ErrHostProfileNotWidened when the profile is one of Stratum's own because
+// the host's could not be widened. Several of these come back joined. A host without the restriction has nothing
 // to report.
 func Check() error {
 	on, err := Restricted()
@@ -452,16 +458,14 @@ func Check() error {
 		return nil
 	}
 	ok, err := Covers()
-	if err != nil {
+	if err != nil && !errors.Is(err, errCannotProbe) {
 		return err
 	}
-	if !ok {
+	if err == nil && !ok {
 		return fmt.Errorf("%s: %w while kernel.apparmor_restrict_unprivileged_unconfined is set, so containers created now are labelled <profile>//&unconfined and cannot signal their own processes", runcPath(), ErrNotCovered)
 	}
-	if _, notWidened, err := Profile(); err != nil || notWidened != nil {
-		return errors.Join(err, notWidened)
-	}
-	return nil
+	_, notWidened, perr := Profile()
+	return errors.Join(err, perr, notWidened)
 }
 
 // Widened reports whether Stratum's runc runs under the runc profile, so
