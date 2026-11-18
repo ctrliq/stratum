@@ -42,7 +42,7 @@ import { K8S, resetK8S } from './data.js';
 import * as liveLoader from './live.js';
 import * as nodeShell from './node-shell.js';
 import { getConfig } from './cluster-context.js';
-import { fetchMe, logout, setUnauthorizedHandler, clearSession, currentSessionRevision, currentAuthRevision, isSessionCurrent, subscribeRemoteSessionChanges } from './session.js';
+import { fetchMe, probeMe, logout, setUnauthorizedHandler, clearSession, currentSessionRevision, currentAuthRevision, isSessionCurrent, subscribeRemoteSessionChanges } from './session.js';
 import { getScreen, screenLabel } from './registry.js';
 
 // ---- sign-out: the shells go before the cookie does -------------------------
@@ -106,7 +106,39 @@ export async function signOut({ deadlineMs = SHELL_DELETE_BOUND_MS } = {}) {
   if (revision !== currentAuthRevision()) return { superseded: true };
   nodeShell.endNodeShellSession();
   const result = await logout();
-  return { superseded: !!result.stale };
+  // Three outcomes: signed out (ok, or a 401 that says the session had already
+  // ended), superseded (another revision won), and failed (the server refused
+  // or was unreachable). A failed logout leaves the sealed session cookie
+  // standing, so the caller must not treat it as signed out.
+  if (result.stale) return { superseded: true };
+  if (result.ok || result.status === 401) return { superseded: false };
+  // logout() retired the shared identity and CSRF token before it sent the
+  // request, so write and exec controls are off. The cookie is still live:
+  // read both back from /me so a user who is still signed in can still act.
+  // The read is bounded by the same deadline the shell deletes ran under, so
+  // a stalled recovery cannot hold sign-out hostage past the bound the caller
+  // chose. probeMe keeps the status: a 401 confirms the session expired while
+  // the refused logout was in flight, which is a signed-out outcome, not a
+  // failure to stay signed in about.
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), deadlineMs);
+  const probed = currentSessionRevision();
+  const recovery = await probeMe({ signal: abort.signal });
+  clearTimeout(timer);
+  // probeMe checks the revision before it returns; check again here, after
+  // the await, so a login that completed in between is never cleared below.
+  if (recovery.stale || !isSessionCurrent(probed)) return { superseded: true };
+  if (recovery.status === 401) {
+    // The confirmed expiry retires the shared identity and CSRF token; the
+    // unauthorized handler is suppressed on this quiet probe, so the caller
+    // sees the signed-out outcome and shows the signed-out UI.
+    clearSession();
+    return { superseded: false };
+  }
+  // ok: identity and CSRF are restored and the failed outcome stands. A
+  // network error or the deadline leaves no identity restored — the user is
+  // still told the sign-out failed either way.
+  return { superseded: false, failed: true, error: result.error };
 }
 
 // Bespoke screens (custom value); every other route falls through to the generic
@@ -205,9 +237,17 @@ function Boot() {
     // Shells first (bounded, reported), then the logout that clears the
     // cookie — after it the shell deletes would only ever be 401s.
     const outcome = await signOut();
-    if (outcome.superseded) return;
+    if (outcome.superseded) return outcome;
+    if (outcome.failed) {
+      // The logout POST did not go through, so the sealed session cookie is
+      // still live: stay in the shell and say so instead of showing the
+      // signed-out UI as if sign-out had worked.
+      console.error(`Stratum: sign-out failed${outcome.error ? ` (${outcome.error})` : ''}; you are still signed in`);
+      return outcome;
+    }
     setMe(null); setPhase('login');
     navigate('/login', { replace: true });
+    return outcome;
   }, [navigate]);
 
   if (phase === 'loading' || !config) return <BootSplash text="Connecting to the cluster…" />;
@@ -371,6 +411,15 @@ export function Shell({ config, me, onSignOut }) {
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2800); }, []);
 
+  // A failed sign-out keeps the user signed in (Boot leaves the session
+  // alone); the outcome comes back through this prop so the failure shows in
+  // the toast the shell owns.
+  const handleSignOut = useCallback(async () => {
+    const outcome = await onSignOut();
+    if (outcome && outcome.failed) flash('Sign-out failed — you are still signed in');
+    return outcome;
+  }, [onSignOut, flash]);
+
   // ---- navigation (everything goes through the router) ----
   const hrefFor = useCallback((id, extra = {}) => {
     const q = new URLSearchParams();
@@ -498,7 +547,7 @@ export function Shell({ config, me, onSignOut }) {
         namespaces={data.NAMESPACES || ['all-namespaces']}
         live={live} updated={updated} stale={staleSlices} onToggleLive={() => setLive((v) => !v)}
         onPalette={() => setPaletteOpen(true)}
-        cluster={cluster} config={config} me={me} onSignOut={onSignOut}>
+        cluster={cluster} config={config} me={me} onSignOut={handleSignOut}>
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
           <div style={{ flex: 1, minHeight: 0, overflow: 'auto', position: 'relative' }}>
             {loading && (
