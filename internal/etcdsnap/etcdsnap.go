@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ctrliq/stratum/internal/atomicfile"
+	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/comps"
 	"github.com/ctrliq/stratum/internal/etcddata"
 	"github.com/ctrliq/stratum/internal/host"
@@ -31,6 +33,7 @@ import (
 	"github.com/ctrliq/stratum/internal/staticpod"
 	"github.com/ctrliq/stratum/internal/supervisor"
 	"github.com/ctrliq/stratum/internal/version"
+	"sigs.k8s.io/yaml"
 )
 
 // defaultSnapshotDir is where snapshots are written when nothing else is
@@ -152,6 +155,20 @@ type SaveOptions struct {
 	// failures here instead of matching the printed text; the CLI and the
 	// scheduled loop leave it nil and keep reading the printed line.
 	PruneWarn func(error)
+	// Evidence, when true, records this save's attempts durably: the local
+	// snapshot attempt, the S3 off-box copy attempt, the retention prune
+	// attempt and the warnings the tick ran with go into the node's snapshot
+	// evidence record (snapshot-evidence.yaml in the config area), so what a
+	// scheduled tick did survives the process the way the cert-renewal record
+	// does. The scheduled loop turns it on; a manual save, an MCP save and
+	// the pre-upgrade snapshot leave it off and record nothing.
+	Evidence bool
+	// EvidenceWarnings are the scheduling warnings the tick already ran
+	// with — the WARN lines the options resolution printed, an unreadable
+	// snapshot.conf among them — recorded beside the attempts. Each recorded
+	// attempt replaces the record's warnings with the tick's current ones,
+	// so a warning from a condition that has healed does not linger.
+	EvidenceWarnings []string
 }
 
 // Save takes a local snapshot, optionally uploads it to S3, then prunes both
@@ -180,28 +197,59 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		name = ScheduledName(hn, NowStamp())
 	}
 	path := filepath.Join(dir, name)
+	// The scheduled save records each attempt as it happens, so evidence of
+	// a snapshot that exists locally survives a failed remote copy and
+	// evidence of a failed tick survives the process. A save that is not
+	// scheduled (the CLI, an MCP tool, the pre-upgrade hook) records
+	// nothing: its attempts are interactive and reported by their own
+	// output.
+	var evidence *evidenceRecorder
+	if o.Evidence {
+		evidence = &evidenceRecorder{warnings: o.EvidenceWarnings}
+		defer evidence.report(w)
+	}
 	if err := snapshotContext(ctx, w, path); err != nil {
+		if evidence != nil {
+			evidence.recordSave(err)
+		}
 		return "", err
+	}
+	if evidence != nil {
+		evidence.recordSave(nil)
 	}
 	remote := o.S3
 	var uploadErr error
 	if remote.Enabled() {
-		if err := remote.Upload(ctx, path, name); err != nil {
-			uploadErr = fmt.Errorf("snapshot saved locally (%s) but S3 upload failed: %w", path, err)
+		upload := remote.Upload(ctx, path, name)
+		if evidence != nil {
+			// The upload attempt is recorded however it went, beside the
+			// save attempt that already says the local artifact exists.
+			evidence.recordUpload(upload)
+		}
+		if upload != nil {
+			uploadErr = fmt.Errorf("snapshot saved locally (%s) but S3 upload failed: %w", path, upload)
 			remote = nil
 		}
 	}
-	if o.Retain > 0 {
+	if o.Retain > 0 && ctx.Err() == nil {
 		// A failed prune is a warning, not an error: the snapshot itself
 		// succeeded. Each failure is printed through the writer the save was
 		// handed for the scheduled loop and `stratum snapshot save`, whose
 		// output must not change, and handed to PruneWarn as data for callers
 		// that report it beside the path.
+		var pruneErrs []error
 		for _, perr := range PruneScheduledContext(ctx, dir, hn, o.Retain, remote) {
 			fmt.Fprintf(w, "  WARN: %v\n", perr)
 			if o.PruneWarn != nil {
 				o.PruneWarn(perr)
 			}
+			pruneErrs = append(pruneErrs, perr)
+		}
+		if evidence != nil {
+			// The prune attempt is recorded beside the save and the upload,
+			// never over them: pruning is maintenance, and its refusal must
+			// not touch the backup's own evidence.
+			evidence.recordPrune(pruneErrs)
 		}
 	}
 	return path, uploadErr
@@ -235,6 +283,221 @@ func PruneScheduledContext(ctx context.Context, dir, host string, keep int, s3 *
 		}
 	}
 	return errs
+}
+
+// The durable snapshot evidence record: what the scheduled loop's last save,
+// upload and prune attempts did, and when the save and the upload last
+// succeeded, in snapshot-evidence.yaml beside node.yaml and renewal.yaml in
+// the node's config area — the same place and the same shape the
+// cert-renewal record uses, so evidence of a tick survives the process the
+// way renewal does. The loop is the record's only writer; its reader is the
+// backup-evidence interface (internal/backupevidence), which resolves its
+// policy through this package and internal/cluster and so cannot be imported
+// from here: the file is the contract between the writer and the reader, and
+// the recording tests hold the two together.
+
+// evidenceSchemaVersion is the record's schema version this binary writes
+// and reads, in lockstep with the reader's own version. The recording tests
+// pin the two, so a revision of the record changes both together.
+const evidenceSchemaVersion = 1
+
+// evidencePath is where the record persists, beside the node's other
+// durable per-node records.
+func evidencePath() string {
+	return filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml")
+}
+
+// snapshotAttempt is one attempt of the record: when it started and how it
+// went, the result empty when it succeeded.
+type snapshotAttempt struct {
+	AttemptedAt time.Time `json:"attemptedAt"`
+	Result      string    `json:"result,omitempty"`
+}
+
+// IsZero reports whether no attempt is recorded in this value, so a slot
+// the loop has never run is absent from the file instead of carrying a
+// zero timestamp a reader must know to read as "never".
+func (a snapshotAttempt) IsZero() bool {
+	return a.AttemptedAt.IsZero() && a.Result == ""
+}
+
+// snapshotEvidence is the durable record. The save and upload
+// last-success stamps are separate because a snapshot can save locally and
+// fail its remote copy: each says on its own whether the artifact exists on
+// the node and whether a remote copy does. The prune attempt is independent
+// of both: pruning is maintenance beside the backup, and a save that
+// succeeded while retention failed is a working backup with broken
+// retention.
+type snapshotEvidence struct {
+	SchemaVersion     int             `json:"schemaVersion"`
+	Save              snapshotAttempt `json:"save,omitzero"`
+	Upload            snapshotAttempt `json:"upload,omitzero"`
+	Prune             snapshotAttempt `json:"prune,omitzero"`
+	LastSaveSuccess   time.Time       `json:"lastSaveSuccess,omitzero"`
+	LastUploadSuccess time.Time       `json:"lastUploadSuccess,omitzero"`
+	Warnings          []string        `json:"warnings,omitempty"`
+}
+
+// recordSave records a save attempt: the attempt itself always, the
+// last-success stamp only when it succeeded, so a failed retry never moves
+// the stamp of the last backup that worked.
+func (e *snapshotEvidence) recordSave(at time.Time, err error) {
+	e.Save = snapshotAttemptOf(at, err)
+	if err == nil {
+		e.LastSaveSuccess = at
+	}
+}
+
+// recordUpload records an upload attempt the way recordSave records a save.
+func (e *snapshotEvidence) recordUpload(at time.Time, err error) {
+	e.Upload = snapshotAttemptOf(at, err)
+	if err == nil {
+		e.LastUploadSuccess = at
+	}
+}
+
+// recordPrune records a prune attempt. Retention has no last-success stamp:
+// the attempt itself says whether it last worked.
+func (e *snapshotEvidence) recordPrune(at time.Time, err error) {
+	e.Prune = snapshotAttemptOf(at, err)
+}
+
+// snapshotAttemptOf shapes one attempt from its outcome.
+func snapshotAttemptOf(at time.Time, err error) snapshotAttempt {
+	a := snapshotAttempt{AttemptedAt: at}
+	if err != nil {
+		a.Result = err.Error()
+	}
+	return a
+}
+
+// mutateEvidence applies one mutation to the record as its single writer's
+// read-modify-write: the etcd data lock is held across the read, the
+// mutation and the write, so while a rejoin, a restore or an `up` holds it
+// the recording refuses — best-effort, the next tick retries — instead of
+// writing between that operation's own read and write. A record that does
+// not exist yet is a fresh empty one (the loop's first tick has nothing to
+// read); one a newer binary wrote is refused, never misread or overwritten.
+func mutateEvidence(mutate func(*snapshotEvidence)) error {
+	release, err := etcddata.Lock(version.EtcdDataDir)
+	if err != nil {
+		return err
+	}
+	defer release()
+	rec, err := loadEvidence()
+	if err != nil {
+		return err
+	}
+	mutate(rec)
+	return saveEvidence(rec)
+}
+
+// loadEvidence reads the record from disk through the bounded regular-file
+// reader — the same rules the backup-evidence reader applies on its side of
+// the file — because this read runs under the etcd data lock: a FIFO or an
+// oversized stand-in swapped in at the record's path must refuse promptly,
+// never stall the single writer's read-modify-write — a read stalled under
+// the lock would hold it, refusing every rejoin, restore and `up` that
+// tries to take it. The read is not bounded by the save's own context: a
+// save that context ended still records its failed attempt, best-effort,
+// so loadEvidence reads with a fresh background context.
+func loadEvidence() (*snapshotEvidence, error) {
+	b, err := boundedfile.Read(context.Background(), evidencePath())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return &snapshotEvidence{}, nil
+		}
+		return nil, err
+	}
+	var rec snapshotEvidence
+	if err := yaml.Unmarshal(b, &rec); err != nil {
+		return nil, fmt.Errorf("%s: %w", evidencePath(), err)
+	}
+	if rec.SchemaVersion > evidenceSchemaVersion {
+		return nil, fmt.Errorf("%s: schema version %d is newer than this binary's %d", evidencePath(), rec.SchemaVersion, evidenceSchemaVersion)
+	}
+	return &rec, nil
+}
+
+// saveEvidence stamps the record's schema version and persists it through
+// the shared atomic writer at mode 0600: the record names failures, so a
+// torn write must never leave a half-parsable one where a working one was,
+// and a node-local record of what failed must not be world-readable.
+func saveEvidence(rec *snapshotEvidence) error {
+	rec.SchemaVersion = evidenceSchemaVersion
+	b, err := yaml.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(evidencePath()), 0o755); err != nil {
+		return err
+	}
+	return atomicfile.WriteFile(evidencePath(), b, 0o600)
+}
+
+// evidenceRecorder is one scheduled save's recording into the durable
+// record: each attempt is persisted the moment it finishes — the local
+// snapshot first, so evidence that a snapshot exists on the node survives a
+// failed S3 copy — with the tick's warnings carried beside every write,
+// replacing what an earlier tick warned so a healed condition does not
+// linger. Recording is best-effort: the first failure to persist is
+// remembered and reported once through the save's writer, and the save is
+// never failed by its own evidence.
+type evidenceRecorder struct {
+	warnings []string
+	err      error
+}
+
+// recordSave records the local snapshot attempt's outcome.
+func (r *evidenceRecorder) recordSave(err error) {
+	r.mutate(func(e *snapshotEvidence) {
+		e.recordSave(time.Now(), err)
+		e.Warnings = r.warnings
+	})
+}
+
+// recordUpload records the S3 copy attempt's outcome.
+func (r *evidenceRecorder) recordUpload(err error) {
+	r.mutate(func(e *snapshotEvidence) {
+		e.recordUpload(time.Now(), err)
+		e.Warnings = r.warnings
+	})
+}
+
+// recordPrune records the retention prune's outcome. Each failed target is
+// also a warning in its own right — the same line the save printed — so a
+// refused delete is visible beside the structured attempt; a clean prune
+// records a clean attempt and still replaces the warnings with the tick's
+// current ones.
+func (r *evidenceRecorder) recordPrune(errs []error) {
+	var joined error
+	if len(errs) > 0 {
+		joined = errors.Join(errs...)
+		for _, perr := range errs {
+			r.warnings = append(r.warnings, fmt.Sprintf("WARN: %v", perr))
+		}
+	}
+	r.mutate(func(e *snapshotEvidence) {
+		e.recordPrune(time.Now(), joined)
+		e.Warnings = r.warnings
+	})
+}
+
+// report writes the one WARN a failed recording deserves, through the
+// save's writer: evidence going silently missing is exactly what the record
+// exists to prevent.
+func (r *evidenceRecorder) report(w io.Writer) {
+	if r.err != nil {
+		fmt.Fprintf(w, "  WARN: recording snapshot evidence: %v\n", r.err)
+	}
+}
+
+// mutate persists one mutation, remembering the first failure so a tick
+// whose first record was refused still tries its later ones.
+func (r *evidenceRecorder) mutate(mutate func(*snapshotEvidence)) {
+	if err := mutateEvidence(mutate); err != nil && r.err == nil {
+		r.err = err
+	}
 }
 
 var removeSnapshot = os.Remove

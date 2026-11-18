@@ -11,6 +11,7 @@ plane.
 | [High Availability](high-availability.md) | Three control planes behind a virtual IP (VIP), and how Stratum manages etcd membership |
 | [Upgrades & Rollback](upgrades.md) | Rolling upgrades within the Kubernetes version skew rules, and rolling a node back |
 | [Snapshot & Restore](snapshot-restore.md) | Scheduled etcd snapshots, restoring from one, and rejoining a member |
+| [Backup Evidence](backup-evidence.md) | The backup-evidence read: the effective snapshot policy, the local and remote artifacts, and the maintenance diagnostics, served as one bounded JSON document |
 | [Certificates](certificates.md) | Certificate expiry and renewal, CA rotation, and recovering a rotation that halted |
 | [Hardening](hardening.md) | The security controls every cluster runs. The Center for Internet Security (CIS) profile is in [Stratum PRO](../pro/index.md) |
 | [MCP Server](mcp.md) | Serving Stratum's tools to an AI agent over the Model Context Protocol (MCP), and the tiers that bound it |

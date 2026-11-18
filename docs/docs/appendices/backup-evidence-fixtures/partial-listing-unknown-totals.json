@@ -1,0 +1,139 @@
+{
+  "policy": {
+    "state": "configured",
+    "intervalSeconds": 86400,
+    "intervalFrom": "cluster-config",
+    "retain": 3,
+    "retainFrom": "snapshot-conf",
+    "copy": "remote-required",
+    "copyFrom": "snapshot-conf",
+    "dir": "/var/backups/etcd",
+    "dirFrom": "default",
+    "warnings": []
+  },
+  "node": "cp-1",
+  "local": {
+    "node": "cp-1",
+    "artifacts": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "location": "local",
+        "created": "2026-11-12T11:00:00Z",
+        "size": 10,
+        "digest": "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+        "copyID": "sha256:e419777e23ef99a4c2ae177293cb0c8c24c00d97da95a3d83d374ae9c444c89b"
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261113-110000.db",
+        "location": "local",
+        "created": "2026-11-13T11:00:00Z",
+        "size": 16,
+        "digest": "unknown",
+        "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+        "copyID": "sha256:9b173dc82a60171d4f7d28b42343e135a1378216e4769394d9957499cf4330e2"
+      }
+    ],
+    "complete": true,
+    "warnings": []
+  },
+  "remote": {
+    "copies": [
+      {
+        "id": "etcd-snapshot-cp-1-20261108-110000.db",
+        "location": "remote",
+        "created": "2026-11-08T11:00:00Z",
+        "size": 14,
+        "digest": "unknown",
+        "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+        "copyID": "sha256:5b2495a318f507ecaa62988a1a0db3cb25d07b2260a132cc7fdc9777e6f8506f"
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "location": "remote",
+        "created": "2026-11-12T11:00:00Z",
+        "size": 10,
+        "digest": "unknown",
+        "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+        "copyID": "sha256:b1681c29ca35c3276192867a61a322b6b534900f68aa66f813c8cd52dec8ef95"
+      }
+    ],
+    "old": [],
+    "complete": false,
+    "warnings": [
+      "WARN: the remote listing stopped early at its page or byte bound; the remote catalog is unknown and not a complete total"
+    ]
+  },
+  "backups": {
+    "node": "cp-1",
+    "entries": [
+      {
+        "id": "etcd-snapshot-cp-1-20261108-110000.db",
+        "remote": {
+          "id": "etcd-snapshot-cp-1-20261108-110000.db",
+          "location": "remote",
+          "created": "2026-11-08T11:00:00Z",
+          "size": 14,
+          "digest": "unknown",
+          "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+          "copyID": "sha256:5b2495a318f507ecaa62988a1a0db3cb25d07b2260a132cc7fdc9777e6f8506f"
+        }
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261112-110000.db",
+          "location": "local",
+          "created": "2026-11-12T11:00:00Z",
+          "size": 10,
+          "digest": "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+          "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+          "copyID": "sha256:e419777e23ef99a4c2ae177293cb0c8c24c00d97da95a3d83d374ae9c444c89b"
+        },
+        "remote": {
+          "id": "etcd-snapshot-cp-1-20261112-110000.db",
+          "location": "remote",
+          "created": "2026-11-12T11:00:00Z",
+          "size": 10,
+          "digest": "unknown",
+          "locationID": "sha256:08915bce004bb37f6a071f751998e509a31fb3c78bab1c689e86a3c4a19db69a",
+          "copyID": "sha256:b1681c29ca35c3276192867a61a322b6b534900f68aa66f813c8cd52dec8ef95"
+        }
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261113-110000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261113-110000.db",
+          "location": "local",
+          "created": "2026-11-13T11:00:00Z",
+          "size": 16,
+          "digest": "unknown",
+          "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+          "copyID": "sha256:9b173dc82a60171d4f7d28b42343e135a1378216e4769394d9957499cf4330e2"
+        }
+      }
+    ],
+    "complete": false,
+    "warnings": [
+      "WARN: the remote listing stopped early at its page or byte bound; the remote catalog is unknown and not a complete total",
+      "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total"
+    ],
+    "retention": []
+  },
+  "maintenance": {
+    "save": {},
+    "upload": {},
+    "prune": {},
+    "warnings": [
+      "WARN: the snapshot attempt record cannot be read; the maintenance diagnostics are unknown"
+    ],
+    "attemptsKnown": false
+  },
+  "complete": false,
+  "warnings": [
+    "WARN: the remote listing stopped early at its page or byte bound; the remote catalog is unknown and not a complete total",
+    "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total",
+    "WARN: the snapshot attempt record cannot be read; the maintenance diagnostics are unknown"
+  ],
+  "nodeUID": "5e4f9a20-4af6-4d15-8c72-62b9c92223f3"
+}

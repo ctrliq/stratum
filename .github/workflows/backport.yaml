@@ -41,7 +41,7 @@ jobs:
           printf '* merge=mergiraf\n' >> "$HOME/.gitattributes-mergiraf"
           git config --global core.attributesFile "$HOME/.gitattributes-mergiraf"
 
-      - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4.7.0
+      - uses: korthout/backport-action@0ebd44f9c79a4a0a171200dcdcceec3ed9ca732f # v4.7.1
         id: backport
         with:
           label_pattern: '^backport/(?<target>release-1\.[0-9]+)$'

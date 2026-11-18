@@ -195,7 +195,7 @@ jobs:
         run: make build-info TARGET_ARCH=${{ matrix.arch }}
 
       - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           # v2: cosign v3, installer v4's default, ignores sign-blob's
           # --output-signature/--output-certificate.
@@ -299,7 +299,7 @@ jobs:
     needs: [meta, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           # v2: cosign v3, installer v4's default, ignores sign-blob's
           # --output-signature/--output-certificate.
@@ -342,7 +342,7 @@ jobs:
     needs: [meta, build]
     runs-on: ubuntu-latest
     steps:
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           # v2: cosign v3, installer v4's default, ignores sign-blob's
           # --output-signature/--output-certificate.
@@ -486,7 +486,7 @@ jobs:
         with:
           fetch-depth: 0
       # Provisioning is Pulumi-on-GCP; the runner needs only the Pulumi CLI.
-      - uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7
+      - uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7
       # One state bucket per cloud: a job's credentials reach exactly one, and
       # the backend refuses any other scheme (backends/ssh-lib.sh). Resolved in
       # shell rather than a chain of `&&`/`||` expressions so that an unset

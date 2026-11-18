@@ -37,8 +37,17 @@ wait_for "the kube-dns Service at $DNS" 300 kube_dns || { on cp1 "$K -n kube-sys
 pass "cp1 up on $RANGE, kube-dns at $DNS"
 
 # The join as it was before the range was recorded: the same line, without --service-cidr.
-out=$(on cp1 "/dist/stratum token create --server https://$HA_VIP:6443")
-line=$(grep -F -- '--worker' <<<"$out" | head -1)
+# The API answering does not mean kube-controller-manager has settled: it can
+# still be restarting or waiting for its leader lease, and token create refuses
+# until the bootstrapsigner has signed cluster-info. Retry while it takes over.
+for _ in 1 2 3 4 5 6; do
+  out=$(on cp1 "/dist/stratum token create --server https://$HA_VIP:6443" 2>&1) && break
+  sleep 10
+done
+# `|| true`: under pipefail a grep that finds no --worker line would end the
+# script here, before the error below could say why.
+line=$(grep -F -- '--worker' <<<"$out" | head -1 || true)
+[[ -n $line ]] || { fail "token create never succeeded: $out"; done_testing; exit 1; }
 read -r token cahash < <(python3 -c '
 import shlex, sys
 a = shlex.split(sys.stdin.read())

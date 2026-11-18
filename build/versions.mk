@@ -49,7 +49,7 @@ node_version = 24.22.2
 # it moves on its own Renovate PR with `pnpm test` and `pnpm run build` green,
 # not as a side effect of a dashboard change.
 # renovate: datasource=npm depName=pnpm
-pnpm_version = 12.16.1
+pnpm_version = 12.18.0
 
 # --- kubernetes --------------------------------------------------------------
 
@@ -133,7 +133,7 @@ etcd_binaries = etcdctl etcdutl
 # versions in CI and locally, so the same file can validate differently in
 # two places.
 # renovate: datasource=npm depName=renovate
-renovate_version = 44.198.0
+renovate_version = 44.227.0
 
 # renovate: datasource=github-releases depName=kubernetes-sigs/hydrophone
 hydrophone_version = 0.8.0
@@ -205,7 +205,7 @@ image_registry = ghcr.io/ctrliq/stratum
 # renovate: datasource=pypi depName=mkdocs
 mkdocs_version = 1.6.1
 # renovate: datasource=pypi depName=mkdocs-material
-mkdocs_material_version = 9.8.0
+mkdocs_material_version = 9.8.1
 
 # --- SKE's own version ------------------------------------------------------
 # Full version string is v$(kubernetes_version)-stratum.<N>, derived by

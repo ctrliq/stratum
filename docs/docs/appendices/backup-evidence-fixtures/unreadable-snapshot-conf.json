@@ -1,0 +1,106 @@
+{
+  "policy": {
+    "state": "unreadable",
+    "intervalSeconds": 43200,
+    "intervalFrom": "default",
+    "retain": 0,
+    "retainFrom": "unknown",
+    "copy": "",
+    "copyFrom": "unknown",
+    "dir": "/var/backups/etcd",
+    "dirFrom": "default",
+    "warnings": [
+      "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown"
+    ]
+  },
+  "node": "cp-1",
+  "local": {
+    "node": "cp-1",
+    "artifacts": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-100000.db",
+        "location": "local",
+        "created": "2026-11-12T10:00:00Z",
+        "size": 9,
+        "digest": "unknown",
+        "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+        "copyID": "sha256:646ed3addd3252b9904aecceeb862108ed4adbac7c7385a808d23a8cdd4909e4"
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "location": "local",
+        "created": "2026-11-12T11:00:00Z",
+        "size": 10,
+        "digest": "unknown",
+        "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+        "copyID": "sha256:e419777e23ef99a4c2ae177293cb0c8c24c00d97da95a3d83d374ae9c444c89b"
+      }
+    ],
+    "complete": true,
+    "warnings": []
+  },
+  "remote": {
+    "copies": [],
+    "old": [],
+    "complete": false,
+    "warnings": [
+      "WARN: the remote target could not be determined because the snapshot config or the recorded cluster config cannot be read; the remote catalog is unknown and not a complete total"
+    ]
+  },
+  "backups": {
+    "node": "cp-1",
+    "entries": [
+      {
+        "id": "etcd-snapshot-cp-1-20261112-100000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261112-100000.db",
+          "location": "local",
+          "created": "2026-11-12T10:00:00Z",
+          "size": 9,
+          "digest": "unknown",
+          "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+          "copyID": "sha256:646ed3addd3252b9904aecceeb862108ed4adbac7c7385a808d23a8cdd4909e4"
+        }
+      },
+      {
+        "id": "etcd-snapshot-cp-1-20261112-110000.db",
+        "local": {
+          "id": "etcd-snapshot-cp-1-20261112-110000.db",
+          "location": "local",
+          "created": "2026-11-12T11:00:00Z",
+          "size": 10,
+          "digest": "unknown",
+          "locationID": "sha256:05164b31147954fa650fd2cdb01a10d0fdbc064e2d9fdc02a596d1b9b965dbf3",
+          "copyID": "sha256:e419777e23ef99a4c2ae177293cb0c8c24c00d97da95a3d83d374ae9c444c89b"
+        }
+      }
+    ],
+    "complete": false,
+    "warnings": [
+      "WARN: the remote target could not be determined because the snapshot config or the recorded cluster config cannot be read; the remote catalog is unknown and not a complete total",
+      "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total"
+    ],
+    "retention": []
+  },
+  "maintenance": {
+    "save": {
+      "attemptedAt": "2026-11-12T11:00:00Z",
+      "outcome": "succeeded"
+    },
+    "upload": {},
+    "prune": {},
+    "lastSaveSuccess": "2026-11-12T11:00:00Z",
+    "warnings": [
+      "WARN: the recorded tick ran with a snapshot config it could not read; it kept every snapshot and uploaded nothing"
+    ],
+    "attemptsKnown": true
+  },
+  "complete": false,
+  "warnings": [
+    "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown",
+    "WARN: the remote target could not be determined because the snapshot config or the recorded cluster config cannot be read; the remote catalog is unknown and not a complete total",
+    "WARN: the union's total is unknown: a catalog in the union is partial, and a partial listing never yields an exact total",
+    "WARN: the recorded tick ran with a snapshot config it could not read; it kept every snapshot and uploaded nothing"
+  ],
+  "nodeUID": "5e4f9a20-4af6-4d15-8c72-62b9c92223f3"
+}
