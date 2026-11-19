@@ -173,6 +173,11 @@ starts it. A node you cordoned before the run is drained and upgraded, and stays
 cordoned afterwards. The run uncordons only the nodes it cordoned; see
 [Cordon ownership](../appendices/upgrade-reference.md#cordon-ownership).
 
+To have the run check a node before it uncordons it, for example with a hardware
+diagnostic on the nodes that carry an accelerator, declare the check in
+`kube-system/stratum-upgrade-node-checks`; see
+[Post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks).
+
 The first node that fails stops new nodes from starting, and nodes already in
 flight finish. To continue, follow
 [Recover from a halted cluster upgrade](#recover-from-a-halted-cluster-upgrade).

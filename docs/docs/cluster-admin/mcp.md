@@ -329,6 +329,10 @@ grant itself more than you gave it:
   cluster-admin, and a `stratum-node-client-claim-*` ConfigMap holds a node
   name against reuse by a later join. Writing either would get around the
   tiers, so both are refused for apply and delete.
+- **Writing `kube-system/stratum-upgrade-node-checks`** — a cluster upgrade
+  runs the commands it names as root on the nodes it selects; see
+  [Post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks).
+  It is refused for apply and delete.
 - **Applying a pod spec that escapes its namespace** — `hostPath` volumes,
   `hostNetwork`, `hostPID`, `hostIPC`, `privileged`, added Linux capabilities
   and an unmasked `procMount`. Each reaches the node itself.

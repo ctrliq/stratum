@@ -278,6 +278,59 @@ hold:
 The gate reads `nodeInfo` with the node's own kubelet credential, so workers
 are checked the same way as controllers.
 
+## Post-upgrade node checks
+
+A cluster can declare checks that `upgrade --cluster` runs on a node after its
+upgrade and before the run uncordons it, for example a hardware diagnostic on
+the nodes that carry an accelerator. Stratum ships no checks. They live in an
+optional ConfigMap, `kube-system/stratum-upgrade-node-checks`, with one key
+per check:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stratum-upgrade-node-checks
+  namespace: kube-system
+data:
+  accel-diag: |
+    nodeSelector: example.com/accelerator=true
+    command: ["/usr/bin/accel-diag", "--quick"]
+    timeoutSeconds: 600
+```
+
+| Field | Meaning |
+|---|---|
+| `nodeSelector` | required. A label selector, in `kubectl get -l` syntax, matched against the node's labels after its upgrade |
+| `command` | required. The command and its arguments. The first element is an absolute path to a binary on the node |
+| `timeoutSeconds` | how long the check may run, 1 to 86400. Unset or `0` is 900 |
+
+- The run reads the ConfigMap once, before it changes anything, and lists each
+  check in its plan, `--dry-run` included. A malformed entry, or a ConfigMap
+  the run cannot read, stops the run before any node is cordoned. With no
+  ConfigMap, there are no checks.
+- For each node, after the node is Ready and, on a control plane, the API
+  server is healthy, the run runs every check whose selector matches, in key
+  order. Each runs as the node's `stratum-upgrade-<node>` Job, which runs the
+  command on the host as root, in the host's namespaces. A check passes when
+  the command exits 0.
+- A check that fails stops the run as any node failure does. The node runs the
+  new version but is not recorded as upgraded, and it stays cordoned. A control
+  plane's own upgrade Job uncordons it before the checks run, so a control plane
+  that fails one is cordoned again; pods scheduled there in between are not
+  evicted. The failed Job stays for inspection:
+
+    ```console
+    # /usr/local/bin/stratum kubectl -n kube-system logs job/stratum-upgrade-<node>
+    ```
+
+    Fix the node, then re-run the same `upgrade --cluster` command. The run
+    finishes the node, runs its checks again, and uncordons it once they pass.
+
+- The ConfigMap is cluster-wide, so the checks apply whichever control plane
+  starts the run. The MCP server refuses to write it; see
+  [MCP Server](../cluster-admin/mcp.md).
+
 ## The supervisor restart
 
 Replacing `/usr/local/bin/stratum` does not replace the running `stratum up`,
