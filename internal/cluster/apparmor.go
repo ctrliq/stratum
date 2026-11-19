@@ -39,6 +39,27 @@ func appArmorProfileLoop(ctx context.Context) {
 	changes := watchAppArmorPolicy(ctx)
 	var failing string
 	backedOff := false
+	look := func() {
+		loaded, err := reconcileAppArmor(ctx)
+		backedOff = loaded && errors.Is(err, apparmor.ErrNotCovered)
+		switch {
+		case err != nil:
+			if err.Error() != failing {
+				failing = err.Error()
+				fmt.Fprintf(appArmorLog, "stratum: WARN: %v\n", err)
+			}
+		case loaded:
+			failing = ""
+			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile no longer covered Stratum's runc; loaded it again")
+		case failing != "":
+			failing = ""
+			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile covers Stratum's runc again")
+		}
+	}
+	// The watcher counts only changes after it starts, so a reload of the
+	// host's profiles since the start loaded Stratum's would wait for the
+	// interval: look once now.
+	look()
 	for {
 		wake := changes
 		if backedOff {
@@ -55,20 +76,6 @@ func appArmorProfileLoop(ctx context.Context) {
 			case <-time.After(appArmorSettle):
 			}
 		}
-		loaded, err := reconcileAppArmor(ctx)
-		backedOff = loaded && errors.Is(err, apparmor.ErrNotCovered)
-		switch {
-		case err != nil:
-			if err.Error() != failing {
-				failing = err.Error()
-				fmt.Fprintf(appArmorLog, "stratum: WARN: %v\n", err)
-			}
-		case loaded:
-			failing = ""
-			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile no longer covered Stratum's runc; loaded it again")
-		case failing != "":
-			failing = ""
-			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile covers Stratum's runc again")
-		}
+		look()
 	}
 }

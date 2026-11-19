@@ -263,13 +263,15 @@ func widen(src []byte) ([]byte, error) {
 }
 
 // builtinProfile is Ubuntu's runc profile, attached to Stratum's runc only.
+// It names the path where Ubuntu's uses @{exec_path}, which apparmor_parser
+// defines only from 5.0: Ubuntu 24.04's 4.0 refuses the profile otherwise.
 func builtinProfile() []byte {
 	return fmt.Appendf(nil, `abi <abi/4.0>,
 include <tunables/global>
 
-profile runc %s flags=(unconfined) {
+profile runc %[1]s flags=(unconfined) {
   userns,
-  @{exec_path} mr,
+  %[1]s mr,
 
   include if exists <local/runc>
 }

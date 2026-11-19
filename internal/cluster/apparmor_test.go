@@ -71,14 +71,15 @@ func TestAppArmorProfileLoopLogsEachChangeOnce(t *testing.T) {
 	}
 }
 
-// A change of the kernel's policy, as a reload of the host's profiles makes,
-// is looked at once it settles, without waiting for the interval: containers
-// created until the profile is back are stacked for good. So is one that
-// lands just after a look that loaded: it may be the host replacing the
-// profile again.
-func TestAppArmorProfileLoopLooksAtEveryPolicyChange(t *testing.T) {
+// The loop looks as soon as it starts, since its watcher counts only later
+// changes, and then on every change of the kernel's policy, as a reload of the
+// host's profiles makes, once it settles, without waiting for the interval:
+// containers created until the profile is back are stacked for good. So is a
+// change that lands just after a look that loaded: it may be the host
+// replacing the profile again.
+func TestAppArmorProfileLoopLooksAtStartAndAtEveryPolicyChange(t *testing.T) {
 	changes := stubAppArmorLoop(t)
-	looked := make(chan struct{}, 2)
+	looked := make(chan struct{}, 3)
 	reconcileAppArmor = func(context.Context) (bool, error) {
 		looked <- struct{}{}
 		return true, nil
@@ -87,6 +88,11 @@ func TestAppArmorProfileLoopLooksAtEveryPolicyChange(t *testing.T) {
 	done := make(chan struct{})
 	go func() { appArmorProfileLoop(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
+	select {
+	case <-looked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the loop did not look when it started")
+	}
 	for i := range 2 {
 		changes <- struct{}{}
 		select {
@@ -113,8 +119,8 @@ func TestAppArmorProfileLoopBacksOffALoadThatDoesNotCover(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// The look at start loads, and its own change is already pending.
 	go func() { appArmorProfileLoop(ctx); close(done) }()
-	changes <- struct{}{}
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	<-done

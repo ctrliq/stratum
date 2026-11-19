@@ -269,6 +269,10 @@ func TestProfileIsForStratumsRuncAloneWithoutAHostProfileToWiden(t *testing.T) {
 			if !bytes.Contains(got, []byte("profile runc /var/lib/stratum/bin/runc flags=(unconfined) {")) {
 				t.Errorf("Profile() =\n%s\nwant a runc profile in unconfined mode for Stratum's runc alone", got)
 			}
+			// apparmor_parser 4.0, as on Ubuntu 24.04, has no @{exec_path}.
+			if bytes.Contains(got, []byte("@{exec_path}")) || !bytes.Contains(got, []byte("  /var/lib/stratum/bin/runc mr,\n")) {
+				t.Errorf("Profile() =\n%s\nwant Stratum's runc named in its own rule, not through @{exec_path}", got)
+			}
 		})
 	}
 }
