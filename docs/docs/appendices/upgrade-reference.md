@@ -108,7 +108,7 @@ check.
 | Job | `stratum-upgrade-<node>`, labeled `stratum.ciq.com/upgrade=<node>` | runs the staged binary on that node |
 | Node label | `stratum.ciq.com/control-plane=true` | marks control planes, which upgrade first and one at a time |
 | Node annotation | `stratum.ciq.com/upgrade-cordoned=<kind>@<holder>` | who owns the node's cordon during the upgrade; see [Cordon ownership](#cordon-ownership) |
-| Node annotation | `stratum.ciq.com/upgrade-in-progress=<version>` | set before a node's Job starts, removed when the node is back Ready at that version |
+| Node annotation | `stratum.ciq.com/upgrade-in-progress=<version>` | set before a node's Job starts, removed once the node is back Ready at that version and has passed its [post-upgrade checks](#post-upgrade-node-checks) |
 | Node annotation | `stratum.ciq.com/k8s-version=<version>` | the Kubernetes version the node runs |
 | Node annotation | `stratum.ciq.com/version=<version>` | the Stratum build the node runs |
 
@@ -379,6 +379,9 @@ as any node failure does:
 ```text
 post-upgrade node check failed: <name> on <node>: post-upgrade check <name> Job stratum-upgrade-<node> failed (logs: kubectl -n kube-system logs job/stratum-upgrade-<node>). <node> runs <target>, but it is not recorded as upgraded, and it is left cordoned. Read why: <path> kubectl -n kube-system logs job/stratum-upgrade-<node>. Once the node is fixed, re-run <path> upgrade --cluster --target <target> --from <path> --yes, which runs the check again before it uncordons the node
 ```
+
+For a check that does not finish within its deadline, the
+`failed (logs: …)` part reads `did not complete in time` instead.
 
 - The node runs the new version, but the run does not record it as upgraded:
   the node keeps its `upgrade-in-progress` annotation, so the next run treats
