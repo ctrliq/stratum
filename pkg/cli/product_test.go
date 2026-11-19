@@ -12,12 +12,12 @@ import (
 
 func TestReadableVersion(t *testing.T) {
 	for in, want := range map[string]string{
-		"v1.37.2-stratum.0":          "1.37.2",
-		"v1.36.6-stratum.0-rc.2":     "1.36.6 (rc.2)",
-		"v1.36.6-stratum-pro.0-rc.2": "1.36.6 (rc.2)",
-		"v1.37.2-stratum-pro.1":      "1.37.2",
-		"v0.0.0-dev":                 "0.0.0-dev",
-		"1.2.3":                      "1.2.3",
+		"v1.2.3-stratum.0":              "1.2.3",
+		"v1.2.4-stratum.0-rc.2":         "1.2.4 (rc.2)",
+		"v1.2.4-stratum-example.0-rc.2": "1.2.4 (rc.2)",
+		"v1.2.3-stratum-example.1":      "1.2.3",
+		"v0.0.0-dev":                    "0.0.0-dev",
+		"1.2.3":                         "1.2.3",
 	} {
 		if got := readableVersion(in); got != want {
 			t.Errorf("readableVersion(%q) = %q, want %q", in, got, want)
@@ -26,13 +26,13 @@ func TestReadableVersion(t *testing.T) {
 }
 
 func TestHeadlineNamesTheProduct(t *testing.T) {
-	cfg := rootConfig{displayVersion: "v1.37.2-stratum.0"}
-	if got, want := cfg.headline(), "CIQ Stratum 1.37.2"; got != want {
+	cfg := rootConfig{displayVersion: "v1.2.3-stratum.0"}
+	if got, want := cfg.headline(), "CIQ Stratum 1.2.3"; got != want {
 		t.Errorf("default headline = %q, want %q", got, want)
 	}
-	WithProductName("Stratum Pro")(&cfg)
+	WithProductName("Stratum Example")(&cfg)
 	WithProductName("")(&cfg) // empty leaves the name already set
-	if got, want := cfg.headline(), "CIQ Stratum Pro 1.37.2"; got != want {
+	if got, want := cfg.headline(), "CIQ Stratum Example 1.2.3"; got != want {
 		t.Errorf("headline with a product name = %q, want %q", got, want)
 	}
 }
@@ -41,13 +41,13 @@ func TestHeadlineNamesTheProduct(t *testing.T) {
 // listed under a named group, so none falls into "Additional Commands",
 // which is left for importers' own commands.
 func TestHelpGroupsEveryEngineCommand(t *testing.T) {
-	root := NewRootCommand(WithProductName("Stratum Pro"))
+	root := NewRootCommand(WithProductName("Stratum Example"))
 	for _, c := range root.Commands() {
 		if c.GroupID == "" && c.Name() != "help" && c.Name() != "completion" {
 			t.Errorf("command %q has no help group", c.Name())
 		}
 	}
-	if !strings.HasPrefix(root.Long, "CIQ Stratum Pro ") {
+	if !strings.HasPrefix(root.Long, "CIQ Stratum Example ") {
 		t.Errorf("help does not open with the product's name:\n%s", root.Long)
 	}
 	if !strings.Contains(root.Long, "sudo /usr/local/bin/stratum up") {

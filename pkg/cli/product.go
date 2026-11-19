@@ -30,7 +30,7 @@ func (c rootConfig) product() string {
 }
 
 // headline is the first line an install command prints: the vendor, the
-// product and a version a person can read, such as "CIQ Stratum 1.37.2".
+// product and a version a person can read, such as "CIQ Stratum X.Y.Z".
 func (c rootConfig) headline() string {
 	return fmt.Sprintf("CIQ %s %s", c.product(), readableVersion(c.displayVersion))
 }
@@ -41,14 +41,14 @@ func (c rootConfig) printHeadline(w io.Writer) {
 }
 
 // releaseVersion matches a release tag: the Kubernetes version, the build's
-// own suffix (stratum, or a downstream one such as stratum-pro) and its
+// own suffix (stratum, or stratum- and a downstream build's name) and its
 // number, then an optional release-candidate suffix.
 var releaseVersion = regexp.MustCompile(`^v?(\d+\.\d+\.\d+)-stratum(?:-[a-z]+)*\.\d+(?:-(rc\.\d+))?$`)
 
 // readableVersion turns a release tag into what a person reads: the
 // Kubernetes version, with a release candidate named in brackets, so
-// v1.37.2-stratum.0 reads 1.37.2 and v1.36.6-stratum-pro.0-rc.2 reads
-// 1.36.6 (rc.2). Anything else, such as a development build, is shown as it
+// vX.Y.Z-stratum.0 reads X.Y.Z and vX.Y.Z-stratum.0-rc.2 reads
+// X.Y.Z (rc.2). Anything else, such as a development build, is shown as it
 // is, without a leading v.
 func readableVersion(v string) string {
 	m := releaseVersion.FindStringSubmatch(v)
