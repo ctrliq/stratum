@@ -858,22 +858,30 @@ func upgradeOneNode(w io.Writer, ctx context.Context, cs kubernetes.Interface, n
 // per-node Job runs on the host and does not stop with this process, so it may
 // still be upgrading the node. A controller's Job also uncordons the node once
 // its upgrade passes, which can be before this run's own gates fail or after
-// it halts, so only a worker is said to be left cordoned.
+// it halts, so only a worker, or a controller whose Job keeps its cordon for
+// its checks, is said to be left cordoned. With checks declared, the only way
+// back is a re-run, which runs them before it uncordons the node.
 func recoverySteps(n Node, job string, o ClusterOptions) string {
 	// The --from binary runs every command, kubectl included: the node has no
 	// kubectl on its PATH, and a bare `stratum` may be an older release.
 	from := shellQuote(o.From)
 	state := "is left cordoned, and its upgrade Job"
-	if n.IsCP {
+	if n.IsCP && !o.keepCPCordon {
 		state = "may be left cordoned (its upgrade Job uncordons it once upgraded), and the Job"
 	}
-	return fmt.Sprintf("  %s %s may still be running. To recover:\n"+
+	steps := fmt.Sprintf("  %s %s may still be running. To recover:\n"+
 		"    1. %s kubectl -n %s get job/%s       (wait for it to succeed or fail; \"not found\" means it\n"+
-		"       already finished and was cleaned up)\n"+
-		"    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node)\n"+
+		"       already finished and was cleaned up)\n",
+		n.Name, state, from, cuNamespace, job)
+	if len(o.postChecks) > 0 {
+		return steps + fmt.Sprintf("    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node, and runs its\n"+
+			"       post-upgrade checks before it uncordons it)",
+			from, o.Target, from)
+	}
+	return steps + fmt.Sprintf("    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node)\n"+
 		"       or, if the node is at the target and healthy, and this run cordoned it (you did not cordon it yourself\n"+
 		"       before the upgrade): %s kubectl uncordon %s",
-		n.Name, state, from, cuNamespace, job, from, o.Target, from, from, n.Name)
+		from, o.Target, from, from, n.Name)
 }
 
 // shellQuote is s as one shell word: unchanged when it is made only of

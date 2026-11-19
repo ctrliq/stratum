@@ -59,6 +59,34 @@ func TestRecoveryStepsStateTheCordonOnlyOfAWorker(t *testing.T) {
 	}
 }
 
+// With checks declared, a control plane whose Job keeps its cordon is left
+// cordoned, and no step uncordons a node by hand, which would skip its checks.
+func TestRecoveryStepsWithChecksOnlyRerun(t *testing.T) {
+	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-v1.37.1",
+		postChecks: []postCheck{{Name: "accel-diag"}}}
+	for _, c := range []struct {
+		n    Node
+		keep bool
+		want string
+	}{
+		{Node{Name: "w1"}, true, "  w1 is left cordoned, and its upgrade Job may still be running."},
+		{Node{Name: "cp1", IsCP: true}, true, "  cp1 is left cordoned, and its upgrade Job may still be running."},
+		{Node{Name: "cp1", IsCP: true}, false, "  cp1 may be left cordoned (its upgrade Job uncordons it once upgraded), and the Job may still be running."},
+	} {
+		o.keepCPCordon = c.keep
+		got := recoverySteps(c.n, "stratum-upgrade-"+c.n.Name, o)
+		if !strings.HasPrefix(got, c.want) {
+			t.Errorf("recovery steps for %s (keep=%v) start:\n%s\nwant:\n%s", c.n.Name, c.keep, got, c.want)
+		}
+		if strings.Contains(got, "uncordon "+c.n.Name) {
+			t.Errorf("recovery steps for %s (keep=%v) uncordon it by hand:\n%s", c.n.Name, c.keep, got)
+		}
+		if !strings.Contains(got, "upgrade --cluster --target v1.37.1") || !strings.Contains(got, "post-upgrade checks before it uncordons it") {
+			t.Errorf("recovery steps for %s (keep=%v) do not re-run the checks:\n%s", c.n.Name, c.keep, got)
+		}
+	}
+}
+
 // The Job's backstop warning names a command that runs on the node and under
 // sudo: the installed binary's absolute path (Rocky's secure_path has no
 // /usr/local/bin) and its bundled kubectl. It also says to uncordon only a
