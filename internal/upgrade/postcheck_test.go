@@ -46,6 +46,7 @@ func TestParsePostChecks(t *testing.T) {
 		{"relative command", postCheckCM(map[string]string{"x": "nodeSelector: a=b\ncommand: [diag]\n"}), "not an absolute path"},
 		{"negative timeout", postCheckCM(map[string]string{"x": good + "timeoutSeconds: -1\n"}), "timeoutSeconds -1"},
 		{"timeout over a day", postCheckCM(map[string]string{"x": good + "timeoutSeconds: 86401\n"}), "timeoutSeconds 86401"},
+		{"timeout that wraps a duration", postCheckCM(map[string]string{"x": good + "timeoutSeconds: 18446744074\n"}), "timeoutSeconds 18446744074"},
 		{"unknown field", postCheckCM(map[string]string{"x": good + "image: busybox\n"}), "unknown field"},
 		{"binaryData", &corev1.ConfigMap{BinaryData: map[string][]byte{"x": []byte(good)}}, "binaryData"},
 	} {
@@ -187,8 +188,9 @@ func TestPostCheckSkipsANodeItDoesNotSelect(t *testing.T) {
 // A failed check halts the run with the node unstamped and cordoned. A worker,
 // and a control plane of several, whose Job leaves its cordon, are cordoned
 // while the check runs; the only control plane, which its own Job uncordoned,
-// is cordoned again.
-func TestPostCheckFailureHoldsTheNode(t *testing.T) {
+// is cordoned again. A re-run finishes the node, runs the check again, and
+// uncordons the node only once it passes.
+func TestPostCheckFailureHoldsTheNodeUntilARerunPasses(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
 		isCP, keep, uncordons bool
@@ -222,6 +224,26 @@ func TestPostCheckFailureHoldsTheNode(t *testing.T) {
 					n.Annotations[k8sutil.UpgradeInProgressAnnotation] != "v1.37.1" ||
 					n.Annotations[k8sutil.UpgradeCordonAnnotation] != cordonClaim("v1.37.1", "") {
 					t.Errorf("unschedulable=%v annotations=%v, want it cordoned under the upgrade's claim and unfinished", n.Spec.Unschedulable, n.Annotations)
+				}
+
+				reran := 0
+				stubPostCheck(t, func(context.Context, kubernetes.Interface, nodejob.Spec) error {
+					reran++
+					if got := !getNode(t, cs).Spec.Unschedulable; got != tc.uncordons {
+						t.Errorf("re-run: schedulable while the check runs = %v, want %v", got, tc.uncordons)
+					}
+					return nil
+				})
+				if err := runPostCheckNode(cs, tc.isCP, tc.keep, []postCheck{gpuCheck(t)}); err != nil {
+					t.Fatalf("re-run: %v", err)
+				}
+				if reran != 1 {
+					t.Errorf("re-run ran the check %d times, want once", reran)
+				}
+				n = getNode(t, cs)
+				if n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "v1.37.1" ||
+					n.Annotations[k8sutil.UpgradeInProgressAnnotation] != "" || n.Annotations[k8sutil.UpgradeCordonAnnotation] != "" {
+					t.Errorf("after a re-run whose check passed: unschedulable=%v annotations=%v, want the node finished", n.Spec.Unschedulable, n.Annotations)
 				}
 			})
 		})
