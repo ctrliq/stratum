@@ -60,11 +60,12 @@ func newRuntimeApplyCommand() *cobra.Command {
 }
 
 // newRuntimeCheckCommand reports whether containerd will run this node's
-// runtime handlers, and exits 1 when it will not.
+// runtime handlers, and runc under its AppArmor profile, and exits 1 when it
+// will not.
 func newRuntimeCheckCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "check",
-		Short: "Report whether containerd will run this node's runtime handlers",
+		Short: "Report whether containerd will run this node's runtime handlers, and runc under its AppArmor profile",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := cluster.CheckRuntimeHandlers(cmd.ErrOrStderr())

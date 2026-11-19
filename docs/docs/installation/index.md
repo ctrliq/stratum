@@ -101,6 +101,10 @@ turn labelling off.
   boot, but other init systems do not, and containerd refuses the host-path
   mounts Cilium's pods make on a private root. A root that is already shared,
   or a slave, is left alone.
+* When `kernel.apparmor_restrict_unprivileged_unconfined` is `1`, as on Ubuntu
+  26.04, it loads an AppArmor profile named `runc` that covers Stratum's runc,
+  so containers can signal their own processes. See
+  [AppArmor](configuration.md#apparmor) on the Configuration page.
 
 `stratum stage` and `stratum up` set their own umask to `022`, so the node's
 file modes do not depend on the shell or unit that starts them. Hardened hosts,
