@@ -317,11 +317,14 @@ data:
   server is healthy, the run runs every check whose selector matches, in key
   order. Each runs as the node's `stratum-upgrade-<node>` Job, which runs the
   command on the host as root, in the host's namespaces. A check passes when
-  the command exits 0.
+  the command exits 0. The check's Job replaces the node's upgrade Job, so
+  from then on that Job's log is the check's.
 - The node stays cordoned while its checks run. The exception is a cluster
   with one control plane: that node's own upgrade Job uncordons it, as the run
   may not outlive the node's upgrade, so its checks run after it is
-  schedulable.
+  schedulable. The same holds for every control plane when the upgrade binary
+  is from a release that cannot leave the cordon; the run then prints a
+  `WARN` line before it changes anything.
 - A check that fails stops the run as any node failure does. The node runs the
   new version but is not recorded as upgraded, and it stays cordoned. The only
   control plane of a cluster is cordoned again; pods scheduled there in between

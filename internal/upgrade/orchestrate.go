@@ -251,6 +251,16 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 		fmt.Fprintln(w, "\n(dry-run; no changes) — ensure the upgrade binary is staged at", o.From, "on every node.")
 		return nil
 	}
+	if o.keepCPCordon {
+		ok, err := stagedKeepsCordon(ctx, o.From)
+		if err != nil {
+			return fmt.Errorf("%w (no node was cordoned or upgraded)", err)
+		}
+		if !ok {
+			o.keepCPCordon = false
+			fmt.Fprintf(w, "  WARN: the upgrade binary %s cannot leave a control plane cordoned for its checks, so each control plane's own upgrade Job uncordons it and its checks run after it is schedulable\n", o.From)
+		}
+	}
 
 	// Exclusive cluster-wide from here until the run ends (lease.go). The
 	// released lease name is taken FIRST — an orchestrator on the previous
@@ -1158,16 +1168,27 @@ var runImageImport = nodejob.Run
 // Every node runs the same build (the rollout pins it), so this node's copy
 // answers for all of them. A var for tests.
 var stagedImportsImages = func(ctx context.Context, path string) (bool, error) {
+	return stagedAcceptsFlag(ctx, path, "--import-images", "import images")
+}
+
+// stagedKeepsCordon reports whether the upgrade binary at path can leave a
+// control plane cordoned for the run's checks, asked as stagedImportsImages
+// asks. A var for tests.
+var stagedKeepsCordon = func(ctx context.Context, path string) (bool, error) {
+	return stagedAcceptsFlag(ctx, path, "--keep-cordon", "keep a control plane cordoned")
+}
+
+func stagedAcceptsFlag(ctx context.Context, path, flag, what string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "upgrade", "--import-images", "--help").CombinedOutput()
+	out, err := exec.CommandContext(ctx, path, "upgrade", flag, "--help").CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
-	if strings.Contains(string(out), "unknown flag: --import-images") {
+	if strings.Contains(string(out), "unknown flag: "+flag) {
 		return false, nil
 	}
-	return false, fmt.Errorf("ask the upgrade binary %s whether it can import images: %w", path, err)
+	return false, fmt.Errorf("ask the upgrade binary %s whether it can %s: %w", path, what, err)
 }
 
 // nodeCheckArgv is nodeUpgradeArgv's read-only twin: the same exec of the

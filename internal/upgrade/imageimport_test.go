@@ -313,3 +313,25 @@ func TestUpgradeNodeImportImagesRefusesWhileAnotherOperationHoldsTheNode(t *test
 		t.Errorf("imported %v while the node was locked", *imported)
 	}
 }
+
+func TestStagedKeepsCordonAsksTheBinary(t *testing.T) {
+	for _, tc := range []struct {
+		name, script  string
+		want, wantErr bool
+	}{
+		{"has the flag", "#!/bin/sh\n[ \"$*\" = \"upgrade --keep-cordon --help\" ]\n", true, false},
+		{"predates the flag", "#!/bin/sh\necho 'Error: unknown flag: --keep-cordon' >&2\nexit 1\n", false, false},
+		{"fails another way", "#!/bin/sh\necho 'Killed' >&2\nexit 137\n", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "stratum-next")
+			if err := os.WriteFile(p, []byte(tc.script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			got, err := stagedKeepsCordon(context.Background(), p)
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Errorf("stagedKeepsCordon = %v, %v; want %v, error %v", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
