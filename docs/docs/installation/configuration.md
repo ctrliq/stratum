@@ -641,3 +641,110 @@ sudo ausearch -m AVC -ts recent
 When its standard input is a pipe, as in a command passed to `ssh`, `ausearch`
 searches that input instead of the audit log and finds no denials. Add
 `--input-logs` there.
+
+## AppArmor
+
+On a host with AppArmor, such as Ubuntu, each container runs under
+containerd's profile, `cri-containerd.apparmor.d`, unless its pod sets another
+`appArmorProfile`. runc switches to that profile after it has dropped to the
+container's capabilities. When the kernel setting
+`kernel.apparmor_restrict_unprivileged_unconfined` is `1`, as on Ubuntu 26.04,
+the kernel then stacks the profile on `unconfined` instead of switching to it,
+unless runc itself runs under a profile. Ubuntu's `apparmor` package ships one,
+named `runc`, for `/usr/bin/runc` and `/usr/sbin/runc`, but Stratum's runc is
+`/var/lib/stratum/bin/runc`.
+
+So when the setting is `1`, every `stratum up` loads a `runc` profile that also
+covers `/var/lib/stratum/bin/runc`, before containerd starts. It loads it with
+`apparmor_parser`, from the `apparmor` package, which is also the package that
+sets the restriction:
+
+- It is the host's `/etc/apparmor.d/runc` with `/var/lib/stratum/bin/runc`
+  added to the paths it attaches to, so Ubuntu's own runc keeps the profile
+  Ubuntu gives it.
+- If the host has no `/etc/apparmor.d/runc`, or it is disabled in
+  `/etc/apparmor.d/disable/`, the profile covers `/var/lib/stratum/bin/runc`
+  alone.
+- If Stratum cannot add its runc to the host's file, which needs exactly one
+  `profile runc <path>` line, it loads that profile of its own instead and
+  warns. The host's own runc then runs without the host's profile until the
+  host loads it again, and `stratum runtime check` warns until the file is
+  fixed or disabled.
+- It then starts `/var/lib/stratum/bin/runc` stopped, before any of its code
+  runs, to read the label the kernel gave it, and the start fails unless that
+  label is `runc`.
+- Reloading the host's profiles, as `systemctl reload apparmor` does, puts the
+  host's own `runc` profile back. Stratum looks again as soon as the kernel's
+  AppArmor policy changes, and every minute besides, and loads its profile
+  again. It logs a failure to load it when the failure first happens
+  and when it changes.
+- A kernel that forbids `ptrace` altogether (`kernel.yama.ptrace_scope` set to
+  `3`) does not allow reading runc's label. The start and
+  `stratum runtime check` then warn that they could not check, and Stratum does
+  not load its profile again when the host's profiles are reloaded: run
+  `sudo systemctl restart stratum` after you reload them.
+- `stratum runtime check` exits 1 while the setting is `1` and the kernel's
+  `runc` profile does not cover `/var/lib/stratum/bin/runc`, and while any
+  container process still runs with a stacked label.
+- A cluster upgrade checks on each node, before it changes the node, that the
+  profile can be built and compiled there, and refuses the node when it cannot.
+- `stratum uninstall` loads the host's own `runc` profile again, or removes the
+  `runc` profile when the host loads none.
+
+When the setting is `0`, as on Ubuntu 24.04, Stratum loads nothing. To see the
+setting, and whether Stratum's runc runs under the `runc` profile:
+
+```console
+$ cat /proc/sys/kernel/apparmor_restrict_unprivileged_unconfined
+
+# /usr/local/bin/stratum runtime check
+```
+
+**Without the profile**, a container's processes run as
+`cri-containerd.apparmor.d//&unconfined`, and containerd's profile denies
+signals between them. `kill` fails with `Permission denied`, `timeout` does not
+stop its command, an exec liveness probe that signals a child fails, and
+programs that signal their own processes, such as PostgreSQL, stop working.
+Host profiles also apply inside the container: Ubuntu's profile for
+`/usr/bin/nslookup` makes `nslookup` in a container exit with code 139. The
+kernel log shows the denials:
+
+```console
+# journalctl -k | grep 'apparmor="DENIED"' | grep 'operation="signal"'
+```
+
+**Running containers keep their label.** Exec sessions started after the
+profile was loaded get the container's profile alone, but a process started
+before keeps the stacked label until its pod is recreated or the node reboots.
+That includes the control plane's static pods, which deleting the pod does not
+recreate, so rebooting the node is the simplest way. `stratum runtime check`
+names the processes still stacked, as does:
+
+```console
+# ps -eo label,pid,comm | grep '//&unconfined'
+```
+
+**Localhost profiles.** Stopping a container, runc sends its signals as `runc`.
+A profile of your own that mediates signals must accept them from runc, as
+containerd's profile does, or the pod cannot be stopped: its deletion hangs, and
+the kernel logs `apparmor="DENIED" operation="signal" ... signal=kill
+peer="runc"`. Add this rule to such a profile:
+
+```text
+signal (receive) peer=runc,
+```
+
+A profile with no `signal` rules at all does not mediate signals and needs
+nothing.
+
+**Unconfined pods.** A pod with `appArmorProfile: {type: Unconfined}` runs as
+`runc (unconfined)` rather than `unconfined`. Like the host's own runc, it is
+then exempt from Ubuntu's restriction on unprivileged user namespaces,
+`kernel.apparmor_restrict_unprivileged_userns`.
+
+**Runtime handlers.** A handler in `spec.node.runtimeHandlers` whose binary
+runs `runc` from its `PATH` runs Stratum's runc and is covered. A handler whose
+own binary is the OCI runtime, at a path no host profile covers, runs
+unconfined, and its containers are stacked the same way. Stratum does not cover
+it. To cover it, add its path to the paths `/etc/apparmor.d/runc` attaches to
+and restart Stratum, which builds its profile from that file.

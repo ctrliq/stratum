@@ -206,7 +206,31 @@ else
 out=$OUT
   reason=$(why sc-apparmor)
   if [[ $PHASE == Succeeded ]]; then
-    assert_contains "appArmorProfile RuntimeDefault confines the container" "cri-containerd.apparmor.d" "$out"
+    # The exact label: with kernel.apparmor_restrict_unprivileged_unconfined
+    # set and runc unconfined, the kernel stacks the profile, which reads as
+    # cri-containerd.apparmor.d//&unconfined and denies signals between the
+    # container's own processes.
+    assert_eq "appArmorProfile RuntimeDefault confines the container under its profile alone" "cri-containerd.apparmor.d (enforce)" "$out"
+    # runc applies the profile to an exec session on another path than to the
+    # container's command, after dropping to the container's capabilities.
+    $K delete pod sc-apparmor-exec --ignore-not-found --wait=true >/dev/null 2>&1 || true
+    $K apply -f - >/dev/null <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: sc-apparmor-exec}
+spec:
+  securityContext: {appArmorProfile: {type: RuntimeDefault}}
+  containers: [{name: c, image: $BB, command: [sleep, "3600"]}]
+EOF
+    if $K wait --for=condition=Ready pod/sc-apparmor-exec --timeout=120s >/dev/null 2>&1; then
+      # shellcheck disable=SC2016  # expanded by the container's shell
+      out=$($K exec sc-apparmor-exec -- sh -c 'echo "label=$(cat /proc/self/attr/apparmor/current 2>/dev/null || cat /proc/self/attr/current)"; sleep 5 & kill $!; wait $!; echo "child_exit=$?"' 2>&1 || true)
+      assert_contains "an exec session runs under the container's profile alone" "label=cri-containerd.apparmor.d (enforce)" "$out"
+      assert_contains "an exec session can signal its own child" "child_exit=143" "$out"
+    else
+      fail "the AppArmor exec pod did not become Ready: $(why sc-apparmor-exec)"
+    fi
+    $K delete pod sc-apparmor-exec --ignore-not-found --wait=false >/dev/null 2>&1 || true
   elif [[ $reason == *"AppArmor is not enabled on the host"* ]]; then
     # The kernel has AppArmor, but from inside this container the kubelet
     # cannot see securityfs. Only this condition is the host's; any other

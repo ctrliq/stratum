@@ -559,7 +559,7 @@ type RuntimeCheckIn struct{}
 type RuntimeCheckOut struct {
 	Handlers map[string]string        `json:"handlers,omitempty" jsonschema:"the runtime handlers this node saved, by name, each the path of its OCI runtime binary"`
 	Findings []runtime.HandlerFinding `json:"findings" jsonschema:"each check's severity (ok, warn or error) and what it found"`
-	Failed   bool                     `json:"failed" jsonschema:"true when any finding is an error, so containerd will not run every handler this node declares"`
+	Failed   bool                     `json:"failed" jsonschema:"true when any finding is an error: containerd will not run every handler this node declares, or runc does not run under the AppArmor profile its containers need to signal their own processes"`
 }
 
 // RuntimeCheckHandler reports whether containerd will run this node's

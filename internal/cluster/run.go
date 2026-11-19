@@ -207,7 +207,11 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 	if err := writeComponentArgs(procs); err != nil {
 		return err
 	}
-	return runSupervisor(ctx, procs, supervisor.Options{
+	gctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	tasks := newRunGroup(gctx)
+	tasks.add("AppArmor runc profile", appArmorProfileLoop)
+	err := runSupervisor(ctx, procs, supervisor.Options{
 		LogDir:        version.LogDir,
 		ControlSocket: version.ControlSocket,
 		// No admin.conf here: the kubelet stamps its own Node.
@@ -218,6 +222,9 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 		}),
 		ReExec: UpArgv(version.StratumInstallPath, true, "", ""),
 	})
+	cancel()
+	tasks.wait()
+	return err
 }
 
 // writeBundles stages the versioned add-on manifests into the deployer's
@@ -924,14 +931,15 @@ func restampOwnNodeWhenRegistered(ctx context.Context, hostname string) bool {
 
 // postStart starts the controller's post-start housekeeping: the etcd growth
 // recorder for an ungrown seed, the learner promotion for a joined member, the
-// node-registered task, the long-lived cert-renew and snapshot loops the
-// config enables, and the backup-evidence publisher beside the snapshot loop,
-// each a run-group task with the controller's context. No task
-// waits on the apiserver to start, and none needs it: renewal reads and
-// reissues local certificates only, a snapshot needs only the local etcd, the
-// publisher only the node's own stores and records, the
-// recorder and the learner promotion only etcd, and the node-registered task's
-// per-tick registration check is itself the apiserver wait.
+// node-registered task, the AppArmor runc profile loop, the long-lived
+// cert-renew and snapshot loops the config enables, and the backup-evidence
+// publisher beside the snapshot loop, each a run-group task with the
+// controller's context. No task waits on the apiserver to start, and none
+// needs it: renewal reads and reissues local certificates only, a snapshot
+// needs only the local etcd, the publisher only the node's own stores and
+// records, the recorder and the learner promotion only etcd, the AppArmor loop
+// only the host's AppArmor, and the node-registered task's per-tick
+// registration check is itself the apiserver wait.
 func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// Only this node's own etcd, no apiserver: started first, so a seed whose
 	// apiserver never becomes ready still records HA growth.
@@ -945,6 +953,7 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	// the node's registration itself, per tick, so a slow apiserver delays
 	// its ticks, never the loops beside it.
 	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st, dashboardHint(cfg, st.NodeIP)) })
+	g.add("AppArmor runc profile", appArmorProfileLoop)
 	if cfg.CertRenewEnabled() {
 		g.add("cert renewal", func(ctx context.Context) { certRenewLoop(ctx, st.Hostname) })
 	}
