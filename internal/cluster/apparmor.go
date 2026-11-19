@@ -24,16 +24,15 @@ var (
 )
 
 // appArmorProfileLoop keeps the kernel's runc profile covering Stratum's runc
-// for the node's whole run. Start loads it before containerd starts
-// (host.Prereqs), but the host's AppArmor can replace it at any time: a reload
-// of /etc/apparmor.d loads the host's own runc profile, and every container
-// created after that is stacked for good. So it looks as soon as the kernel's
-// policy changes, once the change has settled, as a reload of every profile
-// changes it many times, and every interval besides. A look loads only when
-// the profile is gone, so its own load does not make the next one load again;
-// but a load that leaves runc uncovered, as when another profile attaches to
-// it first, would, so after one the loop waits for the interval. A failure is
-// logged when it first happens and when it changes, not on every look.
+// while the node runs. The host's AppArmor replaces it with the host's own
+// whenever it reloads /etc/apparmor.d, and every container created after that
+// is stacked for good. So it looks as soon as the kernel's policy changes,
+// once the change has settled, as a reload of every profile changes it many
+// times, and every interval besides. A look loads only when runc is not
+// covered, so its own load does not make the next one load again; but a load
+// that leaves runc uncovered, as when another profile attaches to it first,
+// would, so after one the loop waits for the interval. A failure is logged
+// when it first happens and when it changes, not on every look.
 func appArmorProfileLoop(ctx context.Context) {
 	t := time.NewTicker(appArmorProfileInterval)
 	defer t.Stop()
@@ -56,20 +55,17 @@ func appArmorProfileLoop(ctx context.Context) {
 			case <-time.After(appArmorSettle):
 			}
 		}
-		reload, err := reconcileAppArmor(ctx)
-		backedOff = reload != apparmor.NotLoaded && errors.Is(err, apparmor.ErrNotCovered)
+		loaded, err := reconcileAppArmor(ctx)
+		backedOff = loaded && errors.Is(err, apparmor.ErrNotCovered)
 		switch {
 		case err != nil:
 			if err.Error() != failing {
 				failing = err.Error()
 				fmt.Fprintf(appArmorLog, "stratum: WARN: %v\n", err)
 			}
-		case reload == apparmor.Loaded:
+		case loaded:
 			failing = ""
 			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile no longer covered Stratum's runc; loaded it again")
-		case reload == apparmor.LoadedUnchecked:
-			// Loaded where runc's label cannot be read: nothing says it covers.
-			failing = ""
 		case failing != "":
 			failing = ""
 			fmt.Fprintln(appArmorLog, "stratum: the kernel's runc AppArmor profile covers Stratum's runc again")

@@ -5,81 +5,60 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/apparmor"
 )
 
-// syncBuffer is a log the loop writes while the test reads it.
-type syncBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (s *syncBuffer) Write(p []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.Write(p)
-}
-
-func (s *syncBuffer) String() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.b.String()
-}
-
-// The loop reloads on every tick the profile is lost, and logs a failure once
-// until it changes or clears, so a host that cannot take the profile does not
-// fill the journal.
-func TestAppArmorProfileLoopReloadsAndLogsEachChangeOnce(t *testing.T) {
-	oldInterval, oldReconcile, oldLog, oldWatch := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy
+// stubAppArmorLoop gives appArmorProfileLoop, until the test ends, a channel
+// standing in for the kernel's policy changes, which it returns, an interval
+// that never comes, a short settle and no log.
+func stubAppArmorLoop(t *testing.T) chan struct{} {
+	t.Helper()
+	oldInterval, oldReconcile, oldLog, oldWatch, oldSettle := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle
 	t.Cleanup(func() {
-		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy = oldInterval, oldReconcile, oldLog, oldWatch
+		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle = oldInterval, oldReconcile, oldLog, oldWatch, oldSettle
 	})
-	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return nil }
+	changes := make(chan struct{}, 1)
+	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return changes }
+	appArmorProfileInterval, appArmorSettle, appArmorLog = time.Hour, time.Millisecond, io.Discard
+	return changes
+}
 
+// The loop looks on every tick, and logs a failure once until it changes or
+// clears, so a host that cannot take the profile does not fill the journal.
+func TestAppArmorProfileLoopLogsEachChangeOnce(t *testing.T) {
+	stubAppArmorLoop(t)
+	var log bytes.Buffer
+	appArmorProfileInterval, appArmorLog = time.Millisecond, &log
 	type result struct {
-		loaded apparmor.Reload
+		loaded bool
 		err    error
 	}
 	results := []result{
-		{apparmor.NotLoaded, nil},
-		{apparmor.NotLoaded, errors.New("apparmor_parser: syntax error")},
-		{apparmor.NotLoaded, errors.New("apparmor_parser: syntax error")},
-		{apparmor.NotLoaded, errors.New("apparmor_parser: syntax error")},
-		{apparmor.Loaded, nil},
-		{apparmor.NotLoaded, errors.New("read the label: permission denied")},
-		{apparmor.NotLoaded, nil},
+		{false, nil},
+		{true, errors.New("apparmor_parser: syntax error")},
+		{true, errors.New("apparmor_parser: syntax error")},
+		{true, errors.New("apparmor_parser: syntax error")},
+		{true, nil},
+		{false, errors.New("read the label: permission denied")},
+		{false, nil},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var mu sync.Mutex
-	ticks := 0
-	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if ticks == len(results) {
+	reconcileAppArmor = func(context.Context) (bool, error) {
+		if len(results) == 0 {
 			cancel()
-			return apparmor.NotLoaded, nil
+			return false, nil
 		}
-		r := results[ticks]
-		ticks++
+		r := results[0]
+		results = results[1:]
 		return r.loaded, r.err
 	}
-	log := &syncBuffer{}
-	appArmorLog = log
-	appArmorProfileInterval = time.Millisecond
-
-	done := make(chan struct{})
-	go func() { appArmorProfileLoop(ctx); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("appArmorProfileLoop did not stop when its context ended")
-	}
+	appArmorProfileLoop(ctx)
 
 	got := log.String()
 	if n := strings.Count(got, "syntax error"); n != 1 {
@@ -94,55 +73,20 @@ func TestAppArmorProfileLoopReloadsAndLogsEachChangeOnce(t *testing.T) {
 
 // A change of the kernel's policy, as a reload of the host's profiles makes,
 // is looked at once it settles, without waiting for the interval: containers
-// created until the profile is back are stacked for good.
-func TestAppArmorProfileLoopLooksWhenThePolicyChanges(t *testing.T) {
-	oldInterval, oldReconcile, oldLog, oldWatch, oldSettle := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle
-	t.Cleanup(func() {
-		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle = oldInterval, oldReconcile, oldLog, oldWatch, oldSettle
-	})
-	appArmorProfileInterval = time.Hour
-	appArmorSettle = time.Millisecond
-	appArmorLog = &syncBuffer{}
-	changes := make(chan struct{}, 1)
-	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return changes }
-	looked := make(chan struct{}, 1)
-	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
-		looked <- struct{}{}
-		return apparmor.NotLoaded, nil
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { appArmorProfileLoop(ctx); close(done) }()
-	changes <- struct{}{}
-	select {
-	case <-looked:
-	case <-time.After(10 * time.Second):
-		t.Fatal("appArmorProfileLoop did not look after the policy changed")
-	}
-	cancel()
-	<-done
-}
-
-// Every change gets a look, even one that lands just after a look that loaded:
-// it may be the host replacing the profile again.
-func TestAppArmorProfileLoopLooksAtEveryChange(t *testing.T) {
-	oldInterval, oldReconcile, oldLog, oldWatch, oldSettle := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle
-	t.Cleanup(func() {
-		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle = oldInterval, oldReconcile, oldLog, oldWatch, oldSettle
-	})
-	appArmorProfileInterval = time.Hour
-	appArmorSettle = time.Millisecond
-	appArmorLog = &syncBuffer{}
-	changes := make(chan struct{}, 1)
-	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return changes }
+// created until the profile is back are stacked for good. So is one that
+// lands just after a look that loaded: it may be the host replacing the
+// profile again.
+func TestAppArmorProfileLoopLooksAtEveryPolicyChange(t *testing.T) {
+	changes := stubAppArmorLoop(t)
 	looked := make(chan struct{}, 2)
-	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
+	reconcileAppArmor = func(context.Context) (bool, error) {
 		looked <- struct{}{}
-		return apparmor.Loaded, nil
+		return true, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { appArmorProfileLoop(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
 	for i := range 2 {
 		changes <- struct{}{}
 		select {
@@ -151,34 +95,21 @@ func TestAppArmorProfileLoopLooksAtEveryChange(t *testing.T) {
 			t.Fatalf("change %d got no look", i+1)
 		}
 	}
-	cancel()
-	<-done
 }
 
 // A load that leaves runc uncovered, as when another profile attaches to it
 // first, changes the policy too; the loop must not answer its own change with
 // another load, so it waits for the interval.
 func TestAppArmorProfileLoopBacksOffALoadThatDoesNotCover(t *testing.T) {
-	oldInterval, oldReconcile, oldLog, oldWatch, oldSettle := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle
-	t.Cleanup(func() {
-		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy, appArmorSettle = oldInterval, oldReconcile, oldLog, oldWatch, oldSettle
-	})
-	appArmorProfileInterval = time.Hour
-	appArmorSettle = time.Millisecond
-	appArmorLog = &syncBuffer{}
-	changes := make(chan struct{}, 1)
-	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return changes }
-	var mu sync.Mutex
+	changes := stubAppArmorLoop(t)
 	looks := 0
-	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
-		mu.Lock()
+	reconcileAppArmor = func(context.Context) (bool, error) {
 		looks++
-		mu.Unlock()
 		select {
 		case changes <- struct{}{}: // the load's own change
 		default:
 		}
-		return apparmor.Loaded, fmt.Errorf("give it the profile: loaded, but %w", apparmor.ErrNotCovered)
+		return true, fmt.Errorf("give it the profile: loaded, but %w", apparmor.ErrNotCovered)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -187,42 +118,7 @@ func TestAppArmorProfileLoopBacksOffALoadThatDoesNotCover(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	cancel()
 	<-done
-	mu.Lock()
-	defer mu.Unlock()
 	if looks != 1 {
 		t.Errorf("the loop looked %d times, want once: a load that left runc uncovered must wait for the interval", looks)
-	}
-}
-
-// A load where runc's label cannot be read says nothing about coverage, so it
-// must not be logged as covering runc again after a failure.
-func TestAppArmorProfileLoopClaimsNothingAfterAnUncheckedLoad(t *testing.T) {
-	oldInterval, oldReconcile, oldLog, oldWatch := appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy
-	t.Cleanup(func() {
-		appArmorProfileInterval, reconcileAppArmor, appArmorLog, watchAppArmorPolicy = oldInterval, oldReconcile, oldLog, oldWatch
-	})
-	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return nil }
-	appArmorProfileInterval = time.Millisecond
-	log := &syncBuffer{}
-	appArmorLog = log
-	ctx, cancel := context.WithCancel(context.Background())
-	var mu sync.Mutex
-	looks := 0
-	reconcileAppArmor = func(context.Context) (apparmor.Reload, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		looks++
-		switch looks {
-		case 1:
-			return apparmor.NotLoaded, errors.New("apparmor_parser: syntax error")
-		case 2:
-			return apparmor.LoadedUnchecked, nil
-		}
-		cancel()
-		return apparmor.NotLoaded, nil
-	}
-	appArmorProfileLoop(ctx)
-	if strings.Contains(log.String(), "covers Stratum's runc again") {
-		t.Errorf("the loop claimed coverage after a load it could not check:\n%s", log.String())
 	}
 }

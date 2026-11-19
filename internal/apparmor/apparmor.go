@@ -34,7 +34,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ctrliq/stratum/internal/toolenv"
@@ -49,30 +48,28 @@ var (
 	restrictPath   = "/proc/sys/kernel/apparmor_restrict_unprivileged_unconfined"
 	hostProfile    = "/etc/apparmor.d/runc"
 	hostDisabled   = "/etc/apparmor.d/disable/runc"
+	procDir        = "/proc"
 )
 
-// parserTimeout bounds one apparmor_parser run, so a parser that hangs cannot
-// hold up a start, the reload loop's shutdown or an uninstall; a var so a test
-// can shorten it.
-var parserTimeout = time.Minute
+// parserTimeout keeps a parser that hangs from holding up a start, the reload
+// loop or an uninstall.
+const parserTimeout = time.Minute
 
 const profileName = "runc"
 
-// attachVar holds the attachment of the profile Profile renders: the host's
-// own attachment and Stratum's runc. A variable with several values expands to
-// an alternation of them, so the host's attachment is kept as it is written,
-// whether a path, a glob or another variable.
+// attachVar holds the widened profile's attachment: the host's own and
+// Stratum's runc. A variable with several values expands to an alternation of
+// them, so the host's attachment is kept as it is written, whether a path, a
+// glob or another variable.
 const attachVar = "@{stratum_runc_attach}"
 
 // header finds the line that names the host profile's attachment.
 var header = regexp.MustCompile(`(?m)^([ \t]*profile[ \t]+runc[ \t]+)("[^"\n]*"|[/@][^ \t\n]*)`)
 
-// runcPath is Stratum's runc, which the profile attaches to.
 func runcPath() string { return filepath.Join(version.BinDir, "runc") }
 
-// parse runs apparmor_parser with args on profile, fed on standard input, and
-// kills it when ctx ends or parserTimeout passes. A var so a test can stand in
-// for the parser.
+// parse runs apparmor_parser with args on profile, fed on standard input; a
+// var so a test can stand in for the parser.
 var parse = func(ctx context.Context, profile []byte, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, parserTimeout)
 	defer cancel()
@@ -84,7 +81,7 @@ var parse = func(ctx context.Context, profile []byte, args ...string) error {
 	if err == nil {
 		stop := context.AfterFunc(ctx, func() { _ = cmd.Process.Kill() })
 		err = cmd.Wait()
-		if !stop() {
+		if !stop() && err != nil {
 			err = fmt.Errorf("%w: %w", ctx.Err(), err)
 		}
 	}
@@ -102,8 +99,7 @@ var parse = func(ctx context.Context, profile []byte, args ...string) error {
 
 // enabled reports whether AppArmor confines containers on this node: the
 // kernel runs it and its securityfs is mounted, which containerd and runc
-// check before they apply a profile. In a container without securityfs, as a
-// node under test can be, no profile is applied, so none is stacked.
+// check before they apply a profile.
 func enabled() (bool, error) {
 	on, err := readSetting(enabledPath)
 	if err != nil || on != "Y" {
@@ -113,8 +109,7 @@ func enabled() (bool, error) {
 }
 
 // Restricted reports whether the kernel stacks runc's profile change: AppArmor
-// is enabled and kernel.apparmor_restrict_unprivileged_unconfined is set. A
-// kernel without the setting has no such restriction.
+// is enabled and kernel.apparmor_restrict_unprivileged_unconfined is set.
 func Restricted() (bool, error) {
 	if on, err := enabled(); err != nil || !on {
 		return false, err
@@ -143,6 +138,12 @@ func readSetting(path string) (string, error) {
 // a test can answer for the kernel.
 var runcLabel = probeRuncLabel
 
+// errCannotProbe marks a kernel that will not let Stratum start its runc
+// traced, as one that forbids ptrace altogether (kernel.yama.ptrace_scope=3)
+// does. Nothing then tells Stratum whether runc runs under the profile, so
+// nothing loads it again when the host's AppArmor replaces it.
+var errCannotProbe = errors.New("the kernel does not allow tracing it, as with kernel.yama.ptrace_scope=3, so Stratum cannot tell when the host replaces the runc profile; restart stratum after reloading the host's AppArmor profiles")
+
 // Covers reports whether Stratum's runc runs under the runc profile. It asks
 // the kernel by starting the runc and reading the label it got, not from the
 // kernel's list of loaded profiles: apparmor_parser 5 loads a profile's
@@ -154,18 +155,13 @@ func Covers() (bool, error) {
 	}
 	label, err := runcLabel()
 	if errors.Is(err, fs.ErrPermission) {
-		err = fmt.Errorf("%w: %w", errCannotProbe, err)
+		err = fmt.Errorf("%w: %w", err, errCannotProbe)
 	}
 	if err != nil {
 		return false, fmt.Errorf("read the AppArmor label %s runs with: %w", runcPath(), err)
 	}
-	name, _, _ := strings.Cut(label, " (")
-	return name == profileName, nil
+	return label == profileName, nil
 }
-
-// procDir is where the kernel lists processes; a var so a test can stand in
-// for it.
-var procDir = "/proc"
 
 // readLabel reads the AppArmor label of the process whose /proc directory is
 // dir, without its mode.
@@ -189,13 +185,12 @@ type StackedProcess struct {
 	Label string
 }
 
-// Stacked lists the container processes running with a label the kernel
-// stacked on unconfined, such as cri-containerd.apparmor.d//&unconfined:
-// containers runc started while it did not run under the runc profile. A
-// container process is one in the kubelet's kubepods cgroups. A label is set when a
-// process starts, so they keep it, and cannot signal their own processes,
-// until their pods are recreated; the profile helps only containers started
-// after it is loaded. A process that ends while it is read is left out.
+// Stacked lists the container processes, those in the kubelet's kubepods
+// cgroups, running with a label the kernel stacked on unconfined, such as
+// cri-containerd.apparmor.d//&unconfined. A label is set when a process
+// starts, so containers runc started while it did not run under the runc
+// profile keep theirs until their pods are recreated. A process that ends
+// while it is read is left out.
 func Stacked() ([]StackedProcess, error) {
 	if on, err := enabled(); err != nil || !on {
 		return nil, err
@@ -224,22 +219,13 @@ func Stacked() ([]StackedProcess, error) {
 	return out, nil
 }
 
-// errCannotProbe marks a kernel that will not let Stratum start its runc
-// traced, as one that forbids ptrace altogether (kernel.yama.ptrace_scope=3)
-// does, so whether runc runs under the profile cannot be read.
-var errCannotProbe = errors.New("the kernel does not allow tracing it")
-
-// Profile is the runc profile Ensure loads. When the host ships one, it is the
-// host's file with its attachment widened to Stratum's runc, so whatever the
-// distribution changes in its profile carries over. When the host ships none,
-// or the operator has disabled the host's, it is a profile of the same shape
-// for Stratum's runc alone, which leaves the host's runc as the operator set
-// it.
-//
-// A host profile Stratum cannot widen gets the same profile of its own, and
-// notWidened, which wraps ErrHostProfileNotWidened, says why: the node still
-// starts, and the host's own runc runs without the host's profile until the
-// host loads it again.
+// Profile is the runc profile Ensure loads: the host's file with its
+// attachment widened to Stratum's runc, so whatever the distribution changes in
+// its profile carries over, and the host's runc keeps it. When the host ships
+// none, or the operator has disabled it, it is a profile of the same shape for
+// Stratum's runc alone. So it is for a host profile Stratum cannot widen,
+// rather than a node that does not start; notWidened, which wraps
+// ErrHostProfileNotWidened, then says why.
 func Profile() (profile []byte, notWidened, err error) {
 	own, err := hostOwnProfile()
 	if err != nil {
@@ -302,137 +288,58 @@ func exists(path string) (bool, error) {
 }
 
 // Ensure loads the runc profile when the kernel is Restricted and checks that
-// the kernel's runc profile then covers Stratum's runc. It loads on every
-// start, so the profile is current again before containerd starts even when
-// the host's AppArmor reloaded its own since. With the restriction off it
-// loads nothing: runc's profile change is not stacked then, and loading would
-// only move unconfined pods from the label unconfined to runc.
-//
-// It checks by starting runc traced, which a kernel that forbids ptrace
-// altogether (kernel.yama.ptrace_scope=3) refuses; the load then stands, with
-// a warning to w that it could not be checked. A host profile it cannot widen
-// is warned about the same way (Profile).
+// Stratum's runc then runs under it. It loads on every start, so the profile
+// is current again before containerd starts even when the host's AppArmor
+// reloaded its own since. With the restriction off it loads nothing: runc's
+// profile change is not stacked then, and loading would only move unconfined
+// pods from the label unconfined to runc. What load could not do without
+// failing is warned about to w.
 func Ensure(w io.Writer) error {
-	on, err := Restricted()
-	if err != nil {
-		return fmt.Errorf("read the AppArmor restriction: %w", err)
-	}
-	if !on {
-		return nil
-	}
-	warning, err := load(context.Background())
-	if err != nil {
+	if on, err := Restricted(); err != nil || !on {
 		return err
 	}
+	warning, err := load(context.Background())
 	if warning != nil {
 		fmt.Fprintf(w, "  WARN: loaded the runc AppArmor profile for %s, but %v\n", runcPath(), warning)
 	}
-	return nil
+	return err
 }
 
-// Reload is what Reconcile did.
-type Reload int
-
-const (
-	// NotLoaded: the profile covered runc, or the restriction is off.
-	NotLoaded Reload = iota
-	// Loaded: the profile no longer covered runc, and it was loaded again.
-	Loaded
-	// LoadedUnchecked: whether it covered runc could not be read, so it was
-	// loaded again anyway.
-	LoadedUnchecked
-)
-
-// Reconcile loads the runc profile again when Check finds the kernel's runc
-// profile no longer covers Stratum's runc, as after the host's AppArmor
-// reloaded the host's own. Where runc's label cannot be read, it loads when
-// the kernel's runc profile is no longer the one this process loaded.
-func Reconcile(ctx context.Context) (Reload, error) {
-	err := Check()
-	switch {
-	case errors.Is(err, ErrNotCovered):
-		warning, err := load(ctx)
-		return Loaded, errors.Join(err, warning)
-	case errors.Is(err, errCannotProbe):
-		// Not being able to read runc's label is expected here and is not
-		// reported on every look; a host profile it cannot widen still is.
-		_, notWidened, _ := Profile()
-		if !loaded.replaced() {
-			return NotLoaded, notWidened
-		}
-		if _, err := load(ctx); err != nil {
-			return LoadedUnchecked, err
-		}
-		return LoadedUnchecked, notWidened
+// Reconcile loads the runc profile again when Check finds the kernel's no
+// longer covers Stratum's runc, as after the host's AppArmor reloaded the
+// host's own. loaded says it ran the load, err how the check or the load went.
+func Reconcile(ctx context.Context) (loaded bool, err error) {
+	if err := Check(); !errors.Is(err, ErrNotCovered) {
+		return false, err
 	}
-	return NotLoaded, err
+	warning, err := load(ctx)
+	return true, errors.Join(err, warning)
 }
 
-// load loads Profile and checks runc took it. warning is what it could not do
-// as asked without failing: widen the host's profile, or read runc's label.
+// load loads Profile and checks runc took it: the parser's exit status does
+// not prove it, since another profile can attach to runc first. warning is
+// what it could not do without failing: widen the host's profile, or read
+// runc's label. Only the label read may fail that way, so a permission error
+// before the load is not taken for it.
 func load(ctx context.Context) (warning, err error) {
 	p, notWidened, err := Profile()
 	if err == nil {
 		err = parse(ctx, p, "--replace", "--skip-cache")
 	}
 	if err == nil {
-		loaded.record()
 		var ok bool
 		ok, err = Covers()
+		if errors.Is(err, errCannotProbe) {
+			return errors.Join(notWidened, fmt.Errorf("could not check it: %w", err)), nil
+		}
 		if err == nil && !ok {
 			err = fmt.Errorf("loaded, but %w", ErrNotCovered)
 		}
-	}
-	if errors.Is(err, errCannotProbe) {
-		return errors.Join(notWidened, fmt.Errorf("could not check it: %w", err)), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("give %s the AppArmor profile runc: %w%s", runcPath(), err, remedy)
 	}
 	return notWidened, nil
-}
-
-// loadState is what this process last loaded. Where runc's label cannot be
-// read, a look compares the kernel's hash of its runc profile with the one
-// recorded here to tell whether the host replaced the profile, rather than
-// loading it again every time, which would wake the next look; with no hash
-// to read, it loads at most once per blindInterval.
-type loadState struct {
-	sync.Mutex
-	hash      string
-	blindLoad time.Time
-}
-
-var loaded loadState
-
-// blindInterval is how often a look loads the profile when neither runc's
-// label nor the kernel's hash of it can be read; a var so a test can shorten
-// it.
-var blindInterval = 50 * time.Second
-
-// record notes the hash of the runc profile just loaded.
-func (l *loadState) record() {
-	h := runcHash()
-	l.Lock()
-	defer l.Unlock()
-	l.hash = h
-}
-
-// replaced reports whether the kernel's runc profile is no longer the one this
-// process loaded, or, with no hash to compare, whether blindInterval has
-// passed since the last load it could not compare.
-func (l *loadState) replaced() bool {
-	h := runcHash()
-	l.Lock()
-	defer l.Unlock()
-	if h != "" {
-		return h != l.hash
-	}
-	if time.Since(l.blindLoad) < blindInterval {
-		return false
-	}
-	l.blindLoad = time.Now()
-	return true
 }
 
 // remedy ends an error that keeps Stratum's runc from its profile.
@@ -443,118 +350,34 @@ const remedy = " (with kernel.apparmor_restrict_unprivileged_unconfined set, con
 var ErrNotCovered = errors.New("it does not run under the runc AppArmor profile")
 
 // Check reports what keeps containers from running under their own profile
-// alone: ErrNotCovered, with the consequence, when the kernel is Restricted
-// and its runc profile does not cover Stratum's runc, or the error that leaves
-// either unknown; and, once it covers it or when that cannot be read,
-// ErrHostProfileNotWidened when the profile is one of Stratum's own because
-// the host's could not be widened. Several of these come back joined. A host without the restriction has nothing
-// to report.
+// alone on a Restricted kernel: ErrNotCovered, with the consequence, when
+// Stratum's runc does not run under the runc profile; the error that leaves
+// that unknown; or, once it does, ErrHostProfileNotWidened when the profile is
+// Stratum's own because the host's could not be widened.
 func Check() error {
-	on, err := Restricted()
-	if err != nil {
-		return fmt.Errorf("read the AppArmor restriction: %w", err)
-	}
-	if !on {
-		return nil
-	}
-	ok, err := Covers()
-	if err != nil && !errors.Is(err, errCannotProbe) {
+	if on, err := Restricted(); err != nil || !on {
 		return err
 	}
-	if err == nil && !ok {
+	ok, err := Covers()
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return fmt.Errorf("%s: %w while kernel.apparmor_restrict_unprivileged_unconfined is set, so containers created now are labelled <profile>//&unconfined and cannot signal their own processes", runcPath(), ErrNotCovered)
 	}
-	_, notWidened, perr := Profile()
-	return errors.Join(err, perr, notWidened)
-}
-
-// Widened reports whether Stratum's runc runs under the runc profile, so
-// uninstall can say it will restore the host's. A label it cannot read counts
-// as yes, so the preview errs toward saying so, unless the kernel would not
-// have made Stratum load one; a host without AppArmor, or without Stratum's
-// runc, has nothing to restore.
-func Widened() bool {
-	ok, err := Covers()
-	switch {
-	case err == nil:
-		return ok
-	case errors.Is(err, fs.ErrNotExist):
-		return false
-	case errors.Is(err, errCannotProbe):
-		on, rerr := Restricted()
-		return on || rerr != nil
-	}
-	return true
-}
-
-// RestoreWithWriter puts the kernel's runc profile back as the host has it,
-// once its runc profile covers Stratum's runc: the host's own profile when it
-// ships one the operator has not disabled, and no runc profile otherwise. It
-// reports what it did to w.
-//
-// Where runc's label cannot be read, the restriction stands for it: Stratum
-// loaded its profile only with the restriction on. It then restores the same
-// way without checking the result, and removes a runc profile only if one is
-// loaded.
-func RestoreWithWriter(w io.Writer) error {
-	ok, err := Covers()
-	checked := true
-	switch {
-	case errors.Is(err, fs.ErrNotExist) || (err == nil && !ok):
-		return nil
-	case errors.Is(err, errCannotProbe):
-		on, rerr := Restricted()
-		if rerr != nil || !on {
-			return rerr
-		}
-		if loaded, lerr := runcLoaded(); lerr != nil || !loaded {
-			return lerr
-		}
-		checked = false
-	case err != nil:
-		return err
-	}
-	own, err := hostOwnProfile()
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	// The host's own profile is the host's to decide, including whether it
-	// covers Stratum's runc, as an operator's own workaround may; only a
-	// profile left behind once the host loads none must not.
-	if own != nil {
-		if err := parse(ctx, own, "--replace", "--skip-cache"); err != nil {
-			return fmt.Errorf("restore the runc AppArmor profile: %w", err)
-		}
-		fmt.Fprintln(w, "  AppArmor: restored the host's runc profile")
-		return nil
-	}
-	err = parse(ctx, builtinProfile(), "--remove")
-	if err == nil && checked {
-		if ok, err = Covers(); err == nil && ok {
-			err = fmt.Errorf("it still attaches to %s", runcPath())
-		}
-	}
-	if err != nil {
-		return fmt.Errorf("remove the runc AppArmor profile: %w", err)
-	}
-	fmt.Fprintln(w, "  AppArmor: removed the runc profile")
-	return nil
+	_, notWidened, err := Profile()
+	return errors.Join(err, notWidened)
 }
 
 // Prerequisite reports, loading nothing, whether Ensure can load the runc
 // profile on this node: nil when the kernel is not Restricted, and otherwise
 // the error building or compiling the profile gives. A host profile it cannot
-// widen is not one: Ensure loads a profile of Stratum's own then. An upgrade asks it before
-// it changes the node, so a node the new release could not start is refused
-// while it still runs the old one.
+// widen is not one: Ensure loads a profile of Stratum's own then. An upgrade
+// asks before it changes the node, so a node the new release could not start
+// is refused while it still runs the old one.
 func Prerequisite() error {
-	on, err := Restricted()
-	if err != nil {
-		return fmt.Errorf("read the AppArmor restriction: %w", err)
-	}
-	if !on {
-		return nil
+	if on, err := Restricted(); err != nil || !on {
+		return err
 	}
 	p, _, err := Profile()
 	if err == nil {
@@ -566,40 +389,76 @@ func Prerequisite() error {
 	return nil
 }
 
-// runcProfileDir is the kernel's directory for its loaded runc profile, or
-// empty when it has none loaded.
-func runcProfileDir() (string, error) {
+// toRestore reports whether uninstall has a runc profile to put back: one
+// Stratum's runc runs under. Where runc's label cannot be read, the
+// restriction and a loaded runc profile stand for it, since Stratum loads its
+// profile only with the restriction on. A host without Stratum's runc has
+// nothing to put back.
+func toRestore() (bool, error) {
+	ok, err := Covers()
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case errors.Is(err, errCannotProbe):
+		if on, err := Restricted(); err != nil || !on {
+			return false, err
+		}
+		return runcLoaded()
+	}
+	return ok, err
+}
+
+// Widened reports whether uninstall would restore the host's runc profile, for
+// its preview; what it cannot read counts as yes.
+func Widened() bool {
+	ok, err := toRestore()
+	return ok || err != nil
+}
+
+// RestoreWithWriter puts the kernel's runc profile back as the host has it:
+// the host's own profile when it ships one the operator has not disabled, and
+// no runc profile otherwise. It reports what it did to w, and does nothing
+// where Stratum's runc does not run under the runc profile.
+func RestoreWithWriter(w io.Writer) error {
+	if ok, err := toRestore(); err != nil || !ok {
+		return err
+	}
+	own, err := hostOwnProfile()
+	if err != nil {
+		return err
+	}
+	if own != nil {
+		// Not checked afterwards: the host's own profile may itself cover
+		// Stratum's runc, as an operator's workaround does.
+		if err := parse(context.Background(), own, "--replace", "--skip-cache"); err != nil {
+			return fmt.Errorf("restore the runc AppArmor profile: %w", err)
+		}
+		fmt.Fprintln(w, "  AppArmor: restored the host's runc profile")
+		return nil
+	}
+	if err := parse(context.Background(), builtinProfile(), "--remove"); err != nil {
+		return fmt.Errorf("remove the runc AppArmor profile: %w", err)
+	}
+	fmt.Fprintln(w, "  AppArmor: removed the runc profile")
+	return nil
+}
+
+// runcLoaded reports whether the kernel has a profile named runc loaded.
+func runcLoaded() (bool, error) {
 	dir := filepath.Join(securityfsPath, "policy", "profiles")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("list the loaded AppArmor profiles: %w", err)
+		return false, fmt.Errorf("list the loaded AppArmor profiles: %w", err)
 	}
 	for _, e := range entries {
 		if !strings.HasPrefix(e.Name(), profileName+".") {
 			continue
 		}
-		if name, err := readSetting(filepath.Join(dir, e.Name(), "name")); err == nil && name == profileName {
-			return filepath.Join(dir, e.Name()), nil
+		if name, _ := readSetting(filepath.Join(dir, e.Name(), "name")); name == profileName {
+			return true, nil
 		}
 	}
-	return "", nil
-}
-
-// runcLoaded reports whether the kernel has a profile named runc loaded.
-func runcLoaded() (bool, error) {
-	dir, err := runcProfileDir()
-	return dir != "", err
-}
-
-// runcHash is the kernel's hash of the runc profile it has loaded, or empty
-// when it has none or does not keep hashes.
-func runcHash() string {
-	dir, err := runcProfileDir()
-	if err != nil || dir == "" {
-		return ""
-	}
-	h, _ := readSetting(filepath.Join(dir, "raw_sha256"))
-	return h
+	return false, nil
 }
 
 // hostOwnProfile is the host's runc profile as it ships it, or nil when it

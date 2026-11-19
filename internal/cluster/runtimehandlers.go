@@ -191,18 +191,6 @@ var (
 	stackedAppArmor = apparmor.Stacked
 )
 
-// joined splits an error errors.Join made into the errors it joined, so each
-// gets a finding of its own.
-func joined(err error) []error {
-	if err == nil {
-		return nil
-	}
-	if j, ok := err.(interface{ Unwrap() []error }); ok {
-		return j.Unwrap()
-	}
-	return []error{err}
-}
-
 // stackedMessage names the processes the kernel stacked and what recreates
 // them, listing the first few.
 func stackedMessage(procs []apparmor.StackedProcess) string {
@@ -220,30 +208,28 @@ func stackedMessage(procs []apparmor.StackedProcess) string {
 		"a pod whose runtime handler runs its own OCI runtime is stacked again unless /etc/apparmor.d/runc also attaches to that runtime", len(procs), strings.Join(names, ", "))
 }
 
-// CheckRuntimeHandlers reports on this node's runtime handlers, and on the
+// CheckRuntimeHandlers reports on this node's runtime handlers, on the
 // AppArmor runc profile the default handler's containers need where the
 // kernel would otherwise stack their profile, and on the containers it
-// stacked already. On a control plane it also
-// reports a config file whose spec.node.runtimeHandlers differ from what
-// node.yaml saved, which the next `stratum up` or `stratum runtime apply`
-// would write.
+// stacked already. On a control plane it also reports a config file whose
+// spec.node.runtimeHandlers differ from what node.yaml saved, which the next
+// `stratum up` or `stratum runtime apply` would write.
 func CheckRuntimeHandlers(w io.Writer) (runtime.HandlerReport, error) {
 	st, err := LoadState()
 	if err != nil {
 		return runtime.HandlerReport{}, fmt.Errorf("read the node state (has this node run `stratum up`?): %w", err)
 	}
 	r := runtime.CheckHandlers(st.RuntimeHandlers)
-	for _, err := range joined(checkAppArmor()) {
-		switch {
-		case errors.Is(err, apparmor.ErrHostProfileNotWidened):
-			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: err.Error()})
-		case errors.Is(err, apparmor.ErrNotCovered):
-			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
-				Message: fmt.Sprintf("%v; a running stratum loads the profile again within %v, and `journalctl -u stratum` says why when it cannot", err, appArmorProfileInterval)})
-		default:
-			r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn,
-				Message: fmt.Sprintf("cannot check the AppArmor runc profile: %v", err)})
-		}
+	switch err := checkAppArmor(); {
+	case err == nil:
+	case errors.Is(err, apparmor.ErrNotCovered):
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
+			Message: fmt.Sprintf("%v; a running stratum loads the profile again within %v, and `journalctl -u stratum` says why when it cannot", err, appArmorProfileInterval)})
+	case errors.Is(err, apparmor.ErrHostProfileNotWidened):
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: err.Error()})
+	default:
+		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn,
+			Message: fmt.Sprintf("cannot check the AppArmor runc profile: %v", err)})
 	}
 	switch procs, err := stackedAppArmor(); {
 	case err != nil:

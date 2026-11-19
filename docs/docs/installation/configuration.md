@@ -693,9 +693,10 @@ sets the restriction:
   again. It logs a failure to load it when the failure first happens
   and when it changes.
 - A kernel that forbids `ptrace` altogether (`kernel.yama.ptrace_scope` set to
-  `3`) does not allow reading runc's label. The start then prints a warning
-  instead of checking, and Stratum loads its profile again whenever the
-  kernel's hash of its `runc` profile is no longer the one it loaded.
+  `3`) does not allow reading runc's label. The start and
+  `stratum runtime check` then warn that they could not check, and Stratum does
+  not load its profile again when the host's profiles are reloaded: run
+  `sudo systemctl restart stratum` after you reload them.
 - `stratum runtime check` exits 1 while the setting is `1` and the kernel's
   `runc` profile does not cover `/var/lib/stratum/bin/runc`, and while any
   container process still runs with a stacked label.
