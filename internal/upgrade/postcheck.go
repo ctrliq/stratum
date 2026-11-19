@@ -127,7 +127,7 @@ func (c *postCheck) validate() error {
 	if !path.IsAbs(c.Command[0]) {
 		return fmt.Errorf("command: %q is not an absolute path to a binary on the node", c.Command[0])
 	}
-	if c.TimeoutSeconds < 0 || time.Duration(c.TimeoutSeconds)*time.Second > maxPostCheckTimeout {
+	if c.TimeoutSeconds < 0 || c.TimeoutSeconds > int(maxPostCheckTimeout/time.Second) {
 		return fmt.Errorf("timeoutSeconds %d is out of range 1-%d (0 or unset is %d)",
 			c.TimeoutSeconds, int(maxPostCheckTimeout.Seconds()), int(defaultPostCheckTimeout.Seconds()))
 	}
