@@ -341,8 +341,8 @@ A ConfigMap with `binaryData` set is refused too, with
 - For each node, the checks start once the node is Ready and, on a control
   plane, the API server is healthy. The run reads the node's labels then, and
   runs every check whose selector matches, one at a time, in the order of
-  their keys. Before each check, it confirms it still holds the
-  [upgrade leases](#what-a-cluster-upgrade-creates).
+  their keys. Before each check, it stops if it has lost either
+  [upgrade lease](#what-a-cluster-upgrade-creates).
 - Each check prints `==> Post-upgrade check <name> on <node>`, and
   `<node> passed check <name>` when its command exits `0`. Once every
   matching check has passed, the run records the node as upgraded and
