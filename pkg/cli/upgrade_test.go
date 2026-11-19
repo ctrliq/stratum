@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/upgrade"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -176,5 +177,37 @@ func TestUpgradeImportImagesIsHidden(t *testing.T) {
 	f := newUpgradeCommand().Flags().Lookup("import-images")
 	if f == nil || !f.Hidden {
 		t.Errorf("--import-images = %+v, want a hidden flag", f)
+	}
+}
+
+func TestUpgradeKeepCordonReachesTheNodeUpgrade(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"with --keep-cordon", []string{"upgrade", "--soak", "5", "--keep-cordon"}, true},
+		{"without it", []string{"upgrade", "--soak", "5"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got *upgrade.NodeOptions
+			old := upgradeNode
+			upgradeNode = func(_ io.Writer, o upgrade.NodeOptions) error { got = &o; return nil }
+			t.Cleanup(func() { upgradeNode = old })
+
+			root := NewRootCommand()
+			root.SetArgs(tc.args)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			if err := root.Execute(); err != nil {
+				t.Fatalf("%q: %v", tc.args, err)
+			}
+			if got == nil {
+				t.Fatalf("%q never reached the node upgrade", tc.args)
+			}
+			if got.KeepCordon != tc.want || got.SoakSec != 5 {
+				t.Errorf("NodeOptions = %+v, want KeepCordon=%v SoakSec=5", *got, tc.want)
+			}
+		})
 	}
 }

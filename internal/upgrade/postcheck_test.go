@@ -324,3 +324,101 @@ func TestUpgradeClusterRefusesAMalformedPostCheckBeforeAnyChange(t *testing.T) {
 		}
 	}
 }
+
+// A full run with a declared check: on a cluster of several control planes,
+// each control plane's upgrade Job is told to keep its cordon and stays
+// cordoned through its check; with one control plane, or a staged binary
+// without the flag, the Job uncordons the node itself and the run warns about
+// the latter.
+func TestUpgradeClusterKeepsEachControlPlaneCordonedForItsChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		cps         []string
+		binaryKeeps bool
+		wantKeep    bool
+		wantWarn    bool
+	}{
+		{"several control planes", []string{"cp1", "cp2", "cp3"}, true, true, false},
+		{"one control plane", []string{"cp1"}, true, false, false},
+		{"a staged binary without the flag", []string{"cp1", "cp2", "cp3"}, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := []runtime.Object{postCheckCM(map[string]string{
+				"accel-diag": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, run, \"1\"]\n",
+			})}
+			for i, name := range append(slices.Clone(tc.cps), "w1") {
+				n := upgradeNodeFixture(name, name != "w1", fmt.Sprintf("10.0.0.%d", 10+i))
+				n.Labels["example.com/accel"] = "true"
+				objs = append(objs, n)
+			}
+			cs := fake.NewSimpleClientset(objs...)
+			fastOrchestrator(t, nil)
+			probed := false
+			swap(t, &stagedKeepsCordon, func(context.Context, string) (bool, error) {
+				probed = true
+				return tc.binaryKeeps, nil
+			})
+			keptBy := map[string]bool{}
+			swap(t, &runNodeJob, func(ctx context.Context, cs kubernetes.Interface, s nodejob.Spec) error {
+				keep := slices.Contains(s.Argv, "--keep-cordon")
+				keptBy[s.Node] = keep
+				if s.Node != "w1" && !keep {
+					if _, err := releaseUpgradeCordon(ctx, cs, s.Node, "v1.37.1"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return nil
+			})
+			cordonedForCheck := map[string]bool{}
+			stubPostCheck(t, func(ctx context.Context, cs kubernetes.Interface, s nodejob.Spec) error {
+				n, err := cs.CoreV1().Nodes().Get(ctx, s.Node, metav1.GetOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				cordonedForCheck[s.Node] = n.Spec.Unschedulable
+				return nil
+			})
+
+			out, err := runWriter(t, func(w io.Writer) error {
+				return UpgradeCluster(w, ClusterOptions{Target: "v1.37.1", From: stagedBinary(t), Client: cs})
+			})
+			if err != nil {
+				t.Fatalf("UpgradeCluster: %v", err)
+			}
+			if probed != (len(tc.cps) > 1) {
+				t.Errorf("the staged binary was asked about --keep-cordon: %v, want %v", probed, len(tc.cps) > 1)
+			}
+			for _, name := range tc.cps {
+				if got, ran := keptBy[name]; !ran || got != tc.wantKeep {
+					t.Errorf("%s's upgrade Job: ran=%v --keep-cordon=%v, want --keep-cordon=%v", name, ran, got, tc.wantKeep)
+				}
+				if got, ran := cordonedForCheck[name]; !ran || got != tc.wantKeep {
+					t.Errorf("%s during its check: ran=%v cordoned=%v, want cordoned=%v", name, ran, got, tc.wantKeep)
+				}
+			}
+			if keptBy["w1"] {
+				t.Error("the worker's upgrade Job is told to keep its cordon")
+			}
+			if !cordonedForCheck["w1"] {
+				t.Error("the worker was schedulable during its check")
+			}
+			for _, name := range append(slices.Clone(tc.cps), "w1") {
+				if n := getNodeNamed(t, cs, name); n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "v1.37.1" {
+					t.Errorf("%s after the run: unschedulable=%v annotations=%v, want it finished", name, n.Spec.Unschedulable, n.Annotations)
+				}
+			}
+			if got := strings.Contains(out, "cannot leave a control plane cordoned for its checks"); got != tc.wantWarn {
+				t.Errorf("warned about the staged binary: %v, want %v:\n%s", got, tc.wantWarn, out)
+			}
+		})
+	}
+}
+
+func getNodeNamed(t *testing.T, cs kubernetes.Interface, name string) *corev1.Node {
+	t.Helper()
+	n, err := cs.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
