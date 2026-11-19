@@ -127,7 +127,9 @@ belongs to. It returns token IDs and expiry only — never the secret half.
 (`super-admin.conf` when present, otherwise `admin.conf`),
 so it always previews the cluster this node belongs to — the same cluster
 `upgrade_apply` with `scope: cluster` rolls — and `--kubeconfig` and
-`--context` do not move it.
+`--context` do not move it. It does not list the cluster's
+[post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks),
+and does not report a malformed check that `upgrade_apply` then refuses.
 
 ```console
 # /usr/local/bin/stratum mcp --kubeconfig /path/to/config --context staging
