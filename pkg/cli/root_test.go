@@ -27,7 +27,7 @@ func TestUnknownTopLevelCommandPrintsUsageAndExitsOne(t *testing.T) {
 	if !strings.Contains(err.Error(), `unknown command "bogus"`) {
 		t.Fatalf("error does not identify the invalid command: %v", err)
 	}
-	if !strings.Contains(out.String(), "Available Commands:") {
+	if !strings.Contains(out.String(), "Run the cluster:") {
 		t.Fatalf("no usage printed before the unknown-command error:\n%s", &out)
 	}
 }
@@ -42,7 +42,7 @@ func TestBareInvocationReturnsErrNoCommand(t *testing.T) {
 	if !errors.Is(err, ErrNoCommand) {
 		t.Fatalf("Execute(nil) = %v, want ErrNoCommand", err)
 	}
-	if !strings.Contains(out.String(), "Available Commands:") {
+	if !strings.Contains(out.String(), "Run the cluster:") {
 		t.Fatalf("no help printed for a bare invocation:\n%s", &out)
 	}
 }

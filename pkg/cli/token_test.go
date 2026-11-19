@@ -261,7 +261,7 @@ func TestCreateTokenTreatsTheWriteAsTheHandover(t *testing.T) {
 	// output fails. A partial heading is not a token handover.
 	t.Run("partially handed over: report, do not revoke", func(t *testing.T) {
 		var revoked []string
-		prefix := "\nControl-plane (HA) join:\n\n  stratum up --join https://cp:6443 --token abcdef.0123456789abcdef"
+		prefix := "\nOn the new control-plane server, install the same stratum file this server runs, then run:\n\n  sudo /usr/local/bin/stratum up --join https://cp:6443 --token abcdef.0123456789abcdef"
 		w := &failingWriter{accept: len(prefix)}
 		c := okCmd(&bytes.Buffer{}, &revoked)
 		c.out = w
@@ -285,7 +285,7 @@ func TestCreateTokenTreatsTheWriteAsTheHandover(t *testing.T) {
 // TestCreateTokenWorkerHandoverEndsAtTheToken: on the worker path the token is
 // handed over once the whole token reaches the terminal, and not a byte before.
 func TestCreateTokenWorkerHandoverEndsAtTheToken(t *testing.T) {
-	prefix := "\nWorker join:\n\n  stratum up --worker --server https://cp:6443 --token abcdef.0123456789abcdef"
+	prefix := "\nOn each new server, install the same stratum file this server runs, then run:\n\n  sudo /usr/local/bin/stratum up --worker --server https://cp:6443 --token abcdef.0123456789abcdef"
 	for _, tc := range []struct {
 		name   string
 		accept int
@@ -380,7 +380,7 @@ func TestCreateTokenIndependentHandoverBoundaries(t *testing.T) {
 		keepToken, keepKey, shortNil bool
 		extra                        string // joinExtra, appended after the key's path
 	}{
-		{name: "heading", boundary: "Control-plane (HA) join:", keepToken: false},
+		{name: "heading", boundary: "On the new control-plane server", keepToken: false},
 		{name: "partial token", boundary: "abcdef.0123456789abcdef", delta: -1},
 		{name: "complete token", boundary: "abcdef.0123456789abcdef", keepToken: true},
 		{name: "partial path", boundary: "path", delta: -1, keepToken: true},
@@ -456,7 +456,10 @@ func TestTokenJoinCommandQuotesKeyPath(t *testing.T) {
 	if join == "" {
 		t.Fatal("missing HA command")
 	}
-	// Execute the printed command with a harmless stub, not a real join.
+	// Execute the printed command with a harmless stub, not a real join: the
+	// printed line runs the installed binary through sudo, so both are
+	// replaced with the stub.
+	join = strings.Replace(join, "sudo "+version.StratumInstallPath+" ", "stratum ", 1)
 	got, err := exec.Command("sh", "-c", "stratum() { printf '%s\\n' \"$@\"; };\n"+join).CombinedOutput()
 	if err != nil {
 		t.Fatalf("printed command failed: %v: %s", err, got)
@@ -493,7 +496,7 @@ func TestRemainingFloors(t *testing.T) {
 // (e.g. a typo'd -24h) must fail before minting, never silently mint a permanent
 // token. 0 remains the documented non-expiring opt-out.
 func TestTokenCreateRejectsNegativeTTL(t *testing.T) {
-	cmd := newTokenCreateCommand()
+	cmd := newTokenCreateCommand(rootConfig{})
 	cmd.SetArgs([]string{"--ttl", "-1h"})
 	cmd.SilenceUsage, cmd.SilenceErrors = true, true
 	err := cmd.Execute()
@@ -849,6 +852,10 @@ func joinLineValue(t *testing.T, out, flag string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {
 		fields := strings.Fields(line)
+		// The printed line runs the installed binary through sudo.
+		if len(fields) > 2 && fields[0] == "sudo" && fields[1] == version.StratumInstallPath {
+			fields = append([]string{"stratum"}, fields[2:]...)
+		}
 		if len(fields) < 2 || fields[0] != "stratum" || fields[1] != "up" {
 			continue
 		}
@@ -1066,7 +1073,7 @@ func TestTokenCreateRefusesAProfileThisBinaryDoesNotRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"--control-plane"}, {}} {
-		cmd := newTokenCreateCommand()
+		cmd := newTokenCreateCommand(rootConfig{})
 		cmd.SetArgs(append([]string{"--server", "https://cp:6443"}, args...))
 		cmd.SilenceUsage, cmd.SilenceErrors = true, true
 		var out bytes.Buffer

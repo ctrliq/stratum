@@ -74,7 +74,9 @@ type ComponentVersions struct {
 
 type rootConfig struct {
 	displayVersion string
-	components     ComponentVersions
+	// productName is set by an importer through WithProductName. See product.go.
+	productName string
+	components  ComponentVersions
 	// toolSets are contributed by importers through WithToolSets and
 	// registered onto `stratum mcp`. See toolset.go.
 	toolSets []ToolSet
@@ -160,12 +162,9 @@ func NewRootCommand(opts ...Option) *cobra.Command {
 	}
 
 	root := &cobra.Command{
-		Use:   "stratum",
-		Short: "Stratum Kubernetes Engine",
-		Long: `stratum — Stratum Kubernetes Engine
-
-A self-extracting node agent and installer: it knows its own version, knows
-what payload it carries, can stage that payload, and runs a node.`,
+		Use:           "stratum",
+		Short:         "CIQ " + cfg.product(),
+		Long:          rootLong(cfg),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -187,13 +186,20 @@ what payload it carries, can stage that payload, and runs a node.`,
 		return &ErrUsage{err: err}
 	})
 
+	root.AddGroup(
+		&cobra.Group{ID: GroupCluster, Title: "Run the cluster:"},
+		&cobra.Group{ID: GroupTools, Title: "Tools:"},
+		&cobra.Group{ID: GroupAdvanced, Title: "Advanced:"},
+	)
+	root.SetHelpCommandGroupID(GroupAdvanced)
+	root.SetCompletionCommandGroupID(GroupAdvanced)
 	root.AddCommand(
 		newVersionCommand(cfg),
 		newStageCommand(),
 		newWhichCommand(),
 		newUpCommand(cfg),
 		newOperatorCommand(),
-		newTokenCommand(),
+		newTokenCommand(cfg),
 		newCertsCommand(),
 		newSnapshotCommand(),
 		newUpgradeCommand(),
@@ -202,11 +208,12 @@ what payload it carries, can stage that payload, and runs a node.`,
 		newRuntimeCommand(),
 		newNodeCommand(),
 		newHARepointCommand(),
-		newUninstallCommand(),
+		newUninstallCommand(cfg),
 		newKubectlCommand(),
 		newEtcdctlCommand(),
 		newMCPCommand(cfg),
 	)
+	groupCommands(root)
 
 	return root
 }

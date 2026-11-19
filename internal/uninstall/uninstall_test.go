@@ -1434,6 +1434,17 @@ func TestDryRunListsEveryTargetAndEachConditionalItem(t *testing.T) {
 			t.Errorf("dry-run output does not mention %q:\n%s", want, out)
 		}
 	}
+	// What it does and what can't be undone come first, the full list after,
+	// and the command that goes ahead last.
+	if !strings.HasPrefix(out, "This removes Stratum from this server. Nothing has been changed yet.") {
+		t.Errorf("dry run does not open with what it does:\n%s", out)
+	}
+	if strings.Index(out, "can't be undone") > strings.Index(out, "Everything that will be removed:") {
+		t.Errorf("dry run lists the paths before the consequences:\n%s", out)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(out), "uninstall --yes") {
+		t.Errorf("dry run does not end with the command that goes ahead:\n%s", out)
+	}
 }
 
 // The tests below pin that one preview function in this package
@@ -2311,7 +2322,7 @@ func TestRunTeardownIsSplitIntoDeclaredPhases(t *testing.T) {
 // and which undo calls ran. A step moved across a phase boundary, or a class
 // changed without this table changing with it, fails here.
 func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
-	const stateRemovedHint = "The node's state was removed; fix the reported cleanup failures and re-run `stratum uninstall --yes` to finish"
+	const stateRemovedHint = "Stratum's node state is removed, but cleanup didn't finish. Fix what's listed above, then run this again to finish:"
 	for _, tc := range []struct {
 		name string
 		// phase is the declared phase the step runs in; class is the error
