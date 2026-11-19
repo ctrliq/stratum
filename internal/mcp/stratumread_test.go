@@ -576,6 +576,7 @@ func TestUninstallPreviewReturnsTheSharedConditionals(t *testing.T) {
 	uninstall.PreviewProbes.TrustedPodCIDRs = func() ([]string, error) { return []string{"10.245.0.0/16"}, nil }
 	uninstall.PreviewProbes.OwnedFirewalldInterfaces = func() ([]string, error) { return []string{"lxc+"}, nil }
 	uninstall.PreviewProbes.SELinuxRegistered = func() bool { return true }
+	uninstall.PreviewProbes.AppArmorWidened = func() bool { return true }
 
 	_, out, err := UninstallPreviewHandler()(context.Background(), nil, UninstallPreviewIn{})
 	if err != nil {
@@ -590,6 +591,7 @@ func TestUninstallPreviewReturnsTheSharedConditionals(t *testing.T) {
 		{Kind: "firewalld-source", Path: "10.245.0.0/16"},
 		{Kind: "firewalld-interface", Path: "lxc+"},
 		{Kind: "selinux-contexts"},
+		{Kind: "apparmor-runc-profile"},
 	} {
 		found := false
 		for _, got := range out.Conditionals {

@@ -178,6 +178,48 @@ func TestUpgradeCheckRefusesMissingSELinuxPrereq(t *testing.T) {
 	}
 }
 
+// A node whose kernel would stack every container's AppArmor profile, but
+// whose runc profile cannot be built, refuses itself like one missing its
+// SELinux policy: the new release's start would fail there.
+func TestUpgradeCheckRefusesMissingAppArmorPrereq(t *testing.T) {
+	oldOpts, oldPrereq, oldAppArmor := nodeSELinuxOptions, nodePrereq, nodeAppArmorPrereq
+	nodeSELinuxOptions = func() (selinux.Options, error) { return selinux.Options{}, nil }
+	nodePrereq = func(selinux.Options) error { return nil }
+	nodeAppArmorPrereq = func() error {
+		return errors.New("/var/lib/stratum/bin/runc cannot be given the AppArmor profile runc")
+	}
+	t.Cleanup(func() { nodeSELinuxOptions, nodePrereq, nodeAppArmorPrereq = oldOpts, oldPrereq, oldAppArmor })
+	for _, c := range []struct {
+		name        string
+		interrupted bool
+		want        error
+	}{
+		{"needs the upgrade", false, ErrPrereqMissing},
+		{"interrupted", true, ErrUpgradeNeeded},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			resumeFixture(t)
+			redirect(t, &version.K8sVersion, "v1.37.9")
+			fakeKubelet(t, map[bool]string{false: "v1.37.1", true: "v1.37.9"}[c.interrupted])
+			installedBuild(t, "rc.3", "rc.3")
+			if c.interrupted {
+				interruptedAt(t, version.K8sVersion)
+			}
+			out, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{Check: true}) })
+			if !errors.Is(err, c.want) {
+				t.Errorf("UpgradeNode(io.Discard, --check) = %v, want %v", err, c.want)
+			}
+			if c.interrupted && !strings.Contains(out, "AppArmor") {
+				t.Errorf("an interrupted upgrade did not warn about the AppArmor prerequisite:\n%s", out)
+			}
+			// A cluster upgrade relays only WARN lines from the node's Job.
+			if !c.interrupted && !strings.Contains(out, "WARN: refusing the upgrade: /var/lib/stratum/bin/runc") {
+				t.Errorf("the refusal is not on a WARN line a cluster upgrade relays:\n%s", out)
+			}
+		})
+	}
+}
+
 // A real upgrade of a node whose prerequisites fail stops before anything on
 // the node is changed: nothing installed, nothing backed up, nothing marked.
 func TestUpgradeNodeRefusesMissingSELinuxPrereqBeforeChanging(t *testing.T) {

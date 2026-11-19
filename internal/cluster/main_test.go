@@ -14,20 +14,27 @@ package cluster
 // /etc/cni/net.d among them, which no redirect of the version paths reaches;
 // hostTrustPodCIDRs runs firewall-cmd, which on a test host with firewalld
 // running would change its real trusted zone and write the production
-// ownership record; and hostPrereqs loads modules and writes sysctls. A test
-// that asserts on any of them installs its own recorder and restores these
-// no-ops; one that forgets can no longer reach the host.
+// ownership record; hostPrereqs loads modules and writes sysctls; and the
+// AppArmor runc profile loop reads the host's AppArmor, starts
+// its runc traced and loads profiles with apparmor_parser. The loop's policy
+// watcher also waits in epoll on a host with AppArmor's securityfs, where
+// synctest never counts it as blocked, so a test that starts the loop in a
+// bubble would hang. A test that asserts on any of them installs its own
+// recorder and restores these no-ops; one that forgets can no longer reach
+// the host.
 //
 // And it registers the engine's cis profile, as the binary does for every
 // command: the tests here render cis nodes, and a renderer refuses a node
 // whose profile is not registered.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"reflect"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/profile/profiletest"
@@ -47,6 +54,8 @@ func TestMain(m *testing.M) {
 	hostDirs = func() error { return nil }
 	hostTrustPodCIDRs = func(string) {}
 	hostPrereqs = func(host.PrereqOptions) error { return nil }
+	watchAppArmorPolicy = func(context.Context) <-chan struct{} { return nil }
+	reconcileAppArmor = func(context.Context) (bool, error) { return false, nil }
 	if err := profile.SetRegistered([]profile.Profile{profiletest.Profile()}); err != nil {
 		fmt.Fprintf(os.Stderr, "cluster tests: register the cis profile: %v\n", err)
 		os.Exit(1)
@@ -68,6 +77,8 @@ func TestTestMainStubsTheHostSeams(t *testing.T) {
 		{"hostTrustPodCIDRs", hostTrustPodCIDRs, host.TrustPodCIDRs},
 		{"hostPrereqs", hostPrereqs, host.Prereqs},
 		{"hostDirs", hostDirs, host.Dirs},
+		{"watchAppArmorPolicy", watchAppArmorPolicy, apparmor.WatchPolicy},
+		{"reconcileAppArmor", reconcileAppArmor, apparmor.Reconcile},
 	} {
 		if reflect.ValueOf(s.seam).Pointer() == reflect.ValueOf(s.real).Pointer() {
 			t.Errorf("%s is still the real host function; TestMain must stub it for the whole package", s.name)
