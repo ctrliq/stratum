@@ -327,7 +327,7 @@ func TestUpgradeClusterDryRunListsThePostChecks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpgradeCluster --dry-run: %v", err)
 	}
-	if !strings.Contains(out, "check accel-diag on nodes matching example.com/accel=true: /usr/bin/diag run 1") {
+	if !strings.Contains(out, "\n  after each node's upgrade, before its uncordon: check accel-diag on nodes matching example.com/accel=true: /usr/bin/diag run 1\n") {
 		t.Errorf("the dry run does not list the check:\n%s", out)
 	}
 }
