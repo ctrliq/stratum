@@ -41,8 +41,12 @@ wait_for "cp1 to start" 600 node_started cp1 || { node_log cp1; exit 1; }
 wait_for "the VIP to answer" 300 api_via "$HA_VIP" cp1 || { node_log cp1; exit 1; }
 pass "cp1 up"
 
-out=$(on cp1 "/dist/stratum token create --server https://$HA_VIP:6443")
-line=$(grep -F -- '--worker' <<<"$out" | head -1)
+for _ in 1 2 3 4 5 6; do
+  out=$(on cp1 "/dist/stratum token create --server https://$HA_VIP:6443" 2>&1) && break
+  sleep 10
+done
+line=$(grep -F -- '--worker' <<<"$out" | head -1 || true)
+[[ -n $line ]] || { fail "token create never succeeded: $out"; done_testing; exit 1; }
 read -r token cahash < <(python3 -c '
 import shlex, sys
 a = shlex.split(sys.stdin.read())
