@@ -30,7 +30,9 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -38,6 +40,7 @@ import (
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/profile/profiletest"
+	"github.com/ctrliq/stratum/internal/runtime"
 )
 
 func TestMain(m *testing.M) {
@@ -58,6 +61,16 @@ func TestMain(m *testing.M) {
 	reconcileAppArmor = func(context.Context) (bool, error) { return false, nil }
 	checkAppArmor = func() error { return nil }
 	stackedAppArmor = func() ([]apparmor.StackedProcess, error) { return nil, nil }
+	lockDir, err := os.MkdirTemp("", "cluster-locks")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cluster tests: lock dir: %v\n", err)
+		os.Exit(1)
+	}
+	lockPath := filepath.Join(lockDir, "runtime-handlers.lock")
+	lockRuntimeHandlers = func(ctx context.Context, w io.Writer) (func(), error) {
+		return runtime.LockHandlersAt(ctx, w, lockPath)
+	}
+	loadedHandlers = func(_ context.Context, names []string) ([]string, error) { return names, nil }
 	if err := profile.SetRegistered([]profile.Profile{profiletest.Profile()}); err != nil {
 		fmt.Fprintf(os.Stderr, "cluster tests: register the cis profile: %v\n", err)
 		os.Exit(1)

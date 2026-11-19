@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -311,11 +312,11 @@ func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T)
 	if !res.Changed || !res.Unloaded || res.Restarted {
 		t.Fatalf("apply without a restart = %+v, want changed and unloaded", res)
 	}
-	if got := LoadedHandlers([]string{"gvisor", "kata"}); !slices.Equal(got, []string{"gvisor"}) {
-		t.Errorf("LoadedHandlers before the restart = %v, want [gvisor]", got)
+	if got, err := LoadedHandlers(context.Background(), []string{"gvisor", "kata"}); err != nil || !slices.Equal(got, []string{"gvisor"}) {
+		t.Errorf("LoadedHandlers before the restart = %v, %v; want [gvisor]", got, err)
 	}
-	if r := CheckHandlers(both); !strings.Contains(findings(r, SeverityError), "runtime restart") {
-		t.Errorf("check before the restart = %+v, want an error naming the restart", r.Findings)
+	if r := CheckHandlers(both); !strings.Contains(findings(r, SeverityError), "has not loaded the runtime handlers kata") {
+		t.Errorf("check before the restart = %+v, want an error naming kata and the restart", r.Findings)
 	}
 	res, err = ApplyHandlers(io.Discard, both, true)
 	if err != nil {
@@ -324,101 +325,118 @@ func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T)
 	if res.Changed || !res.Restarted || res.Unloaded || restarts() != 2 {
 		t.Fatalf("retried apply = %+v after %d restarts, want the pending restart done", res, restarts())
 	}
-	if got := LoadedHandlers([]string{"gvisor", "kata"}); !slices.Equal(got, []string{"gvisor", "kata"}) {
-		t.Errorf("LoadedHandlers after the restart = %v, want both", got)
-	}
-	if _, err := os.Stat(unloadedPath()); !os.IsNotExist(err) {
-		t.Errorf("the unloaded record survived the restart (stat: %v)", err)
+	if got, err := LoadedHandlers(context.Background(), []string{"gvisor", "kata"}); err != nil || !slices.Equal(got, []string{"gvisor", "kata"}) {
+		t.Errorf("LoadedHandlers after the restart = %v, %v; want both", got, err)
 	}
 }
 
-// A containerd that falls further behind keeps the handlers it loaded, not
-// the ones of the drop-in it never read.
-func TestApplyHandlersKeepsWhatABehindContainerdLoaded(t *testing.T) {
+// The loaded set is containerd's own answer, not a record stratum keeps: a
+// drop-in removed by hand before a restart leaves containerd with no handler
+// loaded, and the node is labelled for none.
+func TestLoadedHandlersFollowsContainerdNotTheDropIn(t *testing.T) {
 	handlersHost(t, true)
 	fakeSupervisor(t, false)
-	a, b, c := fakeBinary(t, "a"), fakeBinary(t, "b"), fakeBinary(t, "c")
-	for _, h := range []map[string]string{{"a": a, "b": b}, {"a": a, "b": b, "c": c}} {
-		if _, err := ApplyHandlers(io.Discard, h, false); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := LoadedHandlers([]string{"a", "b", "c"}); len(got) != 0 {
-		t.Errorf("LoadedHandlers = %v, want none: containerd started before any drop-in", got)
-	}
-}
-
-// Any containerd restart loads the drop-in on disk, so a record naming an
-// earlier containerd no longer narrows anything.
-func TestLoadedHandlersIgnoresARecordForAnEarlierContainerd(t *testing.T) {
-	handlersHost(t, true)
-	fakeSupervisor(t, false)
-	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+	h := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+	if _, err := ApplyHandlers(io.Discard, h, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(unloadedPath(), []byte("99\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := LoadedHandlers([]string{"gvisor"}); !slices.Equal(got, []string{"gvisor"}) {
-		t.Errorf("LoadedHandlers with a stale record = %v, want [gvisor]", got)
-	}
-}
-
-// A reboot or a container restart can hand the new containerd the PID the
-// record names; a record whose start does not match that containerd's was
-// written for an earlier one, and narrows nothing.
-func TestLoadedHandlersIgnoresARecordWhoseContainerdReusedThePID(t *testing.T) {
-	handlersHost(t, true)
-	fakeSupervisor(t, false)
-	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(unloadedPath(), []byte("100 boot/100\nrunc\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := LoadedHandlers([]string{"gvisor"}); len(got) != 0 {
-		t.Fatalf("LoadedHandlers with a record for this containerd = %v, want none", got)
-	}
-	processStart = func(int) string { return "another-boot/100" }
-	if got := LoadedHandlers([]string{"gvisor"}); !slices.Equal(got, []string{"gvisor"}) {
-		t.Errorf("LoadedHandlers with a record for an earlier containerd on the same PID = %v, want [gvisor]", got)
-	}
-}
-
-func TestRestartContainerdClearsTheUnloadedRecord(t *testing.T) {
-	handlersHost(t, true)
-	fakeSupervisor(t, false)
-	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, false); err != nil {
+	if err := os.Remove(version.ContainerdRuntimeConfD); err != nil {
 		t.Fatal(err)
 	}
 	if err := RestartContainerd(io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(unloadedPath()); !os.IsNotExist(err) {
-		t.Errorf("the unloaded record survived a restart (stat: %v)", err)
+	if got, err := LoadedHandlers(context.Background(), []string{"gvisor"}); err != nil || len(got) != 0 {
+		t.Errorf("LoadedHandlers after a restart without the drop-in = %v, %v; want none", got, err)
+	}
+	if r := CheckHandlers(h); !strings.Contains(findings(r, SeverityError), "has not loaded the runtime handlers gvisor") {
+		t.Errorf("check = %+v, want an error that gvisor is not loaded", r.Findings)
 	}
 }
 
-func TestProcessStartNamesTheBootAndTheStart(t *testing.T) {
-	if _, err := os.Stat("/proc/self/stat"); err != nil {
-		t.Skip("no /proc on this host")
+// A handler removed from the drop-in keeps running in containerd until a
+// restart: an apply that removes it restarts, though the remaining handler
+// is loaded.
+func TestApplyHandlersRestartsAContainerdThatStillRunsARemovedHandler(t *testing.T) {
+	handlersHost(t, true)
+	restarts := fakeSupervisor(t, false)
+	gvisor, kata := fakeBinary(t, "runsc"), fakeBinary(t, "kata-runtime")
+	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": gvisor, "kata": kata}, true); err != nil {
+		t.Fatal(err)
 	}
-	got := processStart(os.Getpid())
-	boot, start, ok := strings.Cut(got, "/")
-	if !ok || boot == "" || start == "" || strings.ContainsAny(got, " \n") {
-		t.Fatalf("processStart(self) = %q, want <boot id>/<start ticks>", got)
+	only := map[string]string{"gvisor": gvisor}
+	if _, err := ApplyHandlers(io.Discard, only, false); err != nil {
+		t.Fatal(err)
 	}
-	if again := processStart(os.Getpid()); again != got {
-		t.Errorf("processStart(self) changed from %q to %q", got, again)
+	if r := CheckHandlers(only); !strings.Contains(findings(r, SeverityWarn), "still runs the runtime handlers kata") {
+		t.Errorf("check = %+v, want a warning that kata still runs", r.Findings)
 	}
-	if processStart(1<<30) != "" {
-		t.Error("processStart of a PID that does not exist is not empty")
+	res, err := ApplyHandlers(io.Discard, only, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || !res.Restarted || restarts() != 2 {
+		t.Errorf("apply = %+v after %d restarts, want the restart that unloads kata", res, restarts())
+	}
+}
+
+// A runtime another conf.d file defines is containerd's, not a stale stratum
+// handler, so it never makes an apply restart.
+func TestApplyHandlersLeavesARuntimeAnotherConfDFileDefines(t *testing.T) {
+	confd := handlersHost(t, true)
+	restarts := fakeSupervisor(t, false)
+	nvidia := "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia]\nruntime_type = 'io.containerd.runc.v2'\n"
+	if err := os.WriteFile(filepath.Join(confd, "99-nvidia.toml"), []byte(nvidia), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := criRuntimeHandlers
+	t.Cleanup(func() { criRuntimeHandlers = old })
+	criRuntimeHandlers = func(ctx context.Context) ([]string, error) {
+		names, err := old(ctx)
+		return append(names, "nvidia", "runc"), err
+	}
+	h := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+	if _, err := ApplyHandlers(io.Discard, h, true); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ApplyHandlers(io.Discard, h, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Restarted || restarts() != 1 {
+		t.Errorf("second apply = %+v after %d restarts, want no restart for runc or another file's runtime", res, restarts())
+	}
+}
+
+// A containerd that cannot say which handlers it loaded is a restart still
+// pending, not a containerd that runs them all: apply restarts it, and
+// LoadedHandlers reports the error rather than every name.
+func TestAContainerdThatCannotSayIsPending(t *testing.T) {
+	handlersHost(t, true)
+	restarts := fakeSupervisor(t, false)
+	h := map[string]string{"gvisor": fakeBinary(t, "runsc")}
+	if _, err := ApplyHandlers(io.Discard, h, true); err != nil {
+		t.Fatal(err)
+	}
+	failCRI(t)
+	if got, err := LoadedHandlers(context.Background(), []string{"gvisor"}); err == nil {
+		t.Errorf("LoadedHandlers = %v with containerd unable to say, want an error", got)
+	}
+	res, err := ApplyHandlers(io.Discard, h, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Restarted || restarts() != 2 {
+		t.Errorf("apply = %+v after %d restarts, want a restart", res, restarts())
+	}
+	if r := CheckHandlers(h); !strings.Contains(findings(r, SeverityWarn), "cannot tell whether it runs the saved handlers") {
+		t.Errorf("check = %+v, want a warning that containerd could not say", r.Findings)
 	}
 }
 
 // A drop-in renamed into place whose directory sync failed is on disk, so a
-// retry finds nothing to write: the failed apply records the containerd that
-// has not loaded it, and the retry restarts it.
+// retry finds nothing to write; containerd has not loaded it, so the retry
+// restarts it.
 func TestApplyHandlersThatCouldNotSyncTheDropInLeavesTheRestartPending(t *testing.T) {
 	handlersHost(t, true)
 	restarts := fakeSupervisor(t, false)
