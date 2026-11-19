@@ -1,0 +1,253 @@
+package upgrade
+
+import (
+	"context"
+	"errors"
+	"io"
+	"slices"
+	"strings"
+	"testing"
+	"testing/synctest"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
+
+	"github.com/ctrliq/stratum/internal/k8sutil"
+	"github.com/ctrliq/stratum/internal/nodejob"
+)
+
+func postCheckCM(data map[string]string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: PostCheckConfigMap, Namespace: cuNamespace},
+		Data:       data,
+	}
+}
+
+func TestParsePostChecks(t *testing.T) {
+	good := "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, run, \"1\"]\n"
+	for _, tc := range []struct {
+		name    string
+		cm      *corev1.ConfigMap
+		wantErr string
+	}{
+		{"valid", postCheckCM(map[string]string{"b": good, "a": good + "timeoutSeconds: 60\n"}), ""},
+		{"no selector", postCheckCM(map[string]string{"x": "command: [/bin/true]\n"}), "nodeSelector is required"},
+		{"bad selector", postCheckCM(map[string]string{"x": "nodeSelector: 'a=b=c'\ncommand: [/bin/true]\n"}), "nodeSelector"},
+		{"no command", postCheckCM(map[string]string{"x": "nodeSelector: a=b\n"}), "command is required"},
+		{"relative command", postCheckCM(map[string]string{"x": "nodeSelector: a=b\ncommand: [diag]\n"}), "not an absolute path"},
+		{"negative timeout", postCheckCM(map[string]string{"x": good + "timeoutSeconds: -1\n"}), "timeoutSeconds -1"},
+		{"timeout over a day", postCheckCM(map[string]string{"x": good + "timeoutSeconds: 86401\n"}), "timeoutSeconds 86401"},
+		{"unknown field", postCheckCM(map[string]string{"x": good + "image: busybox\n"}), "unknown field"},
+		{"binaryData", &corev1.ConfigMap{BinaryData: map[string][]byte{"x": []byte(good)}}, "binaryData"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parsePostChecks(tc.cm)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one containing %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got[0].Name != "a" || got[1].Name != "b" {
+				t.Fatalf("checks = %+v, want a then b", got)
+			}
+			if got[0].timeout() != time.Minute || got[1].timeout() != defaultPostCheckTimeout {
+				t.Errorf("timeouts = %s, %s; want 1m and the default", got[0].timeout(), got[1].timeout())
+			}
+			if !slices.Equal(got[1].Command, []string{"/usr/bin/diag", "run", "1"}) {
+				t.Errorf("command = %q", got[1].Command)
+			}
+		})
+	}
+}
+
+func TestLoadPostChecksAbsentMeansNoneAndUnreadableRefuses(t *testing.T) {
+	checks, err := loadPostChecks(context.Background(), fake.NewSimpleClientset())
+	if err != nil || checks != nil {
+		t.Fatalf("no ConfigMap: checks=%v err=%v, want none", checks, err)
+	}
+	cs := fake.NewSimpleClientset()
+	cs.PrependReactor("get", "configmaps", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, PostCheckConfigMap, errors.New("denied"))
+	})
+	if _, err := loadPostChecks(context.Background(), cs); err == nil || !apierrors.IsForbidden(err) {
+		t.Fatalf("a ConfigMap that cannot be read: %v, want the refusal", err)
+	}
+}
+
+func gpuCheck(t *testing.T) postCheck {
+	t.Helper()
+	got, err := parsePostChecks(postCheckCM(map[string]string{
+		"accel-diag": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, run, \"1\"]\ntimeoutSeconds: 300\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got[0]
+}
+
+// stubUpgradeJob makes the upgrade Job succeed and, as a controller's Job
+// does, release the upgrade's cordon on its way out.
+func stubUpgradeJob(t *testing.T, backstop bool) {
+	t.Helper()
+	old := runNodeJob
+	t.Cleanup(func() { runNodeJob = old })
+	runNodeJob = func(ctx context.Context, cs kubernetes.Interface, s nodejob.Spec) error {
+		if backstop {
+			if _, err := releaseUpgradeCordon(ctx, cs, s.Node, "v1.37.1"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	}
+}
+
+func stubPostCheck(t *testing.T, fn func(context.Context, kubernetes.Interface, nodejob.Spec) error) {
+	t.Helper()
+	old := runPostUpgradeCheck
+	t.Cleanup(func() { runPostUpgradeCheck = old })
+	runPostUpgradeCheck = fn
+}
+
+func runPostCheckNode(cs kubernetes.Interface, isCP bool, checks []postCheck) error {
+	n := Node{Name: "cp1", Version: "v1.36.5", Ready: true, IsCP: isCP}
+	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-next", DrainGraceSec: 1, postChecks: checks}
+	_, err := upgradeOneNode(io.Discard, context.Background(), cs, n, o)
+	return err
+}
+
+// The check runs on a matching node after its upgrade and before the node is
+// stamped and uncordoned, as a node Job running the command on the host.
+func TestPostCheckRunsOnAMatchingNodeBeforeItIsFinished(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
+		changeNode(t, cs, func(n *corev1.Node) { n.Labels = map[string]string{"example.com/accel": "true"} })
+		stubUpgradeJob(t, false)
+		var got []nodejob.Spec
+		stubPostCheck(t, func(_ context.Context, _ kubernetes.Interface, s nodejob.Spec) error {
+			n := getNode(t, cs)
+			if !n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "" ||
+				n.Annotations[k8sutil.UpgradeInProgressAnnotation] != "v1.37.1" {
+				t.Errorf("the check ran on a node already finished: unschedulable=%v annotations=%v", n.Spec.Unschedulable, n.Annotations)
+			}
+			got = append(got, s)
+			return nil
+		})
+		if err := runPostCheckNode(cs, false, []postCheck{gpuCheck(t)}); err != nil {
+			t.Fatalf("upgradeOneNode: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("the check ran %d times, want once", len(got))
+		}
+		s := got[0]
+		wantArgv := []string{"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "/usr/bin/diag", "run", "1"}
+		if !slices.Equal(s.Argv, wantArgv) || s.Node != "cp1" || s.Name != jobName("cp1") || s.LabelKey != upgradeJobLabel ||
+			s.Namespace != cuNamespace || s.ActiveDeadline != 5*time.Minute || s.PollAttempts != 60 {
+			t.Errorf("check Job = %+v", s)
+		}
+		n := getNode(t, cs)
+		if n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "v1.37.1" {
+			t.Errorf("after a passed check: unschedulable=%v annotations=%v, want the node finished", n.Spec.Unschedulable, n.Annotations)
+		}
+	})
+}
+
+// A node the selector does not match is finished without the check.
+func TestPostCheckSkipsANodeItDoesNotSelect(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
+		changeNode(t, cs, func(n *corev1.Node) { n.Labels = map[string]string{"example.com/accel": "false"} })
+		stubUpgradeJob(t, false)
+		stubPostCheck(t, func(context.Context, kubernetes.Interface, nodejob.Spec) error {
+			t.Error("the check ran on a node its selector does not match")
+			return nil
+		})
+		if err := runPostCheckNode(cs, false, []postCheck{gpuCheck(t)}); err != nil {
+			t.Fatalf("upgradeOneNode: %v", err)
+		}
+		if n := getNode(t, cs); n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "v1.37.1" {
+			t.Errorf("unschedulable=%v annotations=%v, want the node finished", n.Spec.Unschedulable, n.Annotations)
+		}
+	})
+}
+
+// A failed check halts the run with the node unstamped and cordoned: a worker
+// stays cordoned, and a control plane its own Job uncordoned is cordoned again.
+func TestPostCheckFailureHoldsTheNode(t *testing.T) {
+	for _, isCP := range []bool{false, true} {
+		name := "worker"
+		if isCP {
+			name = "control plane"
+		}
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
+				changeNode(t, cs, func(n *corev1.Node) { n.Labels = map[string]string{"example.com/accel": "true"} })
+				stubUpgradeJob(t, isCP)
+				stubPostCheck(t, func(context.Context, kubernetes.Interface, nodejob.Spec) error {
+					if isCP && getNode(t, cs).Spec.Unschedulable {
+						t.Error("the stub backstop did not uncordon the control plane")
+					}
+					return errors.New("post-upgrade check accel-diag Job stratum-upgrade-cp1 failed")
+				})
+				err := runPostCheckNode(cs, isCP, []postCheck{gpuCheck(t)})
+				if !errors.Is(err, errPostCheckFailed) {
+					t.Fatalf("err = %v, want the failed check", err)
+				}
+				for _, want := range []string{"accel-diag", "logs job/stratum-upgrade-cp1", "left cordoned", "upgrade --cluster --target v1.37.1"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error missing %q:\n%v", want, err)
+					}
+				}
+				n := getNode(t, cs)
+				if !n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "" ||
+					n.Annotations[k8sutil.UpgradeInProgressAnnotation] != "v1.37.1" ||
+					n.Annotations[k8sutil.UpgradeCordonAnnotation] != cordonClaim("v1.37.1", "") {
+					t.Errorf("unschedulable=%v annotations=%v, want it cordoned under the upgrade's claim and unfinished", n.Spec.Unschedulable, n.Annotations)
+				}
+			})
+		})
+	}
+}
+
+func TestUpgradeClusterDryRunListsThePostChecks(t *testing.T) {
+	objs := append(upgradeNodesFixture(), postCheckCM(map[string]string{
+		"accel-diag": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, run, \"1\"]\n",
+	}))
+	cs := fake.NewSimpleClientset(objs...)
+	out, err := runWriter(t, func(w io.Writer) error {
+		return UpgradeCluster(w, ClusterOptions{Target: "v1.37.1", From: "/staged/stratum", Client: cs, DryRun: true})
+	})
+	if err != nil {
+		t.Fatalf("UpgradeCluster --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "check accel-diag on nodes matching example.com/accel=true: /usr/bin/diag run 1") {
+		t.Errorf("the dry run does not list the check:\n%s", out)
+	}
+}
+
+// A ConfigMap the run cannot use refuses it before any node is touched.
+func TestUpgradeClusterRefusesAMalformedPostCheckBeforeAnyChange(t *testing.T) {
+	objs := append(upgradeNodesFixture(), postCheckCM(map[string]string{"accel-diag": "command: [diag]\n"}))
+	cs := fake.NewSimpleClientset(objs...)
+	err := UpgradeCluster(io.Discard, ClusterOptions{Target: "v1.37.1", From: "/staged/stratum", Client: cs})
+	if err == nil || !strings.Contains(err.Error(), PostCheckConfigMap) || !strings.Contains(err.Error(), "accel-diag") {
+		t.Fatalf("err = %v, want the ConfigMap's check named", err)
+	}
+	for _, a := range cs.Actions() {
+		if a.GetVerb() != "get" && a.GetVerb() != "list" && a.GetVerb() != "watch" {
+			t.Errorf("the refused run wrote: %s %s", a.GetVerb(), a.GetResource().Resource)
+		}
+	}
+}

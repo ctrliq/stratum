@@ -119,6 +119,9 @@ type ClusterOptions struct {
 	// stratumVersion is the staged binary's release, stamped on every node:
 	// this orchestrator may be an older build than the one it installs.
 	stratumVersion string
+	// postChecks are the checks PostCheckConfigMap declares, read once at the
+	// start of the run.
+	postChecks []postCheck
 }
 
 // nodeOutcome is what upgradeOneNode did with a node.
@@ -185,8 +188,9 @@ func (o *ClusterOptions) leaseConfirm(ctx context.Context) error {
 // UpgradeCluster orchestrates a quorum-safe rolling HA upgrade from one CP node:
 // preflight -> serial control planes -> workers (up to --workers-max-unavailable at
 // a time); per node it does cordon -> drain (PDB-aware) -> per-node Job
-// (`stratum upgrade --from`) -> node Ready + health gate -> stamp version ->
-// uncordon. Halts on any node failure.
+// (`stratum upgrade --from`) -> node Ready + health gate -> the post-upgrade
+// checks PostCheckConfigMap declares for the node -> stamp version -> uncordon.
+// Halts on any node failure.
 //
 // Control planes are always serial (never two etcd members down at once). Workers
 // run up to --workers-max-unavailable concurrently (default 1); they are not etcd
@@ -216,6 +220,9 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 		return fmt.Errorf("preflight: %s", plan.Blocker)
 	}
 	ordered := orderedNodes(plan.Nodes)
+	if o.postChecks, err = loadPostChecks(ctx, cs); err != nil {
+		return err
+	}
 
 	// The dry run renders the plan — the same classification and ordering the
 	// MCP upgrade_plan tool reports, so the two cannot disagree about which
@@ -232,6 +239,7 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 		}
 	}
 	fmt.Fprintln(w, "  first, import the upgrade binary's images on every Ready node: the add-ons roll out to every node as soon as the first control plane is upgraded")
+	printPostChecks(w, o.postChecks)
 	warnUntrustedKubeletServing(w, ctx, ordered)
 	if o.DryRun {
 		fmt.Fprintln(w, "\n(dry-run; no changes) — ensure the upgrade binary is staged at", o.From, "on every node.")
@@ -799,6 +807,12 @@ func upgradeOneNode(w io.Writer, ctx context.Context, cs kubernetes.Interface, n
 		hctx, cancel := context.WithTimeout(ctx, orchestratorHealthzWindow)
 		err = waitAPIHealthz(hctx, cs)
 		cancel()
+	}
+	if err == nil {
+		err = runPostChecks(ctx, w, cs, n, jn, o)
+		if errors.Is(err, errPostCheckFailed) {
+			return nodeUpgraded, holdFailedNode(ctx, cs, n, jn, o, err)
+		}
 	}
 	// The leases again, and by renewing them, on every attempt of the write that
 	// stamps the node and undoes its cordon: the Job, the Ready wait and the gate
