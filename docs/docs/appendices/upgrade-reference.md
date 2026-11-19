@@ -590,6 +590,13 @@ not compile, is refused with exit code `11`, and its reason is relayed as a
 - Install the `apparmor` package on that node, or fix what the reason names,
   and re-run. Setting the restriction to `0` in a file under `/etc/sysctl.d`
   also lets the node through, and turns that hardening off.
+- Before you upgrade, add `signal (receive) peer=runc,` to each `Localhost`
+  profile of your own that has `signal` rules, on every node that loads it.
+  Once a node runs this build, runc stops containers as `runc`, and a pod
+  under such a profile without the rule can no longer be deleted. The upgrade
+  does not show it: the next rollout, or the next drain of that node, does.
+  See "Localhost profiles" under
+  [AppArmor](../installation/configuration.md#apparmor).
 - Containers that started before the upgrade keep a stacked label. The drain
   recreates the node's ordinary pods; recreate DaemonSet and static pods as in
   [Recreating pods that still run unconfined](#recreating-pods-that-still-run-unconfined).

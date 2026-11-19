@@ -224,7 +224,7 @@ func CheckRuntimeHandlers(w io.Writer) (runtime.HandlerReport, error) {
 	case err == nil:
 	case errors.Is(err, apparmor.ErrNotCovered):
 		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityError,
-			Message: fmt.Sprintf("%v; a running stratum loads the profile again within %v, and `journalctl -u stratum` says why when it cannot", err, appArmorProfileInterval)})
+			Message: fmt.Sprintf("%v; a running stratum loads the profile again within a minute, and `journalctl -u stratum` says why when it cannot", err)})
 	case errors.Is(err, apparmor.ErrHostProfileNotWidened):
 		r.Findings = append(r.Findings, runtime.HandlerFinding{Severity: runtime.SeverityWarn, Message: err.Error()})
 	default:
