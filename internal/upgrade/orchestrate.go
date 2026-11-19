@@ -122,6 +122,11 @@ type ClusterOptions struct {
 	// postChecks are the checks PostCheckConfigMap declares, read once at the
 	// start of the run.
 	postChecks []postCheck
+	// keepCPCordon has a control plane's upgrade Job leave its cordon for this
+	// run to undo once the node's checks pass. A cluster with one control plane
+	// keeps the Job's own uncordon, as this run may not outlive that node's
+	// upgrade.
+	keepCPCordon bool
 }
 
 // nodeOutcome is what upgradeOneNode did with a node.
@@ -223,6 +228,7 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 	if o.postChecks, err = loadPostChecks(ctx, cs); err != nil {
 		return err
 	}
+	o.keepCPCordon = keepsCPCordon(o.postChecks, ordered)
 
 	// The dry run renders the plan — the same classification and ordering the
 	// MCP upgrade_plan tool reports, so the two cannot disagree about which
@@ -952,6 +958,9 @@ func nodeUpgradeArgv(o ClusterOptions, n Node) []string {
 	argv := append(stagedUpgradeArgv(o, n), "--soak", strconv.Itoa(o.SoakSec))
 	if o.SkipSnapshot {
 		argv = append(argv, "--skip-snapshot")
+	}
+	if n.IsCP && o.keepCPCordon {
+		argv = append(argv, "--keep-cordon")
 	}
 	return argv
 }

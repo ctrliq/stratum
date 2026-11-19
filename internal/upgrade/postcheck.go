@@ -48,6 +48,13 @@ func (c postCheck) timeout() time.Duration {
 	return time.Duration(c.TimeoutSeconds) * time.Second
 }
 
+// postCheckPolls is how many times the run reads a check Job of deadline: past
+// the deadline by a minute, so the Job's own ActiveDeadline marks it failed
+// first.
+func postCheckPolls(deadline time.Duration) int {
+	return int((deadline + time.Minute) / (5 * time.Second))
+}
+
 // errPostCheckFailed marks a check that ran on the node and did not pass.
 var errPostCheckFailed = errors.New("post-upgrade node check failed")
 
@@ -135,6 +142,20 @@ func printPostChecks(w io.Writer, checks []postCheck) {
 	}
 }
 
+// keepsCPCordon reports whether a control plane's upgrade Job leaves its
+// cordon for the run to undo after the node's checks: whenever a check is
+// declared, as the selector is matched against the labels the node has after
+// its upgrade, unless the cluster has one control plane.
+func keepsCPCordon(checks []postCheck, nodes []Node) bool {
+	cps := 0
+	for _, n := range nodes {
+		if n.IsCP {
+			cps++
+		}
+	}
+	return len(checks) > 0 && cps > 1
+}
+
 // postCheckArgv runs c's command on the host, as the upgrade Job runs the
 // staged binary.
 func postCheckArgv(c postCheck) []string {
@@ -174,11 +195,13 @@ func runPostChecks(ctx context.Context, w io.Writer, cs kubernetes.Interface, n 
 			Container:      "check",
 			Argv:           postCheckArgv(c),
 			ActiveDeadline: deadline,
-			PollAttempts:   int(deadline / (5 * time.Second)),
+			PollAttempts:   postCheckPolls(deadline),
 			Kind:           "post-upgrade check " + c.Name,
 			Critical:       true,
-		}); err != nil {
+		}); errors.Is(err, nodejob.ErrNotPassed) {
 			return fmt.Errorf("%w: %s on %s: %w", errPostCheckFailed, c.Name, n.Name, err)
+		} else if err != nil {
+			return fmt.Errorf("post-upgrade check %s on %s: %w", c.Name, n.Name, err)
 		}
 		fmt.Fprintf(w, "  %s passed check %s\n", n.Name, c.Name)
 	}
@@ -186,13 +209,15 @@ func runPostChecks(ctx context.Context, w io.Writer, cs kubernetes.Interface, n 
 }
 
 // holdFailedNode keeps a node that failed a post-upgrade check out of
-// scheduling: a control plane's own upgrade Job has already uncordoned it, so
-// it is cordoned again under the upgrade's claim, which the next run's
+// scheduling: the only control plane's own upgrade Job has already uncordoned
+// it, so it is cordoned again under the upgrade's claim, which the next run's
 // successful check undoes. The node stays unstamped, so the next run takes the
 // full path and runs the checks again.
 func holdFailedNode(ctx context.Context, cs kubernetes.Interface, n Node, job string, o ClusterOptions, cause error) error {
 	from := shellQuote(o.From)
 	held := "it is left cordoned"
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
 	if err := cordonForUpgrade(ctx, cs, n.Name, o.Target, o.lease); err != nil {
 		held = fmt.Sprintf("cordoning it again failed (%v), so it may be schedulable: run %s kubectl cordon %s", err, from, n.Name)
 	}

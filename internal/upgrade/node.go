@@ -69,7 +69,10 @@ type NodeOptions struct {
 	// set only for nodes of the orchestrator's own architecture.
 	ExpectBuild  string
 	ExpectSHA256 string
-	DryRun       bool
+	// KeepCordon leaves a controller cordoned after its upgrade, for the
+	// cluster upgrade to undo once the node's post-upgrade checks pass.
+	KeepCordon bool
+	DryRun     bool
 }
 
 // RollbackOptions configures a local per-node rollback.
@@ -2317,7 +2320,7 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 	// use, not the OS hostname: a kubelet started with --hostname-override
 	// registers under another name, and a lookup by the OS name would find no
 	// node and leave the registered one cordoned.
-	if isCP {
+	if isCP && !o.KeepCordon {
 		node := nodeName(st)
 		if done, err := uncordonUpgraded(node, o.Target); err != nil {
 			fmt.Fprint(w, uncordonWarning(node, err))

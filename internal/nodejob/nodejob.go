@@ -403,14 +403,24 @@ func Run(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 		}
 		if j.Status.Failed >= 1 {
 			// The failed Job is left in place for inspection; a re-run replaces it.
-			return fmt.Errorf("%s Job %s failed (logs: kubectl -n %s logs job/%s)", s.Kind, s.Name, s.Namespace, s.Name)
+			return notPassed{fmt.Errorf("%s Job %s failed (logs: kubectl -n %s logs job/%s)", s.Kind, s.Name, s.Namespace, s.Name)}
 		}
 		if err := wait(ctx, pollInterval-time.Since(started)); err != nil {
 			return err
 		}
 	}
-	return timedOut(s, lastErr)
+	return notPassed{timedOut(s, lastErr)}
 }
+
+// ErrNotPassed marks a Run error for a Job that Run created and that then
+// failed, or did not complete within its polls: not one Run could not create,
+// or stopped waiting on because its context ended.
+var ErrNotPassed = errors.New("the Job failed or did not complete in time")
+
+type notPassed struct{ err error }
+
+func (e notPassed) Error() string   { return e.err.Error() }
+func (e notPassed) Unwrap() []error { return []error{ErrNotPassed, e.err} }
 
 // getJob is one poll read. An error from it that is not NotFound is the API
 // server being unreachable, as while it restarts under a single-node cluster's

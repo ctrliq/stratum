@@ -208,8 +208,8 @@ func TestRun(t *testing.T) {
 		cs := fake.NewSimpleClientset()
 		cs.PrependReactor("get", "jobs", statusReactor(batchv1.JobStatus{Failed: 1}))
 		err := Run(context.Background(), cs, testSpec())
-		if err == nil {
-			t.Fatal("want an error for a failed Job")
+		if !errors.Is(err, ErrNotPassed) {
+			t.Fatalf("Run = %v, want an error marked ErrNotPassed for a failed Job", err)
 		}
 		for _, want := range []string{"per-node upgrade", "failed", "logs: kubectl -n kube-system logs job/stratum-upgrade-node1"} {
 			if !strings.Contains(err.Error(), want) {
@@ -224,8 +224,25 @@ func TestRun(t *testing.T) {
 		s := testSpec()
 		s.PollAttempts = 2
 		err := Run(context.Background(), cs, s)
-		if err == nil || !strings.Contains(err.Error(), "did not complete in time") {
-			t.Fatalf("want a timeout error, got %v", err)
+		if !errors.Is(err, ErrNotPassed) || !strings.Contains(err.Error(), "did not complete in time") {
+			t.Fatalf("want a timeout error marked ErrNotPassed, got %v", err)
+		}
+	})
+
+	t.Run("a Job it cannot create or stops waiting on has not run and failed", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		cs.PrependReactor("create", "jobs", func(clienttesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("admission denied")
+		})
+		if err := Run(context.Background(), cs, testSpec()); err == nil || errors.Is(err, ErrNotPassed) {
+			t.Errorf("a refused create = %v, want an error not marked ErrNotPassed", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		cs = fake.NewSimpleClientset()
+		cs.PrependReactor("get", "jobs", statusReactor(batchv1.JobStatus{}))
+		if err := Run(ctx, cs, testSpec()); !errors.Is(err, context.Canceled) || errors.Is(err, ErrNotPassed) {
+			t.Errorf("a cancelled run = %v, want context.Canceled, not marked ErrNotPassed", err)
 		}
 	})
 }

@@ -239,6 +239,10 @@ stratum upgrade: uncordoned <node> (the cluster upgrade that cordoned it may hav
   cluster upgrade.
 - Workers do not uncordon themselves, because upgrading a worker does not
   restart the API server.
+- When the cluster declares
+  [post-upgrade node checks](#post-upgrade-node-checks) and has more than one
+  control plane, a controller's Job leaves the cordon for the run to undo once
+  the node's checks pass.
 - A run started by an older `stratum` records no `upgrade-cordoned` annotation.
   The Job then treats the cordon as the upgrade's own when `upgrade-in-progress`
   names the target. That older run does not record whether the node was already
@@ -314,11 +318,16 @@ data:
   order. Each runs as the node's `stratum-upgrade-<node>` Job, which runs the
   command on the host as root, in the host's namespaces. A check passes when
   the command exits 0.
+- The node stays cordoned while its checks run. The exception is a cluster
+  with one control plane: that node's own upgrade Job uncordons it, as the run
+  may not outlive the node's upgrade, so its checks run after it is
+  schedulable.
 - A check that fails stops the run as any node failure does. The node runs the
-  new version but is not recorded as upgraded, and it stays cordoned. A control
-  plane's own upgrade Job uncordons it before the checks run, so a control plane
-  that fails one is cordoned again; pods scheduled there in between are not
-  evicted. The failed Job stays for inspection:
+  new version but is not recorded as upgraded, and it stays cordoned. The only
+  control plane of a cluster is cordoned again; pods scheduled there in between
+  are not evicted. A check that could not start, such as one whose Job the run
+  could not create, stops the run without being counted as failed. The failed
+  Job stays for inspection:
 
     ```console
     # /usr/local/bin/stratum kubectl -n kube-system logs job/stratum-upgrade-<node>

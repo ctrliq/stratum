@@ -50,3 +50,24 @@ func TestBackstopUsesRegisteredNodeName(t *testing.T) {
 		t.Fatalf("backstop requested %q (OS=%q), registered=%q remains cordoned=%v; gates/stamp=%v; output:\n%s", requested, osName, registered, obj.Spec.Unschedulable, *events, out)
 	}
 }
+
+// A controller told to keep its cordon leaves it for the cluster upgrade, which
+// runs the node's post-upgrade checks before it uncordons the node.
+func TestKeepCordonSkipsTheBackstop(t *testing.T) {
+	const target = "v1.37.9"
+	events := controllerUpgradeFixture(t, target, 0)
+	called := false
+	swap(t, &uncordonUpgraded, func(string, string) (bool, error) {
+		called = true
+		return true, nil
+	})
+	out, err := runWriter(t, func(w io.Writer) error {
+		return UpgradeNode(w, NodeOptions{SkipSnapshot: true, KeepCordon: true})
+	})
+	if err != nil {
+		t.Fatalf("UpgradeNode: %v; gates/stamp=%v; output:\n%s", err, *events, out)
+	}
+	if called {
+		t.Fatalf("the backstop uncordoned a controller told to keep its cordon; output:\n%s", out)
+	}
+}

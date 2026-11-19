@@ -70,11 +70,12 @@ func TestUpgradeCommandAcceptsTheOrchestratorsArgv(t *testing.T) {
 		// argv is what follows the binary path and "upgrade" in the Job's
 		// exec: stagedUpgradeArgv's --from/--target/--expect-build/
 		// --expect-sha256, then nodeUpgradeArgv's --soak and optional
-		// --skip-snapshot, nodeCheckArgv's --check, or nodeImportImagesArgv's
-		// --import-images.
+		// --skip-snapshot and --keep-cordon, nodeCheckArgv's --check, or
+		// nodeImportImagesArgv's --import-images.
 		argv             []string
 		wantSoak         int
 		wantSkipSnapshot bool
+		wantKeepCordon   bool
 		wantCheck        bool
 		wantImportImages bool
 	}{
@@ -85,6 +86,14 @@ func TestUpgradeCommandAcceptsTheOrchestratorsArgv(t *testing.T) {
 				"--soak", "5", "--skip-snapshot"},
 			wantSoak:         5,
 			wantSkipSnapshot: true,
+		},
+		{
+			name: "per-node upgrade Job of a control plane with post-upgrade checks",
+			argv: []string{"--from", from, "--target", target,
+				"--expect-build", build, "--expect-sha256", sum,
+				"--soak", "15", "--keep-cordon"},
+			wantSoak:       15,
+			wantKeepCordon: true,
 		},
 		{
 			name: "build-check Job",
@@ -131,6 +140,9 @@ func TestUpgradeCommandAcceptsTheOrchestratorsArgv(t *testing.T) {
 			}
 			if got, err := fs.GetBool("skip-snapshot"); err != nil || got != tc.wantSkipSnapshot {
 				t.Errorf("--skip-snapshot = %v (%v), want %v", got, err, tc.wantSkipSnapshot)
+			}
+			if got, err := fs.GetBool("keep-cordon"); err != nil || got != tc.wantKeepCordon {
+				t.Errorf("--keep-cordon = %v (%v), want %v", got, err, tc.wantKeepCordon)
 			}
 			if got, err := fs.GetBool("check"); err != nil || got != tc.wantCheck {
 				t.Errorf("--check = %v (%v), want %v", got, err, tc.wantCheck)

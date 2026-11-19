@@ -3,6 +3,7 @@ package upgrade
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -98,13 +99,13 @@ func gpuCheck(t *testing.T) postCheck {
 }
 
 // stubUpgradeJob makes the upgrade Job succeed and, as a controller's Job
-// does, release the upgrade's cordon on its way out.
-func stubUpgradeJob(t *testing.T, backstop bool) {
+// does unless told to keep it, release the upgrade's cordon on its way out.
+func stubUpgradeJob(t *testing.T, isCP bool) {
 	t.Helper()
 	old := runNodeJob
 	t.Cleanup(func() { runNodeJob = old })
 	runNodeJob = func(ctx context.Context, cs kubernetes.Interface, s nodejob.Spec) error {
-		if backstop {
+		if isCP && !slices.Contains(s.Argv, "--keep-cordon") {
 			if _, err := releaseUpgradeCordon(ctx, cs, s.Node, "v1.37.1"); err != nil {
 				t.Fatal(err)
 			}
@@ -120,9 +121,10 @@ func stubPostCheck(t *testing.T, fn func(context.Context, kubernetes.Interface, 
 	runPostUpgradeCheck = fn
 }
 
-func runPostCheckNode(cs kubernetes.Interface, isCP bool, checks []postCheck) error {
+func runPostCheckNode(cs kubernetes.Interface, isCP, keepCPCordon bool, checks []postCheck) error {
 	n := Node{Name: "cp1", Version: "v1.36.5", Ready: true, IsCP: isCP}
-	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-next", DrainGraceSec: 1, postChecks: checks}
+	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-next", DrainGraceSec: 1,
+		postChecks: checks, keepCPCordon: keepCPCordon}
 	_, err := upgradeOneNode(io.Discard, context.Background(), cs, n, o)
 	return err
 }
@@ -144,7 +146,7 @@ func TestPostCheckRunsOnAMatchingNodeBeforeItIsFinished(t *testing.T) {
 			got = append(got, s)
 			return nil
 		})
-		if err := runPostCheckNode(cs, false, []postCheck{gpuCheck(t)}); err != nil {
+		if err := runPostCheckNode(cs, false, false, []postCheck{gpuCheck(t)}); err != nil {
 			t.Fatalf("upgradeOneNode: %v", err)
 		}
 		if len(got) != 1 {
@@ -153,7 +155,7 @@ func TestPostCheckRunsOnAMatchingNodeBeforeItIsFinished(t *testing.T) {
 		s := got[0]
 		wantArgv := []string{"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", "/usr/bin/diag", "run", "1"}
 		if !slices.Equal(s.Argv, wantArgv) || s.Node != "cp1" || s.Name != jobName("cp1") || s.LabelKey != upgradeJobLabel ||
-			s.Namespace != cuNamespace || s.ActiveDeadline != 5*time.Minute || s.PollAttempts != 60 {
+			s.Namespace != cuNamespace || s.ActiveDeadline != 5*time.Minute || s.PollAttempts != 72 {
 			t.Errorf("check Job = %+v", s)
 		}
 		n := getNode(t, cs)
@@ -173,7 +175,7 @@ func TestPostCheckSkipsANodeItDoesNotSelect(t *testing.T) {
 			t.Error("the check ran on a node its selector does not match")
 			return nil
 		})
-		if err := runPostCheckNode(cs, false, []postCheck{gpuCheck(t)}); err != nil {
+		if err := runPostCheckNode(cs, false, false, []postCheck{gpuCheck(t)}); err != nil {
 			t.Fatalf("upgradeOneNode: %v", err)
 		}
 		if n := getNode(t, cs); n.Spec.Unschedulable || n.Annotations[k8sutil.VersionAnnotation] != "v1.37.1" {
@@ -182,26 +184,31 @@ func TestPostCheckSkipsANodeItDoesNotSelect(t *testing.T) {
 	})
 }
 
-// A failed check halts the run with the node unstamped and cordoned: a worker
-// stays cordoned, and a control plane its own Job uncordoned is cordoned again.
+// A failed check halts the run with the node unstamped and cordoned. A worker,
+// and a control plane of several, whose Job leaves its cordon, are cordoned
+// while the check runs; the only control plane, which its own Job uncordoned,
+// is cordoned again.
 func TestPostCheckFailureHoldsTheNode(t *testing.T) {
-	for _, isCP := range []bool{false, true} {
-		name := "worker"
-		if isCP {
-			name = "control plane"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		isCP, keep, uncordons bool
+	}{
+		{"worker", false, false, false},
+		{"control plane of several", true, true, false},
+		{"the only control plane", true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
 				changeNode(t, cs, func(n *corev1.Node) { n.Labels = map[string]string{"example.com/accel": "true"} })
-				stubUpgradeJob(t, isCP)
+				stubUpgradeJob(t, tc.isCP)
 				stubPostCheck(t, func(context.Context, kubernetes.Interface, nodejob.Spec) error {
-					if isCP && getNode(t, cs).Spec.Unschedulable {
-						t.Error("the stub backstop did not uncordon the control plane")
+					if got := !getNode(t, cs).Spec.Unschedulable; got != tc.uncordons {
+						t.Errorf("schedulable while the check runs = %v, want %v", got, tc.uncordons)
 					}
-					return errors.New("post-upgrade check accel-diag Job stratum-upgrade-cp1 failed")
+					return fmt.Errorf("post-upgrade check accel-diag Job stratum-upgrade-cp1 failed: %w", nodejob.ErrNotPassed)
 				})
-				err := runPostCheckNode(cs, isCP, []postCheck{gpuCheck(t)})
+				err := runPostCheckNode(cs, tc.isCP, tc.keep, []postCheck{gpuCheck(t)})
 				if !errors.Is(err, errPostCheckFailed) {
 					t.Fatalf("err = %v, want the failed check", err)
 				}
@@ -218,6 +225,72 @@ func TestPostCheckFailureHoldsTheNode(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// A check Job that never ran, as one the run could not create or stopped
+// waiting on, is not a failed check: the run halts with its ordinary recovery
+// steps, and the node is not held as having failed.
+func TestPostCheckThatDidNotRunIsNotAFailedCheck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
+		changeNode(t, cs, func(n *corev1.Node) { n.Labels = map[string]string{"example.com/accel": "true"} })
+		stubUpgradeJob(t, false)
+		stubPostCheck(t, func(context.Context, kubernetes.Interface, nodejob.Spec) error {
+			return errors.New("a post-upgrade check accel-diag Job stratum-upgrade-cp1 is already running; refusing to replace it")
+		})
+		err := runPostCheckNode(cs, false, false, []postCheck{gpuCheck(t)})
+		if err == nil || errors.Is(err, errPostCheckFailed) {
+			t.Fatalf("err = %v, want an error that is not a failed check", err)
+		}
+		for _, want := range []string{"accel-diag", "refusing to replace", "To recover"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error missing %q:\n%v", want, err)
+			}
+		}
+	})
+}
+
+// The run keeps a control plane's cordon past its Job when a check is declared,
+// unless the control plane is the cluster's only one.
+func TestKeepsCPCordon(t *testing.T) {
+	cp := Node{Name: "cp1", IsCP: true}
+	checks := []postCheck{gpuCheck(t)}
+	for _, tc := range []struct {
+		name   string
+		checks []postCheck
+		nodes  []Node
+		want   bool
+	}{
+		{"checks on three control planes", checks, []Node{cp, {Name: "cp2", IsCP: true}, {Name: "cp3", IsCP: true}}, true},
+		{"checks on one control plane and a worker", checks, []Node{cp, {Name: "w1"}}, false},
+		{"no checks", nil, []Node{cp, {Name: "cp2", IsCP: true}}, false},
+	} {
+		if got := keepsCPCordon(tc.checks, tc.nodes); got != tc.want {
+			t.Errorf("%s: keepsCPCordon = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	o := ClusterOptions{From: "/b", Target: "v1.37.1", keepCPCordon: true}
+	if !slices.Contains(nodeUpgradeArgv(o, cp), "--keep-cordon") {
+		t.Error("a control plane's upgrade Job is not told to keep its cordon")
+	}
+	if slices.Contains(nodeUpgradeArgv(o, Node{Name: "w1"}), "--keep-cordon") {
+		t.Error("a worker's upgrade Job is told to keep its cordon")
+	}
+	o.keepCPCordon = false
+	if slices.Contains(nodeUpgradeArgv(o, cp), "--keep-cordon") {
+		t.Error("the only control plane's upgrade Job is told to keep its cordon")
+	}
+}
+
+// A check of the shortest timeout is polled past its deadline, not given up on
+// before its Job is read.
+func TestPostCheckPollsOutlastTheDeadline(t *testing.T) {
+	for _, secs := range []int{1, 4, 900, 86400} {
+		d := time.Duration(secs) * time.Second
+		if polls := postCheckPolls(d); time.Duration(polls)*5*time.Second <= d {
+			t.Errorf("timeoutSeconds %d: %d polls of 5s do not outlast the deadline", secs, polls)
+		}
 	}
 }
 
