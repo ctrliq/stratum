@@ -305,6 +305,72 @@ func TestKeepsCPCordon(t *testing.T) {
 	}
 }
 
+func postCheckNode(t *testing.T) (kubernetes.Interface, Node) {
+	t.Helper()
+	n := upgradeNodeFixture("w1", false, "10.0.0.20")
+	n.Labels["example.com/accel"] = "true"
+	return fake.NewSimpleClientset(n), Node{Name: "w1", Version: "v1.37.1", Ready: true}
+}
+
+// A run that loses its lease after one check does not start the next: it
+// stops with the lease error, not as a failed check.
+func TestPostChecksStopOnALostLeaseBeforeTheNextCheck(t *testing.T) {
+	checks, err := parsePostChecks(postCheckCM(map[string]string{
+		"a-first":  "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, one]\n",
+		"b-second": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, two]\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, n := postCheckNode(t)
+	g := &leaseGuard{}
+	lost := errors.New("lease lost")
+	var ran []string
+	stubPostCheck(t, func(_ context.Context, _ kubernetes.Interface, s nodejob.Spec) error {
+		ran = append(ran, s.Kind)
+		g.mu.Lock()
+		g.lost = lost
+		g.mu.Unlock()
+		return nil
+	})
+	o := ClusterOptions{Target: "v1.37.1", postChecks: checks, lease: g}
+	err = runPostChecks(context.Background(), io.Discard, cs, n, jobName(n.Name), o)
+	if !errors.Is(err, lost) || errors.Is(err, errPostCheckFailed) {
+		t.Fatalf("err = %v, want the lost lease and not a failed check", err)
+	}
+	if !slices.Equal(ran, []string{"post-upgrade check a-first"}) {
+		t.Errorf("checks run = %q, want only the first", ran)
+	}
+}
+
+// A check without timeoutSeconds gets a 900-second deadline.
+func TestPostCheckDefaultTimeoutIsFifteenMinutes(t *testing.T) {
+	checks, err := parsePostChecks(postCheckCM(map[string]string{
+		"accel-diag": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag]\n",
+		"zero":       "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag]\ntimeoutSeconds: 0\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, n := postCheckNode(t)
+	var got []nodejob.Spec
+	stubPostCheck(t, func(_ context.Context, _ kubernetes.Interface, s nodejob.Spec) error {
+		got = append(got, s)
+		return nil
+	})
+	if err := runPostChecks(context.Background(), io.Discard, cs, n, jobName(n.Name), ClusterOptions{postChecks: checks}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("checks run = %d, want 2", len(got))
+	}
+	for _, s := range got {
+		if s.ActiveDeadline != 900*time.Second || s.PollAttempts != postCheckPolls(900*time.Second) {
+			t.Errorf("%s: deadline=%s polls=%d, want 900s and %d", s.Kind, s.ActiveDeadline, s.PollAttempts, postCheckPolls(900*time.Second))
+		}
+	}
+}
+
 // A check of the shortest timeout is polled past its deadline, not given up on
 // before its Job is read.
 func TestPostCheckPollsOutlastTheDeadline(t *testing.T) {
