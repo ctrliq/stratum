@@ -1152,8 +1152,8 @@ func registryFixture(t *testing.T) {
 // pid comps.Restart's replacement check waits for. With refuseRestart the
 // restart op is refused, for the error path. Its containerd answers the CRI
 // status with the runtime handlers of the drop-in on disk when it started and
-// at each restart it served, and reports it started when it was created and
-// at each restart it served; backdateContainerd moves that start earlier.
+// at each restart it served, and its containerd instance changes at each
+// restart it served.
 // Returns a func counting the restart ops served.
 func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	t.Helper()
@@ -1162,32 +1162,26 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, oldCRI, oldStarted := version.ControlSocket, criRuntimeHandlers, containerdStarted
+	old, oldCRI, oldInstance := version.ControlSocket, criRuntimeHandlers, containerdInstance
 	version.ControlSocket = socket
 	t.Cleanup(func() {
-		version.ControlSocket, criRuntimeHandlers, containerdStarted = old, oldCRI, oldStarted
-		backdateContainerd = nil
+		version.ControlSocket, criRuntimeHandlers, containerdInstance = old, oldCRI, oldInstance
 		ln.Close()
 	})
 
 	var mu sync.Mutex
 	served := 0
 	loaded := dropInNamesForTest()
-	started := time.Now()
+	instance := 0
 	criRuntimeHandlers = func(context.Context) ([]string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(loaded), nil
 	}
-	containerdStarted = func() (time.Time, error) {
+	containerdInstance = func() (string, bool) {
 		mu.Lock()
 		defer mu.Unlock()
-		return started, nil
-	}
-	backdateContainerd = func(d time.Duration) {
-		mu.Lock()
-		defer mu.Unlock()
-		started = started.Add(-d)
+		return fmt.Sprintf("fake %d", instance), true
 	}
 	go func() {
 		for {
@@ -1219,7 +1213,7 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 					out.OK, out.Error = false, "restart refused"
 				} else {
 					loaded = dropInNamesForTest()
-					started = time.Now()
+					instance++
 				}
 			}
 			mu.Unlock()
@@ -1229,9 +1223,6 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	}()
 	return func() int { mu.Lock(); defer mu.Unlock(); return served }
 }
-
-// backdateContainerd moves the start of fakeSupervisor's containerd d earlier.
-var backdateContainerd func(d time.Duration)
 
 // dropInNamesForTest is the runtime handlers the drop-in on disk declares.
 func dropInNamesForTest() []string {

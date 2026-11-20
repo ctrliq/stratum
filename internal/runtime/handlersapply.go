@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
+	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/comps"
 	"github.com/ctrliq/stratum/internal/staticpod"
 	"github.com/ctrliq/stratum/internal/version"
@@ -28,8 +29,8 @@ import (
 // handlers, even when the restart after it failed; Restarted is true only
 // when this call restarted a running containerd, so a caller reports the
 // restart from Restarted, never Changed. Unloaded means the running
-// containerd started before the drop-in's latest change, by this call or an
-// earlier one that did not restart it.
+// containerd was already running at the drop-in's latest change, by this
+// call or an earlier one that did not restart it.
 type ApplyHandlersResult struct {
 	Changed   bool
 	Written   bool
@@ -110,7 +111,7 @@ func loadedRuntimeHandlers(ctx context.Context) ([]string, error) {
 // handlersPending reports whether the running containerd needs a restart to
 // run exactly handlers: one of them is not loaded, or it still runs a handler
 // stratum declared before, one that is neither runc nor defined by another
-// file in the shared conf.d, or it started before the drop-in last changed.
+// file in the shared conf.d, or it was running when the drop-in last changed.
 // A containerd that cannot say is pending.
 func handlersPending(handlers map[string]string) bool {
 	loaded, err := loadedRuntimeHandlers(context.Background())
@@ -120,53 +121,74 @@ func handlersPending(handlers map[string]string) bool {
 	if len(missingHandlers(handlers, loaded)) > 0 || len(staleHandlers(handlers, loaded)) > 0 {
 		return true
 	}
-	newer, err := dropInNewerThanContainerd()
-	return err != nil || newer
+	unloaded, err := dropInUnloaded()
+	return err != nil || unloaded
 }
 
-// containerdStarted is when the supervisor's running containerd started.
-var containerdStarted = func() (time.Time, error) {
+// containerdInstance names the supervisor's running containerd process by its
+// PID and start time, so a restart, which replaces the process, changes it. ok
+// is false when no containerd runs under the supervisor, or the supervisor
+// cannot be asked, as before a node starts.
+var containerdInstance = func() (id string, ok bool) {
 	procs, err := comps.Status()
 	if err != nil {
-		return time.Time{}, err
+		return "", false
 	}
-	p, ok := procs["containerd"]
-	if !ok || !p.Running || p.Foreign || p.Pid <= 0 {
-		return time.Time{}, errors.New("containerd is not running under the stratum supervisor")
+	p, found := procs["containerd"]
+	if !found || !p.Running || p.Foreign || p.Pid <= 0 {
+		return "", false
 	}
-	ago, alive, err := staticpod.StartedAgo(p.Pid)
-	if err != nil {
-		return time.Time{}, err
+	ticks, alive, err := staticpod.StartTicks(p.Pid)
+	if err == nil && !alive {
+		return "", false
 	}
-	if !alive {
-		return time.Time{}, fmt.Errorf("containerd (pid %d) exited", p.Pid)
-	}
-	return time.Now().Add(-ago), nil
+	return fmt.Sprintf("%d %d", p.Pid, ticks), true
 }
 
-// dropInSettle is how long after containerd starts a change to the drop-in
-// still counts as read by it. A start writes the drop-in just before it starts
-// containerd, and the process start time is kept to the clock tick, so a
-// write a moment before the start can look a moment after it.
-const dropInSettle = time.Second
+// unloadedPath records the containerd that was running when the
+// runtime-handler drop-in last changed. That containerd read the file before
+// the change, so while it runs, the change is not loaded.
+func unloadedPath() string {
+	return filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), ".stratum-runtime.unloaded")
+}
 
-// dropInNewerThanContainerd reports whether the runtime-handler drop-in
-// changed after the running containerd started, so containerd has not read
-// it. A handler whose binary changed keeps its name, so the names containerd
-// reports cannot show that change.
-func dropInNewerThanContainerd() (bool, error) {
-	fi, err := os.Stat(version.ContainerdRuntimeConfD)
+// recordDropInChange runs before the drop-in changes: it records the running
+// containerd, which will not read the change, or clears the record when none
+// runs, since the next containerd reads the file as it is. A record in place
+// whose directory did not sync is enough: only a host crash loses it, and that
+// also ends the containerd it names.
+func recordDropInChange() error {
+	id, ok := containerdInstance()
+	if !ok {
+		if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+		return err
+	}
+	err := atomicfile.WriteFileWith(unloadedPath(), []byte(id+"\n"), 0o644, atomicfileSeams())
+	if errors.Is(err, atomicfile.ErrNotDurable) {
+		return nil
+	}
+	return err
+}
+
+// dropInUnloaded reports whether the running containerd was already running
+// when the drop-in last changed, so it has not read the change. A handler
+// whose binary changed keeps its name, so the names containerd reports cannot
+// show that change.
+func dropInUnloaded() (bool, error) {
+	b, err := os.ReadFile(unloadedPath())
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	started, err := containerdStarted()
-	if err != nil {
-		return false, fmt.Errorf("ask when containerd started: %w", err)
-	}
-	return fi.ModTime().After(started.Add(dropInSettle)), nil
+	id, ok := containerdInstance()
+	return ok && strings.TrimSpace(string(b)) == id, nil
 }
 
 // missingHandlers is the declared handlers containerd has not loaded.
@@ -249,12 +271,12 @@ func checkLoaded(r *HandlerReport, saved map[string]string) {
 	if stale := staleHandlers(saved, loaded); len(stale) > 0 {
 		r.add(SeverityWarn, "containerd still runs the runtime handlers %s, which this node no longer declares; run `stratum runtime restart`", strings.Join(stale, ", "))
 	}
-	newer, err := dropInNewerThanContainerd()
+	unloaded, err := dropInUnloaded()
 	switch {
 	case err != nil:
-		r.add(SeverityWarn, "%v; cannot tell whether it read the latest %s", err, version.ContainerdRuntimeConfD)
-	case newer:
-		r.add(SeverityError, "containerd started before %s last changed, so it runs the runtime handlers as they were; run `stratum runtime restart`", version.ContainerdRuntimeConfD)
+		r.add(SeverityWarn, "%v; cannot tell whether containerd read the latest %s", err, version.ContainerdRuntimeConfD)
+	case unloaded:
+		r.add(SeverityError, "containerd has not restarted since %s last changed, so it runs the runtime handlers as they were; run `stratum runtime restart`", version.ContainerdRuntimeConfD)
 	}
 }
 

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/version"
@@ -341,7 +341,6 @@ func TestApplyHandlersRestartsForABinaryChangedUnderTheSameName(t *testing.T) {
 	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true); err != nil {
 		t.Fatal(err)
 	}
-	backdateContainerd(time.Hour)
 	moved := map[string]string{"gvisor": fakeBinary(t, "runsc-next")}
 	res, err := ApplyHandlers(io.Discard, moved, false)
 	if err != nil {
@@ -350,7 +349,7 @@ func TestApplyHandlersRestartsForABinaryChangedUnderTheSameName(t *testing.T) {
 	if !res.Changed || !res.Unloaded || res.Restarted || restarts() != 1 {
 		t.Fatalf("apply without a restart = %+v after %d restarts, want changed and unloaded", res, restarts())
 	}
-	if r := CheckHandlers(moved); !strings.Contains(findings(r, SeverityError), "started before") {
+	if r := CheckHandlers(moved); !strings.Contains(findings(r, SeverityError), "has not restarted since") {
 		t.Errorf("check before the restart = %+v, want an error that containerd has not read the drop-in", r.Findings)
 	}
 	res, err = ApplyHandlers(io.Discard, moved, true)
@@ -600,5 +599,23 @@ func TestApplyAndCheckAgreeOnTheSharedConfD(t *testing.T) {
 	}
 	if got := findings(CheckHandlers(nil), SeverityError); !strings.Contains(got, bad+" does not parse") {
 		t.Errorf("check = %s, want %s reported as not parsing", got, bad)
+	}
+}
+
+// A drop-in written while no containerd runs is read by the next one to
+// start, so the write clears the record of an earlier, unloaded change.
+func TestWriteHandlersWithNoContainerdClearsTheUnloadedRecord(t *testing.T) {
+	handlersHost(t, true)
+	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unloadedPath(), []byte("100 5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(unloadedPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("record after a write with no containerd: %v, want it removed", err)
 	}
 }

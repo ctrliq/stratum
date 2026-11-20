@@ -168,6 +168,9 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 		if prevErr != nil || !strings.HasPrefix(string(prev), handlersMarker) {
 			return false, nil
 		}
+		if err := recordDropInChange(); err != nil {
+			return false, fmt.Errorf("record the drop-in change: %w", err)
+		}
 		if err := os.Remove(path); err != nil {
 			return false, err
 		}
@@ -191,6 +194,9 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	}
 	if prevErr == nil && !strings.HasPrefix(string(prev), handlersMarker) {
 		fmt.Fprintf(w, "  WARN: %s was not written by stratum; replacing it with the runtime handlers this node declares\n", path)
+	}
+	if err := recordDropInChange(); err != nil {
+		return false, fmt.Errorf("record the drop-in change: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return false, err
