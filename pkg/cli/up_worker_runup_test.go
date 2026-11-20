@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/cluster"
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -60,10 +61,17 @@ func runUpWorker(t *testing.T, o runUpOptions, config string, saved *cluster.Nod
 		t.Fatal(err)
 	}
 
-	oldInstall, oldRun, oldJoin := installUnit, runWorkerFn, prepareWorkerFn
-	t.Cleanup(func() { installUnit, runWorkerFn, prepareWorkerFn = oldInstall, oldRun, oldJoin })
+	oldInstall, oldRun, oldJoin, oldResolve := installUnit, runWorkerFn, prepareWorkerFn, resolveJoinNodeIP
+	t.Cleanup(func() {
+		installUnit, runWorkerFn, prepareWorkerFn, resolveJoinNodeIP = oldInstall, oldRun, oldJoin, oldResolve
+	})
 	installUnit = func([]string) error { return nil }
 	runWorkerFn = func(context.Context, *cluster.NodeState) error { return nil }
+	// The pre-stage check accepts every address here, so these wiring tests
+	// do not depend on the runner's $NODE_IP or network.
+	resolveJoinNodeIP = func(string, string, bool) (host.NodeIPChoice, error) {
+		return host.NodeIPChoice{IP: "192.0.2.1"}, nil
+	}
 	call := &joinCall{}
 	prepareWorkerFn = func(_ context.Context, w cluster.WorkerOptions) (*cluster.NodeState, error) {
 		*call = joinCall{called: true, server: w.Server, token: w.Token, caHash: w.CAHash, nodeIP: w.NodeIP, configNodeIP: w.ConfigNodeIP, serviceCIDR: w.ServiceCIDR, podCIDR: w.PodCIDR, domain: w.ClusterDomain, profile: w.Profile, dual: w.DualStack, selinuxOptOut: w.SELinuxOptOut}
@@ -90,7 +98,7 @@ func TestRunUpWorkerJoinReadsTheConfig(t *testing.T) {
 	}{
 		{name: "config nodeIP", config: nodeIPConfig, want: "|10.50.0.4"},
 		{name: "flag and config both passed", config: nodeIPConfig, flag: "10.9.9.9", want: "10.9.9.9|10.50.0.4"},
-		{name: "no nodeIP leaves $NODE_IP and detection to the join", config: "spec: {}\n", want: "|"},
+		{name: "no nodeIP hands the join neither address", config: "spec: {}\n", want: "|"},
 		{name: "zero-valued field refused", config: nodeIPConfig + "  operator: false\n", want: "-", wantErr: "spec.operator"},
 		{name: "refused even with the flag", config: nodeIPConfig + "  snapshots:\n    retain: 0\n", flag: "10.9.9.9", want: "-", wantErr: "spec.snapshots.retain"},
 		{name: "misspelled key refused", config: "spec:\n  network:\n    nodeAddr: 10.50.0.4\n", want: "-", wantErr: "nodeAddr"},
