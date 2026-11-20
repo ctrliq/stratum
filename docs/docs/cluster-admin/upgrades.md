@@ -173,9 +173,90 @@ starts it. A node you cordoned before the run is drained and upgraded, and stays
 cordoned afterwards. The run uncordons only the nodes it cordoned; see
 [Cordon ownership](../appendices/upgrade-reference.md#cordon-ownership).
 
+To have the run check a node before it returns the node to service, declare the
+check first; see
+[Check nodes before they return to service](#check-nodes-before-they-return-to-service).
+
 The first node that fails stops new nodes from starting, and nodes already in
 flight finish. To continue, follow
 [Recover from a halted cluster upgrade](#recover-from-a-halted-cluster-upgrade).
+
+### Check nodes before they return to service
+
+A cluster upgrade can run your own checks on a node after its upgrade and
+before it uncordons the node, for example a hardware diagnostic on the nodes
+that carry an accelerator. Stratum ships no checks: you declare each one in the
+ConfigMap `kube-system/stratum-upgrade-node-checks`, and every later
+`upgrade --cluster` run reads it. A one-node `stratum upgrade`, without
+`--cluster`, runs no checks.
+
+A check runs a binary that is already installed on the node, as root, in the
+host's namespaces. It passes when the binary exits `0`.
+
+1. Install the check binary on every node the check selects, at the same
+   absolute path.
+
+2. Write the ConfigMap. Each key under `data` is one check, named by its key:
+
+    ```yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: stratum-upgrade-node-checks
+      namespace: kube-system
+    data:
+      accel-diag: |
+        nodeSelector: example.com/accelerator=true
+        command: ["/usr/bin/accel-diag", "--quick"]
+        timeoutSeconds: 600
+    ```
+
+    `nodeSelector` picks the nodes, `command` is the binary and its arguments,
+    and `timeoutSeconds` is how long the check may run in seconds, 900 if you
+    leave it out. The fields
+    and their rules are in
+    [Post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks).
+
+3. Apply it from a control-plane node:
+
+    ```console
+    # /usr/local/bin/stratum kubectl apply -f stratum-upgrade-node-checks.yaml
+    ```
+
+4. Preview the rollout, as in step 1 of
+   [Upgrade a whole cluster](#upgrade-a-whole-cluster). The plan has one line
+   for each check:
+
+    ```text
+      after each node's upgrade, before its uncordon: check accel-diag on nodes matching example.com/accelerator=true: /usr/bin/accel-diag --quick
+    ```
+
+    A malformed entry stops the preview with an error that names the check, and
+    a real run refuses the same way before it cordons any node.
+
+5. Run the rollout. For each node the check selects, the run prints
+   `==> Post-upgrade check accel-diag on <node>` and, once the check passes,
+   `<node> passed check accel-diag`. The check runs as the node's
+   `stratum-upgrade-<node>` Job, so follow it with the commands in step 3 of
+   [Upgrade a whole cluster](#upgrade-a-whole-cluster).
+
+A check that fails stops the run. The node keeps the new version, but stays
+cordoned and is not recorded as upgraded. The error names the check and the
+command that shows the check's log. Fix the node, then run the same
+`upgrade --cluster` command again: it finishes the node, runs its checks again
+and uncordons it once they pass. Do not uncordon the node by hand, which
+returns it to service without its checks.
+
+!!! warning "A cluster with one control plane"
+    On a cluster with one control plane, that node is uncordoned by its own
+    upgrade Job, and its checks run after it can take pods again. If a check
+    fails, the run cordons it again, but pods scheduled there in between are
+    not evicted. The other limits are in
+    [Limitations of the checks](../appendices/upgrade-reference.md#limitations-of-the-checks).
+
+To stop running a check, remove its key from the ConfigMap. To stop running
+all of them, delete the ConfigMap. The MCP server cannot write it; see
+[MCP Server](mcp.md).
 
 ### A single-node cluster
 
@@ -222,6 +303,20 @@ controller's upgrade Job uncordons its node once the node's upgrade succeeds,
 and that can happen before or after the run stops; see
 [Uncordoning after a halted run](../appendices/upgrade-reference.md#uncordoning-after-a-halted-run).
 
+When the cluster declares
+[post-upgrade node checks](#check-nodes-before-they-return-to-service), step 2
+offers only the re-run, which runs the node's checks before it uncordons the
+node:
+
+```text
+    2. <path> upgrade --cluster --target <target> --from <path> --yes    (finishes the node, and runs its
+       post-upgrade checks before it uncordons it)
+```
+
+A controller whose upgrade Job keeps its cordon for the checks, on a cluster
+with more than one control plane, is then said to be `left cordoned`, as a
+worker is.
+
 `<path>` is the halted run's `--from` binary. Run every command as printed, with
 `sudo`. A path that contains spaces or other shell characters is printed in
 single quotes. The commands use that binary because the `stratum` on your `PATH`
@@ -238,8 +333,10 @@ may be an older release, and the node has no `kubectl` on its `PATH`.
 
 If you do not want to re-run yet, and the node is at the target and healthy, run
 `sudo <path> kubectl uncordon <node>` to restore its workloads. Skip this if you
-cordoned the node yourself before the run. Run the step 2 command later to
-upgrade the remaining nodes and clear the annotations.
+cordoned the node yourself before the run, or if the cluster declares
+post-upgrade node checks: an uncordon by hand returns the node without them.
+Run the step 2 command later to upgrade the remaining nodes and clear the
+annotations.
 
 ## Roll back a node
 
@@ -342,6 +439,10 @@ when it cannot confirm the member count. For an HA cluster, use
 | `the supervisor did not come back on <installed binary> with every component running within 3m0s (…)` | The upgrade keeps the new build and does not roll back. See [The supervisor restart](../appendices/upgrade-reference.md#the-supervisor-restart). |
 | `the in-progress upgrade marker /var/lib/stratum/upgrade/in-progress.json …` | The marker of an interrupted upgrade cannot be read. Check the `*.bak-<stamp>` backups, then delete the file. |
 | `<node> hosts a CoreDNS replica and no other replica became Ready within 5m0s; …` | Get a CoreDNS replica Ready on another node, then re-run the cluster upgrade. |
+| `kube-system/stratum-upgrade-node-checks: check "<name>": …` | An entry in the post-upgrade checks is malformed. Nothing was changed. Fix the entry the message names; the rules are in [Post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks). |
+| `read kube-system/stratum-upgrade-node-checks: …` | The run could not read the post-upgrade checks, so it changed nothing. Fix the cause the message gives, then re-run. |
+| `ask the upgrade binary <path> whether it can keep a control plane cordoned: … (no node was cordoned or upgraded)` | The upgrade binary did not answer. Check that it runs on this node, then re-run. |
+| `post-upgrade node check failed: <name> on <node>: …` | Read the check's log with the command the message gives, fix the node, then re-run the same command. See [Check nodes before they return to service](#check-nodes-before-they-return-to-service). |
 
 What each health check tests is listed in
 [The node health gate](../appendices/upgrade-reference.md#the-node-health-gate).

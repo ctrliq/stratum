@@ -843,3 +843,17 @@ func TestPodSpecGuardsRefuseAManifestTooDeepToCheck(t *testing.T) {
 		t.Errorf("a manifest too deep to check: %v, want a refusal", err)
 	}
 }
+
+// The post-upgrade checks name a command a cluster upgrade runs as root, so
+// their ConfigMap is refused for apply and delete alike; the same name in
+// another namespace is an ordinary ConfigMap.
+func TestPostUpgradeCheckConfigMapIsNotWritable(t *testing.T) {
+	cm := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
+	err := checkEngineConfigMap(cm, metav1.NamespaceSystem, "stratum-upgrade-node-checks")
+	if err == nil || !strings.Contains(err.Error(), "fixed policy") {
+		t.Errorf("kube-system/stratum-upgrade-node-checks: %v, want the fixed refusal", err)
+	}
+	if err := checkEngineConfigMap(cm, metav1.NamespaceDefault, "stratum-upgrade-node-checks"); err != nil {
+		t.Errorf("default/stratum-upgrade-node-checks: %v, want it allowed", err)
+	}
+}

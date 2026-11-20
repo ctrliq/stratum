@@ -31,6 +31,7 @@ func newUpgradeCommand() *cobra.Command {
 		importImgs  bool
 		expect      string
 		expectSum   string
+		keepCordon  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "upgrade",
@@ -69,7 +70,7 @@ func newUpgradeCommand() *cobra.Command {
 			}
 			err := upgradeNode(os.Stdout, upgrade.NodeOptions{
 				Target: target, From: from, SoakSec: soak, SkipSnapshot: skipSnap, DryRun: dry, Check: check,
-				ImportImages: importImgs, ExpectBuild: expect, ExpectSHA256: expectSum,
+				ImportImages: importImgs, ExpectBuild: expect, ExpectSHA256: expectSum, KeepCordon: keepCordon,
 			})
 			// --check answers in its exit status: the cluster orchestrator reads
 			// it from the Job's pod before deciding whether to drain.
@@ -109,6 +110,8 @@ func newUpgradeCommand() *cobra.Command {
 	// other nodes must already hold their images.
 	fs.BoolVar(&importImgs, "import-images", false, "import this upgrade binary's images into the node's runtime, and change nothing else")
 	_ = fs.MarkHidden("import-images")
+	fs.BoolVar(&keepCordon, "keep-cordon", false, "leave a control-plane node cordoned after its upgrade, for the cluster upgrade to uncordon")
+	_ = fs.MarkHidden("keep-cordon")
 	return cmd
 }
 

@@ -26,6 +26,7 @@ import (
 
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 	"github.com/ctrliq/stratum/internal/selinux"
+	"github.com/ctrliq/stratum/internal/upgrade"
 )
 
 // The generic Kubernetes write toolset.
@@ -134,14 +135,21 @@ func (p WritePolicy) check(gvr schema.GroupVersionResource, deleting bool) error
 	return nil
 }
 
-// checkEngineConfigMap refuses the kube-system ConfigMaps the operator acts
-// on with its own cluster-admin identity, at every tier: an inventory entry is
-// a list of objects the operator deletes, and a node-client claim holds a node
-// name against reuse by a later join. The names are internal/operator's
-// inventoryConfigMapName and nodeClientClaimName.
+// checkEngineConfigMap refuses the kube-system ConfigMaps the engine acts on
+// with its own cluster-admin identity, at every tier: an inventory entry is a
+// list of objects the operator deletes, a node-client claim holds a node name
+// against reuse by a later join, and the post-upgrade checks name a command a
+// cluster upgrade runs as root on nodes. The names are internal/operator's
+// inventoryConfigMapName and nodeClientClaimName, and
+// upgrade.PostCheckConfigMap.
 func checkEngineConfigMap(gvr schema.GroupVersionResource, ns, name string) error {
 	if gvr.Group != "" || gvr.Resource != "configmaps" || ns != metav1.NamespaceSystem {
 		return nil
+	}
+	if name == upgrade.PostCheckConfigMap {
+		return fmt.Errorf("ConfigMap %s/%s is not writable through this server (a cluster upgrade runs the "+
+			"commands it names as root on the nodes it selects, so writing it would get around this server's tiers). "+
+			"This is a fixed policy, not a permission that can be granted by a flag", ns, name)
 	}
 	if name != "stratum-addon-inventory" && !strings.HasPrefix(name, "stratum-node-client-claim-") {
 		return nil

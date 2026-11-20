@@ -143,6 +143,7 @@ func fastOrchestrator(t *testing.T, onJob func(n int)) *int {
 	oldBuild, oldVersion := readStagedBuild, readStagedVersion
 	swap(t, &runImageImport, func(context.Context, kubernetes.Interface, nodejob.Spec) error { return nil })
 	swap(t, &stagedImportsImages, func(context.Context, string) (bool, error) { return true, nil })
+	swap(t, &stagedKeepsCordon, func(context.Context, string) (bool, error) { return true, nil })
 	jobs := 0
 	runExitCode = func(context.Context, kubernetes.Interface, nodejob.Spec) (int, error) {
 		return ExitUpgradeNeeded, nil
