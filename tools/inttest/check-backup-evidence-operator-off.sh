@@ -14,10 +14,11 @@
 # artifact on the publisher's cadence, and `snapshot list -o json` serves
 # the same evidence the record summarises.
 #
-# The snapshot is taken by hand, not by the scheduled loop: the default
-# interval is twelve hours, and what this check proves is the publisher's
-# lifecycle, which samples on its own one-minute cadence whatever the
-# store holds.
+# The scheduled loop takes its first snapshot as soon as etcd is up. The
+# check waits for that one, then takes one by hand under a known name, so
+# the store holds exactly two: what this check proves is the publisher's
+# lifecycle, which samples on its own one-minute cadence whatever the store
+# holds.
 . "$(dirname "$0")/harness.sh"
 
 CFG=$ROOT/operator-off.yaml
@@ -71,6 +72,11 @@ else
   fail "the record carries no node scope: '$node_from_record'"
 fi
 
+# The first scheduled snapshot, taken once etcd is up. Waiting for it keeps
+# the counts below exact whichever lands first.
+wait_for "the first scheduled snapshot" 180 sh -c \
+  "ls /var/backups/etcd/etcd-snapshot-*.db >/dev/null 2>&1"
+
 # A real snapshot's artifact, described by the publisher's next sample: the
 # record is refreshed on the cadence, not written once at start.
 out=$($STRATUM snapshot save --name inttest-evidence.db 2>&1) \
@@ -80,13 +86,13 @@ if [[ -s /var/backups/etcd/inttest-evidence.db ]]; then
 else
   fail "no snapshot at /var/backups/etcd/inttest-evidence.db: $out"
 fi
-wait_for "the record to describe the snapshot" 300 sh -c \
-  "test \"\$(sed -n 's/^localArtifacts:[[:space:]]*//p' $REC 2>/dev/null)\" -ge 1 2>/dev/null"
+wait_for "the record to describe both snapshots" 300 sh -c \
+  "test \"\$(sed -n 's/^localArtifacts:[[:space:]]*//p' $REC 2>/dev/null)\" -ge 2 2>/dev/null"
 node_uid=$($K get node "$node" -o jsonpath='{.metadata.uid}')
 wait_for "the publisher to resolve the node UID" 120 sh -c \
   "test \"\$(sed -n 's/^nodeUID:[[:space:]]*//p' $REC 2>/dev/null)\" = '$node_uid'"
 assert_eq "the record carries the immutable node UID" "$node_uid" "$(record_field nodeUID)"
-assert_eq "the record counts the snapshot" "1" "$(record_field localArtifacts)"
+assert_eq "the record counts both snapshots" "2" "$(record_field localArtifacts)"
 assert_eq "the record's deduplicated total is exact" "true" "$(record_field exactTotal)"
 
 # The machine-readable surface on the installed node: the same evidence rows
@@ -101,8 +107,8 @@ if [[ $policy_state == configured || $policy_state == unconfigured ]]; then
 else
   fail "the evidence's policy state is '$policy_state', not a resolvable one"
 fi
-assert_eq "the evidence counts the snapshot the record described" \
-  "1" "$(evidence_field "sum(1 for e in d['backups']['entries'] if e['local'] is not None)")"
+assert_eq "the evidence counts the snapshots the record described" \
+  "2" "$(evidence_field "sum(1 for e in d['backups']['entries'] if e['local'] is not None)")"
 assert_eq "the evidence carries the immutable node UID" "$node_uid" "$(evidence_field "d['nodeUID']")"
 assert_eq "each local artifact has a location and copy identity" "True" \
   "$(evidence_field "all(a['locationID'].startswith('sha256:') and a['copyID'].startswith('sha256:') for a in d['local']['artifacts'])")"
@@ -112,8 +118,8 @@ else
   fail "the census is not complete: a partial listing is presented as a total"
 fi
 assert_eq "the evidence's node scope matches the record" "$node_from_record" "$(evidence_field "d['node']")"
-snap_id=$(evidence_field "[e['id'] for e in d['backups']['entries'] if e['local'] is not None][0]")
-assert_eq "the census names the snapshot's stable ID" "inttest-evidence.db" "$snap_id"
+assert_eq "the census names the hand-taken snapshot's stable ID" "1" \
+  "$(evidence_field "sum(1 for e in d['backups']['entries'] if e['id'] == 'inttest-evidence.db' and e['local'] is not None)")"
 
 # The native text table stays the listing it was: the JSON surface is
 # additive.
