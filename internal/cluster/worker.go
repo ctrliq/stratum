@@ -67,7 +67,8 @@ type WorkerOptions struct {
 	ServiceCIDR   string
 	PodCIDR       string
 	ClusterDomain string
-	// Profile selects the named node profile on a join.
+	// Profile selects the named node profile on a join. On a restart, a
+	// profile other than the saved one is refused.
 	Profile string
 	// SELinuxOptOut is spec.selinux: false from the config file, nil when a
 	// restart's file does not set it; a restart saves a changed setting.
@@ -114,6 +115,9 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		p, err := profile.Select(st.ProfileName())
 		if err != nil {
 			return nil, fmt.Errorf("this worker's saved state names a %w; run it with a binary that registers the profile", err)
+		}
+		if err := RefuseWorkerProfileChange(st, profileName); err != nil {
+			return nil, err
 		}
 		// Every refusal comes before the restart saves a setting or prepares
 		// the host, so a refused start leaves node.yaml and the host as they
@@ -428,4 +432,28 @@ func FormatKeyValues(m map[string]string) string {
 		out = append(out, k+"="+m[k])
 	}
 	return strings.Join(out, ",")
+}
+
+// RefuseWorkerProfileChange refuses a worker restart that names a profile
+// other than the one st, the worker's saved state, records. No profile named
+// keeps the saved one.
+func RefuseWorkerProfileChange(st *NodeState, want string) error {
+	if want == "" || want == st.ProfileName() {
+		return nil
+	}
+	return fmt.Errorf("worker restart: this worker joined with %s, and a restart cannot change it to profile %q: "+
+		"a worker takes its profile from its join. To move it, remove spec.profile and spec.cis from this worker's "+
+		"config file, which a worker join refuses, then run `stratum token create` on a control plane and run the "+
+		"worker join line it prints on this node with its --profile set to %s, adding one if the line has none. "+
+		"The join replaces this worker's saved state with what that line and the config file give, so also add "+
+		"the --node-ip, --dual-stack, --node-label, --node-taint and --runtime-handler settings that %s records "+
+		"and the config file does not set. Then restart the worker as before. Nothing was changed",
+		describeProfile(st.ProfileName()), want, want, nodestate.StatePath())
+}
+
+func describeProfile(name string) string {
+	if name == "" {
+		return "no profile"
+	}
+	return fmt.Sprintf("profile %q", name)
 }
