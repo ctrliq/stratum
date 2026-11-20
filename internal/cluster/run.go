@@ -1570,9 +1570,12 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 	started := time.Now()
 	// The start phase's saves run under the window's deadline: etcdctl has no
 	// timeout of its own, so a save that hangs while etcd comes up is cut off
-	// when the window ends and the window's log line still comes. The ticks
+	// when the window ends and the window's log line still comes. A window
+	// that ends during a retry wait ends the wait too, with no save under the
+	// expired deadline: the line reports the last real failure. The ticks
 	// keep the controller's context.
-	startCtx, cancelStart := context.WithDeadline(ctx, started.Add(interval))
+	deadline := started.Add(interval)
+	startCtx, cancelStart := context.WithDeadline(ctx, deadline)
 	defer cancelStart()
 	warned := false
 	for {
@@ -1583,22 +1586,27 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 			}
 			break
 		}
-		failing := time.Since(started)
-		if failing >= interval {
+		if !time.Now().Before(deadline) {
 			fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
 			break
 		}
-		if !warned && failing >= bindingWarnAfter {
+		if failing := time.Since(started); !warned && failing >= bindingWarnAfter {
 			warned = true
 			fmt.Fprintf(os.Stderr, "stratum: WARN: scheduled etcd snapshot still failing after %v: %v; retrying every %v\n",
 				failing.Round(time.Second), err, snapshotStartRetry)
 		}
 		timer := time.NewTimer(snapshotStartRetry)
 		select {
-		case <-ctx.Done():
+		case <-startCtx.Done():
 			timer.Stop()
-			return
 		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
+			break
 		}
 	}
 	t := time.NewTicker(interval)

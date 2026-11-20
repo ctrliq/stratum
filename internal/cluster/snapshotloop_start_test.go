@@ -121,7 +121,7 @@ func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 		snapshotStartRetry = 30 * time.Minute
 		var attempts atomic.Int32
 		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
-			if n := attempts.Add(1); n <= 3 {
+			if n := attempts.Add(1); n <= 2 {
 				return "", fmt.Errorf("attempt %d", n)
 			}
 			return "", nil
@@ -131,14 +131,14 @@ func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// Attempts at 0, 30m and 1h: the last one fails exactly when the
-		// one-interval window ends, so the window closes with no success.
-		// The ticker then arms at 1h and its tick at 2h saves (the fake
-		// succeeds by then), so after two fake hours there are four saves.
+		// Attempts at 0 and 30m fail. The retry due at 1h falls on the
+		// window's end, so no attempt is made under the expired deadline:
+		// the window closes with no success. The ticker then arms at 1h and
+		// its tick at 2h saves, so after two fake hours there are three.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
-		if got := attempts.Load(); got != 4 {
-			t.Fatalf("saves = %d, want 4 (three failed start attempts across the window plus the first tick's save): the loop must keep running on its interval after the start window ends", got)
+		if got := attempts.Load(); got != 3 {
+			t.Fatalf("saves = %d, want 3 (two failed start attempts across the window plus the first tick's save): the loop must keep running on its interval after the start window ends", got)
 		}
 	})
 
@@ -148,8 +148,8 @@ func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 	if lines := strings.Count(string(out), "stratum: scheduled etcd snapshot:"); lines != 1 {
 		t.Errorf("the end-of-window failure was logged %d times, want exactly once; stderr said:\n%s", lines, out)
 	}
-	if !strings.Contains(string(out), "stratum: scheduled etcd snapshot: attempt 3\n") {
-		t.Errorf("the logged error is not the window's LAST start failure (attempt 3); stderr said:\n%s", out)
+	if !strings.Contains(string(out), "stratum: scheduled etcd snapshot: attempt 2\n") {
+		t.Errorf("the logged error is not the window's LAST start failure (attempt 2); stderr said:\n%s", out)
 	}
 }
 
@@ -243,7 +243,7 @@ func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T
 		oldInterval, oldSnap, oldRetry := snapshotInterval, snapshotSave, snapshotStartRetry
 		t.Cleanup(func() { snapshotInterval, snapshotSave, snapshotStartRetry = oldInterval, oldSnap, oldRetry })
 		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
-		snapshotStartRetry = 20 * time.Minute
+		snapshotStartRetry = 15 * time.Minute
 		var saves atomic.Int32
 		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
 			if saves.Add(1) < 4 {
@@ -256,9 +256,9 @@ func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// Failed saves at 0, 20m and 40m, the retry succeeds at 1h, and
-		// the ticker armed at 1h saves again on its 2h tick: the loop kept
-		// running past the failed first save to its next tick.
+		// Failed saves at 0, 15m and 30m, the retry succeeds at 45m, and
+		// the ticker armed at 45m saves again on its 1h45m tick: the loop
+		// kept running past the failed first save to its next tick.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
 		if got := saves.Load(); got != 5 {
@@ -448,6 +448,68 @@ func TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow(t *testing.T) {
 	out, _ := io.ReadAll(r)
 	if lines := strings.Count(string(out), "stratum: scheduled etcd snapshot: context deadline exceeded\n"); lines != 1 {
 		t.Errorf("the stopped start save was logged %d times, want exactly once; stderr said:\n%s", lines, out)
+	}
+}
+
+// TestSnapshotLoopEndsTheWindowDuringARetryWait pins a window that ends
+// between two retries: the wait ends with the window, no save is made under
+// the expired deadline, the line reports the last real failure, and the
+// ticker arms at the window's end rather than after the wait.
+func TestSnapshotLoopEndsTheWindowDuringARetryWait(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = origErr
+		w.Close()
+		r.Close()
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		oldInterval, oldSnap, oldRetry := snapshotInterval, snapshotSave, snapshotStartRetry
+		t.Cleanup(func() { snapshotInterval, snapshotSave, snapshotStartRetry = oldInterval, oldSnap, oldRetry })
+		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
+		snapshotStartRetry = 25 * time.Minute
+		var saves, expired atomic.Int32
+		snapshotSave = func(ctx context.Context, _ *ClusterConfig) (string, error) {
+			n := saves.Add(1)
+			if ctx.Err() != nil {
+				expired.Add(1)
+			}
+			if n <= 3 {
+				return "", fmt.Errorf("attempt %d", n)
+			}
+			return "", nil
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go snapshotLoop(ctx, cfgForLoop(t))
+
+		// Attempts at 0, 25m and 50m fail. The next retry is due at 75m,
+		// past the window's end at 1h, so the wait ends at 1h with no save.
+		// The ticker arms at 1h and its tick at 2h saves: four saves.
+		time.Sleep(2 * time.Hour)
+		synctest.Wait()
+		if got := saves.Load(); got != 4 {
+			t.Fatalf("saves = %d, want 4 (three failed start attempts, then the tick at 2h): the window's end must end the retry wait and arm the ticker", got)
+		}
+		if n := expired.Load(); n != 0 {
+			t.Errorf("%d save(s) ran under an expired context; the window's end must not trigger another start save", n)
+		}
+	})
+
+	os.Stderr = origErr
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if lines := strings.Count(string(out), "stratum: scheduled etcd snapshot:"); lines != 1 {
+		t.Errorf("the window's end was logged %d times, want exactly once; stderr said:\n%s", lines, out)
+	}
+	if !strings.Contains(string(out), "stratum: scheduled etcd snapshot: attempt 3\n") {
+		t.Errorf("the logged error is not the last real start failure (attempt 3); stderr said:\n%s", out)
 	}
 }
 
