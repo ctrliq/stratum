@@ -399,6 +399,91 @@ func TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing(t *testing.T) {
 	}
 }
 
+// TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow pins the window's
+// deadline on the start saves: etcdctl has no timeout of its own, so a save
+// that hangs while etcd comes up would otherwise hold the loop past the
+// window with no log line and no tick. The hung save is stopped when the
+// window ends, its error is logged once, and the loop goes on to its ticks.
+func TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = origErr
+		w.Close()
+		r.Close()
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		oldInterval, oldSnap := snapshotInterval, snapshotSave
+		t.Cleanup(func() { snapshotInterval, snapshotSave = oldInterval, oldSnap })
+		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
+		var saves atomic.Int32
+		snapshotSave = func(ctx context.Context, _ *ClusterConfig) (string, error) {
+			if saves.Add(1) == 1 {
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			return "", nil
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go snapshotLoop(ctx, cfgForLoop(t))
+
+		// The first save hangs until the window ends at 1h, the ticker arms
+		// then, and its tick at 2h saves.
+		time.Sleep(2 * time.Hour)
+		synctest.Wait()
+		if got := saves.Load(); got != 2 {
+			t.Fatalf("saves = %d, want 2 (the hung start save, stopped at the window's end, then the first tick's): a start save must not outlast the window", got)
+		}
+	})
+
+	os.Stderr = origErr
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if lines := strings.Count(string(out), "stratum: scheduled etcd snapshot: context deadline exceeded\n"); lines != 1 {
+		t.Errorf("the stopped start save was logged %d times, want exactly once; stderr said:\n%s", lines, out)
+	}
+}
+
+// TestSnapshotLoopTicksKeepTheControllerContext pins that the window's
+// deadline is for the start phase only: a tick's save runs under the
+// controller's context, with no deadline.
+func TestSnapshotLoopTicksKeepTheControllerContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		oldInterval, oldSnap := snapshotInterval, snapshotSave
+		t.Cleanup(func() { snapshotInterval, snapshotSave = oldInterval, oldSnap })
+		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
+		var saves, tickDeadlines atomic.Int32
+		snapshotSave = func(ctx context.Context, _ *ClusterConfig) (string, error) {
+			if saves.Add(1) > 1 {
+				if _, ok := ctx.Deadline(); ok {
+					tickDeadlines.Add(1)
+				}
+			}
+			return "", nil
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go snapshotLoop(ctx, cfgForLoop(t))
+
+		time.Sleep(2 * time.Hour)
+		synctest.Wait()
+		if got := saves.Load(); got < 2 {
+			t.Fatalf("saves = %d, want at least 2", got)
+		}
+		if n := tickDeadlines.Load(); n != 0 {
+			t.Errorf("%d tick save(s) ran under a deadline; a tick must keep the controller's context", n)
+		}
+	})
+}
+
 // cfgForLoop returns a minimal config for snapshotLoop: the loop reads only
 // the snapshot settings, which the faked interval seam covers.
 func cfgForLoop(t *testing.T) *ClusterConfig {

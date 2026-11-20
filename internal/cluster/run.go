@@ -1553,7 +1553,8 @@ func (w *tickWarnings) recorded() []string { return w.lines }
 // until one succeeds, the context ends, or a full snapshot interval has
 // passed since the loop started — a window that ends without a success
 // reports the last error once, and a control plane restarted more often
-// than the interval still snapshots once per daemon lifetime. A save that
+// than the interval still snapshots once per daemon lifetime. A start save
+// still running when the window ends is stopped there. A save that
 // wrote the local snapshot but failed its S3 upload ends the start phase:
 // retrying it would prune the pre-restart snapshots away. A start phase
 // still failing after bindingWarnAfter warns once and keeps retrying. Config
@@ -1567,9 +1568,15 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 	}
 	interval := snapshotInterval(cfg)
 	started := time.Now()
+	// The start phase's saves run under the window's deadline: etcdctl has no
+	// timeout of its own, so a save that hangs while etcd comes up is cut off
+	// when the window ends and the window's log line still comes. The ticks
+	// keep the controller's context.
+	startCtx, cancelStart := context.WithDeadline(ctx, started.Add(interval))
+	defer cancelStart()
 	warned := false
 	for {
-		path, err := snapshotSave(ctx, cfg)
+		path, err := snapshotSave(startCtx, cfg)
 		if err == nil || path != "" {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
