@@ -526,6 +526,23 @@ func StartTicks(pid int) (uint64, bool, error) {
 	return t, true, nil
 }
 
+// StartedAgo is how long ago process pid started, by the boot clock, to the
+// clock tick. alive is false when the process has exited.
+func StartedAgo(pid int) (ago time.Duration, alive bool, err error) {
+	start, alive, err := StartTicks(pid)
+	if err != nil || !alive {
+		return 0, alive, err
+	}
+	now, err := Now()
+	if err != nil {
+		return 0, false, err
+	}
+	if now.ticks < start {
+		return 0, true, nil
+	}
+	return time.Duration(now.ticks-start) * time.Second / clockTicks, true, nil
+}
+
 // WaitReplaced waits until every process running the component started after
 // mark: once a changed manifest is written, until kubelet has taken down
 // whatever ran before it. A process that started in mark's own tick counts as

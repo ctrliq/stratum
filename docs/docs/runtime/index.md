@@ -185,7 +185,9 @@ node, and changes nothing.
 
 `stratum runtime check` reports whether containerd will run the node's handlers.
 It exits 1 when the file does not match the handlers the node saved, when the
-running containerd has not loaded one of them, when a handler's binary is missing,
+running containerd has not loaded one of them or started before the file last
+changed, which leaves a handler whose binary changed on its old binary, when a
+handler's binary is missing,
 when containerd's configuration does not import the file, when another file in
 `/etc/containerd/conf.d` does not parse, which containerd refuses to start with,
 or, on a control plane, when its configuration file declares other handlers than
@@ -198,7 +200,7 @@ no CDI specs in `/etc/cdi` or `/var/run/cdi`, when another file in
 containerd's default runtime, which would run every pod without a
 `runtimeClassName` under it, when the running containerd still runs a handler
 the node no longer declares, and when containerd cannot say which handlers it
-loaded.
+loaded or when it started.
 
 `stratum runtime restart` restarts containerd on its own, for example after you
 reinstall a handler's binary or after `runtime_apply`, and then updates the

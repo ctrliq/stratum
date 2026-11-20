@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/version"
@@ -327,6 +328,47 @@ func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T)
 	}
 	if got, err := LoadedHandlers(context.Background(), []string{"gvisor", "kata"}); err != nil || !slices.Equal(got, []string{"gvisor", "kata"}) {
 		t.Errorf("LoadedHandlers after the restart = %v, %v; want both", got, err)
+	}
+}
+
+// A handler whose binary changed keeps its name, so containerd's loaded names
+// cannot show that it still runs the old binary. An apply that wrote the
+// change without a restart leaves the restart pending: the check reports it
+// and the next apply with a restart does it, though the drop-in is unchanged.
+func TestApplyHandlersRestartsForABinaryChangedUnderTheSameName(t *testing.T) {
+	handlersHost(t, true)
+	restarts := fakeSupervisor(t, false)
+	if _, err := ApplyHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}, true); err != nil {
+		t.Fatal(err)
+	}
+	backdateContainerd(time.Hour)
+	moved := map[string]string{"gvisor": fakeBinary(t, "runsc-next")}
+	res, err := ApplyHandlers(io.Discard, moved, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Changed || !res.Unloaded || res.Restarted || restarts() != 1 {
+		t.Fatalf("apply without a restart = %+v after %d restarts, want changed and unloaded", res, restarts())
+	}
+	if r := CheckHandlers(moved); !strings.Contains(findings(r, SeverityError), "started before") {
+		t.Errorf("check before the restart = %+v, want an error that containerd has not read the drop-in", r.Findings)
+	}
+	res, err = ApplyHandlers(io.Discard, moved, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Changed || !res.Restarted || res.Unloaded || restarts() != 2 {
+		t.Fatalf("retried apply = %+v after %d restarts, want the pending restart done", res, restarts())
+	}
+	if r := CheckHandlers(moved); findings(r, SeverityError) != "" {
+		t.Errorf("check after the restart = %+v, want no error", r.Findings)
+	}
+	res, err = ApplyHandlers(io.Discard, moved, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Restarted || restarts() != 2 {
+		t.Errorf("apply after the restart = %+v after %d restarts, want no restart", res, restarts())
 	}
 }
 

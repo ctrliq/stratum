@@ -18,6 +18,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
+	"github.com/ctrliq/stratum/internal/comps"
+	"github.com/ctrliq/stratum/internal/staticpod"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -108,13 +110,63 @@ func loadedRuntimeHandlers(ctx context.Context) ([]string, error) {
 // handlersPending reports whether the running containerd needs a restart to
 // run exactly handlers: one of them is not loaded, or it still runs a handler
 // stratum declared before, one that is neither runc nor defined by another
-// file in the shared conf.d. A containerd that cannot say is pending.
+// file in the shared conf.d, or it started before the drop-in last changed.
+// A containerd that cannot say is pending.
 func handlersPending(handlers map[string]string) bool {
 	loaded, err := loadedRuntimeHandlers(context.Background())
 	if err != nil {
 		return true
 	}
-	return len(missingHandlers(handlers, loaded)) > 0 || len(staleHandlers(handlers, loaded)) > 0
+	if len(missingHandlers(handlers, loaded)) > 0 || len(staleHandlers(handlers, loaded)) > 0 {
+		return true
+	}
+	newer, err := dropInNewerThanContainerd()
+	return err != nil || newer
+}
+
+// containerdStarted is when the supervisor's running containerd started.
+var containerdStarted = func() (time.Time, error) {
+	procs, err := comps.Status()
+	if err != nil {
+		return time.Time{}, err
+	}
+	p, ok := procs["containerd"]
+	if !ok || !p.Running || p.Foreign || p.Pid <= 0 {
+		return time.Time{}, errors.New("containerd is not running under the stratum supervisor")
+	}
+	ago, alive, err := staticpod.StartedAgo(p.Pid)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !alive {
+		return time.Time{}, fmt.Errorf("containerd (pid %d) exited", p.Pid)
+	}
+	return time.Now().Add(-ago), nil
+}
+
+// dropInSettle is how long after containerd starts a change to the drop-in
+// still counts as read by it. A start writes the drop-in just before it starts
+// containerd, and the process start time is kept to the clock tick, so a
+// write a moment before the start can look a moment after it.
+const dropInSettle = time.Second
+
+// dropInNewerThanContainerd reports whether the runtime-handler drop-in
+// changed after the running containerd started, so containerd has not read
+// it. A handler whose binary changed keeps its name, so the names containerd
+// reports cannot show that change.
+func dropInNewerThanContainerd() (bool, error) {
+	fi, err := os.Stat(version.ContainerdRuntimeConfD)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	started, err := containerdStarted()
+	if err != nil {
+		return false, fmt.Errorf("ask when containerd started: %w", err)
+	}
+	return fi.ModTime().After(started.Add(dropInSettle)), nil
 }
 
 // missingHandlers is the declared handlers containerd has not loaded.
@@ -196,6 +248,13 @@ func checkLoaded(r *HandlerReport, saved map[string]string) {
 	}
 	if stale := staleHandlers(saved, loaded); len(stale) > 0 {
 		r.add(SeverityWarn, "containerd still runs the runtime handlers %s, which this node no longer declares; run `stratum runtime restart`", strings.Join(stale, ", "))
+	}
+	newer, err := dropInNewerThanContainerd()
+	switch {
+	case err != nil:
+		r.add(SeverityWarn, "%v; cannot tell whether it read the latest %s", err, version.ContainerdRuntimeConfD)
+	case newer:
+		r.add(SeverityError, "containerd started before %s last changed, so it runs the runtime handlers as they were; run `stratum runtime restart`", version.ContainerdRuntimeConfD)
 	}
 }
 
