@@ -276,6 +276,18 @@ func runUp(parent context.Context, o runUpOptions) error {
 	if err := preStageProfile(o); err != nil {
 		return err
 	}
+	// A fresh worker join is refused before the payload is staged, so a bad
+	// --node-ip changes nothing on the host: staging writes the binaries and
+	// images under DataDir, and a refusal after them leaves them behind. The
+	// same resolve + check the join itself runs (cluster.ResolveJoinNodeIP,
+	// shared with PrepareWorker's join path, same inputs and error text)
+	// runs here. A restart is not gated by this — its address comes from
+	// saved node state and its check runs in PrepareWorker as before.
+	if o.worker && o.server != "" {
+		if _, err := resolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
+			return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+		}
+	}
 	// Uninstall takes the same data lock before removing DataDir. Keep staging
 	// outside its deletion window, including for worker starts.
 	releaseStageLock, err := etcddata.Lock(version.EtcdDataDir)
@@ -639,6 +651,9 @@ var (
 	// prepareControlPlaneJoinFn is the HA join seam, so a wiring test sees the
 	// JoinOptions runUp builds from the flags and the config without a join.
 	prepareControlPlaneJoinFn = ha.PrepareControlPlaneJoin
+	// resolveJoinNodeIP is the pre-stage node-IP check's seam: the real one
+	// reads $NODE_IP and detects the host's address, so wiring tests stub it.
+	resolveJoinNodeIP = cluster.ResolveJoinNodeIP
 )
 
 // runControllerWithEvidenceSampler runs the controller with the engine's
