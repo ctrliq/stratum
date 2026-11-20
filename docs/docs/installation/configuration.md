@@ -72,8 +72,31 @@ spec:
 ```
 
 A worker restart (`stratum up --worker` without `--server`, which is what
-`stratum.service` runs after a reboot) reads only `spec.selinux` from the file.
-It keeps the saved setting when the file does not set it or cannot be read.
+`stratum.service` runs after a reboot) reads only `spec.selinux` from the file,
+and `spec.profile` and `spec.cis` only to refuse a change of profile. It keeps
+the saved settings when the file does not set them or cannot be read, and warns
+when it cannot read the file.
+
+A worker keeps the profile it joined with. A restart that names a different
+one, with `--profile`, `--cis`, `spec.profile` or `spec.cis`, refuses and
+changes nothing, and after a reboot the worker stays down until the file and
+its profile agree. To move a worker to another profile:
+
+1. Stop the worker: `systemctl stop stratum` for a worker that
+   `stratum.service` started, or Ctrl+C in the terminal of one you started by
+   hand.
+2. Remove `spec.profile` and `spec.cis` from its config file, since a worker
+   join refuses them.
+3. Run `stratum token create` on a control plane, and run the worker join line
+   it prints on the worker with its `--profile` set to `<name>`. On a cluster
+   that runs a profile the line already ends with `--profile`, so change its
+   value; otherwise add `--profile <name>`. The join replaces the worker's
+   saved state with what the line and the config file give, so also add each
+   setting the worker saved in `/var/lib/stratum/config/node.yaml` that its
+   config file does not set: `--node-ip` and `--dual-stack`, and
+   `--node-label`, `--node-taint` and `--runtime-handler` for labels, taints
+   and runtime handlers given as flags or with `stratum runtime apply`.
+   Otherwise the worker re-joins without them.
 
 ## Node labels, taints and runtime handlers
 
