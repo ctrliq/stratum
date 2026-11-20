@@ -388,8 +388,11 @@ func TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing(t *testing.T) {
 	os.Stderr = origErr
 	w.Close()
 	out, _ := io.ReadAll(r)
-	if lines := strings.Count(string(out), "stratum: WARN: scheduled etcd snapshot still failing after 5m0s: connection refused; retrying every 1m0s\n"); lines != 1 {
+	if lines := strings.Count(string(out), "stratum: WARN: scheduled etcd snapshot still failing"); lines != 1 {
 		t.Errorf("the still-failing warning was logged %d times, want exactly once; stderr said:\n%s", lines, out)
+	}
+	if !strings.Contains(string(out), "stratum: WARN: scheduled etcd snapshot still failing after 5m0s: connection refused; retrying every 1m0s\n") {
+		t.Errorf("the warning did not fire on the first attempt past bindingWarnAfter; stderr said:\n%s", out)
 	}
 	if strings.Contains(string(out), "stratum: scheduled etcd snapshot:") {
 		t.Errorf("the end-of-window line was logged before the window ended; stderr said:\n%s", out)
