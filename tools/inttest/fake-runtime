@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# A runtime handler for the checks: the payload's runc, under a name of its own.
+#
+# A check declares it as a handler's binary and reads /tmp/fake-runtime.log to
+# see that containerd ran a pod's containers through it, which no listing of
+# containerd's configuration can show.
+echo "$*" >>/tmp/fake-runtime.log
+exec /var/lib/stratum/bin/runc "$@"
