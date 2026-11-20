@@ -67,7 +67,8 @@ type WorkerOptions struct {
 	ServiceCIDR   string
 	PodCIDR       string
 	ClusterDomain string
-	// Profile selects the named node profile on a join.
+	// Profile selects the named node profile on a join. On a restart, a
+	// profile other than the saved one is refused.
 	Profile string
 	// SELinuxOptOut is spec.selinux: false from the config file, nil when a
 	// restart's file does not set it; a restart saves a changed setting.
@@ -443,7 +444,7 @@ func RefuseWorkerProfileChange(st *NodeState, want string) error {
 	return fmt.Errorf("worker restart: this worker joined with %s, and a restart cannot change it to profile %q: "+
 		"a worker takes its profile from its join. To move it, remove spec.profile and spec.cis from this worker's "+
 		"config file, which a worker join refuses, then run `stratum token create` on a control plane and run the "+
-		"worker join line it prints on this node with --profile %s added; the join replaces this worker's saved "+
+		"worker join line it prints on this node with its --profile set to %s, adding one if the line has none; the join replaces this worker's saved "+
 		"state. Then restart the worker as before. Nothing was changed",
 		describeProfile(st.ProfileName()), want, want)
 }

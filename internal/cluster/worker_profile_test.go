@@ -64,7 +64,7 @@ func TestWorkerRestartRefusesAProfileOtherThanItsJoin(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("PrepareWorker = %v, want a refusal containing %q", err, tc.wantErr)
 				}
-				if !strings.Contains(err.Error(), "stratum token create") || !strings.Contains(err.Error(), "--profile "+tc.given) {
+				if !strings.Contains(err.Error(), "stratum token create") || !strings.Contains(err.Error(), "--profile set to "+tc.given) {
 					t.Errorf("refusal %q does not name the re-join with --profile %s", err, tc.given)
 				}
 			}

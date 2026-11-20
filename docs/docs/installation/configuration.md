@@ -57,14 +57,6 @@ other field, the join refuses to start and names the field, even when
 from the `--profile`, `--pod-cidr`, `--service-cidr` and `--cluster-domain`
 flags instead. `spec.operator` has no flag and is refused.
 
-A worker keeps the profile it joined with. A restart that names a different
-one, with `--profile`, `--cis`, `spec.profile` or `spec.cis`, refuses and
-changes nothing. To move a worker to another profile, first remove
-`spec.profile` and `spec.cis` from its config file, since a worker join refuses
-them. Then run `stratum token create` on a control plane and run the worker join
-line it prints on the worker with `--profile <name>` added. The join replaces
-the worker's saved state.
-
 A key that is present counts as set, even when its value is `false`, `0` or
 `""`, so `operator: false` is refused. A key with no value (`operator:`) and an
 empty mapping (`vip: {}`) set nothing and are accepted.
@@ -80,8 +72,26 @@ spec:
 ```
 
 A worker restart (`stratum up --worker` without `--server`, which is what
-`stratum.service` runs after a reboot) reads only `spec.selinux` from the file.
-It keeps the saved setting when the file does not set it or cannot be read.
+`stratum.service` runs after a reboot) reads only `spec.selinux` from the file,
+and `spec.profile` and `spec.cis` only to refuse a change of profile. It keeps
+the saved settings when the file does not set them or cannot be read, and warns
+when it cannot read the file.
+
+A worker keeps the profile it joined with. A restart that names a different
+one, with `--profile`, `--cis`, `spec.profile` or `spec.cis`, refuses and
+changes nothing, and after a reboot the worker stays down until the file and
+its profile agree. To move a worker to another profile:
+
+1. Stop the worker: `systemctl stop stratum` for a worker that
+   `stratum.service` started, or Ctrl+C in the terminal of one you started by
+   hand.
+2. Remove `spec.profile` and `spec.cis` from its config file, since a worker
+   join refuses them.
+3. Run `stratum token create` on a control plane, and run the worker join line
+   it prints on the worker with its `--profile` set to `<name>`. On a cluster
+   that runs a profile the line already ends with `--profile`, so change its
+   value; otherwise add `--profile <name>`. The join replaces the worker's
+   saved state.
 
 ## Node labels, taints and runtime handlers
 

@@ -314,7 +314,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		var selinuxOptOut *bool
 		if o.server == "" {
 			if v, set, err := cluster.WorkerSELinux(o.configPath); err != nil {
-				fmt.Printf("  WARN: spec.selinux not read: %v; keeping the setting this worker saved\n", err)
+				fmt.Printf("  WARN: spec.selinux, spec.profile and spec.cis not read: %v; keeping the SELinux setting and the profile this worker saved\n", err)
 			} else if set {
 				selinuxOptOut = &v
 			}
@@ -325,7 +325,8 @@ func runUp(parent context.Context, o runUpOptions) error {
 				return err
 			}
 			// Only a join reads and validates the whole config. A restart
-			// reads just spec.selinux, above, and passes --node-ip, which can
+			// reads spec.selinux, above, and spec.profile and spec.cis only
+			// to refuse a change of profile. It passes --node-ip, which can
 			// move the address saved in node.yaml; PrepareWorker's fast path
 			// keeps the rest of the settings node.yaml saved.
 			wcfg = joinCfg
@@ -730,7 +731,7 @@ func preStageProfile(o runUpOptions) error {
 // workerProfileName is the profile a worker start names: --profile or --cis,
 // and on a restart also spec.profile or spec.cis from its config file, which
 // must agree. A config file that cannot be read names none here; the start
-// warns about it where it reads spec.selinux.
+// warns where it reads spec.selinux that it read neither field.
 func workerProfileName(o runUpOptions) (string, error) {
 	name, err := o.profileName()
 	if err != nil || o.server != "" {
