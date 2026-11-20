@@ -97,7 +97,7 @@ func TestNodeRegisteredTaskPrintsTheHintOnceRegistered(t *testing.T) {
 		if n := strings.Count(string(out), "stratum: dashboard: https://10.0.0.5:30443\n"); n != want || labels() != int32(want) {
 			t.Errorf("registers=%v: hint printed %d times with %d labels, want %d: %s", registers, n, labels(), want, out)
 		}
-		if registers && strings.Index(string(out), "dashboard:") < strings.Index(string(out), "labeling it control-plane") {
+		if registers && strings.Index(string(out), "dashboard:") < strings.Index(string(out), "the control plane is up") {
 			t.Errorf("hint printed before the node was labelled: %s", out)
 		}
 	}

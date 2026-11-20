@@ -327,7 +327,7 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 		if err := createToken("https://cp:6443", false, token.DefaultTokenTTL, c); err != nil {
 			t.Fatalf("worker token create: %v", err)
 		}
-		if !strings.Contains(out.String(), "Worker join") {
+		if !strings.Contains(out.String(), "up --worker") {
 			t.Errorf("output lacks the worker join line:\n%s", out.String())
 		}
 		if len(revoked) != 0 {

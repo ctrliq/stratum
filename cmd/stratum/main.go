@@ -21,7 +21,9 @@ func main() {
 	// pkg/cli is the one package a downstream build imports, so registering
 	// the dashboard there would compile its server, proxy and embedded SPA
 	// into every embedding binary too.
-	root.AddCommand(dashboard.Command())
+	dash := dashboard.Command()
+	dash.GroupID = cli.GroupTools
+	root.AddCommand(dash)
 	// root.go sets SilenceErrors/SilenceUsage so cobra never prints its own
 	// "Error: ..." + usage-dump format. The mapping from pkg/cli's error
 	// sentinels to exit codes lives in cli.ExitCode — the one package an

@@ -8,7 +8,7 @@ import (
 	"github.com/ctrliq/stratum/internal/uninstall"
 )
 
-func newUninstallCommand() *cobra.Command {
+func newUninstallCommand(cfg rootConfig) *cobra.Command {
 	var yes, assumeNoForeign bool
 	cmd := &cobra.Command{
 		Use:   "uninstall",
@@ -17,6 +17,7 @@ func newUninstallCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The CLI prints to the process's stdout, the writer
 			// RunWithOptions takes: same bytes, same stream.
+			cfg.printHeadline(os.Stdout)
 			return uninstall.RunWithOptions(os.Stdout, uninstall.Options{Force: yes, AssumeNoForeignRuntimes: assumeNoForeign})
 		},
 	}

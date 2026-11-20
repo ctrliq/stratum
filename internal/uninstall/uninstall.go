@@ -657,7 +657,18 @@ func RunWithOptions(w io.Writer, o Options) error {
 // report what they cannot read instead of failing.
 func runUninstall(w io.Writer, force bool, fx *hostEffects) error {
 	if !force {
-		fmt.Fprintln(w, "stratum uninstall will STOP all stratum services and irreversibly DELETE:")
+		// The consequences first, in plain words, then the step to take
+		// before, then the full list for whoever wants it, then how to go ahead.
+		fmt.Fprintln(w, "This removes Stratum from this server. Nothing has been changed yet.")
+		fmt.Fprintln(w, "  - Stratum stops, and so does every container it runs (SIGTERM, then SIGKILL after 30s).")
+		fmt.Fprintln(w, "  - This server's cluster data (etcd) and all its local cluster state are deleted. This can't be undone.")
+		fmt.Fprintln(w, "  - A host containerd or Docker, if installed, isn't touched.")
+		fmt.Fprintln(w, "\nTo move this server's workloads first, drain it from a control plane:")
+		fmt.Fprintf(w, "  sudo %s kubectl drain %s --ignore-daemonsets --delete-emptydir-data\n", version.StratumInstallPath, drainNodeName())
+		fmt.Fprintln(w, "A worker's Node object is then removed by the operator on the control plane about 2 minutes")
+		fmt.Fprintln(w, "after the worker is gone; without an operator, remove it from a control plane. A control")
+		fmt.Fprintln(w, "plane's Node is never removed for you: remove it, and its etcd member, from a remaining one.")
+		fmt.Fprintln(w, "\nEverything that will be removed:")
 		report := Preview()
 		for _, t := range report.Targets {
 			fmt.Fprintln(w, "  - "+t)
@@ -665,15 +676,8 @@ func runUninstall(w io.Writer, force bool, fx *hostEffects) error {
 		for _, it := range report.Items {
 			fmt.Fprintln(w, renderPreviewItem(it))
 		}
-		fmt.Fprintln(w, "\nIt also stops every container Stratum's containerd runs on this node (SIGTERM, then SIGKILL")
-		fmt.Fprintln(w, "after 30s), and then that containerd.")
-		fmt.Fprintln(w, "Drain the node from a control plane first so its pods move gracefully:")
-		fmt.Fprintln(w, "  kubectl drain <node> --ignore-daemonsets --delete-emptydir-data")
-		fmt.Fprintln(w, "A worker's Node object is then removed by the operator on the control plane about 2 minutes")
-		fmt.Fprintln(w, "after the worker is gone; without an operator, remove it from a control plane. A control")
-		fmt.Fprintln(w, "plane's Node is never removed for you: remove it, and its etcd member, from a remaining one.")
-		fmt.Fprintln(w, "\netcd data and all local cluster state will be lost.")
-		fmt.Fprintln(w, "Re-run with --yes to proceed. (A host containerd or Docker, if installed, is not touched.)")
+		fmt.Fprintln(w, "\nTo go ahead:")
+		fmt.Fprintf(w, "  sudo %s uninstall --yes\n", version.StratumInstallPath)
 		return nil
 	}
 
@@ -1220,7 +1224,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 		if notice != "" {
 			fmt.Fprintln(w, notice)
 		}
-		return fmt.Errorf("uninstall: %w. The node's state was removed; fix the reported cleanup failures and re-run `stratum uninstall --yes` to finish", err)
+		return fmt.Errorf("uninstall: %w.\nStratum's node state is removed, but cleanup didn't finish. Fix what's listed above, then run this again to finish:\n  sudo %s uninstall --yes", err, version.StratumInstallPath)
 	}
 	fmt.Fprintln(w, "stratum uninstalled.")
 	if notice != "" {
@@ -1567,4 +1571,15 @@ func unescapeMount(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// drainNodeName is this server's node name for the drain command the dry run
+// prints: its short hostname, which is what Stratum registers the node as.
+// When it can't be read, the command keeps a placeholder to fill in.
+func drainNodeName() string {
+	name, err := host.Hostname()
+	if err != nil || name == "" {
+		return "<node>"
+	}
+	return strings.ToLower(name)
 }

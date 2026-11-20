@@ -1163,9 +1163,10 @@ waitForRegistration:
 		}
 		if registered {
 			cancelRegistration()
-			fmt.Fprintf(os.Stderr, "stratum: node %s registered after %v; labeling it control-plane and stamping its version\n", hostname, time.Since(start))
+			fmt.Fprintf(os.Stderr, "stratum: node %s registered in %v\n", hostname, time.Since(start).Round(time.Second))
 			labelErr := labelControlPlane(ctx, hostname)
 			stampNode(ctx, hostname)
+			fmt.Fprintln(os.Stderr, "stratum: the control plane is up")
 			for _, line := range hint {
 				fmt.Fprintf(os.Stderr, "stratum: %s\n", line)
 			}
@@ -1177,7 +1178,7 @@ waitForRegistration:
 			return
 		}
 		if ticks%progressEveryTicks == 0 {
-			fmt.Fprintf(os.Stderr, "stratum: node %s not registered yet, %v of %v elapsed\n", hostname, time.Since(start), nodeRegistrationGiveUp)
+			fmt.Fprintf(os.Stderr, "stratum: node %s not registered yet, %v of %v elapsed\n", hostname, time.Since(start).Round(time.Second), nodeRegistrationGiveUp)
 		}
 	}
 	if ctx.Err() != nil {

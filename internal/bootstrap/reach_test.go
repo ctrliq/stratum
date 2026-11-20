@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -340,5 +341,23 @@ func TestDiscoverCABoundsAnonymousRBACDenial(t *testing.T) {
 	_, err := DiscoverCA(srv.URL, testToken, pin)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || !strings.Contains(err.Error(), "after") || calls.Load() < 2 {
 		t.Fatalf("requests=%d err=%v; want bounded retries preserving the denial", calls.Load(), err)
+	}
+}
+
+func TestUnreachableErrorSaysWhereAndHowToCheck(t *testing.T) {
+	cause := errors.New("dial tcp 192.168.64.4:6443: connect: no route to host")
+	err := unreachableError("https://192.168.64.4:6443", cause, 38)
+	if !errors.Is(err, cause) {
+		t.Fatalf("the cause is lost: %v", err)
+	}
+	for _, want := range []string{
+		"the control plane at 192.168.64.4:6443 is still unreachable after",
+		"38 attempts",
+		"allows 6443/tcp",
+		"curl -k https://192.168.64.4:6443/healthz",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message lacks %q:\n%v", want, err)
+		}
 	}
 }
