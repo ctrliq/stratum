@@ -457,3 +457,23 @@ func TestWorkerRejoinKeepsTheLabelsItAppliedToPrune(t *testing.T) {
 		t.Errorf("AppliedNodeLabels = %v after a rejoin, want [pool] kept so the Node's old label is pruned", got)
 	}
 }
+
+// A worker rejoining under a new hostname registers a new Node, so the record
+// of the labels it put on the old one is dropped, not pruned from the new one.
+func TestWorkerRejoinUnderANewHostnameDropsTheLabelRecord(t *testing.T) {
+	redirectJoinDirs(t)
+	stubJoinHost(t, "gpu-2", "10.80.0.5", []byte("-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"))
+	recordTrust(t)
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "gpu-1", AppliedNodeLabels: []string{"pool"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareWorker(context.Background(), WorkerOptions{
+		Server: "https://cp:6443", Token: "abcdef.0123456789abcdef", CAHash: "sha256:aa",
+	}); err != nil {
+		t.Fatalf("PrepareWorker = %v", err)
+	}
+	st := mustLoadState(t)
+	if st.Hostname != "gpu-2" || st.AppliedNodeLabels != nil {
+		t.Errorf("hostname %q, AppliedNodeLabels = %v after a rejoin as gpu-2, want no record from gpu-1", st.Hostname, st.AppliedNodeLabels)
+	}
+}

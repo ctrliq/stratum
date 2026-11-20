@@ -338,3 +338,26 @@ func TestPrepareControllerWarnsAboutChangedTaintsAndKeepsTheLabelRecord(t *testi
 		t.Errorf("AppliedNodeLabels = %v, want the [zone] the last start recorded", st.AppliedNodeLabels)
 	}
 }
+
+// The label record is of the Node the saved hostname named. A host renamed
+// since registers a new Node, so the record is not carried to it, and the
+// reconcile cannot prune a key there that another writer set.
+func TestPrepareControllerDropsTheLabelRecordOfARenamedHost(t *testing.T) {
+	assemblyFixture(t)
+	prev := &NodeState{Role: "controller", Hostname: "cp0", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11",
+		EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380",
+		EtcdState: "existing", EtcdHasPeers: true,
+		PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12", ClusterDomain: "cluster.local",
+		AppliedNodeLabels: []string{"zone"}}
+	if err := SaveState(prev); err != nil {
+		t.Fatal(err)
+	}
+	runThroughRecordingAssembly(t, host.NodeIPChoice{IP: "10.0.0.11", Source: "state"}, nil)
+	st, err := PrepareController(&ClusterConfig{}, "", holdDataLock(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Hostname != "cp1" || st.AppliedNodeLabels != nil {
+		t.Errorf("hostname %q, AppliedNodeLabels = %v; want cp1 with no record from cp0", st.Hostname, st.AppliedNodeLabels)
+	}
+}

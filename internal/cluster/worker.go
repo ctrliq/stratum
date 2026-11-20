@@ -402,7 +402,9 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {
 		st.ClusterDNSIP = cur.ClusterDNSIP
-		st.AppliedNodeLabels = cur.AppliedNodeLabels
+		if cur.Hostname == hostname {
+			st.AppliedNodeLabels = cur.AppliedNodeLabels
+		}
 		*cur = *st
 		return nil
 	}); err != nil {
