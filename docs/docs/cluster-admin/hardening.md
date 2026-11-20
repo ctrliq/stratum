@@ -80,11 +80,12 @@ place. `privileged: true` goes further and lifts those too, with every
 capability and the host's devices. Either one weakens the pod's isolation from
 the host, so keep these pods in a namespace of their own:
 
-- The `baseline` and `restricted` Pod Security levels refuse both. Stratum sets
-  no cluster-wide level, so a namespace enforces one only when it is labelled
-  `pod-security.kubernetes.io/enforce`. Label a namespace that runs these pods
-  `pod-security.kubernetes.io/enforce: privileged`, and keep tenants' namespaces
-  at `baseline` or `restricted`.
+- The `baseline` and `restricted` Pod Security levels refuse both. Without a
+  profile, Stratum sets no cluster-wide level, so a namespace enforces one only
+  when it is labelled `pod-security.kubernetes.io/enforce`. The CIS profile
+  enforces `restricted` on every namespace except `kube-system`. Label a
+  namespace that runs these pods `pod-security.kubernetes.io/enforce: privileged`,
+  and keep tenants' namespaces at `baseline` or `restricted`.
 - A `HelmChart` that installs such a plugin installs into its own namespace and
   as its requester, unless it lives in one of the operator's
   `--privileged-namespaces`, by default `kube-system`; see

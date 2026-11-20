@@ -7,9 +7,10 @@ description: "Giving pods an NVIDIA GPU: the runtime handler, the RuntimeClass, 
 To give pods an NVIDIA GPU, a node declares NVIDIA's container runtime as a
 runtime handler, the cluster publishes a RuntimeClass for it, and NVIDIA's
 device plugin advertises the node's GPUs to the scheduler. Stratum does the
-first two from its configuration file. This page is the whole procedure,
-followed by two traps that are easy to hit on a host with one GPU or with
-unified memory. It was verified with v1.37.2-stratum.0 on a GB10 node running
+first two from its configuration file. This page is the whole procedure. After
+it come GPU metrics, two problems that a model server can run into on a host
+with one GPU or with unified memory, and moving a node set up with
+`nvidia-ctk`. It was verified with v1.37.2-stratum.0 on a GB10 node running
 Rocky Linux from CIQ Pro AI 9.8 with SELinux enforcing, NVIDIA driver
 580.173.02, NVIDIA Container Toolkit 1.20.1 and device plugin v0.17.4.
 
@@ -18,9 +19,11 @@ Rocky Linux from CIQ Pro AI 9.8 with SELinux enforcing, NVIDIA driver
 - The NVIDIA driver and the NVIDIA Container Toolkit on every GPU node:
   `nvidia-smi` lists the GPUs, and `/usr/bin/nvidia-container-runtime` exists.
   Stratum configures its own containerd, so do not run
-  `nvidia-ctk runtime configure`. The toolkit's package also writes a CDI spec
-  to `/var/run/cdi`, which `stratum runtime check` reports; the steps on this
-  page do not use it.
+  `nvidia-ctk runtime configure`. The toolkit's package also writes a Container
+  Device Interface (*CDI*) spec to `/var/run/cdi`, which
+  `stratum runtime check` reports; the steps on this page do not use it.
+- A root shell on a control plane for the `stratum kubectl` steps. On a worker,
+  `stratum kubectl` has no kubeconfig.
 
 ## 1. Declare the handler and its RuntimeClass
 
@@ -81,6 +84,8 @@ for what `apply`, `check` and `restart` do.
 
 ## 2. Install the device plugin
 
+From a control plane:
+
 ```console
 # /usr/local/bin/stratum kubectl apply -f \
   https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.4/deployments/static/nvidia-device-plugin.yml
@@ -89,8 +94,8 @@ for what `apply`, `check` and `restart` do.
 NVIDIA's static manifest assumes `nvidia` is containerd's default runtime and
 that every node it runs on has a GPU. Patch its DaemonSet for Stratum:
 
-- `runtimeClassName: nvidia`, or the plugin cannot load NVML and logs
-  `No devices found`.
+- `runtimeClassName: nvidia`, or the plugin cannot load the NVIDIA Management
+  Library (*NVML*) and logs `No devices found`.
 - A `nodeSelector` on the handler's label, so the DaemonSet runs only on the
   GPU nodes. The RuntimeClass's node selector reaches each pod, not the
   DaemonSet's choice of nodes, so without it every node without a GPU gets a
@@ -126,6 +131,8 @@ Confirm that the node advertises its GPU:
 A number above `0` means the scheduler can place GPU pods on the node.
 
 ## 3. Verify with a pod
+
+From a control plane:
 
 ```console
 # cat <<'MANIFEST' | /usr/local/bin/stratum kubectl apply -f -
@@ -168,8 +175,9 @@ to start with `exec: "nvidia-smi": executable file not found in $PATH`.
 
 ## GPU metrics
 
-A GPU metrics exporter such as NVIDIA's DCGM exporter reads the kubelet's
-pod-resources API to label each metric with the pod that uses the GPU. On
+A GPU metrics exporter such as NVIDIA's Data Center GPU Manager (*DCGM*)
+exporter reads the kubelet's pod-resources API to label each metric with the
+pod that uses the GPU. On
 Stratum that socket is under the kubelet's root directory,
 `/var/lib/stratum/kubelet/pod-resources`, not `/var/lib/kubelet/pod-resources`.
 Set the exporter's Helm value `kubeletPath` to it. Like the device plugin, the
@@ -184,23 +192,34 @@ nodeSelector:
 kubeletPath: /var/lib/stratum/kubelet/pod-resources
 ```
 
-On the default `kubeletPath` the exporter still runs and exports metrics, but
-none of them carry a `pod` or `namespace` label, and it logs no error. On an
-SELinux node it also needs to run as `spc_t`, like the device plugin.
+Like the device plugin, the exporter runs as `spc_t` on an SELinux node, or it
+cannot connect to the pod-resources socket. There, also set:
+
+```yaml
+podSecurityContext:
+  seLinuxOptions:
+    type: spc_t
+```
+
+On the default `kubeletPath`, or without `spc_t` on an SELinux node, the
+exporter still runs and exports metrics, but none of them carry a `pod` or
+`namespace` label, and it logs no error.
 
 ## Two traps for a model server
 
-**With one GPU per node, use `Recreate`.** A Deployment's default rolling
-update starts the new pod before it stops the old one. When the old pod holds
-the node's only GPU, the new pod cannot schedule
-(`FailedScheduling: Insufficient nvidia.com/gpu`) and the rollout never
-finishes. Set `spec.strategy.type: Recreate` on a Deployment whose pods each
+### Use `Recreate` with one GPU per node
+
+A Deployment's default rolling update starts the new pod before it stops the
+old one. When the old pod holds the node's only GPU, the new pod cannot
+schedule (`FailedScheduling: Insufficient nvidia.com/gpu`) and the rollout
+never finishes. Set `spec.strategy.type: Recreate` on a Deployment whose pods each
 take a whole GPU.
 
-**On a unified-memory host, budget the model server's memory.** A DGX Spark
-reports its whole 128 GB as GPU memory. An inference server that allocates too
-much does not get a GPU out-of-memory error: the host runs out of memory, and
-the machine can go down. A `resources.limits.memory` on the pod does not
+### Budget a model server's memory on a unified-memory host
+
+A DGX Spark reports its whole 128 GB as GPU memory. An inference server that
+allocates too much does not get a GPU out-of-memory error: the host runs out
+of memory, and the machine can go down. A `resources.limits.memory` on the pod does not
 prevent that on its own. GPU allocations may not be charged to the pod's
 memory cgroup, so they can grow past the limit. Cap what the server allocates
 instead, with its model size and its context or KV-cache budget, and leave the
@@ -248,7 +267,8 @@ keeps the server's GPU allocations down; the `100Gi` limit bounds the rest.
 A node set up by hand, with `nvidia-ctk runtime configure` and a RuntimeClass
 you applied yourself, keeps working. Once you declare the handler in step 1,
 `stratum runtime check` warns that `/etc/containerd/conf.d/99-nvidia.toml`
-defines the `nvidia` runtime too. To move it to the steps above:
+defines the `nvidia` runtime too. To move it to the steps above, run the
+`stratum kubectl` commands from a control plane and the rest on the GPU node:
 
 1. Declare the handler and the RuntimeClass as in
    [step 1](#1-declare-the-handler-and-its-runtimeclass).
@@ -260,6 +280,7 @@ defines the `nvidia` runtime too. To move it to the steps above:
 
     ```console
     # /usr/local/bin/stratum kubectl delete runtimeclass nvidia
+
     # /usr/local/bin/stratum kubectl get runtimeclass nvidia -o jsonpath='{.scheduling.nodeSelector}{"\n"}'
     ```
 
@@ -271,10 +292,10 @@ defines the `nvidia` runtime too. To move it to the steps above:
     # grep default_runtime_name /etc/containerd/conf.d/99-nvidia.toml
     ```
 
-    If it does, GPU pods that do not name a RuntimeClass run under NVIDIA's
-    runtime now, and their replacements run under `runc`, without the driver
-    libraries, once the file is gone. Set `runtimeClassName: nvidia` on those
-    workloads' pod templates first.
+    If it does, GPU pods that name no RuntimeClass run under NVIDIA's runtime.
+    Once you remove the file in step 4, their replacements run under `runc`,
+    without the driver libraries. Before that step, set
+    `runtimeClassName: nvidia` on those workloads' pod templates.
 4. Remove `/etc/containerd/conf.d/99-nvidia.toml`, then run
    `sudo /usr/local/bin/stratum runtime restart` and
    `sudo /usr/local/bin/stratum runtime check`.
