@@ -27,7 +27,7 @@ func TestSnapshotLoopSavesOnceRightWhenItStarts(t *testing.T) {
 		oldSnap := snapshotSave
 		t.Cleanup(func() { snapshotSave = oldSnap })
 		var saves atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error { saves.Add(1); return nil }
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) { saves.Add(1); return "", nil }
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -67,11 +67,11 @@ func TestSnapshotLoopRetriesTheFirstSaveUntilItSucceeds(t *testing.T) {
 		snapshotInterval = func(*ClusterConfig) time.Duration { return 24 * time.Hour }
 		snapshotStartRetry = time.Minute
 		var attempts atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error {
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
 			if attempts.Add(1) < 3 {
-				return errors.New("connection refused")
+				return "", errors.New("connection refused")
 			}
-			return nil
+			return "", nil
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -120,11 +120,11 @@ func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
 		snapshotStartRetry = 30 * time.Minute
 		var attempts atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error {
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
 			if n := attempts.Add(1); n <= 3 {
-				return fmt.Errorf("attempt %d", n)
+				return "", fmt.Errorf("attempt %d", n)
 			}
-			return nil
+			return "", nil
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -163,7 +163,10 @@ func TestSnapshotLoopStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
 		snapshotInterval = func(*ClusterConfig) time.Duration { return 24 * time.Hour }
 		snapshotStartRetry = time.Minute
 		var saves atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error { saves.Add(1); return errors.New("connection refused") }
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
+			saves.Add(1)
+			return "", errors.New("connection refused")
+		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -197,7 +200,7 @@ func TestSnapshotLoopSavesAgainOnItsTicks(t *testing.T) {
 		t.Cleanup(func() { snapshotInterval, snapshotSave = oldInterval, oldSnap })
 		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
 		var saves atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error { saves.Add(1); return nil }
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) { saves.Add(1); return "", nil }
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -223,9 +226,6 @@ func TestSnapshotLoopSavesAgainOnItsTicks(t *testing.T) {
 // up), the retry succeeds, and the loop goes on to its next regular tick.
 // The reporting half — what is logged when the whole window fails — is
 // pinned by TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds.
-// (This test previously pinned the round-1 single-attempt behaviour, where
-// the failed first save was logged at once and the next save was the first
-// tick's; the retry window changed both.)
 func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -245,11 +245,11 @@ func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T
 		snapshotInterval = func(*ClusterConfig) time.Duration { return time.Hour }
 		snapshotStartRetry = 20 * time.Minute
 		var saves atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error {
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
 			if saves.Add(1) < 4 {
-				return errors.New("disk full")
+				return "", errors.New("disk full")
 			}
-			return nil
+			return "", nil
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -282,7 +282,7 @@ func TestSnapshotLoopWithCancelledContextSavesNothing(t *testing.T) {
 		oldSnap := snapshotSave
 		t.Cleanup(func() { snapshotSave = oldSnap })
 		var saves atomic.Int32
-		snapshotSave = func(context.Context, *ClusterConfig) error { saves.Add(1); return nil }
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) { saves.Add(1); return "", nil }
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
@@ -293,6 +293,107 @@ func TestSnapshotLoopWithCancelledContextSavesNothing(t *testing.T) {
 			t.Fatalf("saves = %d, want 0: an already-cancelled context must return before the first save", got)
 		}
 	})
+}
+
+// TestSnapshotLoopEndsTheStartPhaseWhenOnlyTheUploadFailed pins that a save
+// which wrote the local snapshot but failed its S3 upload is not retried:
+// each retry would save and prune again, rotating the pre-restart snapshots
+// out of local retention within minutes. The upload error is logged at once
+// and the loop goes to its ticker.
+func TestSnapshotLoopEndsTheStartPhaseWhenOnlyTheUploadFailed(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = origErr
+		w.Close()
+		r.Close()
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		oldInterval, oldSnap, oldRetry := snapshotInterval, snapshotSave, snapshotStartRetry
+		t.Cleanup(func() { snapshotInterval, snapshotSave, snapshotStartRetry = oldInterval, oldSnap, oldRetry })
+		snapshotInterval = func(*ClusterConfig) time.Duration { return 24 * time.Hour }
+		snapshotStartRetry = time.Minute
+		var saves atomic.Int32
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
+			saves.Add(1)
+			return "/var/lib/stratum/snapshots/x.db", errors.New("S3 upload failed")
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go snapshotLoop(ctx, cfgForLoop(t))
+
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if got := saves.Load(); got != 1 {
+			t.Fatalf("start saves = %d, want 1: a save that wrote the local snapshot must end the start phase even when its upload failed", got)
+		}
+	})
+
+	os.Stderr = origErr
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if lines := strings.Count(string(out), "stratum: scheduled etcd snapshot: S3 upload failed\n"); lines != 1 {
+		t.Errorf("the upload failure was logged %d times, want exactly once; stderr said:\n%s", lines, out)
+	}
+}
+
+// TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing pins the early
+// warning: a start phase still failing after bindingWarnAfter says so once,
+// long before the window's end, and keeps retrying.
+func TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origErr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = origErr
+		w.Close()
+		r.Close()
+	})
+
+	synctest.Test(t, func(t *testing.T) {
+		oldInterval, oldSnap, oldRetry, oldWarn := snapshotInterval, snapshotSave, snapshotStartRetry, bindingWarnAfter
+		t.Cleanup(func() {
+			snapshotInterval, snapshotSave, snapshotStartRetry, bindingWarnAfter = oldInterval, oldSnap, oldRetry, oldWarn
+		})
+		snapshotInterval = func(*ClusterConfig) time.Duration { return 24 * time.Hour }
+		snapshotStartRetry = time.Minute
+		bindingWarnAfter = 5 * time.Minute
+		var saves atomic.Int32
+		snapshotSave = func(context.Context, *ClusterConfig) (string, error) {
+			saves.Add(1)
+			return "", errors.New("connection refused")
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go snapshotLoop(ctx, cfgForLoop(t))
+
+		// Attempts at 0..10m: the warning fires on the 5m attempt only.
+		time.Sleep(10 * time.Minute)
+		synctest.Wait()
+		if got := saves.Load(); got != 11 {
+			t.Fatalf("start saves = %d, want 11: the warning must not stop the retries", got)
+		}
+	})
+
+	os.Stderr = origErr
+	w.Close()
+	out, _ := io.ReadAll(r)
+	if lines := strings.Count(string(out), "stratum: WARN: scheduled etcd snapshot still failing after 5m0s: connection refused; retrying every 1m0s\n"); lines != 1 {
+		t.Errorf("the still-failing warning was logged %d times, want exactly once; stderr said:\n%s", lines, out)
+	}
+	if strings.Contains(string(out), "stratum: scheduled etcd snapshot:") {
+		t.Errorf("the end-of-window line was logged before the window ended; stderr said:\n%s", out)
+	}
 }
 
 // cfgForLoop returns a minimal config for snapshotLoop: the loop reads only
