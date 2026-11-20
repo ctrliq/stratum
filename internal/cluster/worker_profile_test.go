@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/host"
+	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -66,6 +67,9 @@ func TestWorkerRestartRefusesAProfileOtherThanItsJoin(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), "stratum token create") || !strings.Contains(err.Error(), "--profile set to "+tc.given) {
 					t.Errorf("refusal %q does not name the re-join with --profile %s", err, tc.given)
+				}
+				if !strings.Contains(err.Error(), "--node-ip, --dual-stack, --node-label, --node-taint and --runtime-handler settings that "+nodestate.StatePath()) {
+					t.Errorf("refusal %q does not say to carry the saved node settings into the re-join", err)
 				}
 			}
 			if got := mustLoadState(t).ProfileName(); got != tc.saved {

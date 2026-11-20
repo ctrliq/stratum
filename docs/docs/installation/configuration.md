@@ -91,7 +91,12 @@ its profile agree. To move a worker to another profile:
    it prints on the worker with its `--profile` set to `<name>`. On a cluster
    that runs a profile the line already ends with `--profile`, so change its
    value; otherwise add `--profile <name>`. The join replaces the worker's
-   saved state.
+   saved state with what the line and the config file give, so also add each
+   setting the worker saved in `/var/lib/stratum/config/node.yaml` that its
+   config file does not set: `--node-ip` and `--dual-stack`, and
+   `--node-label`, `--node-taint` and `--runtime-handler` for labels, taints
+   and runtime handlers given as flags or with `stratum runtime apply`.
+   Otherwise the worker re-joins without them.
 
 ## Node labels, taints and runtime handlers
 
