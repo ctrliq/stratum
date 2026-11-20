@@ -36,6 +36,9 @@ page that explains them.
 | `<file>.bak-<stamp>` | the file an upgrade replaced; see [What an upgrade leaves behind](upgrade-reference.md#what-an-upgrade-leaves-behind) |
 | `/var/backups/etcd/` | local etcd snapshots, unless `spec.snapshots.dir` sets another directory; pre-upgrade snapshots always go here. Local retention prunes only `etcd-snapshot-<host>-<stamp>.db`, and `snapshot list` shows only local files ending in `.db`; see [Snapshot files](snapshot-reference.md#snapshot-files) |
 | `/var/lib/stratum/etcd.pre-restore-<stamp>/`, `/var/lib/stratum/etcd.failed-restore-<stamp>/` | the copies of etcd's data a snapshot restore keeps; `stratum snapshot prune-restores --yes` removes them; see [What restore does to the datastore](snapshot-reference.md#what-restore-does-to-the-datastore) |
+| `/var/lib/stratum/kubelet/` | the kubelet's root directory, in place of `/var/lib/kubelet`; see [Paths](../runtime/index.md#paths) |
+| `/var/lib/stratum/kubelet/pod-resources/kubelet.sock` | the kubelet's pod-resources API, which GPU metrics exporters read; see [Paths](../runtime/index.md#paths) |
+| `/var/lib/stratum/kubelet/plugins_registry/` | where CSI drivers and other kubelet plugins register their sockets |
 | `/var/lib/stratum/log/<component>.log` | logs of the supervised components; see [Logs](../cluster-admin/index.md#logs) |
 | `/run/stratum/stratum.sock` | the control socket (root only) |
 | `/run/stratum/containerd/containerd.sock` | the CRI endpoint |
@@ -48,6 +51,7 @@ page that explains them.
 | `/etc/sysctl.d/99-stratum.conf` | on every start | [Host settings](../installation/index.md#host-settings) |
 | `/etc/sysctl.d/99-stratum-<profile>.conf` | under a profile that declares sysctls | [Host settings](../installation/index.md#host-settings) |
 | `/etc/modules-load.d/k8s.conf` | on every start | [Host settings](../installation/index.md#host-settings) |
+| `/var/lib/kubelet/device-plugins/kubelet.sock` | by the kubelet, at this fixed path whatever its root directory; `stratum uninstall` removes it | [Paths](../runtime/index.md#paths) |
 | `/etc/containerd/certs.d/<registry>/hosts.toml` | when `registries.yaml` has mirrors, or configs entries with auth or tls | [Registry mirrors](../runtime/index.md#registry-mirrors) |
 | `/etc/containerd/conf.d/stratum-registry.toml` | when `registries.yaml` has mirrors, or configs entries with auth or tls | [Registry mirrors](../runtime/index.md#registry-mirrors) |
 
@@ -64,6 +68,10 @@ Under `spec` in `/etc/stratum/config.yaml`:
 | `dashboard.tlsSecretName` | none: a certificate from the dashboard CA | [The dashboard](../cluster-admin/index.md#the-dashboard) |
 | `dashboard.enableNodeShell` | `true`; a profile can make it `false` | [The dashboard](../cluster-admin/index.md#the-dashboard) |
 | `dashboard.tokenSecrets` | `true` | [The dashboard](../cluster-admin/index.md#the-dashboard) |
+| `node.labels` | none | [Node labels, taints and runtime handlers](../installation/configuration.md#node-labels-taints-and-runtime-handlers) |
+| `node.runtimeHandlers` | none: pods run under runc | [Node labels, taints and runtime handlers](../installation/configuration.md#node-labels-taints-and-runtime-handlers) |
+| `node.taints` | none | [Node labels, taints and runtime handlers](../installation/configuration.md#node-labels-taints-and-runtime-handlers) |
+| `runtimeClasses` | none; read on control planes | [RuntimeClasses](../installation/configuration.md#runtimeclasses) |
 | `snapshots.intervalHours` | `12` | [Schedule settings](../cluster-admin/snapshot-restore.md#schedule-settings) |
 | `snapshots.disabled` | `false` | [Schedule settings](../cluster-admin/snapshot-restore.md#schedule-settings) |
 | `snapshots.dir` | `/var/backups/etcd`; a relative path or one with a `..` element is ignored | [The snapshot directory](snapshot-reference.md#the-snapshot-directory) |

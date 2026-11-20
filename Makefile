@@ -333,8 +333,16 @@ docs-venv:
 docs: docs-venv
 	cd $(DOCS_DIR) && .venv/bin/mkdocs build --strict
 	@n=$$(find $(DOCS_DIR)/site -name index.html | wc -l | tr -d ' '); \
+<<<<<<< HEAD
 	  [ "$$n" = 21 ] || { \
 	    echo "make docs: built $$n pages, expected 21." >&2; \
+||||||| parent of 44186d3 (docs(gpus): document GPU nodes on the runtime-handler seam (#117))
+	  [ "$$n" = 23 ] || { \
+	    echo "make docs: built $$n pages, expected 23." >&2; \
+=======
+	  [ "$$n" = 24 ] || { \
+	    echo "make docs: built $$n pages, expected 24." >&2; \
+>>>>>>> 44186d3 (docs(gpus): document GPU nodes on the runtime-handler seam (#117))
 	    echo "           A page was added or dropped — update the count if that was intended." >&2; \
 	    exit 1; }
 
