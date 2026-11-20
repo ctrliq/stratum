@@ -537,7 +537,13 @@ var (
 	// its retention and S3 target through. A seam, so a test can supply or
 	// break the conf without touching /etc.
 	snapshotLoadConfig = etcdsnap.LoadConfigOr
-	snapshotSave       = func(ctx context.Context, c *ClusterConfig) error {
+	// How often snapshotLoop's start phase retries the first save while
+	// etcd is still coming up (see snapshotLoop).
+	snapshotStartRetry = time.Minute
+	// snapshotSave returns SaveContext's path beside its error: a path with
+	// an error is a local snapshot whose S3 upload failed, which the loop's
+	// start phase must not mistake for etcd not being up yet.
+	snapshotSave = func(ctx context.Context, c *ClusterConfig) (string, error) {
 		// The save's prune warnings are the daemon's log: the controller's
 		// stdout is that log, so the writer is os.Stdout, passed explicitly.
 		// The same stream carries the tick's scheduling warnings into the
@@ -547,8 +553,7 @@ var (
 		var warns tickWarnings
 		opts := scheduledSaveOptions(c, snapshotLoadConfig, io.MultiWriter(os.Stdout, &warns))
 		opts.EvidenceWarnings = warns.recorded()
-		_, err := etcdsnap.SaveContext(ctx, os.Stdout, opts)
-		return err
+		return etcdsnap.SaveContext(ctx, os.Stdout, opts)
 	}
 
 	// The node-registered task's seams: nodeRegistered is ONE registration
@@ -1542,12 +1547,69 @@ func (w *tickWarnings) Write(p []byte) (int, error) {
 func (w *tickWarnings) recorded() []string { return w.lines }
 
 // snapshotLoop saves etcd snapshots on the configured interval — the
-// supervisor-native stratum-etcd-snapshot.timer. Config precedence: the
+// supervisor-native stratum-etcd-snapshot.timer. The loop starts before the
+// supervisor has etcd up, so its first scheduled snapshot is taken as soon
+// as etcd can take one: the first save is retried every snapshotStartRetry
+// until one succeeds, the context ends, or a full snapshot interval has
+// passed since the loop started — a window that ends without a success
+// reports the last error once, and a control plane restarted more often
+// than the interval still snapshots once per daemon lifetime. A start save
+// still running when the window ends is stopped there. A save that
+// wrote the local snapshot but failed its S3 upload ends the start phase:
+// retrying it would prune the pre-restart snapshots away. A start phase
+// still failing after bindingWarnAfter warns once and keeps retrying. Config
+// precedence: the
 // operator-managed snapshot config file (written by `stratum snapshot
 // schedule` and the MCP `snapshot_schedule` tool) wins
 // over the cluster config's inline settings.
 func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
-	t := time.NewTicker(snapshotInterval(cfg))
+	if ctx.Err() != nil {
+		return
+	}
+	interval := snapshotInterval(cfg)
+	started := time.Now()
+	// The start phase's saves run under the window's deadline: etcdctl has no
+	// timeout of its own, so a save that hangs while etcd comes up is cut off
+	// when the window ends and the window's log line still comes. A window
+	// that ends during a retry wait ends the wait too, with no save under the
+	// expired deadline: the line reports the last real failure. The ticks
+	// keep the controller's context.
+	deadline := started.Add(interval)
+	startCtx, cancelStart := context.WithDeadline(ctx, deadline)
+	defer cancelStart()
+	warned := false
+	for {
+		path, err := snapshotSave(startCtx, cfg)
+		if err == nil || path != "" {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
+			}
+			break
+		}
+		if !time.Now().Before(deadline) {
+			fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
+			break
+		}
+		if failing := time.Since(started); !warned && failing >= bindingWarnAfter {
+			warned = true
+			fmt.Fprintf(os.Stderr, "stratum: WARN: scheduled etcd snapshot still failing after %v: %v; retrying every %v\n",
+				failing.Round(time.Second), err, snapshotStartRetry)
+		}
+		timer := time.NewTimer(snapshotStartRetry)
+		select {
+		case <-startCtx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
+			break
+		}
+	}
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
@@ -1555,7 +1617,7 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 			return
 		case <-t.C:
 		}
-		if err := snapshotSave(ctx, cfg); err != nil {
+		if _, err := snapshotSave(ctx, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "stratum: scheduled etcd snapshot: %v\n", err)
 		}
 	}
