@@ -23,6 +23,13 @@ import (
 // never reaches them, a valid one does.
 func runUpWorkerJoinReal(t *testing.T, o runUpOptions) (stages func() int32, err error) {
 	t.Helper()
+	return runUpWorkerJoinRealWithConfig(t, o, "spec: {}\n")
+}
+
+// runUpWorkerJoinRealWithConfig is runUpWorkerJoinReal with the given
+// config file, for the cases that take the address from it.
+func runUpWorkerJoinRealWithConfig(t *testing.T, o runUpOptions, config string) (stages func() int32, err error) {
+	t.Helper()
 	tmp := t.TempDir()
 	for _, sw := range []struct {
 		p *string
@@ -38,7 +45,7 @@ func runUpWorkerJoinReal(t *testing.T, o runUpOptions) (stages func() int32, err
 		t.Cleanup(func() { *sw.p = old })
 	}
 	o.configPath = filepath.Join(tmp, "config.yaml")
-	if err := os.WriteFile(o.configPath, []byte("spec: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(o.configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -107,6 +114,48 @@ func TestRunUpWorkerJoinWithAValidNodeIPStillStages(t *testing.T) {
 	stages, err := runUpWorkerJoinReal(t, o)
 	if err != nil {
 		t.Fatalf("runUp(--worker --node-ip 10.80.0.4) = %v, want a completed join", err)
+	}
+	if n := stages(); n != 1 {
+		t.Errorf("the join staged the payload %d time(s), want 1", n)
+	}
+}
+
+// A join with no --node-ip takes its address from spec.network.nodeIP, then
+// $NODE_IP. A bad address from either is refused before staging too, so the
+// pre-stage check must be handed the config's address and read $NODE_IP.
+func TestRunUpWorkerJoinRefusesABadConfigOrEnvNodeIPBeforeItStages(t *testing.T) {
+	for _, tc := range []struct {
+		name, config, env, wantSource string
+	}{
+		{name: "spec.network.nodeIP", config: "spec:\n  network:\n    nodeIP: 127.0.0.1\n", wantSource: `spec.network.nodeIP "127.0.0.1"`},
+		{name: "$NODE_IP", config: "spec: {}\n", env: "127.0.0.1", wantSource: `$NODE_IP "127.0.0.1"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NODE_IP", tc.env)
+			o := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa"}
+			stages, err := runUpWorkerJoinRealWithConfig(t, o, tc.config)
+			if err == nil {
+				t.Fatalf("runUp(--worker) with a loopback %s = nil; want a refusal", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantSource) || !strings.Contains(err.Error(), "Nothing on this host was changed") {
+				t.Errorf("the refusal %q does not name %s", err, tc.wantSource)
+			}
+			if n := stages(); n != 0 {
+				t.Errorf("the refused join staged the payload %d time(s) before refusing", n)
+			}
+		})
+	}
+}
+
+// A valid --node-ip wins over a bad spec.network.nodeIP, as it does in the
+// join itself: the pre-stage check must not refuse an address the join
+// would never use.
+func TestRunUpWorkerJoinWithAValidFlagOverABadConfigNodeIPStillStages(t *testing.T) {
+	t.Setenv("NODE_IP", "")
+	o := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa", nodeIP: "10.80.0.4"}
+	stages, err := runUpWorkerJoinRealWithConfig(t, o, "spec:\n  network:\n    nodeIP: 127.0.0.1\n")
+	if err != nil {
+		t.Fatalf("runUp(--worker --node-ip 10.80.0.4) with a loopback spec.network.nodeIP = %v, want a completed join", err)
 	}
 	if n := stages(); n != 1 {
 		t.Errorf("the join staged the payload %d time(s), want 1", n)
