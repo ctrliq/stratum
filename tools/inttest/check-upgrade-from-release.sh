@@ -143,13 +143,20 @@ n_artifacts=0
 for f in "/var/backups/etcd/$PREV_SNAP" /var/backups/etcd/pre-upgrade-*.db; do
   if [[ -s $f ]]; then n_artifacts=$((n_artifacts + 1)); pass "survived the upgrade: $f"; else fail "lost by the upgrade: $f"; fi
 done
-wait_for "the record to describe the survived artifacts" 300 sh -c \
+# The upgraded node takes its first scheduled snapshot as soon as etcd is up,
+# and the record describes it beside the survivors. Waiting for it keeps the
+# count exact whether it lands before or after the publisher's next sample.
+wait_for "the upgraded node's first scheduled snapshot" 180 sh -c \
+  "ls /var/backups/etcd/etcd-snapshot-*.db >/dev/null 2>&1"
+n_scheduled=$(find /var/backups/etcd -maxdepth 1 -name 'etcd-snapshot-*.db' | wc -l)
+n_artifacts=$((n_artifacts + n_scheduled))
+wait_for "the record to describe the survived and scheduled artifacts" 300 sh -c \
   "test \"\$(sed -n 's/^localArtifacts:[[:space:]]*//p' $REC 2>/dev/null)\" -ge $n_artifacts 2>/dev/null"
 node_uid=$($K get node "$node" -o jsonpath='{.metadata.uid}')
 wait_for "the publisher to resolve the node UID" 120 sh -c \
   "test \"\$(sed -n 's/^nodeUID:[[:space:]]*//p' $REC 2>/dev/null)\" = '$node_uid'"
 assert_eq "the record carries the immutable node UID" "$node_uid" "$(record_field nodeUID)"
-assert_eq "the record counts every survived artifact" "$n_artifacts" "$(record_field localArtifacts)"
+assert_eq "the record counts every survived and scheduled artifact" "$n_artifacts" "$(record_field localArtifacts)"
 assert_eq "the record's deduplicated total is exact" "true" "$(record_field exactTotal)"
 
 # The machine-readable surface on the upgraded node serves the same evidence:

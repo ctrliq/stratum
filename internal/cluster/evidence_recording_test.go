@@ -160,7 +160,7 @@ func TestEvidenceRecordingPersistsAFailedSave(t *testing.T) {
 	cfg := loadClusterConfig(t, "spec:\n  snapshots:\n    dir: "+snapDir+"\n    retain: 3\n")
 
 	fakeEtcdctl(t, "exit 1")
-	if err := snapshotSave(context.Background(), cfg); err == nil {
+	if _, err := snapshotSave(context.Background(), cfg); err == nil {
 		t.Fatal("a failing etcdctl reported a successful save")
 	}
 	rec := readEvidence(t)
@@ -186,7 +186,7 @@ func TestEvidenceRecordingPersistsAFailedSave(t *testing.T) {
 	// The next tick succeeds: the latest attempt is the success, the stamp is
 	// this tick's, and the local prune that ran beside it is recorded clean.
 	fakeEtcdctl(t, "printf snapshot > \"$3\"")
-	if err := snapshotSave(context.Background(), cfg); err != nil {
+	if _, err := snapshotSave(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
 	rec = readEvidence(t)
@@ -222,7 +222,7 @@ func TestEvidenceRecordingKeepsLocalEvidenceWhenTheUploadFails(t *testing.T) {
 	fakeEtcdctl(t, "printf snapshot > \"$3\"")
 	cfg := loadClusterConfig(t, "spec:\n  snapshots:\n    dir: "+snapDir+"\n    retain: 2\n    s3:\n      bucket: b\n      endpoint: "+endpoint+"\n      pathStyle: true\n")
 
-	if err := snapshotSave(context.Background(), cfg); err == nil {
+	if _, err := snapshotSave(context.Background(), cfg); err == nil {
 		t.Fatal("the failed S3 upload was not reported by the save")
 	}
 	dbs, _ := filepath.Glob(filepath.Join(snapDir, "*.db"))
@@ -274,7 +274,7 @@ func TestEvidenceRecordingRecordsAPruneRefusalAsAWarning(t *testing.T) {
 	fakeEtcdctl(t, "printf snapshot > \"$3\"")
 	cfg := loadClusterConfig(t, "spec:\n  snapshots:\n    dir: "+snapDir+"\n    retain: 1\n    s3:\n      bucket: b\n      endpoint: "+endpoint+"\n      pathStyle: true\n")
 
-	if err := snapshotSave(context.Background(), cfg); err != nil {
+	if _, err := snapshotSave(context.Background(), cfg); err != nil {
 		t.Fatalf("a refused prune must not fail the save: %v", err)
 	}
 	if dbs, _ := filepath.Glob(filepath.Join(snapDir, "*.db")); len(dbs) != 1 {
@@ -311,7 +311,7 @@ func TestEvidenceRecordingRecordsTheSchedulingWarningOfAnUnreadableConf(t *testi
 	fakeEtcdctl(t, "printf snapshot > \"$3\"")
 	cfg := loadClusterConfig(t, "spec:\n  snapshots:\n    dir: "+snapDir+"\n")
 
-	if err := snapshotSave(context.Background(), cfg); err != nil {
+	if _, err := snapshotSave(context.Background(), cfg); err != nil {
 		t.Fatalf("the snapshot is still taken beside the unreadable conf: %v", err)
 	}
 	rec := readEvidence(t)

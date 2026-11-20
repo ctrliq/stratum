@@ -104,7 +104,7 @@ func stubLoops(t *testing.T, tick time.Duration) (renewals, snapshots func() int
 	var renewN, snapN atomic.Int32
 	certRenewRotate = func(context.Context) error { renewN.Add(1); return nil }
 	snapshotInterval = func(*ClusterConfig) time.Duration { return tick }
-	snapshotSave = func(context.Context, *ClusterConfig) error { snapN.Add(1); return nil }
+	snapshotSave = func(context.Context, *ClusterConfig) (string, error) { snapN.Add(1); return "", nil }
 	return renewN.Load, snapN.Load
 }
 
@@ -289,7 +289,7 @@ func TestPostStartsLoopsAreRunGroupTasks(t *testing.T) {
 	oldRenew, oldSnap := certRenewRotate, snapshotSave
 	t.Cleanup(func() { certRenewRotate, snapshotSave = oldRenew, oldSnap })
 	certRenewRotate = func(context.Context) error { parkedRenew.Add(1); <-release; return nil }
-	snapshotSave = func(context.Context, *ClusterConfig) error { parkedSnap.Add(1); <-release; return nil }
+	snapshotSave = func(context.Context, *ClusterConfig) (string, error) { parkedSnap.Add(1); <-release; return "", nil }
 
 	synctest.Test(t, func(t *testing.T) {
 		release = make(chan struct{})
@@ -1074,7 +1074,7 @@ func TestTheSnapshotSeamAbortsItsEtcdctlRunWhenTheContextEnds(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- snapshotSave(ctx, cfg) }()
+	go func() { _, err := snapshotSave(ctx, cfg); done <- err }()
 
 	started := filepath.Join(snapDir, "*.started")
 	deadline := time.Now().Add(10 * time.Second)
