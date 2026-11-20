@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,24 +9,18 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/cluster"
-	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
 // runUpWorkerJoinReal drives the real runUp worker-join path the way
-// runUpWorker (up_worker_runup_test.go) does, with one difference: the
-// prepareWorkerFn stub keeps the join's real refusal head — the same
-// ResolveNodeIP precedence and the same host.CheckNodeIP call real
-// PrepareWorker makes at the head of a new join (internal/cluster/worker.go
-// ~303-313) — because the package's TestMain keeps the real PrepareWorker
-// away from the host's firewall and kernel settings. Under the fix, a bad
-// --node-ip is refused by runUp's pre-stage check before anything is staged,
-// so the stub's refusal is never reached in the refusal subtests; the stub
-// exists for the valid-IP path, which exercises the same resolution and
-// check real PrepareWorker runs. The paths a start writes are
-// redirected into a temp dir, the staging extraction is a counting stub, and
-// the steps past the join (the reboot unit, the worker run) are stubbed: a
-// refused join never reaches them, a valid one does.
+// runUpWorker (up_worker_runup_test.go) does, with one difference: runUp's
+// pre-stage check is the real cluster.ResolveJoinNodeIP, not a stub. The
+// prepareWorkerFn stub accepts every address, so only that pre-stage check
+// can refuse a bad --node-ip. Every case passes --node-ip, so the check
+// never reads $NODE_IP or detects. The paths a start writes are redirected
+// into a temp dir, the staging extraction is a counting stub, and the steps
+// past the join (the reboot unit, the worker run) are stubbed: a refused join
+// never reaches them, a valid one does.
 func runUpWorkerJoinReal(t *testing.T, o runUpOptions) (stages func() int32, err error) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -59,18 +51,6 @@ func runUpWorkerJoinReal(t *testing.T, o runUpOptions) (stages func() int32, err
 	installUnit = func([]string) error { return nil }
 	runWorkerFn = func(context.Context, *cluster.NodeState) error { return nil }
 	prepareWorkerFn = func(_ context.Context, w cluster.WorkerOptions) (*cluster.NodeState, error) {
-		// The head of a new join, exactly as real PrepareWorker runs it:
-		// the same resolution precedence and the same check. --node-ip is
-		// always given here, so detection is never reached.
-		choice, err := host.ResolveNodeIP(w.NodeIP, w.ConfigNodeIP, "", func() (string, error) {
-			return "", errors.New("no node-IP detection in the test")
-		})
-		if err != nil {
-			return nil, err
-		}
-		if err := host.CheckNodeIP(choice.IP, strings.Contains(choice.IP, ",")); err != nil {
-			return nil, fmt.Errorf("worker join: %s %q cannot be this worker's node IP: %w", choice.Source, choice.IP, err)
-		}
 		return &cluster.NodeState{Role: "worker", Hostname: "w1", Server: w.Server}, nil
 	}
 
@@ -80,10 +60,11 @@ func runUpWorkerJoinReal(t *testing.T, o runUpOptions) (stages func() int32, err
 }
 
 // A worker join refuses every node IP the kubelet could not register — the
-// refusals host.CheckNodeIP makes — before it changes anything on the host:
-// the install guide's "The join checks the address before it changes anything
-// on the host". Staging the payload (211M of binaries, 510M of images) is the
-// first big change a join makes, so every refusal must come back with the
+// refusals host.CheckNodeIP makes — before it changes anything on the host,
+// as the install guide says a worker join checks the address before it
+// prepares the host. Staging the payload (several hundred MB of binaries and
+// images) is the first big change a join makes, so every refusal must come
+// back with the
 // staging seam never called. Each case expects a substring of the real
 // refusal, in the words CheckNodeIP or its callers use.
 func TestRunUpWorkerJoinRefusesABadNodeIPBeforeItStages(t *testing.T) {
@@ -107,7 +88,8 @@ func TestRunUpWorkerJoinRefusesABadNodeIPBeforeItStages(t *testing.T) {
 			if err == nil {
 				t.Fatalf("runUp(--worker --node-ip %q) = nil; want a refusal", tc.nodeIP)
 			}
-			if !strings.Contains(err.Error(), "cannot be this worker's node IP") || !strings.Contains(err.Error(), tc.wantErr) {
+			if !strings.Contains(err.Error(), "cannot be this worker's node IP") || !strings.Contains(err.Error(), tc.wantErr) ||
+				!strings.Contains(err.Error(), "Nothing on this host was changed") {
 				t.Errorf("the refusal %q does not name %s", err, tc.wantErr)
 			}
 			if n := stages(); n != 0 {

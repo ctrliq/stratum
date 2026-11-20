@@ -284,8 +284,8 @@ func runUp(parent context.Context, o runUpOptions) error {
 	// runs here. A restart is not gated by this — its address comes from
 	// saved node state and its check runs in PrepareWorker as before.
 	if o.worker && o.server != "" {
-		if _, err := cluster.ResolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
-			return err
+		if _, err := resolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
+			return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
 		}
 	}
 	// Uninstall takes the same data lock before removing DataDir. Keep staging
@@ -651,6 +651,9 @@ var (
 	// prepareControlPlaneJoinFn is the HA join seam, so a wiring test sees the
 	// JoinOptions runUp builds from the flags and the config without a join.
 	prepareControlPlaneJoinFn = ha.PrepareControlPlaneJoin
+	// resolveJoinNodeIP is the pre-stage node-IP check's seam: the real one
+	// reads $NODE_IP and detects the host's address, so wiring tests stub it.
+	resolveJoinNodeIP = cluster.ResolveJoinNodeIP
 )
 
 // runControllerWithEvidenceSampler runs the controller with the engine's
