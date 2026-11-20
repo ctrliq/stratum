@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ctrliq/stratum/internal/apparmor"
+	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/runtime"
@@ -101,7 +102,13 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 	}
 	out := RuntimeApplyResult{Handlers: want, Source: source}
 	if !maps.Equal(st.RuntimeHandlers, want) {
-		if err := nodestate.Mutate(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }); err != nil {
+		err := nodestate.MutateSave(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }, saveState)
+		if errors.Is(err, atomicfile.ErrNotDurable) {
+			out.Saved = true
+			return out, fmt.Errorf("save runtime handlers: %w; %s holds the new runtime handlers but may not survive a crash, "+
+				"and the drop-in was not changed: run `stratum runtime apply` again", err, nodestate.StatePath())
+		}
+		if err != nil {
 			return out, fmt.Errorf("save runtime handlers: %w; nothing was changed", err)
 		}
 		out.Saved = true

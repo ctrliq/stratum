@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/apparmor"
+	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/runtime"
 	"github.com/ctrliq/stratum/internal/version"
@@ -429,6 +430,32 @@ func TestApplyRuntimeHandlersSavesBeforeItWritesTheDropIn(t *testing.T) {
 	}
 	if got := savedHandlers(t); !res.Saved || !maps.Equal(got, kata) {
 		t.Errorf("after the failed write node.yaml declares %v (saved %v), want %v", got, res.Saved, kata)
+	}
+}
+
+// A save whose rename landed but whose directory sync failed has replaced
+// node.yaml, so the apply must not say nothing was changed: it reports the
+// handlers saved, writes no drop-in, and says to apply again.
+func TestApplyRuntimeHandlersReportsASaveThatReplacedNodeYAMLButDidNotSync(t *testing.T) {
+	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"gvisor": executable(t)}})
+	kata := map[string]string{"kata": executable(t)}
+	old := saveState
+	t.Cleanup(func() { saveState = old })
+	saveState = func(st *NodeState) error {
+		if err := old(st); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: sync dir: input/output error", atomicfile.ErrNotDurable)
+	}
+	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata})
+	if err == nil || strings.Contains(err.Error(), "nothing was changed") || !strings.Contains(err.Error(), "holds the new runtime handlers") {
+		t.Fatalf("apply = %v, want an error saying node.yaml holds the new handlers", err)
+	}
+	if !res.Saved || len(*written) != 0 {
+		t.Errorf("apply = %+v with drop-in writes %v, want saved and no drop-in written", res, *written)
+	}
+	if got := savedHandlers(t); !maps.Equal(got, kata) {
+		t.Errorf("node.yaml declares %v, want %v", got, kata)
 	}
 }
 
