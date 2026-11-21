@@ -124,8 +124,10 @@ var (
 	RunDir              = "/run/stratum"
 	StartLockPath       string
 	NodeUpgradeLockPath string
-	PKIDir              string
-	KubeconfigDir       string
+	// RuntimeHandlersLockPath serialises reads and writes of the node's runtime handlers.
+	RuntimeHandlersLockPath string
+	PKIDir                  string
+	KubeconfigDir           string
 	// UpgradeStageDir is where an operator stages upgrade binaries. A cluster
 	// upgrade started through MCP runs only a binary staged here.
 	UpgradeStageDir string
@@ -283,6 +285,7 @@ func SetRoots(dataDir, confDir, runDir string) {
 
 	StartLockPath = RunDir + "-start.lock"
 	NodeUpgradeLockPath = RunDir + "-upgrade.lock"
+	RuntimeHandlersLockPath = RunDir + "-runtime-handlers.lock"
 
 	PKIDir = filepath.Join(DataDir, "pki")
 	KubeconfigDir = filepath.Join(DataDir, "kubeconfig")

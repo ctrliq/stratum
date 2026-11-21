@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/apparmor"
+	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/runtime"
 	"github.com/ctrliq/stratum/internal/version"
@@ -37,7 +38,7 @@ func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 	requireHandlersImport = func() error { return nil }
 	requireSharedConfD = func() error { return nil }
 	requireOwnDropIn = func(map[string]string) error { return nil }
-	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string) error { return nil }
+	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string, []string) error { return nil }
 	applyHandlers = func(_ io.Writer, h map[string]string, _ bool) (runtime.ApplyHandlersResult, error) {
 		written = append(written, h)
 		return runtime.ApplyHandlersResult{Changed: true}, nil
@@ -263,7 +264,7 @@ func TestApplyRuntimeHandlersRelabelsTheNode(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", NodeLabels: map[string]string{"zone": "a"}})
 	want := map[string]string{"nvidia": executable(t)}
 	var labelled [][]string
-	reconcileOwnNodeLabels = func(_ context.Context, host string, labels map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, host string, labels map[string]string, handlers, _ []string) error {
 		if host != "w1" || labels["zone"] != "a" {
 			t.Errorf("relabelled %s with %v, want the node's own state", host, labels)
 		}
@@ -304,7 +305,7 @@ func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	t.Cleanup(func() { restartContainerd = oldRestart })
 	var order []string
 	restartContainerd = func(io.Writer) error { order = append(order, "restart"); return nil }
-	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers, _ []string) error {
 		if !slices.Equal(handlers, []string{"nvidia"}) {
 			t.Errorf("relabelled with %v, want [nvidia]", handlers)
 		}
@@ -349,12 +350,12 @@ func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	oldLoaded, oldRestart := loadedHandlers, restartContainerd
 	t.Cleanup(func() { loadedHandlers, restartContainerd = oldLoaded, oldRestart })
-	loadedHandlers = func(names []string) []string {
-		return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n != "gvisor" })
+	loadedHandlers = func(_ context.Context, names []string) ([]string, error) {
+		return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return n != "gvisor" }), nil
 	}
 	restartContainerd = func(io.Writer) error { return nil }
 	var labelled [][]string
-	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers []string) error {
+	reconcileOwnNodeLabels = func(_ context.Context, _ string, _ map[string]string, handlers, _ []string) error {
 		labelled = append(labelled, handlers)
 		return nil
 	}
@@ -409,20 +410,52 @@ func TestRuntimeApplyAndRestartRefuseWhileTheNodeIsLocked(t *testing.T) {
 	}
 }
 
-// A drop-in that could not be written leaves node.yaml as it was, so no later
-// start labels the node for handlers containerd was never given.
-func TestApplyRuntimeHandlersSavesNothingWhenTheDropInWriteFails(t *testing.T) {
-	saved := map[string]string{"gvisor": executable(t)}
-	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
+// node.yaml is saved before the drop-in is written, so an apply cut short
+// between the two leaves node.yaml holding the new handlers for the next
+// start to write, never a drop-in node.yaml does not know.
+func TestApplyRuntimeHandlersSavesBeforeItWritesTheDropIn(t *testing.T) {
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"gvisor": executable(t)}})
+	kata := map[string]string{"kata": executable(t)}
+	var savedAtWrite map[string]string
 	applyHandlers = func(io.Writer, map[string]string, bool) (runtime.ApplyHandlersResult, error) {
+		savedAtWrite = savedHandlers(t)
 		return runtime.ApplyHandlersResult{}, errors.New("disk full")
 	}
-	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: map[string]string{"kata": executable(t)}})
-	if err == nil || res.Saved {
-		t.Fatalf("apply = %+v, %v; want the write's error and nothing saved", res, err)
+	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata})
+	if err == nil || !strings.Contains(err.Error(), "disk full") || !strings.Contains(err.Error(), "node.yaml holds the new runtime handlers") {
+		t.Fatalf("apply = %v, want the write's error and where the handlers are", err)
 	}
-	if got := savedHandlers(t); !maps.Equal(got, saved) {
-		t.Errorf("node.yaml declares %v after the failed write, want the earlier %v", got, saved)
+	if !maps.Equal(savedAtWrite, kata) {
+		t.Errorf("node.yaml declared %v when the drop-in was written, want %v saved first", savedAtWrite, kata)
+	}
+	if got := savedHandlers(t); !res.Saved || !maps.Equal(got, kata) {
+		t.Errorf("after the failed write node.yaml declares %v (saved %v), want %v", got, res.Saved, kata)
+	}
+}
+
+// A save whose rename landed but whose directory sync failed has replaced
+// node.yaml, so the apply must not say nothing was changed: it reports the
+// handlers saved, writes no drop-in, and says to apply again.
+func TestApplyRuntimeHandlersReportsASaveThatReplacedNodeYAMLButDidNotSync(t *testing.T) {
+	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"gvisor": executable(t)}})
+	kata := map[string]string{"kata": executable(t)}
+	old := saveState
+	t.Cleanup(func() { saveState = old })
+	saveState = func(st *NodeState) error {
+		if err := old(st); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: sync dir: input/output error", atomicfile.ErrNotDurable)
+	}
+	res, err := ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata})
+	if err == nil || strings.Contains(err.Error(), "nothing was changed") || !strings.Contains(err.Error(), "holds the new runtime handlers") {
+		t.Fatalf("apply = %v, want an error saying node.yaml holds the new handlers", err)
+	}
+	if !res.Saved || len(*written) != 0 {
+		t.Errorf("apply = %+v with drop-in writes %v, want saved and no drop-in written", res, *written)
+	}
+	if got := savedHandlers(t); !maps.Equal(got, kata) {
+		t.Errorf("node.yaml declares %v, want %v", got, kata)
 	}
 }
 

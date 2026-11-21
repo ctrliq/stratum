@@ -3,7 +3,8 @@
 #
 # A worker joins with the labels, taints and runtime handlers it declares, takes
 # no workloads behind its startup taint until a control plane releases it, and
-# cannot release itself.
+# cannot release itself. A restart that replaces or clears its labels removes
+# the ones it no longer declares from its Node, and leaves another writer's.
 #
 # The startup taint is how a node that still has to pass a burn-in joins: the
 # taint goes on with the node's registration, so no pod lands there in the
@@ -112,25 +113,59 @@ assert_eq "release cleared the hold" " " "$held $held_reason"
 # --- a restarted worker does not taint itself again -----------------------------
 renewed() { on cp1 "$K -n kube-node-lease get lease cp2 -o jsonpath='{.spec.renewTime}'" 2>/dev/null; }
 heartbeat() { on cp1 "$K get node cp2 -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].lastHeartbeatTime}'" 2>/dev/null; }
-docker stop -t 5 "$HA_PREFIX-cp2" >/dev/null
-# Read after the stop: the old kubelet can renew while it shuts down, so only a
-# renewal after this one is the restarted kubelet's. The Lease renews apart
-# from the Node's status, and the Node can stay Ready through a short stop, so
-# the check also waits for the restarted kubelet's first status heartbeat.
-lease_before=$(renewed)
-heartbeat_before=$(heartbeat)
-[[ -n $heartbeat_before ]] || { fail "no Ready heartbeat on cp2 before the restart"; done_testing; exit 1; }
-docker start "$HA_PREFIX-cp2" >/dev/null
-on cp2 ": > /tmp/stratum.log"
-node_up cp2 --worker
-wait_for "the worker to restart" 600 node_started cp2 || { node_log cp2; exit 1; }
-lease_moved() { local now; now=$(renewed); [[ -n $now && $now != "$lease_before" ]]; }
-wait_for "the restarted kubelet to renew its Lease" 300 lease_moved || { node_log cp2; exit 1; }
-heartbeat_moved() { local now; now=$(heartbeat); [[ -n $now && $now != "$heartbeat_before" ]]; }
-wait_for "the restarted kubelet to post the Node's status" 300 heartbeat_moved || { node_log cp2; exit 1; }
-wait_for "2 nodes Ready again" 600 ready_at_least cp1 2 || { on cp1 "$K get nodes -o wide" || true; exit 1; }
+# restart_worker stops cp2's container and starts the worker again with $@.
+# The Lease and heartbeat are read after the stop: the old kubelet can renew
+# while it shuts down, so only a renewal after this one is the restarted
+# kubelet's. The Lease renews apart from the Node's status, and the Node can
+# stay Ready through a short stop, so it also waits for the restarted
+# kubelet's first status heartbeat.
+restart_worker() {
+  local lease_before heartbeat_before
+  docker stop -t 5 "$HA_PREFIX-cp2" >/dev/null
+  lease_before=$(renewed)
+  heartbeat_before=$(heartbeat)
+  [[ -n $heartbeat_before ]] || { fail "no Ready heartbeat on cp2 before the restart"; done_testing; exit 1; }
+  docker start "$HA_PREFIX-cp2" >/dev/null
+  on cp2 ": > /tmp/stratum.log"
+  node_up cp2 --worker "$@"
+  wait_for "the worker to restart" 600 node_started cp2 || { node_log cp2; exit 1; }
+  lease_moved() { local now; now=$(renewed); [[ -n $now && $now != "$lease_before" ]]; }
+  wait_for "the restarted kubelet to renew its Lease" 300 lease_moved || { node_log cp2; exit 1; }
+  heartbeat_moved() { local now; now=$(heartbeat); [[ -n $now && $now != "$heartbeat_before" ]]; }
+  wait_for "the restarted kubelet to post the Node's status" 300 heartbeat_moved || { node_log cp2; exit 1; }
+  wait_for "2 nodes Ready again" 600 ready_at_least cp1 2 || { on cp1 "$K get nodes -o wide" || true; exit 1; }
+}
+restart_worker
 if tainted; then fail "the restarted worker put its startup taint back: $(taints)"; else pass "a restart does not re-arm the startup taint"; fi
 assert_contains "the restarted worker keeps its zone label" '"topology.kubernetes.io/zone":"rack-1"' "$(labels)"
 assert_contains "…and the verified record" "inttest@" "$(annotation verified)"
+
+# --- labels the worker stopped declaring leave its Node -------------------------
+# A label another writer set is not the worker's, so neither a replacement nor
+# a clear removes it; node.yaml's record of the labels the worker applied
+# follows what it declares.
+applied() {
+  on cp2 "cat $ROOT/config/node.yaml" 2>/dev/null |
+    awk '/^appliedNodeLabels:/ { f = 1; next } f && /^- / { print $2; next } { f = 0 }' | paste -sd, -
+}
+on cp1 "$K label node cp2 inttest.stratum.ciq.com/owner=other --overwrite" >/dev/null || fail "could not label cp2 from cp1"
+assert_eq "node.yaml records the zone label the worker applied" "topology.kubernetes.io/zone" "$(applied)"
+
+restart_worker --node-label inttest.stratum.ciq.com/pool=a
+has_pool() { labels | grep -q '"inttest.stratum.ciq.com/pool":"a"'; }
+wait_for "the replacement label" 120 has_pool || fail "no pool label after --node-label: $(labels)"
+# A failed read is never taken for a label that is gone.
+lacks() { local l; l=$(labels) && [[ -n $l ]] && ! grep -qF "\"$1\"" <<<"$l"; }
+zone_gone() { lacks topology.kubernetes.io/zone; }
+wait_for "the replaced zone label to leave the Node" 120 zone_gone || fail "the zone label stayed after --node-label replaced it: $(labels)"
+assert_contains "a replacement keeps the label another writer set" '"inttest.stratum.ciq.com/owner":"other"' "$(labels)"
+assert_eq "node.yaml records only the replacement" "inttest.stratum.ciq.com/pool" "$(applied)"
+
+restart_worker --clear-node-labels
+pool_gone() { lacks inttest.stratum.ciq.com/pool; }
+wait_for "the cleared label to leave the Node" 120 pool_gone || fail "the pool label stayed after --clear-node-labels: $(labels)"
+assert_contains "a clear keeps the label another writer set" '"inttest.stratum.ciq.com/owner":"other"' "$(labels)"
+assert_contains "…and the runtime handler label" '"runtime.stratum.ciq.com/fake":"true"' "$(labels)"
+assert_eq "node.yaml records no applied labels after a clear" "" "$(applied)"
 
 done_testing

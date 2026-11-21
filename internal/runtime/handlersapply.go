@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,13 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/BurntSushi/toml"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/comps"
+	"github.com/ctrliq/stratum/internal/staticpod"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -25,8 +30,8 @@ import (
 // handlers, even when the restart after it failed; Restarted is true only
 // when this call restarted a running containerd, so a caller reports the
 // restart from Restarted, never Changed. Unloaded means the running
-// containerd started before the drop-in's latest change, by this call or an
-// earlier one that did not restart it.
+// containerd was already running at the drop-in's latest change, by this
+// call or an earlier one that did not restart it.
 type ApplyHandlersResult struct {
 	Changed   bool
 	Written   bool
@@ -35,162 +40,236 @@ type ApplyHandlersResult struct {
 }
 
 // ApplyHandlers writes the runtime-handler drop-in for handlers and, with
-// restart, restarts a running containerd when the drop-in changed, or when an
-// earlier apply left it running without the drop-in on disk. A drop-in that
-// changed on disk but could not be made durable is still recorded as
-// unloaded, so a retry restarts containerd. Its caller runs
-// RequireHandlersImport first, before anything it saves: a config rendered
-// before runtime handlers existed would never read the file.
+// restart, restarts a running containerd whose loaded handlers differ from
+// them, or that cannot say which it loaded. Without restart such a containerd
+// is reported Unloaded. Its caller runs RequireHandlersImport first, before
+// anything it saves: a config rendered before runtime handlers existed would
+// never read the file.
 func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (ApplyHandlersResult, error) {
 	var out ApplyHandlersResult
-	behind := loadedHandlerNames()
-	loaded := behind.names
-	if behind.pid == 0 {
-		loaded = dropInHandlerNames()
-	}
 	changed, err := writeHandlers(w, handlers)
 	out.Changed = changed
 	if err != nil {
-		if changed && Active() {
-			out.Unloaded = true
-			recordUnloaded(w, loaded)
-		}
+		out.Unloaded = changed && Active()
 		return out, err
 	}
 	out.Written = true
-	if (!changed && behind.pid == 0) || !Active() {
+	if !Active() || (!changed && !handlersPending(handlers)) {
 		return out, nil
 	}
-	if restart {
-		restarted, err := restartContainerd(" after a runtime handler change")
-		out.Restarted = restarted
-		if restarted {
-			clearUnloaded(w)
-		}
-		if err != nil {
-			if !restarted {
-				out.Unloaded = true
-				recordUnloaded(w, loaded)
-			}
-			return out, err
-		}
+	if !restart {
+		out.Unloaded = true
 		return out, nil
 	}
-	out.Unloaded = true
-	recordUnloaded(w, loaded)
-	return out, nil
+	restarted, err := restartContainerd(" after a runtime handler change")
+	out.Restarted = restarted
+	out.Unloaded = !restarted
+	return out, err
 }
 
-// unloadedPath records which runtime handlers the running containerd loaded
-// when the drop-in changed without restarting it: that containerd's PID and
-// processStart, then one handler name per line. containerd imports only *.toml from the
-// drop-in's directory, so it never reads the record as config.
-func unloadedPath() string { return version.ContainerdRuntimeConfD + ".unloaded" }
+// criTimeout bounds one CRI status call to the running containerd.
+const criTimeout = 10 * time.Second
 
-// loadedHandlers is the runtime handlers a running containerd loaded. A zero
-// pid means it loaded the drop-in on disk, or that no containerd runs.
-type loadedHandlers struct {
-	pid   int
-	names []string
-}
-
-// containerdPID is the PID of the containerd the supervisor runs, or 0.
-func containerdPID() int {
-	st, err := comps.Status()
+// criRuntimeHandlers is the named runtime handlers the running containerd
+// reports through the CRI status the kubelet reads; the default handler has
+// no name and is left out.
+var criRuntimeHandlers = func(ctx context.Context) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, criTimeout)
+	defer cancel()
+	conn, err := grpc.NewClient(version.ContainerdSock, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return 0
+		return nil, err
 	}
-	if p := st[comps.Normalize("containerd")]; p.Running && !p.Foreign {
-		return p.Pid
-	}
-	return 0
-}
-
-// processStart tells one run of a process from another that reuses its PID:
-// the boot it ran in and its start time since that boot, from /proc. A reboot
-// or a container restart can hand a new containerd the PID the record names;
-// it never hands it the same start. Empty when /proc cannot be read.
-var processStart = func(pid int) string {
-	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	defer conn.Close()
+	resp, err := runtimeapi.NewRuntimeServiceClient(conn).Status(ctx, &runtimeapi.StatusRequest{})
 	if err != nil {
-		return ""
-	}
-	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return ""
-	}
-	_, rest, ok := strings.Cut(string(stat), ") ")
-	fields := strings.Fields(rest)
-	if !ok || len(fields) < 20 {
-		return ""
-	}
-	return strings.TrimSpace(string(boot)) + "/" + fields[19]
-}
-
-// loadedHandlerNames reads the unloaded record. It counts only while the
-// containerd it names still runs: any restart since, by `stratum runtime
-// restart`, `stratum registry apply`, an upgrade, the supervisor or a reboot,
-// loaded the drop-in on disk.
-func loadedHandlerNames() loadedHandlers {
-	b, err := os.ReadFile(unloadedPath())
-	if err != nil {
-		return loadedHandlers{}
-	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	pidText, start, _ := strings.Cut(lines[0], " ")
-	pid, err := strconv.Atoi(pidText)
-	if err != nil || pid == 0 || pid != containerdPID() || start != processStart(pid) {
-		return loadedHandlers{}
-	}
-	return loadedHandlers{pid: pid, names: slices.DeleteFunc(lines[1:], func(n string) bool { return n == "" })}
-}
-
-// dropInHandlerNames is the runtime handlers the drop-in on disk declares.
-func dropInHandlerNames() []string {
-	var c sharedConfD
-	if _, err := toml.DecodeFile(version.ContainerdRuntimeConfD, &c); err != nil {
-		return nil
+		return nil, err
 	}
 	var names []string
-	for _, p := range c.Plugins {
-		names = append(names, slices.Collect(maps.Keys(p.Containerd.Runtimes))...)
+	for _, h := range resp.GetRuntimeHandlers() {
+		if h.GetName() != "" {
+			names = append(names, h.GetName())
+		}
 	}
 	slices.Sort(names)
-	return slices.Compact(names)
+	return slices.Compact(names), nil
 }
 
-// recordUnloaded notes that the running containerd has not loaded the drop-in
-// on disk, only the runtime handlers in names. A record it cannot write leaves
-// the node labelled for every declared handler, so it says so on w.
-func recordUnloaded(w io.Writer, names []string) {
-	pid := containerdPID()
-	if pid == 0 {
-		return
+// loadedRuntimeHandlers is the runtime handlers the running containerd loaded.
+// An error means it could not say, which every caller treats as a restart
+// still pending.
+func loadedRuntimeHandlers(ctx context.Context) ([]string, error) {
+	if !Active() {
+		return nil, errors.New("containerd is not running under the stratum supervisor")
 	}
-	body := strconv.Itoa(pid) + " " + processStart(pid) + "\n" + strings.Join(names, "\n") + "\n"
-	if err := atomicfile.WriteFileWith(unloadedPath(), []byte(body), 0o644, atomicfileSeams()); err != nil {
-		fmt.Fprintf(w, "WARN: could not record that containerd has not loaded the runtime handlers (%v); this node may be labelled for them before containerd can run them. Run `stratum runtime restart` to load them\n", err)
+	names, err := criRuntimeHandlers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("ask containerd which runtime handlers it loaded: %w", err)
 	}
+	return names, nil
 }
 
-// clearUnloaded removes the record once a restart has loaded the drop-in. A
-// record it cannot remove names the containerd the restart replaced, so
-// loadedHandlerNames already ignores it.
-func clearUnloaded(w io.Writer) {
-	if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(w, "WARN: could not remove %s (%v); it names the containerd this restart replaced, so it is already ignored\n", unloadedPath(), err)
+// handlersPending reports whether the running containerd needs a restart to
+// run exactly handlers: one of them is not loaded, or it still runs a handler
+// stratum declared before, one that is neither runc nor defined by another
+// file in the shared conf.d, or it was running when the drop-in last changed.
+// A containerd that cannot say is pending.
+func handlersPending(handlers map[string]string) bool {
+	loaded, err := loadedRuntimeHandlers(context.Background())
+	if err != nil {
+		return true
 	}
+	if len(missingHandlers(handlers, loaded)) > 0 || len(staleHandlers(handlers, loaded)) > 0 {
+		return true
+	}
+	unloaded, err := dropInUnloaded()
+	return err != nil || unloaded
+}
+
+// containerdInstance names the supervisor's running containerd process by its
+// PID and start time, so a restart, which replaces the process, changes it. ok
+// is false when no containerd runs under the supervisor, or no supervisor
+// runs, as before a node starts: its control socket is missing or refuses the
+// connection. Any other failure to ask is an error, never "not running".
+var containerdInstance = func() (id string, ok bool, err error) {
+	procs, err := comps.Status()
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("ask the supervisor whether containerd runs: %w", err)
+	}
+	p, found := procs["containerd"]
+	if !found || !p.Running || p.Foreign || p.Pid <= 0 {
+		return "", false, nil
+	}
+	ticks, alive, err := staticpod.StartTicks(p.Pid)
+	if err != nil {
+		return "", false, fmt.Errorf("read when containerd (pid %d) started: %w", p.Pid, err)
+	}
+	if !alive {
+		return "", false, nil
+	}
+	return fmt.Sprintf("%d %d", p.Pid, ticks), true, nil
+}
+
+// unloadedPath records, one per line, the containerd processes that may have
+// read the runtime-handler drop-in before its last change. While one of them
+// runs, the change is not loaded.
+func unloadedPath() string {
+	return filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), ".stratum-runtime.unloaded")
+}
+
+// changeDropIn runs write, which changes the drop-in, between two looks at the
+// running containerd. The one running before the write read the file as it
+// was, and so may one the supervisor started during the write, so both are
+// recorded; one that starts after the second look reads the change. The
+// first record is written before the drop-in changes, so a crash between them
+// leaves the change pending rather than lost. When neither look finds a
+// containerd, the record is cleared: the next one reads the file as it is.
+// A look that cannot tell stops the change before the write, or reports it
+// after. A write that replaced the file but did not sync its directory still
+// takes the second look, and its error is returned. A record whose directory did not sync is kept: only a host crash
+// loses it, and that also ends the containerd it names.
+func changeDropIn(write func() error) error {
+	var ids []string
+	if id, ok, err := containerdInstance(); err != nil {
+		return fmt.Errorf("record the drop-in change: %w", err)
+	} else if ok {
+		ids = append(ids, id)
+	}
+	if err := saveUnloaded(ids); err != nil {
+		return fmt.Errorf("record the drop-in change: %w", err)
+	}
+	werr := write()
+	if werr != nil && !errors.Is(werr, atomicfile.ErrNotDurable) {
+		return werr
+	}
+	id, ok, err := containerdInstance()
+	if err != nil {
+		return fmt.Errorf("the drop-in changed, but %w; run `stratum runtime restart` so containerd reads it", err)
+	}
+	if ok && !slices.Contains(ids, id) {
+		if err := saveUnloaded(append(ids, id)); err != nil {
+			return fmt.Errorf("the drop-in changed, but recording that containerd has not read it failed: %w; run `stratum runtime restart`", err)
+		}
+	}
+	return werr
+}
+
+// saveUnloaded replaces the record with ids, or removes it when there are none.
+func saveUnloaded(ids []string) error {
+	if len(ids) == 0 {
+		if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+		return err
+	}
+	err := atomicfile.WriteFileWith(unloadedPath(), []byte(strings.Join(ids, "\n")+"\n"), 0o644, atomicfileSeams())
+	if errors.Is(err, atomicfile.ErrNotDurable) {
+		return nil
+	}
+	return err
+}
+
+// dropInUnloaded reports whether the running containerd is one recorded at
+// the drop-in's last change, so it has not read the change. A handler whose
+// binary changed keeps its name, so the names containerd reports cannot show
+// that change.
+func dropInUnloaded() (bool, error) {
+	b, err := os.ReadFile(unloadedPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	id, ok, err := containerdInstance()
+	if err != nil || !ok {
+		return false, err
+	}
+	return slices.Contains(strings.Split(strings.TrimSpace(string(b)), "\n"), id), nil
+}
+
+// missingHandlers is the declared handlers containerd has not loaded.
+func missingHandlers(handlers map[string]string, loaded []string) []string {
+	return slices.DeleteFunc(slices.Sorted(maps.Keys(handlers)), func(n string) bool { return slices.Contains(loaded, n) })
+}
+
+// staleHandlers is the loaded handlers that only an earlier drop-in can have
+// declared: not declared now, not runc, and not defined by another file in
+// the shared conf.d.
+func staleHandlers(handlers map[string]string, loaded []string) []string {
+	foreign := map[string]bool{"runc": true}
+	for _, f := range readSharedConfD() {
+		if f.err != nil {
+			continue
+		}
+		for _, p := range f.conf.Plugins {
+			for n := range p.Containerd.Runtimes {
+				foreign[n] = true
+			}
+		}
+	}
+	return slices.DeleteFunc(slices.Clone(loaded), func(n string) bool {
+		_, declared := handlers[n]
+		return declared || foreign[n]
+	})
 }
 
 // LoadedHandlers narrows names to the runtime handlers the running containerd
 // has loaded, so a node is labelled for a handler only once its containerd
-// can run it.
-func LoadedHandlers(names []string) []string {
-	loaded := loadedHandlerNames()
-	if loaded.pid == 0 {
-		return names
+// can run it. An error means containerd could not say; the caller labels
+// nothing new until it can.
+func LoadedHandlers(ctx context.Context, names []string) ([]string, error) {
+	loaded, err := loadedRuntimeHandlers(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return !slices.Contains(loaded.names, n) })
+	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return !slices.Contains(loaded, n) }), nil
 }
 
 // errNoHandlersImport is RequireHandlersImport's report of a containerd
@@ -217,6 +296,33 @@ func RequireHandlersImport() error {
 	return nil
 }
 
+// checkLoaded reports the saved handlers the running containerd has not
+// loaded and the ones it still runs that are no longer declared. A node whose
+// containerd is not running has nothing loaded to compare.
+func checkLoaded(r *HandlerReport, saved map[string]string) {
+	if !Active() {
+		return
+	}
+	loaded, err := loadedRuntimeHandlers(context.Background())
+	if err != nil {
+		r.add(SeverityWarn, "%v; cannot tell whether it runs the saved handlers", err)
+		return
+	}
+	if missing := missingHandlers(saved, loaded); len(missing) > 0 {
+		r.add(SeverityError, "containerd has not loaded the runtime handlers %s; run `stratum runtime restart`", strings.Join(missing, ", "))
+	}
+	if stale := staleHandlers(saved, loaded); len(stale) > 0 {
+		r.add(SeverityWarn, "containerd still runs the runtime handlers %s, which this node no longer declares; run `stratum runtime restart`", strings.Join(stale, ", "))
+	}
+	unloaded, err := dropInUnloaded()
+	switch {
+	case err != nil:
+		r.add(SeverityWarn, "%v; cannot tell whether containerd read the latest %s", err, version.ContainerdRuntimeConfD)
+	case unloaded:
+		r.add(SeverityError, "containerd has not restarted since %s last changed, so it runs the runtime handlers as they were; run `stratum runtime restart`", version.ContainerdRuntimeConfD)
+	}
+}
+
 // RestartContainerd restarts the supervisor's containerd and waits for it to
 // report active again. Running containers keep running: their shims outlive
 // containerd.
@@ -224,10 +330,7 @@ func RestartContainerd(w io.Writer) error {
 	if !Active() {
 		return errors.New("containerd is not running under the stratum supervisor; start the node with `stratum up`")
 	}
-	restarted, err := restartContainerd("")
-	if restarted {
-		clearUnloaded(w)
-	}
+	_, err := restartContainerd("")
 	return err
 }
 
@@ -271,10 +374,7 @@ func (r *HandlerReport) add(s Severity, format string, args ...any) {
 func CheckHandlers(saved map[string]string) HandlerReport {
 	r := HandlerReport{Handlers: saved}
 	checkDropIn(&r, saved)
-	if loaded := loadedHandlerNames(); loaded.pid != 0 {
-		r.add(SeverityError, "containerd (pid %d) started before %s last changed and runs only the handlers %s; run `stratum runtime restart`",
-			loaded.pid, version.ContainerdRuntimeConfD, cmp.Or(strings.Join(loaded.names, ", "), "runc"))
-	}
+	checkLoaded(&r, saved)
 	if err := RequireHandlersImport(); err != nil {
 		severity := SeverityError
 		if len(saved) == 0 && errors.Is(err, errNoHandlersImport) {

@@ -136,6 +136,11 @@ func PrepareControllerWithLease(ctx context.Context, cfg *ClusterConfig, nodeIPF
 		RuntimeHandlers: cfg.Spec.Node.RuntimeHandlers,
 	}
 	warnChangedTaints(os.Stderr, st, prev)
+	// The record is of labels on this hostname's Node. A renamed host
+	// registers a new Node, where those keys may be another writer's.
+	if prev != nil && prev.Hostname == hostname {
+		st.AppliedNodeLabels = prev.AppliedNodeLabels
+	}
 	// A join can inherit its VIP from authenticated bundle metadata without
 	// changing the config file. An unspecified address keeps that recorded
 	// address on restart; explicit addresses and local interface/BGP settings

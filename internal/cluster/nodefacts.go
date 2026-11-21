@@ -37,8 +37,6 @@ func engineOwnedKey(key string) bool {
 // itself and the kubelet does not set to its own values.
 var kubeletLabels = []string{
 	"topology.kubernetes.io/zone", "topology.kubernetes.io/region",
-	"failure-domain.beta.kubernetes.io/zone", "failure-domain.beta.kubernetes.io/region",
-	"beta.kubernetes.io/instance-type",
 }
 
 // nodeMaySetLabel reports whether a node may declare key on its own Node.

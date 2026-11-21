@@ -370,6 +370,7 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		"PKIDir":                    version.PKIDir,
 		"RegistriesConfig":          version.RegistriesConfig,
 		"RunDir":                    version.RunDir,
+		"RuntimeHandlersLockPath":   version.RuntimeHandlersLockPath,
 		"StageDir":                  version.StageDir,
 		"StartLockPath":             version.StartLockPath,
 		"StratumInstallPath":        version.StratumInstallPath,
@@ -461,10 +462,12 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		// uninstall must leave it in place, so that process stays excluded
 		// while the node is wiped; removing the lock files would break that
 		// exclusion. They are runtime transients beside RunDir
-		// (version.go: SetRoots derives both as RunDir + "-start.lock"/
-		// "-upgrade.lock"), not node state, and /run is tmpfs a reboot clears.
-		version.StartLockPath:       "the node-start exclusion lock; pkg/cli's TestStartLockSurvivesUninstall pins it outside every uninstall target so a live `stratum up` stays excluded during a wipe — a runtime transient, not node state",
-		version.NodeUpgradeLockPath: "the node-upgrade exclusion lock, derived beside the start lock for the same reason; a runtime transient, not node state",
+		// (version.go: SetRoots derives each as RunDir + "-start.lock"/
+		// "-upgrade.lock"/"-runtime-handlers.lock"), not node state, and /run
+		// is tmpfs a reboot clears.
+		version.StartLockPath:           "the node-start exclusion lock; pkg/cli's TestStartLockSurvivesUninstall pins it outside every uninstall target so a live `stratum up` stays excluded during a wipe — a runtime transient, not node state",
+		version.NodeUpgradeLockPath:     "the node-upgrade exclusion lock, derived beside the start lock for the same reason; a runtime transient, not node state",
+		version.RuntimeHandlersLockPath: "the runtime-handlers lock, derived beside the start lock; a holder waiting on it stays serialised during a wipe — a runtime transient, not node state",
 	}
 	for _, name := range parsed {
 		p := values[name]

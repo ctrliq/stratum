@@ -25,10 +25,10 @@ const (
 // declares and the runtime-handler label of each handler it declares, and
 // removes every other label under the handler prefix, which stratum owns: a
 // node cannot declare a label there, so one it carries is a handler the node
-// no longer declares or a label set by hand. A label outside the prefix that
-// the node does not declare is left alone: it is another writer's. nil means
-// the Node already carries them.
-func nodeLabelChanges(current, declared map[string]string, handlers []string) map[string]*string {
+// no longer declares or a label set by hand. A label in prune that the node no
+// longer declares is removed too. Any other label outside the prefix is left
+// alone: it is another writer's. nil means the Node already carries them.
+func nodeLabelChanges(current, declared map[string]string, handlers, prune []string) map[string]*string {
 	want := maps.Clone(declared)
 	if want == nil {
 		want = map[string]string{}
@@ -43,7 +43,7 @@ func nodeLabelChanges(current, declared map[string]string, handlers []string) ma
 		}
 	}
 	for k := range current {
-		if _, ok := want[k]; !ok && strings.HasPrefix(k, RuntimeHandlerLabelPrefix) {
+		if _, ok := want[k]; !ok && (strings.HasPrefix(k, RuntimeHandlerLabelPrefix) || slices.Contains(prune, k)) {
 			changes[k] = nil
 		}
 	}
@@ -58,23 +58,23 @@ func nodeLabelChanges(current, declared map[string]string, handlers []string) ma
 // lets a node set those on itself, and the patch carries labels only, so it
 // never touches the taints a kubelet may not change. It reads the Node first
 // and patches only what differs, so a start that changes nothing writes
-// nothing.
-func ReconcileOwnNodeLabels(ctx context.Context, node string, declared map[string]string, handlers []string) error {
+// nothing. A label in prune that the node no longer declares is removed.
+func ReconcileOwnNodeLabels(ctx context.Context, node string, declared map[string]string, handlers, prune []string) error {
 	cs, err := kubeletClientset()
 	if err != nil {
 		return fmt.Errorf("label %s: %w", node, err)
 	}
-	return reconcileNodeLabels(ctx, cs, node, declared, handlers)
+	return reconcileNodeLabels(ctx, cs, node, declared, handlers, prune)
 }
 
-func reconcileNodeLabels(ctx context.Context, cs kubernetes.Interface, node string, declared map[string]string, handlers []string) error {
+func reconcileNodeLabels(ctx context.Context, cs kubernetes.Interface, node string, declared map[string]string, handlers, prune []string) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	n, err := cs.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("label %s: %w", node, err)
 	}
-	changes := nodeLabelChanges(n.Labels, declared, handlers)
+	changes := nodeLabelChanges(n.Labels, declared, handlers, prune)
 	if changes == nil {
 		return nil
 	}
