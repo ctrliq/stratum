@@ -161,10 +161,37 @@ func exportedDocs(file *ast.File) map[*ast.CommentGroup]bool {
 				if doc := specDoc(spec); doc != nil {
 					docs[doc] = true
 				}
+				if ts, ok := spec.(*ast.TypeSpec); ok {
+					memberDocs(ts.Type, docs)
+				}
 			}
 		}
 	}
 	return docs
+}
+
+func memberDocs(t ast.Expr, docs map[*ast.CommentGroup]bool) {
+	var fields *ast.FieldList
+	switch x := t.(type) {
+	case *ast.StructType:
+		fields = x.Fields
+	case *ast.InterfaceType:
+		fields = x.Methods
+	}
+	if fields == nil {
+		return
+	}
+	for _, f := range fields.List {
+		if f.Doc == nil {
+			continue
+		}
+		for _, n := range f.Names {
+			if n.IsExported() {
+				docs[f.Doc] = true
+				break
+			}
+		}
+	}
 }
 
 func specExported(spec ast.Spec) bool {
