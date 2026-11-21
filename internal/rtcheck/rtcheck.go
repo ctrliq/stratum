@@ -1,6 +1,4 @@
-// Package rtcheck compares what is installed on disk with what is actually
-// serving: a node can run a different containerd than the one on disk when an
-// orphan from an earlier run holds the CRI socket.
+// Package rtcheck compares the installed containerd with the one serving on the CRI socket.
 package rtcheck
 
 import (
@@ -19,10 +17,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// Installed is the version `bin --version` prints: the first token that starts
-// with a digit once a leading "v" is dropped. It matches both
-// "containerd github.com/containerd/containerd/v2 v2.4.1+stratum <rev>" and
-// "Kubernetes v<k8s version>-stratum".
+// Installed parses the version token out of containerd or Kubernetes `--version` output.
 func Installed(ctx context.Context, bin string) (string, error) {
 	out, err := exec.CommandContext(ctx, bin, "--version").Output()
 	if err != nil {
@@ -36,14 +31,12 @@ func Installed(ctx context.Context, bin string) (string, error) {
 	return "", fmt.Errorf("%s --version: no version in %q", bin, strings.TrimSpace(string(out)))
 }
 
-// Same compares two versions ignoring a leading "v": containerd's CRI reports
-// its version with or without one depending on the caller.
+// Same compares two versions ignoring a leading "v": the CRI reports it with or without one.
 func Same(a, b string) bool {
 	return strings.TrimPrefix(a, "v") == strings.TrimPrefix(b, "v")
 }
 
-// rawCodec carries the CRI request and reply as bytes, so asking the runtime
-// for its version needs no generated CRI client (and no new module).
+// rawCodec carries requests and replies as raw bytes, so no generated CRI client is needed.
 type rawCodec struct{}
 
 func (rawCodec) Marshal(v any) (mem.BufferSlice, error) {
@@ -59,15 +52,7 @@ func (rawCodec) Name() string { return "proto" }
 
 var _ encoding.CodecV2 = rawCodec{}
 
-// Serving asks the CRI runtime on the unix socket for its version
-// (runtime.v1.RuntimeService/Version, an empty request) and returns
-// VersionResponse.runtime_version. Whatever answers the socket is what this
-// reports, so an orphan holding it shows up as its own version.
-//
-// Whatever answers the socket is not trusted: the version and any error text
-// it sends back are printed to an operator's terminal, so both are cleaned
-// (clean) before they leave this package, and a reply that is not a plain
-// version cannot match the installed one.
+// Serving reports whatever answers the CRI socket; its reply is untrusted and is cleaned.
 func Serving(ctx context.Context, sock string) (string, error) {
 	cc, err := grpc.NewClient("unix://"+strings.TrimPrefix(sock, "unix://"),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -78,8 +63,6 @@ func Serving(ctx context.Context, sock string) (string, error) {
 	defer cc.Close()
 	var reply []byte
 	if err := cc.Invoke(ctx, "/runtime.v1.RuntimeService/Version", []byte{}, &reply, grpc.WaitForReady(true)); err != nil {
-		// status.Convert keeps the server-supplied message apart from our own
-		// wording, so it can be cleaned; a ctx error converts to its own code.
 		st := status.Convert(err)
 		return "", fmt.Errorf("CRI Version on %s: %v: %s", sock, st.Code(), clean(st.Message()))
 	}
@@ -90,13 +73,10 @@ func Serving(ctx context.Context, sock string) (string, error) {
 	return clean(v), nil
 }
 
-// maxReplyText caps any string taken from the runtime's reply. Real versions
-// are a few dozen bytes.
+// maxReplyText caps any string taken from the runtime's reply.
 const maxReplyText = 128
 
-// clean makes s safe to print: every rune that is not printable (control
-// characters, terminal escapes, invalid UTF-8) becomes '?', and the result is
-// cut to maxReplyText bytes, marked "..." when it was longer.
+// clean makes a runtime-supplied string safe to print.
 func clean(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -112,7 +92,6 @@ func clean(s string) string {
 	return b.String()
 }
 
-// runtimeVersion pulls runtime_version (field 3) out of a VersionResponse.
 func runtimeVersion(b []byte) (string, error) {
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)

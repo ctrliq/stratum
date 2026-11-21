@@ -69,9 +69,6 @@ func TestEnsureKubeVipRBAC(t *testing.T) {
 	}
 }
 
-// TestKubeVipUserIsTheLeafCN pins the binding's subject to the CN pki issues
-// kube-vip with: a rename on either side would leave kube-vip unable to hold
-// its lease, and no node would hold the VIP.
 func TestKubeVipUserIsTheLeafCN(t *testing.T) {
 	for _, sp := range pki.LeafSpecs("cp1", "10.0.0.1", nil) {
 		if sp.Name != "kube-vip" {

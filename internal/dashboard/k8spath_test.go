@@ -18,13 +18,9 @@ func TestParseK8sPath(t *testing.T) {
 		{path: "/api/v1/namespaces/default", ok: true, want: k8sRequest{Version: "v1", Resource: "namespaces", Name: "default"}},
 		{path: "/apis/apps/v1/namespaces/kube-system/deployments/coredns", ok: true,
 			want: k8sRequest{Group: "apps", Version: "v1", Namespace: "kube-system", Resource: "deployments", Name: "coredns"}},
-		// The legacy watch form addresses the same resource by a different
-		// path. Reading "watch" as the resource name is the bug this parser
-		// exists to prevent, and the node-shell gate depends on it.
 		{path: "/api/v1/watch/namespaces/default/pods", ok: true,
 			want: k8sRequest{Version: "v1", Verb: "watch", Namespace: "default", Resource: "pods"}},
 		{path: "/api/v1/watch/pods", ok: true, want: k8sRequest{Version: "v1", Verb: "watch", Resource: "pods"}},
-		// Not resource requests.
 		{path: "/version"},
 		{path: "/healthz"},
 		{path: "/"},
@@ -49,8 +45,6 @@ func TestStripPrefixKeepsTheEncodedForm(t *testing.T) {
 		{in: "/k8s/api/v1/pods", wantPath: "/api/v1/pods"},
 		{in: "/k8s", wantPath: "/"},
 		{in: "/k8s/", wantPath: "/"},
-		// A %2F in a resource name must survive: unescaped it would address a
-		// different object, or none.
 		{in: "/k8s/api/v1/namespaces/default/configmaps/a%2Fb", wantPath: "/api/v1/namespaces/default/configmaps/a/b", wantRaw: "/api/v1/namespaces/default/configmaps/a%2Fb"},
 	} {
 		u := mustParseURL(t, tc.in)

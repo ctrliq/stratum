@@ -41,13 +41,9 @@ func exists(dir, name string) bool {
 	return err == nil
 }
 
-// TestPruneKeepsNewest: Prune keeps the newest N of THIS host's snapshots and
-// leaves other hosts' snapshots and pre-upgrade snapshots untouched.
 func TestPruneKeepsNewest(t *testing.T) {
 	dir := t.TempDir()
 	host := "cp1"
-	// three cp1 snapshots (timestamps sort chronologically), plus an unrelated
-	// host and a pre-upgrade snapshot that must survive.
 	write(t, dir, ScheduledName(host, "20260704-010000"))
 	write(t, dir, ScheduledName(host, "20260704-020000"))
 	write(t, dir, ScheduledName(host, "20260704-030000"))
@@ -72,9 +68,6 @@ func TestPruneKeepsNewest(t *testing.T) {
 	}
 }
 
-// TestPruneLeavesAHostWhoseNameExtendsThisOne: host "cp" must not count
-// "cp-2"'s snapshots as its own. They sort first ('-' < '0'), so a prefix
-// match pruned all of cp-2's off-box copies in a shared bucket.
 func TestPruneLeavesAHostWhoseNameExtendsThisOne(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{
@@ -113,7 +106,6 @@ func TestPruneNoopWhenUnderKeep(t *testing.T) {
 	if !exists(dir, ScheduledName("cp1", "20260704-010000")) {
 		t.Error("prune removed a snapshot while under the keep threshold")
 	}
-	// keep<=0 must never prune
 	if err := Prune(dir, hostSnapshot("cp1"), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -122,11 +114,7 @@ func TestPruneNoopWhenUnderKeep(t *testing.T) {
 	}
 }
 
-// captureStdout runs fn with the process's stdout swapped for a pipe and
-// returns what fn printed. The prune prints with fmt.Printf to the process's
-// own stdout, so a pipe swap is the only way to see its output; the reader
-// goroutine keeps a full pipe from deadlocking the writer. Copied from
-// pkg/cli/snapshot_dir_test.go, which needed it for the same reason.
+// captureStdout swaps the process's stdout for a pipe, the only way to see a fmt.Printf.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -147,13 +135,8 @@ func captureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestPruneScheduled_ReturnsTheLocalFailure: PruneScheduled reports a failed
-// prune by RETURNING an error that names the local prune, and prints
-// nothing, so the CLI, the scheduled loop and the snapshot tools learn of
-// the failure as data instead of matching the printed text.
 func TestPruneScheduled_ReturnsTheLocalFailure(t *testing.T) {
-	// A regular file where a directory is expected: ReadDir fails without the
-	// prune deleting anything.
+	// A regular file where a directory is expected makes ReadDir fail.
 	dir := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(dir, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -193,10 +176,7 @@ func TestListLocal(t *testing.T) {
 	}
 }
 
-// --- snapshot.conf credential handling ---
-
-// clearS3Env blanks every credential var applyEnv reads so a test sees only
-// what it sets itself, whatever the developer's or CI's environment holds.
+// clearS3Env blanks every credential var applyEnv reads.
 func clearS3Env(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
@@ -228,10 +208,6 @@ func readConf(t *testing.T, path string) string {
 	return string(b)
 }
 
-// TestSaveConfigNeverPersistsEnvCredentials: an operator who passes S3
-// credentials by environment did so precisely to keep them off disk. Loading
-// the config (which overlays the env creds so they can be USED) and saving it
-// back must not write those secret VALUES into snapshot.conf.
 func TestSaveConfigNeverPersistsEnvCredentials(t *testing.T) {
 	const (
 		envAccess = "AKIAENVACCESSKEY0001"
@@ -250,16 +226,13 @@ func TestSaveConfigNeverPersistsEnvCredentials(t *testing.T) {
 			t.Setenv(tc.secretVar, envSecret)
 
 			path := confPath(t)
-			// The starting conf has a bucket but no credentials on disk — the
-			// shape `stratum snapshot schedule --s3-bucket ...` produces.
+			// The shape `stratum snapshot schedule --s3-bucket` produces: bucket, no credentials.
 			writeConf(t, path, "RETAIN=5\nS3_BUCKET=backups\n")
 
 			cfg, err := loadConfigFrom(path, DefaultConfig())
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The env creds must still be usable in memory: that is the point
-			// of the overlay.
 			if cfg.S3.AccessKey != envAccess || cfg.S3.SecretKey != envSecret {
 				t.Fatalf("env creds not overlaid onto the loaded config: access=%q secret=%q", cfg.S3.AccessKey, cfg.S3.SecretKey)
 			}
@@ -276,7 +249,6 @@ func TestSaveConfigNeverPersistsEnvCredentials(t *testing.T) {
 			if strings.Contains(got, envAccess) {
 				t.Errorf("env-sourced S3 access key was written to disk; snapshot.conf is:\n%s", got)
 			}
-			// The rest of the config must still round-trip.
 			if !strings.Contains(got, "S3_BUCKET=backups") || !strings.Contains(got, "RETAIN=7") {
 				t.Errorf("non-credential config lost on save; snapshot.conf is:\n%s", got)
 			}
@@ -284,9 +256,6 @@ func TestSaveConfigNeverPersistsEnvCredentials(t *testing.T) {
 	}
 }
 
-// TestSaveConfigPreservesFileCredentials: credentials the operator put in
-// snapshot.conf by hand are that file's own state. Rewriting the file for an
-// unrelated reason must not silently drop them.
 func TestSaveConfigPreservesFileCredentials(t *testing.T) {
 	clearS3Env(t)
 	const (
@@ -311,10 +280,6 @@ func TestSaveConfigPreservesFileCredentials(t *testing.T) {
 	}
 }
 
-// TestSaveConfigKeepsFileCredentialsWhenEnvOverrides: both sources present.
-// The environment wins for USING the credentials, but the file keeps its own
-// value — we neither overwrite the operator's file with the env secret nor
-// delete what they put there.
 func TestSaveConfigKeepsFileCredentialsWhenEnvOverrides(t *testing.T) {
 	clearS3Env(t)
 	const (
@@ -381,10 +346,6 @@ func TestSaveConfigPreservesCredentialsWithoutBucket(t *testing.T) {
 	}
 }
 
-// TestSaveConfigTightensModeTo0600: snapshot.conf can hold S3_SECRET_KEY, so
-// the file must end 0600 even when a previous write (or the operator) left it
-// wider. os.WriteFile only chmod'ed files it CREATED, so a 0644 conf stayed
-// 0644 forever; the atomic write replaces the file wholesale, which closes it.
 func TestSaveConfigTightensModeTo0600(t *testing.T) {
 	clearS3Env(t)
 	path := confPath(t)
@@ -403,9 +364,6 @@ func TestSaveConfigTightensModeTo0600(t *testing.T) {
 	}
 }
 
-// TestSaveConfigRoundTrips: what `snapshot schedule` writes back must read
-// back identically — a dropped field is a silently reverted schedule, and for
-// RETAIN that means the next prune deletes backups.
 func TestSaveConfigRoundTrips(t *testing.T) {
 	clearS3Env(t)
 	path := confPath(t)
@@ -425,8 +383,7 @@ func TestSaveConfigRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// loadConfigFrom overlays the file's credentials onto the effective S3,
-	// so a faithful round trip reads them back there too.
+	// A faithful round trip reads the file credentials back in the effective S3.
 	wantS3 := cfg.S3
 	wantS3.AccessKey, wantS3.SecretKey = "file-access", "file-secret"
 	if got.Retain != cfg.Retain || got.S3Target() == nil || *got.S3Target() != wantS3 {
@@ -437,9 +394,6 @@ func TestSaveConfigRoundTrips(t *testing.T) {
 	}
 }
 
-// TestSaveConfigLeavesNoStrayTempFiles: the atomic write stages a temp file
-// in snapshot.conf's own directory; on success the rename must have consumed
-// it, leaving nothing for an operator (or a file reader) to trip over.
 func TestSaveConfigLeavesNoStrayTempFiles(t *testing.T) {
 	clearS3Env(t)
 	path := confPath(t)
@@ -488,9 +442,7 @@ func TestLoadConfigOrExistingFileWinsOutright(t *testing.T) {
 	}
 }
 
-// `snapshot schedule --retain 3` on a node with no snapshot.conf must write a
-// file that still carries the S3 target config.yaml supplied: the file wins
-// once it exists, so dropping the target here silently stops uploads.
+// The file wins once it exists, so the base S3 target must be carried into it.
 func TestScheduleOverMissingFileKeepsBaseS3Target(t *testing.T) {
 	clearS3Env(t)
 	path := filepath.Join(t.TempDir(), "snapshot.conf")
@@ -535,10 +487,7 @@ func TestFromFileDistinguishesMissingFromRead(t *testing.T) {
 	}
 }
 
-// fakeEtcdctl points version.BinDir at a temp dir whose etcdctl runs body —
-// the same shape as internal/k8sutil's fakeKubectl. The save path shells out
-// to etcdctl, so a test drives the real run without a node. The invocation is
-// `etcdctl snapshot save PATH`, so the script's $3 is the snapshot path.
+// fakeEtcdctl writes an etcdctl script whose $3 is the snapshot path.
 func fakeEtcdctl(t *testing.T, body string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -550,18 +499,7 @@ func fakeEtcdctl(t *testing.T, body string) {
 	t.Cleanup(func() { version.BinDir = old })
 }
 
-// TestSaveContextAbortsTheInFlightEtcdctlRun checks shutdown cancellation for
-// the scheduled snapshot: the run group joins the snapshot loop at shutdown,
-// so an etcdctl run that is in flight when the context ends must be aborted,
-// not waited out — under systemd's KillMode=process that lingering window is
-// exactly where a snapshot dies mid-write. The fake etcdctl marks the moment
-// its run starts, writes the .part file used by real etcdctl, and then
-// lingers: the marker proves the abort hit a real
-// in-flight run rather than a pre-call check, and the written file proves
-// the abort removed the truncated snapshot a killed mid-write run leaves
-// behind instead of leaving it for retention to count. Same real-time shape
-// as internal/k8sutil's TestWaitHealthzContextEndsWithItsContext: a subprocess
-// kill cannot run on the fake clock.
+// The .started marker proves the abort hit a real in-flight run, not a pre-call check.
 func TestSaveContextAbortsTheInFlightEtcdctlRun(t *testing.T) {
 	dir := t.TempDir()
 	fakeEtcdctl(t, ": > \"$3.part\"\ntouch \"$3.started\"\nexec sleep 60")
@@ -681,8 +619,6 @@ func TestSaveContextCancelsInFlightS3Retention(t *testing.T) {
 	}
 }
 
-// TestSaveContextWithNoTimeLeftNeverLaunchesEtcdctl: a context that is
-// already cancelled must not start a new snapshot run at all.
 func TestSaveContextWithNoTimeLeftNeverLaunchesEtcdctl(t *testing.T) {
 	dir := t.TempDir()
 	fakeEtcdctl(t, "touch \"$3.started\"\nexit 0")
@@ -698,16 +634,6 @@ func TestSaveContextWithNoTimeLeftNeverLaunchesEtcdctl(t *testing.T) {
 	}
 }
 
-// TestSaveConfigFailedWriteLeavesOldConfIntact is a regression test for
-// atomic writes: a write interrupted partway through (disk full, the
-// process killed) must not leave a truncated snapshot.conf — a parsed
-// truncated conf silently reverts RETAIN and drops the S3 target, so the
-// next prune deletes backups.
-// WriteFileAtomically's temp-file-then-rename means a failure before the
-// rename never touches the file already at path: a direct os.WriteFile
-// would have truncated the destination by the time CreateTemp's equivalent
-// failure lands, so the old content would be gone even though the write
-// as a whole failed.
 func TestSaveConfigFailedWriteLeavesOldConfIntact(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses the directory permissions this test relies on")
@@ -718,16 +644,13 @@ func TestSaveConfigFailedWriteLeavesOldConfIntact(t *testing.T) {
 	old := "RETAIN=5\nS3_BUCKET=backups\n"
 	writeConf(t, path, old)
 
-	// Readable and searchable but not writable: CreateTemp in this directory
-	// is denied, simulating a write failure without needing to actually fill
-	// the disk.
+	// Readable but not writable: CreateTemp fails here without filling the disk.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
-	// A different RETAIN, so the content comparison fails and saveConfigTo
-	// must try to write — a no-op short-circuit is not what is under test here.
+	// A different RETAIN forces the write; a no-op short-circuit is not what is under test.
 	if err := saveConfigTo(path, Config{Retain: 7}); err == nil {
 		t.Fatal("saveConfigTo succeeded despite an unwritable directory")
 	}
@@ -749,8 +672,6 @@ func TestSaveConfigFailedWriteLeavesOldConfIntact(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("failed save changed the snapshot.conf mode: got %v, want %v", perm, os.FileMode(0o600))
 	}
-	// No stray temp file either: the failed attempt's temp file must have been
-	// cleaned up, leaving only the conf itself in the directory.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -764,9 +685,6 @@ func TestSaveConfigFailedWriteLeavesOldConfIntact(t *testing.T) {
 	}
 }
 
-// TestSaveContextStillSavesWithALiveContext pins the save's own behavior
-// through the context change: a live context must not change what a
-// scheduled save does.
 func TestSaveContextStillSavesWithALiveContext(t *testing.T) {
 	dir := t.TempDir()
 	fakeEtcdctl(t, ": > \"$3\"\nexit 0")
@@ -783,14 +701,7 @@ func TestSaveContextStillSavesWithALiveContext(t *testing.T) {
 	}
 }
 
-// ── the stdout-guard retirement pins ─────────────────────────────────────────
-//
-// The save's warnings, the restore's progress and the write-tier SaveConfig
-// seam all take an io.Writer FIRST and write there, so they need no
-// internal/mcp guardStdout/discardStdout wrap.
-
-// captureRealStdout captures the process's ACTUAL stdout while fn runs, so a
-// test can prove an operation left it alone.
+// captureRealStdout captures the process's real stdout while fn runs.
 func captureRealStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -813,13 +724,6 @@ func captureRealStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestSaveContext_WritesItsWarningsToTheWriter pins the save path's half of
-// the convention: SaveContext takes the writer after its context, and a failed
-// retention — a warning, not an error — is written there for the CLI and the
-// scheduled loop, never printed to os.Stdout. The etcdctl child's progress
-// must follow the same writer. The S3 stub uploads the snapshot
-// (PUT answers 200) and refuses every listing (GET answers 403), so the save
-// succeeds and its prune fails deterministically.
 func TestSaveContext_WritesItsWarningsToTheWriter(t *testing.T) {
 	dir := t.TempDir()
 	fakeEtcdctl(t, "printf 'snapshot' > \"$3\"\nprintf 'snapshot child progress\\n'")
@@ -857,12 +761,7 @@ func TestSaveContext_WritesItsWarningsToTheWriter(t *testing.T) {
 	}
 }
 
-// TestSaveConfig_TakesTheWriterTheWriteTierHandsIt pins the write-tier config
-// seam: SaveConfig takes the writer first — held at compile level, since the
-// writer cannot be observed through a function that prints nothing — and the
-// file the snapshot schedule owns is still written, exercised through
-// saveConfigTo: SaveConfig writes the package's const ConfigPath, which a
-// fixture cannot redirect.
+// A compile-level pin: the writer cannot be observed through a function that prints nothing.
 func TestSaveConfig_TakesTheWriterTheWriteTierHandsIt(t *testing.T) {
 	var _ func(io.Writer, Config) error = SaveConfig
 	path := confPath(t)
@@ -882,14 +781,6 @@ func TestSaveConfig_TakesTheWriterTheWriteTierHandsIt(t *testing.T) {
 	}
 }
 
-// TestRestore_RunsOnTheWriterItIsHanded pins the restore's half: the runner
-// takes the writer first and every "etcd restore:" step and the closing
-// "etcd restored from ..." line reach it, including etcdutl's child output,
-// never os.Stdout. The fake-effects
-// node stands in for the control plane, exactly as the fence and rollback
-// tests drive it. RestoreLocalSeed, the entry point internal/mcp calls, takes
-// the writer first by the same convention — a compile-level pin, because a
-// run built from its production effects would stop this node's control plane.
 func TestRestore_RunsOnTheWriterItIsHanded(t *testing.T) {
 	var _ func(io.Writer, string) error = RestoreLocalSeed
 
@@ -927,9 +818,6 @@ func TestRestore_RunsOnTheWriterItIsHanded(t *testing.T) {
 	}
 }
 
-// TestPruneScheduledContext_LeavesAnExtendingHostInS3AndLocal: end to end, host
-// "cp" pruning a bucket and a dir shared with "cp-2" deletes only its own old
-// snapshot in both places.
 func TestPruneScheduledContext_LeavesAnExtendingHostInS3AndLocal(t *testing.T) {
 	names := []string{
 		ScheduledName("cp", "20260704-010000"),
@@ -981,9 +869,6 @@ func writeAt(t *testing.T, dir, name string, mod time.Time) {
 	}
 }
 
-// TestPruneKeepsTheNewestByModTimeAfterAClockStepBack: snapshots taken after
-// the clock stepped back carry earlier-looking names. Prune must keep the
-// snapshots that were written last, not the ones whose names sort last.
 func TestPruneKeepsTheNewestByModTimeAfterAClockStepBack(t *testing.T) {
 	dir := t.TempDir()
 	base := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
@@ -1008,8 +893,6 @@ func TestPruneKeepsTheNewestByModTimeAfterAClockStepBack(t *testing.T) {
 	}
 }
 
-// TestPruneTriesEveryExpiredSnapshot: one snapshot that cannot be removed must
-// not stop retention for the others, and its failure is still returned.
 func TestPruneTriesEveryExpiredSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	base := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
@@ -1045,10 +928,6 @@ func TestPruneTriesEveryExpiredSnapshot(t *testing.T) {
 	}
 }
 
-// TestSaveContextStillTrimsLocalSnapshotsWhenTheUploadFails: an S3 outage must
-// not stop local retention, or /var/backups/etcd fills the disk etcd shares.
-// The upload error is still returned, and the bucket is not pruned, since the
-// newest snapshot never reached it.
 func TestSaveContextStillTrimsLocalSnapshotsWhenTheUploadFails(t *testing.T) {
 	dir := t.TempDir()
 	base := time.Now().Add(-48 * time.Hour)

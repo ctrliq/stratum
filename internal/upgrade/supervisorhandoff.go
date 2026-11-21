@@ -26,20 +26,7 @@ var (
 	supervisorSleep     = time.Sleep
 )
 
-// handOverSupervisor puts this node under a supervisor running the installed
-// stratum. Replacing the binary on disk does not replace the running
-// supervisor: it keeps running the previous build, and so do the arguments,
-// paths and hooks it gives everything it starts, until it is restarted.
-//
-// A supervisor that supports it re-execs itself in place, keeping its pid. One
-// that predates that is restarted through systemd when systemd is what runs
-// it; otherwise it is left running, with a warning saying how to restart it,
-// and recorded so a rerun at the target does not ask it again
-// (unreplaceableSupervisor).
-// It reports whether the supervisor was replaced, in which case every
-// component it runs was restarted and the caller gates the node again. An
-// error means the supervisor was asked to go and did not come back as it
-// should.
+// Replacing the binary on disk does not replace the running supervisor, which keeps the old paths.
 func handOverSupervisor(w io.Writer) (bool, error) {
 	cur, err := runningSupervisor()
 	if err != nil {
@@ -47,8 +34,6 @@ func handOverSupervisor(w io.Writer) (bool, error) {
 			"the installed build\n", err, version.StratumInstallPath)
 		return false, nil
 	}
-	// A record of an earlier answer must not outlive a run that identified
-	// the supervisor: it is current, or is asked again below.
 	forgetUnreplaceable()
 	if !cur.Stale() {
 		return false, nil
@@ -90,12 +75,6 @@ func handOverSupervisor(w io.Writer) (bool, error) {
 	return true, waitSupervisorBack()
 }
 
-// previewSupervisorHandoff says, for a dry run, whether the real run would end
-// by restarting the supervisor on the installed stratum. restoresStratum is
-// whether the real run first restores the stratum binary, as a rollback does:
-// the supervisor then no longer runs the installed build, whatever it runs now.
-// A restart the real run might not do is hedged with what it would do instead
-// (handoffCaveat).
 func previewSupervisorHandoff(w io.Writer, restoresStratum bool) {
 	cur, err := runningSupervisor()
 	switch {
@@ -116,14 +95,7 @@ func previewSupervisorHandoff(w io.Writer, restoresStratum bool) {
 	}
 }
 
-// handoffCaveat qualifies a previewed restart of the supervisor at pid with
-// what handOverSupervisor does when that supervisor predates restarting itself
-// in place, which only asking it to restart would tell: one systemd does not
-// run is left running, and the run ends with an error, keeping the installed
-// build (handOverAndGate), when systemd cannot say whether it runs it, or
-// does but its service would not start the installed build. It is empty when
-// systemd runs it and would start the installed build, so the real run
-// restarts it either way.
+// Empty when the real run restarts that supervisor either way.
 func handoffCaveat(pid int) string {
 	const inPlace = " if it can restart itself in place"
 	const fails = "; for one that predates that, the run ends with an error, keeping the installed build, "
@@ -146,8 +118,6 @@ func handoffCaveat(pid int) string {
 	return ""
 }
 
-// waitSupervisorBack waits for a supervisor running the installed stratum to
-// answer with every component it wants running.
 func waitSupervisorBack() error {
 	deadline := time.Now().Add(supervisorBackAfter)
 	for {

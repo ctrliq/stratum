@@ -19,39 +19,27 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// handlersMarker opens the runtime-handler drop-in, so removing the last
-// handler deletes only a file stratum wrote.
+// handlersMarker marks the drop-in as stratum-written so only stratum files are removed.
 const handlersMarker = version.GeneratedMarker + " (source: spec.node.runtimeHandlers)\n"
 
-// confdImportGlob is the import containerd's default config carries, which
-// the registry drop-in depends on.
+// confdImportGlob: the registry drop-in depends on this import in containerd's default config.
 const confdImportGlob = "/etc/containerd/conf.d/*.toml"
 
-// handlersImportGlob is the stratum-owned import the runtime-handler drop-in
-// rides; stratum's config lists it after confdImportGlob, so its handlers win.
+// handlersImportGlob is the stratum-owned import, listed after confdImportGlob so its handlers win.
 func handlersImportGlob() string {
 	return filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), "*.toml")
 }
 
-// handlersConfigVersion is the containerd config version the drop-in is
-// written in. containerd migrates an import by its own version, and one
-// without a version line is read as version 0 and migrated on every start.
+// containerd migrates an import with no version line on every start.
 const handlersConfigVersion = 4
 
-// cdiSpecDirs are containerd's default CDI spec directories, pinned in the
-// drop-in so a device plugin's CDI specs keep resolving if a later containerd
-// default changes them.
+// cdiSpecDirs are containerd's defaults, pinned so a later default cannot move them.
 var cdiSpecDirs = []string{"/etc/cdi", "/var/run/cdi"}
 
-// handlerPathChars is the character set a handler binary path may use. The
-// path renders into a single-quoted TOML literal and is executed by
-// containerd, so anything outside it is refused rather than escaped.
+// The path renders into a TOML literal containerd executes, so it is refused, not escaped.
 var handlerPathChars = regexp.MustCompile(`^[A-Za-z0-9._/+-]+$`)
 
-// ValidateHandler reports whether name and path can be declared as a
-// containerd runtime handler: name a DNS-1123 label other than runc (the
-// default handler containerd already defines), path absolute, clean and free
-// of shell and TOML metacharacters. It does not look at the host; CheckHandlerBinary does.
+// ValidateHandler checks name and path without looking at the host; CheckHandlerBinary does that.
 func ValidateHandler(name, path string) error {
 	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
 		return fmt.Errorf("runtime handler name %q: %s", name, strings.Join(errs, "; "))
@@ -68,10 +56,7 @@ func ValidateHandler(name, path string) error {
 	return nil
 }
 
-// CheckHandlerBinary reports whether path is an executable regular file on
-// this host. writeHandlers only warns when it fails, since the binary may be
-// mid-reinstall and the node's other pods must keep running; a caller that
-// can still refuse the node, before it joins, checks it itself.
+// CheckHandlerBinary reports whether path is an executable regular file on this host.
 func CheckHandlerBinary(path string) error {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -83,10 +68,6 @@ func CheckHandlerBinary(path string) error {
 	return nil
 }
 
-// renderHandlers renders the drop-in declaring each handler as a runc
-// v2 shim running its own binary in a pod sandbox like runc's, with the
-// cgroup driver kubelet and containerd share, and CDI on so device plugins can
-// inject devices.
 func renderHandlers(handlers map[string]string, cgroup string) string {
 	var b strings.Builder
 	b.WriteString(handlersMarker)
@@ -101,8 +82,6 @@ func renderHandlers(handlers map[string]string, cgroup string) string {
 	return b.String()
 }
 
-// handlerConfig is the slice of containerd's config the drop-in sets, read the
-// way containerd reads it.
 type handlerConfig struct {
 	Version int `toml:"version"`
 	Plugins map[string]struct {
@@ -121,9 +100,6 @@ type handlerConfig struct {
 	} `toml:"plugins"`
 }
 
-// verifyHandlers parses a rendered drop-in and checks that every handler lands
-// on the table path containerd reads, so a render that drifts out of its
-// table fails here instead of leaving pods with an unknown handler.
 func verifyHandlers(rendered string, handlers map[string]string, cgroup string) error {
 	var c handlerConfig
 	if err := toml.Unmarshal([]byte(rendered), &c); err != nil {
@@ -153,11 +129,7 @@ func verifyHandlers(rendered string, handlers map[string]string, cgroup string) 
 	return nil
 }
 
-// writeHandlers writes the runtime-handler drop-in and reports whether it
-// changed the file, which only takes effect when containerd restarts. With no
-// handlers it removes a drop-in stratum wrote and leaves any other file at
-// that path alone. A handler whose binary is missing is written anyway and
-// reported to w: the node's other pods must keep running.
+// writeHandlers writes a handler whose binary is missing anyway: other pods must keep running.
 func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	path := version.ContainerdRuntimeConfD
 	prev, prevErr := os.ReadFile(path)
@@ -201,12 +173,7 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	return true, nil
 }
 
-// RequireOwnDropIn refuses runtime handlers whose drop-in would replace a file
-// at its path that stratum did not write, which may hold an operator's
-// configuration. `stratum runtime apply` runs it before anything changes, as
-// `runtime check` tells the operator to move such a file aside. A node start
-// does not: it replaces the file, warning, rather than fail to start a node
-// whose handlers were already applied.
+// RequireOwnDropIn refuses to replace a file stratum did not write; an operator may own it.
 func RequireOwnDropIn(handlers map[string]string) error {
 	if len(handlers) == 0 {
 		return nil
@@ -225,8 +192,6 @@ func RequireOwnDropIn(handlers map[string]string) error {
 	return nil
 }
 
-// configImports is a containerd config's imports, read as containerd reads
-// them, and the parse error when it cannot be read.
 func configImports(cfg string) ([]string, error) {
 	var c struct {
 		Imports []string `toml:"imports"`
@@ -237,9 +202,7 @@ func configImports(cfg string) ([]string, error) {
 	return c.Imports, nil
 }
 
-// importsDropIns reports whether a config stratum rendered imports both
-// drop-in directories, the stratum-owned one after the shared one. One that
-// does not parse is not current, and is rendered again.
+// importsDropIns treats an unparseable config as not current.
 func importsDropIns(cfg string) bool {
 	imports, err := configImports(cfg)
 	if err != nil {
@@ -249,11 +212,9 @@ func importsDropIns(cfg string) bool {
 	return shared >= 0 && own > shared
 }
 
-// importsLine matches the top-level imports array `containerd config default`
-// renders.
+// importsLine matches the top-level imports array `containerd config default` renders.
 var importsLine = regexp.MustCompile(`(?m)^imports = \[(.*)\]$`)
 
-// addHandlersImport appends the stratum-owned import to a config's imports.
 func addHandlersImport(cfg string) string {
 	return importsLine.ReplaceAllStringFunc(cfg, func(line string) string {
 		inner := importsLine.FindStringSubmatch(line)[1]

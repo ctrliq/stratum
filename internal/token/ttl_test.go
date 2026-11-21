@@ -12,10 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// TestBootstrapExpiration pins the RFC3339 trap: a positive ttl
-// yields a value that round-trips through the SAME parser the bootstrap-token
-// controller uses (so it is never treated as already-expired), and ttl<=0 opts
-// out with an empty string.
+// A positive ttl round-trips through the parser the controller uses; ttl<=0 opts out.
 func TestBootstrapExpiration(t *testing.T) {
 	now := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 
@@ -42,9 +39,7 @@ func TestBootstrapExpiration(t *testing.T) {
 	}
 }
 
-// TestBootstrapOwnerRef: an empty UID yields no ownerRef (never emit one the GC
-// cannot resolve — it would delete the dependent immediately); a real UID yields a
-// Secret ref by the token's Secret name.
+// An empty UID yields no ownerRef; one the GC cannot resolve deletes the dependent.
 func TestBootstrapOwnerRef(t *testing.T) {
 	if got := bootstrapOwnerRef(mintID, ""); got != nil {
 		t.Errorf("empty uid produced an ownerRef: %+v", got)
@@ -58,8 +53,6 @@ func TestBootstrapOwnerRef(t *testing.T) {
 	}
 }
 
-// TestEnsureBootstrapSecretStampsExpiration: ttl>0 stamps a parseable expiration
-// and returns the created UID; ttl==0 omits the key (opt-in non-expiring).
 func TestEnsureBootstrapSecretStampsExpiration(t *testing.T) {
 	t.Run("ttl stamps a valid expiration", func(t *testing.T) {
 		f := &fakeSecrets{uid: "uid-xyz"}
@@ -90,10 +83,7 @@ func TestEnsureBootstrapSecretStampsExpiration(t *testing.T) {
 	})
 }
 
-// TestEnsureBootstrapSecretScopesTheGroupsByRole: every token carries the
-// shared node group the CSR bindings name, and only a control-plane token
-// carries the control-plane group, the one stratum:certs-reader grants, so a
-// worker token cannot read the stratum-certs ciphertext.
+// Only a control-plane token carries the group stratum:certs-reader grants.
 func TestEnsureBootstrapSecretScopesTheGroupsByRole(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -116,8 +106,7 @@ func TestEnsureBootstrapSecretScopesTheGroupsByRole(t *testing.T) {
 	}
 }
 
-// TestCreateTokenMintsTheRequestedShape: createToken hands controlPlane to the
-// mint, so Create(..., true) is what puts a token in the control-plane group.
+// createToken hands controlPlane to the mint.
 func TestCreateTokenMintsTheRequestedShape(t *testing.T) {
 	for _, controlPlane := range []bool{false, true} {
 		f := &fakeSecrets{}
@@ -131,8 +120,7 @@ func TestCreateTokenMintsTheRequestedShape(t *testing.T) {
 	}
 }
 
-// TestCreateTokenReturnsOwnerRef: the --control-plane path needs an ownerRef to the
-// minted token's Secret so the stratum-certs Secret is GC'd with the token.
+// The --control-plane path ties the stratum-certs Secret to the token for GC.
 func TestCreateTokenReturnsOwnerRef(t *testing.T) {
 	f := &fakeSecrets{uid: "uid-abc"}
 	_, _, owner, err := createToken(context.Background(), f, mintID, mintSecret, DefaultTokenTTL, false, okSteps())
@@ -147,11 +135,7 @@ func TestCreateTokenReturnsOwnerRef(t *testing.T) {
 	}
 }
 
-// TestTokenInfos pins List's classification: a real RFC3339
-// expiration parses; a non-empty but malformed one is Malformed (NOT "never",
-// which is what the bootstrap-token controller would disagree with); an absent
-// expiration is non-expiring; entries without a token-id are skipped; output is
-// id-sorted.
+// Pins the classification: valid, malformed, absent, skipped, sorted.
 func TestTokenInfos(t *testing.T) {
 	sec := func(id, exp string) corev1.Secret {
 		d := map[string][]byte{}
@@ -173,7 +157,6 @@ func TestTokenInfos(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("got %d infos, want 3 (empty-id entry skipped): %+v", len(got), got)
 	}
-	// Sorted by id: aaaaaa, bbbbbb, cccccc.
 	if got[0].ID != "aaaaaa" || got[0].Expires != nil || got[0].Malformed {
 		t.Errorf("aaaaaa should be non-expiring: %+v", got[0])
 	}

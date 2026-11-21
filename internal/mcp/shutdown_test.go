@@ -7,10 +7,7 @@ import (
 	"testing"
 )
 
-// TestRefuseWhileStopping: once an HTTP shutdown starts, every request, a
-// client's stream reconnect included, gets an immediate 503 with
-// Connection: close instead of reaching the SDK and opening a stream that holds
-// Shutdown open. Before that, requests pass through untouched.
+// Once a shutdown starts, every request gets an immediate 503 that closes the connection.
 func TestRefuseWhileStopping(t *testing.T) {
 	var stopping atomic.Bool
 	reached := 0

@@ -13,12 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// etcdMigrationNodes is the only thing that keeps workers out of the phase
-// loop, and it had no test. The previous attempt at covering this asserted that
-// no dispatch name began with "worker" — on a fixture containing no worker, so
-// it passed vacuously and would have passed against an implementation that
-// migrated every node in the cluster.
-
 func cpNode(name, ip string, cp bool) *corev1.Node {
 	n := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{}}}
 	if cp {
@@ -46,8 +40,7 @@ func TestEtcdMigrationNodesSelectsControlPlanesOnly(t *testing.T) {
 	for _, n := range got {
 		names = append(names, n.Name)
 	}
-	// Initiator first — it mints the etcd CA and every follower fetches it —
-	// then the rest in a stable order so a resumed run dispatches identically.
+	// Initiator first (it mints the etcd CA); stable order so a resumed run dispatches identically.
 	want := []string{"cp2", "cp1", "cp3"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("node order = %v, want %v", names, want)
@@ -85,10 +78,6 @@ func stubEtcdMemberIPs(t *testing.T, ips []string, err error) *[]string {
 	return &asked
 }
 
-// A controller whose control-plane label never landed is still a voting etcd
-// member. A run built from the label alone would change every other member's
-// trust, survey only them, and report success while that one falls out of
-// raft, so the run refuses before any phase and names the node and the remedy.
 func TestEtcdMigrationRefusesAnEtcdMemberThatIsNotLabelled(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		cpNode("cp1", "10.0.0.1", true),
@@ -126,8 +115,6 @@ func TestEtcdMigrationAcceptsWhenEveryMemberIsLabelled(t *testing.T) {
 	}
 }
 
-// A member list that cannot be read cannot confirm the run covers etcd, so
-// the run does not start.
 func TestEtcdMigrationRefusesWhenTheMemberListIsUnreadable(t *testing.T) {
 	cs := fake.NewSimpleClientset(cpNode("cp1", "10.0.0.1", true))
 	nodes, err := etcdMigrationNodes(context.Background(), cs, "cp1")
@@ -140,8 +127,6 @@ func TestEtcdMigrationRefusesWhenTheMemberListIsUnreadable(t *testing.T) {
 	}
 }
 
-// A control plane with no InternalIP cannot be surveyed, and the survey is the
-// authority for every gate. Failing here beats silently dialling "".
 func TestEtcdMigrationNodesRefusesAControlPlaneWithNoIP(t *testing.T) {
 	cs := fake.NewSimpleClientset(cpNode("cp1", "10.0.0.1", true), cpNode("cp2", "", true))
 	_, err := etcdMigrationNodes(context.Background(), cs, "cp1")

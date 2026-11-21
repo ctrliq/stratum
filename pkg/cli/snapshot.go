@@ -37,17 +37,10 @@ func newSnapshotCommand() *cobra.Command {
 	)
 }
 
-// snapshotDir is the directory a bare snapshot name resolves in
-// (spec.snapshots.dir), a seam so tests need not touch /etc/stratum. Restore
-// resolves names through it; save, list and prune instead take the directory
-// from the resolved snapshot settings, so they cannot drift from the scheduled
-// loop that owns the place.
+// Test seam; save, list and prune take the dir from the config, not the scheduled loop's place.
 var snapshotDir = cluster.LoadSnapshotDir
 
-// loadSnapshotConfig and saveSnapshot are the config read and the etcd save
-// behind seams, so tests reach neither the host's snapshot.conf (and its S3
-// target) nor etcd. The settings carry the directory (Dir) the save, list and
-// prune commands act in.
+// Test seams: tests must not touch the host's snapshot.conf or etcd.
 var (
 	loadSnapshotConfig = cluster.LoadSnapshotConfig
 	saveSnapshot       = etcdsnap.SaveContext
@@ -66,15 +59,7 @@ func newSnapshotSaveCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// The save owns the shared interrupt context: cmd.Context() is
-			// Background for every stratum invocation, so on the raw command
-			// context a first Ctrl-C killed the etcdctl run mid-snapshot. On
-			// this context the first signal stops the save at its next step
-			// boundary (the etcdctl run, then the S3 upload) and a second
-			// kills, the same contract the scheduled loop and the MCP tool run
-			// under. A signal-asked stop exits 0; the partial snapshot the
-			// etcdctl run leaves is the shape the scheduled loop already
-			// tolerates and prune removes.
+			// cmd.Context() is Background; this context stops the save at a step boundary on the first signal.
 			ctx, stop := interrupt.DerivedContext(cmd.Context())
 			defer stop()
 			p, err := saveSnapshot(ctx, os.Stdout, etcdsnap.SaveOptions{Dir: cfg.Dir, Name: name, Retain: cfg.Retain, S3: cfg.S3Target()})
@@ -98,9 +83,6 @@ func newSnapshotSaveCommand() *cobra.Command {
 	return cmd
 }
 
-// snapshotListJSONOutput is the one machine-readable output format `snapshot list`
-// takes: the engine's backup evidence, the same rows the backup_evidence MCP
-// tool serves.
 const snapshotListJSONOutput = "json"
 
 func newSnapshotListCommand() *cobra.Command {
@@ -114,9 +96,7 @@ func newSnapshotListCommand() *cobra.Command {
 				if output != snapshotListJSONOutput {
 					return fmt.Errorf("unknown output format %q: %q or the default text table", output, snapshotListJSONOutput)
 				}
-				// One bounded read through the supported surface — the same
-				// rows the backup_evidence tool serves, so the two surfaces
-				// cannot drift.
+				// Same rows the backup_evidence tool serves, so the surfaces cannot drift.
 				out := backupEvidenceRows(cmd.Context(), mcpsrv.BackupEvidenceIn{})
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 			}
@@ -147,18 +127,12 @@ func newSnapshotPruneCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadSnapshotConfig()
 			if err != nil {
-				// An unreadable config would leave the built-in defaults in
-				// effect (retain 5, no S3), so pruning on it would delete
-				// snapshots the operator's retention kept. Refuse, unless the
-				// operator gave an explicit --retain: then prune locally to
-				// exactly that, leaving S3 retention untouched.
+				// An unreadable config yields default retention: pruning on it could delete kept snapshots.
 				if retain <= 0 {
 					return fmt.Errorf("read snapshot config (pass --retain N to prune to an explicit retention): %w", err)
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "WARN: %v; pruning local snapshots to the --retain %d you passed, leaving S3 retention alone\n", err, retain)
-				// No S3 target: the config the S3 settings came from is unreadable.
-				// The directory does not come from snapshot.conf, so it still
-				// resolves to the one the scheduled loop writes.
+				// The unreadable config held the S3 settings, not the dir; resolve it as the scheduled loop does.
 				cfg = etcdsnap.DefaultConfig()
 				cfg.Dir = snapshotDir()
 			}
@@ -170,10 +144,7 @@ func newSnapshotPruneCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("snapshot prune: resolve host name: %w", err)
 			}
-			// PruneScheduled returns its failures instead of printing them;
-			// the command keeps reporting them as WARN lines with exit status
-			// 0 — a failed prune is a warning, not a command failure, since a
-			// snapshot already succeeded.
+			// A failed prune is a warning, not a failure: the snapshot already succeeded, so exit 0.
 			for _, perr := range etcdsnap.PruneScheduled(cfg.Dir, h, keep, cfg.S3Target()) {
 				fmt.Printf("  WARN: %v\n", perr)
 			}
@@ -185,13 +156,7 @@ func newSnapshotPruneCommand() *cobra.Command {
 	return cmd
 }
 
-// resolveSnapshotArg maps the bare NAME `snapshot list` prints to its file
-// under the snapshot dir. Anything with a path separator, and s3://
-// keys, pass through unchanged, so full paths keep working. A file in the
-// working directory needs ./NAME. A relative path is made absolute so one
-// that starts with "-" cannot reach etcdutl as a flag. It is prefixed with the
-// working directory, not cleaned: Clean folds ".." lexically, which past a
-// symlink names a different file.
+// Not cleaned: Clean folds ".." lexically, which past a symlink names a different file.
 func resolveSnapshotArg(arg string) (string, error) {
 	if arg == "." || arg == ".." || strings.HasPrefix(arg, "s3://") {
 		return arg, nil
@@ -209,21 +174,13 @@ func resolveSnapshotArg(arg string) (string, error) {
 	return filepath.Join(snapshotDir(), arg), nil
 }
 
-// The restore's own watchers are its restart set (etcdsnap.RestoreRestartSet):
-// the host-side watchers and in-cluster workloads the restore restarts because
-// they hold watches, or start-up state, from before it. What is left for the
-// operator is the same whether or not every one of those restarts worked.
+// What is left for the operator is the same whatever the restore restarted.
 var restoreStillToDo = etcdsnap.StillToDo(true)
 
 var restoreNextSteps = "\nseed restored. " + etcdsnap.RestoreRestartSet().RestartedProse() +
 	"\n\n" + restoreStillToDo
 
-// restoreIncompleteNextSteps is for a restore whose data is in place but that
-// could not restart every watcher. The error names the ones it could not.
-//
-// The in-cluster workloads are restarted through the seed's own apiserver, and on
-// the seed: before the other control planes rejoin, admin.conf's server may be
-// the VIP, which can lead to a member that still holds the old datastore.
+// In-cluster restarts must run on the seed: admin.conf may name the VIP before the rejoin.
 var restoreIncompleteNextSteps = `
 seed restored, but NOT every component holding a pre-restore watch or start-up
 state was restarted (the error below names them). Do not run the restore again. Restart
@@ -233,21 +190,12 @@ and the in-cluster workloads, on this seed node, with
 
 ` + restoreStillToDo
 
-// restoreLocalSeed is etcdsnap.RestoreLocalSeed, indirected for tests.
 var restoreLocalSeed = etcdsnap.RestoreLocalSeed
 
-// staleTempAge is how old a download temp file in the snapshot dir must be
-// before restore removes it: a live download rewrites its file continuously.
+// A live download rewrites its temp file continuously, so only stale ones are removed.
 const staleTempAge = 15 * time.Minute
 
-// openSnapshotDir opens dir, creating it 0700 if it is missing, and returns a
-// handle to it. It refuses a download dir other users could swap files in: the
-// snapshot holds every Secret. Each component is opened without following
-// symlinks, so a symlink anywhere in the path is refused, and the checks are
-// made on the opened directory, which the caller then writes through: swapping
-// the path for a symlink afterwards redirects nothing. An existing dir is
-// checked, never chmodded, so a misconfigured spec.snapshots.dir (/) is not
-// changed as root.
+// Refuses a dir other users could swap files in: the snapshot holds every Secret.
 func openSnapshotDir(dir string) (_ *os.Root, err error) {
 	dir = filepath.Clean(dir)
 	if !filepath.IsAbs(dir) {
@@ -259,7 +207,7 @@ func openSnapshotDir(dir string) (_ *os.Root, err error) {
 	}
 	defer func() {
 		if err != nil {
-			_ = root.Close() // root is the deepest handle opened so far
+			_ = root.Close()
 		}
 	}()
 	for _, comp := range strings.Split(dir, string(filepath.Separator)) {
@@ -306,14 +254,9 @@ func openSnapshotDir(dir string) (_ *os.Root, err error) {
 	return root, nil
 }
 
-// geteuid is os.Geteuid, indirected for tests.
 var geteuid = func() uint32 { return uint32(os.Geteuid()) }
 
-// s3RestoreName returns the object name src asks for under the configured
-// target t. Restore only has t's credentials, so a URL naming another bucket,
-// or a key directory other than t's prefix, is refused rather than served from
-// t: the admin would restore a different snapshot from the one they named. A
-// bare key (no directory part) is the name under t's prefix.
+// Restore only holds the configured target's credentials: another bucket or prefix is refused.
 func s3RestoreName(src string, t *objstore.Target) (string, error) {
 	bucket, key, _ := strings.Cut(strings.TrimPrefix(src, "s3://"), "/")
 	if bucket != t.Bucket {
@@ -323,8 +266,7 @@ func s3RestoreName(src string, t *objstore.Target) (string, error) {
 	if key == "" || strings.HasSuffix(key, "/") || name == "." || name == ".." {
 		return "", fmt.Errorf("%s names no snapshot object", src)
 	}
-	// Compare the literal key: path.Dir would clean dot segments and repeated
-	// slashes that S3 keeps, so "other/../x.db" would pass as "x.db".
+	// Compare the literal key: path.Dir cleans dot segments S3 keeps, so ".." would slip past.
 	if want := t.Key(name); strings.Contains(key, "/") && key != want {
 		return "", fmt.Errorf("%s is outside the configured S3 target's prefix, and restore uses the configured target, which would fetch %q from bucket %q", src, want, t.Bucket)
 	}
@@ -347,8 +289,7 @@ func newSnapshotRestoreCommand() *cobra.Command {
 				return fmt.Errorf("resolve snapshot %q: %w", src, err)
 			}
 			if strings.HasPrefix(src, "s3://") {
-				// An unreadable config falls back to the defaults (no S3), whose
-				// "needs an S3 target" would misname the problem.
+				// The defaults' "needs an S3 target" would misname the problem, so wrap the config error.
 				cfg, err := loadSnapshotConfig()
 				if err != nil {
 					return fmt.Errorf("read snapshot config: %w", err)
@@ -390,10 +331,7 @@ func newSnapshotRestoreCommand() *cobra.Command {
 	return cmd
 }
 
-// newSnapshotPruneRestoresCommand lists, and with --yes removes, the etcd data
-// copies snapshot restore keeps beside the data dir. Listing is the
-// default: a pre-restore copy can be the only copy of the data from before a
-// restore, so nothing removes one without being asked.
+// Default is listing: a pre-restore copy can be the only copy of the pre-restore data.
 func newSnapshotPruneRestoresCommand() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
@@ -464,9 +402,7 @@ func newSnapshotRejoinCommand() *cobra.Command {
 	return cmd
 }
 
-// scheduleLoadConfig and scheduleSaveConfig are `snapshot schedule`'s config
-// read and write behind seams: the real ones use the fixed /etc/stratum paths,
-// which a test must not touch.
+// Test seams: the real paths are fixed under /etc/stratum.
 var (
 	scheduleLoadConfig = cluster.LoadSnapshotConfig
 	scheduleSaveConfig = etcdsnap.SaveConfig
@@ -487,20 +423,12 @@ func newSnapshotScheduleCommand() *cobra.Command {
 		Short: "Configure the snapshot retention/S3-offload schedule",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Seed from what is in effect: the existing conf, else config.yaml, plus
-			// env creds. Seeding from the defaults would write a conf that drops
-			// config.yaml's S3 target, and the file then wins.
-			// An unreadable snapshot.conf is an error, not "no file": saving over it
-			// from the defaults would silently replace what the operator configured.
+			// Seeding from the defaults would drop config.yaml's S3 target; unreadable conf is an error.
 			cfg, err := scheduleLoadConfig()
 			if err != nil {
 				return fmt.Errorf("read snapshot config (not overwriting it): %w", err)
 			}
-			// Each S3 flag applies only when it was passed: an unset flag means
-			// "not stated", not "set to empty", so a lone --s3-bucket must not wipe
-			// the configured endpoint/region/prefix/path-style. Key on Changed, not
-			// on values: an explicit --s3-path-style=false must override a
-			// configured true even though false is also the flag's default.
+			// Key on Changed, not values: an explicit --s3-path-style=false must override a configured true.
 			var detailFlags []string
 			if cmd.Flags().Changed("s3-endpoint") {
 				detailFlags = append(detailFlags, "--s3-endpoint")
@@ -514,18 +442,11 @@ func newSnapshotScheduleCommand() *cobra.Command {
 			if cmd.Flags().Changed("s3-path-style") {
 				detailFlags = append(detailFlags, "--s3-path-style")
 			}
-			// An explicitly empty --s3-bucket is refused before anything is
-			// saved: saving it would clear the configured bucket and with it the
-			// omitted S3 details (SaveConfig writes the S3_* keys only while a
-			// bucket is set), while the way to stop S3 uploads is to drop the
-			// S3 target from the snapshot config file.
+			// Saving an empty bucket would clear the configured one and with it the omitted S3 details.
 			if cmd.Flags().Changed("s3-bucket") && strings.TrimSpace(bucket) == "" {
 				return fmt.Errorf("snapshot schedule: --s3-bucket was passed empty: an empty bucket is refused; to stop S3 uploads instead, remove the S3_BUCKET line from %s", etcdsnap.ConfigPath)
 			}
-			// An S3 detail flag configures nothing without a bucket: refuse rather
-			// than silently save a no-op. Either --s3-bucket in this call or a
-			// bucket already in the loaded config is enough; the empty value above
-			// is already refused, so the passed bucket is a real target.
+			// Refuse a detail flag without a bucket rather than silently saving a no-op.
 			effectiveBucket := cfg.S3.Bucket
 			if cmd.Flags().Changed("s3-bucket") {
 				effectiveBucket = bucket
@@ -555,18 +476,14 @@ func newSnapshotScheduleCommand() *cobra.Command {
 			if cmd.Flags().Changed("s3-path-style") {
 				cfg.S3.PathStyle = pathStyle
 			}
-			// credentials come from the environment (STRATUM_S3_*/AWS_*) — never
-			// argv; LoadConfig already overlaid them onto cfg.S3. SaveConfig
-			// will not write them back out.
+			// Credentials come from the environment, never argv; SaveConfig does not write them back.
 			if err := scheduleSaveConfig(os.Stdout, cfg); err != nil {
 				return err
 			}
 			if cfg.HasPersistedCredentials() {
 				fmt.Printf("note: %s holds S3 credentials on disk (left unchanged); to migrate them off disk, first configure STRATUM_S3_*/AWS_* in the snapshot process environment, then remove S3_ACCESS_KEY/S3_SECRET_KEY from this file and verify S3 uploads\n", etcdsnap.ConfigPath)
 			}
-			// No timer units under the supervisor: the controller's snapshot loop
-			// reads this config on every tick, so saving it IS the schedule change.
-			// Disabling still goes through the cluster config (spec.snapshots).
+			// The controller's snapshot loop reads this config every tick, so saving it is the schedule change.
 			if snaps {
 				fmt.Printf("snapshot schedule updated (retain=%d, s3-bucket=%q); the running controller's snapshot loop picks it up on its next tick\n", cfg.Retain, cfg.S3.Bucket)
 			} else {
@@ -586,23 +503,12 @@ func newSnapshotScheduleCommand() *cobra.Command {
 	return cmd
 }
 
-// ------------------------------------------------------------ backup evidence
-
 func init() {
-	// The engine's MCP package cannot import this one — this one imports it —
-	// so the backup_evidence tool gets its evidence reader the same way the
-	// controller gets its evidence sampler: a seam wired from here, at
-	// startup, never an import. What it serves is the supported surface, the
-	// same BackupEvidence read an external pinned binary calls.
+	// Import cycle: the MCP package cannot import this one, so the seam is wired here at startup.
 	mcpsrv.BackupEvidenceRead = backupEvidenceRows
 }
 
-// backupEvidenceRows restates one bounded read from the supported surface —
-// BackupEvidence, the same call an external pinned binary makes — as the
-// shared machine-readable rows: the document `snapshot list -o json` prints
-// and the backup_evidence tool serves, so the two surfaces cannot drift.
-// Stamps are RFC 3339 UTC and durations whole seconds; nil lists become
-// empty ones so the document's shape never moves.
+// Serves the same BackupEvidence read an external pinned binary makes; stamps are RFC 3339 UTC.
 func backupEvidenceRows(ctx context.Context, in mcpsrv.BackupEvidenceIn) mcpsrv.BackupEvidenceOut {
 	res := BackupEvidence(ctx,
 		WithBackupEvidenceMaxEntries(in.MaxEntries),
@@ -622,8 +528,7 @@ func backupEvidenceRows(ctx context.Context, in mcpsrv.BackupEvidenceIn) mcpsrv.
 	}
 }
 
-// backupEvidenceStamp renders one evidence timestamp: RFC 3339 UTC, empty for
-// the zero time, which the contract reads as an absent value.
+// The contract reads an empty stamp as an absent value.
 func backupEvidenceStamp(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -631,8 +536,7 @@ func backupEvidenceStamp(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-// backupRowStrings keeps the document's shape still: a nil list becomes an
-// empty one, never JSON null.
+// A nil list becomes an empty one, never JSON null.
 func backupRowStrings(ss []string) []string {
 	if ss == nil {
 		return []string{}
@@ -640,8 +544,6 @@ func backupRowStrings(ss []string) []string {
 	return ss
 }
 
-// backupPolicyRow restates the effective policy, pairing every value with its
-// provenance as the stable strings the machine-readable contract pins.
 func backupPolicyRow(p BackupPolicy) mcpsrv.BackupPolicyRow {
 	return mcpsrv.BackupPolicyRow{
 		State:           string(p.State),
@@ -657,7 +559,6 @@ func backupPolicyRow(p BackupPolicy) mcpsrv.BackupPolicyRow {
 	}
 }
 
-// backupArtifactRow restates one enumerated artifact.
 func backupArtifactRow(a BackupArtifact) mcpsrv.BackupArtifactRow {
 	return mcpsrv.BackupArtifactRow{
 		ID:         a.ID,
@@ -670,7 +571,6 @@ func backupArtifactRow(a BackupArtifact) mcpsrv.BackupArtifactRow {
 	}
 }
 
-// backupArtifactRows restates a catalog half's artifacts.
 func backupArtifactRows(as []BackupArtifact) []mcpsrv.BackupArtifactRow {
 	out := make([]mcpsrv.BackupArtifactRow, 0, len(as))
 	for _, a := range as {
@@ -679,7 +579,6 @@ func backupArtifactRows(as []BackupArtifact) []mcpsrv.BackupArtifactRow {
 	return out
 }
 
-// backupLocalRow restates the bounded local catalog.
 func backupLocalRow(l BackupLocalCatalog) mcpsrv.BackupLocalRow {
 	return mcpsrv.BackupLocalRow{
 		Node:      l.Node,
@@ -689,7 +588,6 @@ func backupLocalRow(l BackupLocalCatalog) mcpsrv.BackupLocalRow {
 	}
 }
 
-// backupRemoteRow restates the bounded remote catalog.
 func backupRemoteRow(r BackupRemoteCatalog) mcpsrv.BackupRemoteRow {
 	return mcpsrv.BackupRemoteRow{
 		Copies:   backupArtifactRows(r.Copies),
@@ -699,8 +597,7 @@ func backupRemoteRow(r BackupRemoteCatalog) mcpsrv.BackupRemoteRow {
 	}
 }
 
-// backupCensusRow restates the deduplicated census, giving each entry its own
-// artifact values so no pointer reaches back into the surface's result.
+// Copies each entry's artifact values so no pointer reaches back into the surface's result.
 func backupCensusRow(c BackupCensus) mcpsrv.BackupCensusRow {
 	entries := make([]mcpsrv.BackupCensusEntryRow, 0, len(c.Entries))
 	for _, e := range c.Entries {
@@ -724,8 +621,6 @@ func backupCensusRow(c BackupCensus) mcpsrv.BackupCensusRow {
 	}
 }
 
-// backupMaintenanceRow restates the loop's durable maintenance state, with
-// each attempt's typed outcome.
 func backupMaintenanceRow(m BackupMaintenance) mcpsrv.BackupMaintenanceRow {
 	return mcpsrv.BackupMaintenanceRow{
 		Save:              backupAttemptRow(m.Save),
@@ -738,7 +633,6 @@ func backupMaintenanceRow(m BackupMaintenance) mcpsrv.BackupMaintenanceRow {
 	}
 }
 
-// backupAttemptRow restates one recorded attempt with its typed outcome.
 func backupAttemptRow(a BackupAttempt) mcpsrv.BackupAttemptRow {
 	return mcpsrv.BackupAttemptRow{
 		AttemptedAt: backupEvidenceStamp(a.AttemptedAt),

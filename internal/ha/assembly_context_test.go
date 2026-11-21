@@ -36,8 +36,6 @@ func TestNodeAssemblyContextStopsAfterInflightStep(t *testing.T) {
 			r := &assemblyRecord{}
 			a, req := recordingAssembly(r)
 			req.PrereqOptions.Profile = profiletest.Profile()
-			// Finish the selected atomic effect, then deliver cancellation
-			// before assembly can start a later mutation.
 			field := reflect.ValueOf(&a).Elem().FieldByName(step.field)
 			original := reflect.ValueOf(field.Interface())
 			field.Set(reflect.MakeFunc(field.Type(), func(args []reflect.Value) []reflect.Value {

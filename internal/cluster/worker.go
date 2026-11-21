@@ -21,15 +21,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The host and bootstrap calls PrepareWorker makes beyond the ones prepare.go
-// already puts behind seams, behind seams in the same shape: a test can drive
-// the join's own assembly — the node state it saves, the CA files and
-// bootstrap kubeconfig it writes — without a host to detect addresses on or
-// an apiserver to discover a CA from. A worker detects its addresses through
-// hostDetectNodeIPs, as a controller does, not through host.NodeIPs:
-// host.ResolveNodeIP, on a join, and host.ResolveNodeIPWithoutConfig, on a
-// restart, have already weighed $NODE_IP by the time they fall back to
-// detection.
+// Seams let tests drive the join's own assembly without a host or an apiserver.
 var (
 	discoverJoin             = bootstrap.DiscoverJoin
 	fetchKubeletClientCA     = bootstrap.FetchKubeletClientCA
@@ -37,62 +29,35 @@ var (
 	writeTrustFile           = atomicfile.WriteFile
 )
 
-// WorkerOptions are the inputs of a worker start, as `stratum up --worker`
-// resolves them from its flags and config file. A restart passes no join
-// credentials: it resumes from the saved node state.
+// One worker start's inputs; a restart passes no join credentials and resumes saved state.
 type WorkerOptions struct {
-	// Server is the control-plane or VIP URL to join (--server); empty on a
-	// restart.
+	// Server is the control-plane or VIP URL to join; empty on a restart.
 	Server string
 	// Token is the bootstrap token the join authenticates with.
 	Token string
-	// CAHash is the "sha256:<hex>" pin of the cluster CA
-	// (--discovery-token-ca-cert-hash).
+	// CAHash is the "sha256:<hex>" pin of the cluster CA.
 	CAHash string
-	// NodeIP is --node-ip; empty leaves spec.network.nodeIP, $NODE_IP and
-	// detection to the join, and the saved address, else $NODE_IP and
-	// detection, to a restart. A restart given one that differs moves the
-	// worker to it and saves it, once it is an address the worker can
-	// register: an IPv4 address on a single-stack worker, its v4,v6 pair on a
-	// dual-stack one.
+	// NodeIP is --node-ip; a restart given a registrable one moves the worker to it.
 	NodeIP string
-	// ConfigNodeIP is spec.network.nodeIP from the config file, which only a
-	// join reads. It is kept apart from NodeIP, which outranks it, so the join
-	// names the source its address came from.
+	// ConfigNodeIP is spec.network.nodeIP, which only a join reads.
 	ConfigNodeIP string
-	// ServiceCIDR, PodCIDR and ClusterDomain describe a cluster that does not
-	// use the defaults. A restart reads only PodCIDR, to record the range a
-	// legacy worker, or one joined without --pod-cidr, never saved, or to
-	// replace the default an earlier release saved for such a join.
+	// A restart reads only PodCIDR, to record or replace a range older state never saved.
 	ServiceCIDR   string
 	PodCIDR       string
 	ClusterDomain string
-	// Profile selects the named node profile on a join. On a restart, a
-	// profile other than the saved one is refused.
+	// Profile selects the node profile on a join; a restart given another is refused.
 	Profile string
-	// SELinuxOptOut is spec.selinux: false from the config file, nil when a
-	// restart's file does not set it; a restart saves a changed setting.
+	// SELinuxOptOut is spec.selinux: false from the config file; nil when unset there.
 	SELinuxOptOut *bool
 	// DualStack registers a v4,v6 node IP pair on a join (--dual-stack).
 	DualStack bool
-	// Node is --node-label, --node-taint and --runtime-handler. A nil field
-	// was not given. A join lays it over ConfigNode; a restart given a field
-	// replaces the one the worker saved with it.
+	// Node is --node-label, --node-taint and --runtime-handler; nil fields were not given.
 	Node NodeSpec
 	// ConfigNode is spec.node from the config file, which only a join reads.
 	ConfigNode NodeSpec
 }
 
-// ResolveJoinNodeIP resolves and checks the node IP of a new worker join. A
-// join is a new registration, so an address an earlier join saved on this
-// host is not a source: --node-ip, then spec.network.nodeIP, then $NODE_IP,
-// then detection. The join saves this address and every later start reuses
-// it, so it is checked before anything on the host or the cluster is
-// touched — which is why the up command runs this same function before it
-// stages the payload, so a refusal writes nothing. The stack is read from
-// the value, as the restart reads it from the saved one: a pair given
-// without --dual-stack registers both families, and one address given with
-// it registers only that one, as before the check.
+// ResolveJoinNodeIP checks a join's node IP before anything is written, so a refusal writes none.
 func ResolveJoinNodeIP(nodeIP, configNodeIP string, dual bool) (host.NodeIPChoice, error) {
 	choice, err := host.ResolveNodeIP(nodeIP, configNodeIP, "", func() (string, error) { return hostDetectNodeIPs(dual) })
 	if err != nil {
@@ -104,35 +69,18 @@ func ResolveJoinNodeIP(nodeIP, configNodeIP string, dual bool) (host.NodeIPChoic
 	return choice, nil
 }
 
-// PrepareWorker runs the worker join flow: discover + pin the CA,
-// write the bootstrap kubeconfig, persist the node state. RunWorker, which
-// follows, writes the kubelet and containerd configs. The kubelet does TLS
-// bootstrap; the operator's CSR approver signs its serving cert. A worker
-// that already has worker state and is given no Server takes the restart
-// fast path instead, which reuses that state.
-//
-// ctx is the run's interrupt context, created by the caller before its
-// preflight: a signal received before the join began stops it here, before
-// any host write, and the caller stops the run at its boundary once the join
-// returns.
+// PrepareWorker runs the worker join, or the restart fast path when saved worker state is present.
 func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	profileName := o.Profile
-	// A join entered with the run already stopped refuses before anything on
-	// this host is touched, surfacing the signal's own stop.
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("worker join: %w before preparing this node (nothing was written)", err)
 	}
-	// A restarted worker reuses its state — no token needed after first join.
-	// A state file that is there but cannot be read is reported as such on a
-	// restart: asking for join credentials would send the operator to a new
-	// registration when what needs repairing is the file.
 	if st, err := LoadState(); err != nil && !errors.Is(err, fs.ErrNotExist) && o.Server == "" {
 		return nil, fmt.Errorf("worker restart: read this worker's saved node state: %w; repair the file, which a restart resumes from", err)
 	} else if err == nil && st.Role == "worker" && o.Server == "" {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// A restart must retain the profile recorded by the join.
 		p, err := profile.Select(st.ProfileName())
 		if err != nil {
 			return nil, fmt.Errorf("this worker's saved state names a %w; run it with a binary that registers the profile", err)
@@ -140,18 +88,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := RefuseWorkerProfileChange(st, profileName); err != nil {
 			return nil, err
 		}
-		// Every refusal comes before the restart saves a setting or prepares
-		// the host, so a refused start leaves node.yaml and the host as they
-		// were: it does not save one setting it was given and then refuse
-		// another.
 		if o.SELinuxOptOut != nil && p.RequiresSELinux && *o.SELinuxOptOut && !st.SELinuxOptOut {
 			return nil, fmt.Errorf("the %s profile cannot be combined with spec.selinux: false; remove it from this worker's config file", p.Name)
 		}
-		// The interface-scoped binding needs no pod CIDR. Legacy workers, and
-		// workers joined without --pod-cidr, can start without one; persist an
-		// explicit range if supplied. Earlier releases saved the default range
-		// for a join given no --pod-cidr, so a saved default is replaced by a
-		// range given here rather than refused as a conflict.
+		// A saved default came from an older release's join, so it is replaced rather than refused.
 		savedDefault := st.PodCIDR == netcfg.Default().PodCIDR
 		recordPodCIDR := o.PodCIDR != "" && o.PodCIDR != st.PodCIDR && (st.PodCIDR == "" || savedDefault)
 		if recordPodCIDR {
@@ -171,38 +111,21 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 				strings.Join(o.Node.Taints, ","), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname)
 		}
 		labels, handlers, replaced := restartNodeFacts(st, o.Node)
-		// A restart keeps the address this worker registered with unless
-		// --node-ip moves it, by the rule every controller start uses: the
-		// saved address outranks $NODE_IP, which says only what the
-		// environment running this start says now. The reboot unit reruns a
-		// bare `stratum up --worker`, so a moved address is saved below, or
-		// the next start would put the kubelet back on the old one. Older
-		// state records only the primary address. Because it is saved, a
-		// changed address is checked first: one that is not an IP address, or
-		// one that drops or adds an address family this worker registered
-		// with, would otherwise start the kubelet on it at this start and at
-		// every boot after it. A restart reads no spec.network.nodeIP, so it
-		// resolves without one, and the hint it adds to a failed detection
-		// names only the sources it does read.
+		// The reboot unit reruns a bare `stratum up --worker`, so a moved address must be saved.
 		saved := cmp.Or(st.KubeletNodeIP, st.NodeIP)
-		// A worker is dual-stack when it joined with --dual-stack or with a
-		// v4,v6 pair: one joined with a pair but without --dual-stack
-		// registered both families.
+		// A pair joined without --dual-stack registered both families.
 		dualStack := st.DualStack || strings.Contains(saved, ",")
 		choice, err := host.ResolveNodeIPWithoutConfig(o.NodeIP, saved, func() (string, error) { return hostDetectNodeIPs(dualStack) })
 		if err != nil {
 			return nil, err
 		}
-		// An explicit flag also pins the kubelet address missing from older
-		// state, even when it matches the primary address recorded there.
+		// An explicit flag also pins the kubelet address missing from older state.
 		updateNodeIP := choice.IP != saved || (o.NodeIP != "" && choice.IP != st.KubeletNodeIP)
-		// Always check an explicit flag, even when it repeats an invalid
-		// address from damaged or older state.
+		// Check an explicit flag even when it repeats an invalid address from damaged state.
 		if updateNodeIP || o.NodeIP != "" {
 			checkDualStack := dualStack
 			if !updateNodeIP {
-				// A join accepts one explicit IPv4 with --dual-stack too.
-				// Repeating it keeps the address families it registered.
+				// Repeating a join's single IPv4 keeps the families it registered.
 				checkDualStack = strings.Contains(saved, ",")
 			}
 			if err := host.CheckNodeIP(choice.IP, checkDualStack); err != nil {
@@ -213,18 +136,13 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// Every start, as on a control plane (PrepareController): a reboot
-		// can bring swap back, and an upgrade may carry host settings the
-		// join never applied -- the inotify limits among them.
+		// A reboot can bring swap back; an upgrade may carry settings the join never applied.
 		if o.SELinuxOptOut != nil && *o.SELinuxOptOut != st.SELinuxOptOut {
 			if err := nodestate.Mutate(func(cur *NodeState) error { cur.SELinuxOptOut = *o.SELinuxOptOut; return nil }); err != nil {
 				return nil, fmt.Errorf("save spec.selinux: %w", err)
 			}
 			st.SELinuxOptOut = *o.SELinuxOptOut
 		} else if o.SELinuxOptOut == nil && st.SELinuxOptOut {
-			// A config file that omits spec.selinux, or cannot be read, leaves
-			// nil here, so the saved opt-out stays; only spec.selinux: true
-			// clears it.
 			fmt.Printf("  NOTE: keeping the spec.selinux: false this worker saved. Set spec.selinux: true in its config file to confine this worker\n")
 		}
 		if err := ctx.Err(); err != nil {
@@ -265,12 +183,9 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// Every start says which address it runs on and where that came from,
-		// as a controller start does.
 		fmt.Printf("stratum: node IP %s (%s)\n", choice.IP, choice.Source)
 		if updateNodeIP {
-			// Merge only the address under the same lock as every state
-			// mutation, keeping fields recorded since this start loaded it.
+			// Save under the data lock so fields another writer changed survive.
 			if err := nodestate.Mutate(func(cur *NodeState) error {
 				cur.NodeIP, cur.KubeletNodeIP = host.Primary(choice.IP), choice.IP
 				*st = *cur
@@ -288,7 +203,6 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	if o.Server == "" || o.Token == "" || o.CAHash == "" {
 		return nil, errors.New("worker join needs --server, --token and --discovery-token-ca-cert-hash")
 	}
-	// A join selects its profile before any host effects.
 	p, err := profile.Select(profileName)
 	if err != nil {
 		return nil, fmt.Errorf("worker join: %w; every node of a cluster that runs a profile must run a binary that registers it", err)
@@ -302,8 +216,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		}
 	}
 	if o.ServiceCIDR != "" {
-		// Refuse a range the kubelet could not derive its cluster DNS IP from
-		// before anything on the host is touched.
+		// The kubelet derives its cluster DNS IP from this range.
 		if _, err := netcfg.DNSIPFor(o.ServiceCIDR); err != nil {
 			return nil, fmt.Errorf("--service-cidr: %w", err)
 		}
@@ -321,8 +234,6 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A join is a new registration, so an address an earlier join saved on
-	// this host is not a source; ResolveJoinNodeIP names the order.
 	choice, err := ResolveJoinNodeIP(o.NodeIP, o.ConfigNodeIP, o.DualStack)
 	if err != nil {
 		return nil, err
@@ -345,9 +256,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Bind Cilium's pod-facing interfaces on workers as on controllers. The
-	// interface-scoped binding does not depend on the pod range, so a join
-	// given none still converges.
+	// The interface-scoped binding does not depend on the pod range, so an empty one converges.
 	hostTrustPodCIDRs(o.PodCIDR)
 
 	if err := ctx.Err(); err != nil {
@@ -360,8 +269,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// The kubelet's clientCAFile is the kubelet-client CA a split cluster
-	// publishes, or the discovered CA on a cluster that predates the split.
+	// A split cluster publishes a separate kubelet-client CA; a legacy one does not.
 	kubeletCA, found, err := fetchKubeletClientCA(o.Server, ca)
 	if err != nil {
 		return nil, err
@@ -394,9 +302,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		return nil, err
 	}
 
-	// A join learns no pod range from the cluster, so the state records only
-	// the --pod-cidr the user gave. A default recorded here would read on a
-	// restart as a range the user gave, and refuse the cluster's real one.
+	// A recorded default would read on a restart as a range the user gave and refuse the real one.
 	st := &NodeState{
 		Role: "worker", Hostname: hostname,
 		NodeIP: host.Primary(nodeIP), KubeletNodeIP: nodeIP,
@@ -406,8 +312,6 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		NodeLabels:    node.Labels, NodeTaints: node.Taints, RuntimeHandlers: node.RuntimeHandlers,
 		NodeTaintsCheckPending: len(node.Taints) > 0,
 	}
-	// containerd and kubelet configs are RunWorker's, on this start as on
-	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {
 		st.ClusterDNSIP = cur.ClusterDNSIP
 		*cur = *st
@@ -418,9 +322,6 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	return st, nil
 }
 
-// restartNodeFacts is the saved labels and runtime handlers, each replaced by
-// the restart's flag when one was given, and a line for every field that
-// changes what the worker saved.
 func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
 	labels, handlers = st.NodeLabels, st.RuntimeHandlers
 	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
@@ -446,9 +347,6 @@ func FormatKeyValues(m map[string]string) string {
 	return strings.Join(out, ",")
 }
 
-// RefuseWorkerProfileChange refuses a worker restart that names a profile
-// other than the one st, the worker's saved state, records. No profile named
-// keeps the saved one.
 func RefuseWorkerProfileChange(st *NodeState, want string) error {
 	if want == "" || want == st.ProfileName() {
 		return nil

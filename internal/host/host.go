@@ -1,5 +1,4 @@
-// Package host performs node prerequisites: directories, kernel modules,
-// sysctls, swapoff, and node-IP/hostname detection.
+// Package host performs node prerequisites: dirs, modules, sysctls, swapoff, node IPs.
 package host
 
 import (
@@ -19,7 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Hostname returns the short hostname (hostname -s equivalent).
+// Hostname returns the short hostname.
 func Hostname() (string, error) {
 	h, err := os.Hostname()
 	if err != nil {
@@ -29,35 +28,18 @@ func Hostname() (string, error) {
 	return h, nil
 }
 
-// NodeIP returns $NODE_IP if set, else the IP of the default outbound route.
-// A detection failure names $NODE_IP, the one source it reads.
-//
-// It knows nothing about the address a node was actually brought up with. Code
-// acting on a node that already runs wants nodestate.NodeIP, which prefers the
-// recorded address; this is the bare fallback beneath it.
+// NodeIP returns $NODE_IP if set, else the default outbound route's source address.
 func NodeIP() (string, error) {
 	c, err := resolveNodeIP([]NodeIPChoice{{os.Getenv("NODE_IP"), "$NODE_IP"}}, detectIPv4)
 	return c.IP, err
 }
 
-// dialUDP and interfaceAddrs are the system calls node-IP detection rests on:
-// detectIPv4 uses both, nodeIPv6 the interface listing. They are vars so a test
-// can stand in for a host without a default route and decide its addresses.
 var (
 	dialUDP        = net.Dial
 	interfaceAddrs = net.InterfaceAddrs
 )
 
-// detectIPv4 returns the source address of the default outbound route: dial a
-// public IP over UDP (no packet is sent) and read the local address chosen. On a
-// host with more than one NIC this is often not the cluster network, which is
-// why every explicit source outranks it (ResolveNodeIP).
-//
-// With no default route the dial fails, so it falls back to the
-// host's global unicast IPv4 when exactly one exists. With none or several it
-// errors rather than guess a cluster address. The error says why detection
-// failed but names no source to pin the address with: its callers read
-// different sources, and each names its own (resolveNodeIP).
+// The error names no source to pin: each caller's hint names the sources it reads.
 func detectIPv4() (string, error) {
 	conn, err := dialUDP("udp", "8.8.8.8:80")
 	if err == nil {
@@ -87,9 +69,7 @@ func describeIPv4s(ips []string) string {
 	return fmt.Sprintf("%d global unicast IPv4 addresses (%s) to choose from", len(ips), strings.Join(ips, ", "))
 }
 
-// Primary returns the first (IPv4-primary) address of a possibly comma-joined
-// node IP ("v4,v6" -> "v4"). Use it where a single IP is required — etcd peer/
-// client URLs, the Cilium k8sServiceHost — while kubelet/PKI take the full pair.
+// Primary returns the first (IPv4-primary) address of a possibly comma-joined node IP.
 func Primary(nodeIP string) string {
 	if i := strings.IndexByte(nodeIP, ','); i >= 0 {
 		return nodeIP[:i]
@@ -97,20 +77,13 @@ func Primary(nodeIP string) string {
 	return nodeIP
 }
 
-// NodeIPs returns the value for kubelet --node-ip: the IPv4 from NodeIP, plus a
-// node IPv6 when dualStack is requested (kubelet wants "<v4>,<v6>"). If $NODE_IP
-// is set it is honored verbatim (it may already carry both, comma-separated).
-// dualStack with no usable node IPv6 is a hard error rather than a half-configured
-// node that would fail to register its IPv6. A detection failure names
-// $NODE_IP, the one source it reads.
+// NodeIPs returns kubelet --node-ip's value; dualStack without an IPv6 is an error.
 func NodeIPs(dualStack bool) (string, error) {
 	c, err := resolveNodeIP([]NodeIPChoice{{os.Getenv("NODE_IP"), "$NODE_IP"}}, func() (string, error) { return DetectNodeIPs(dualStack) })
 	return c.IP, err
 }
 
-// DetectNodeIPs is NodeIPs without the $NODE_IP override: the default-route
-// IPv4, plus a node IPv6 under dual-stack. ResolveNodeIP uses it as the last
-// resort, after every explicit source has been considered.
+// DetectNodeIPs is NodeIPs without the $NODE_IP override; ResolveNodeIP's last resort.
 func DetectNodeIPs(dualStack bool) (string, error) {
 	v4, err := detectIPv4()
 	if err != nil {
@@ -126,10 +99,7 @@ func DetectNodeIPs(dualStack bool) (string, error) {
 	return v4 + "," + v6, nil
 }
 
-// nodeIPv6 picks a node-global IPv6: the first non-loopback, non-link-local
-// (fe80::/10) IPv6 on any interface — a ULA (fd00::/8) or global address.
-// Like detectIPv4's, its error says why the lookup failed but names no source
-// to pin the address with: each caller names the ones it reads (resolveNodeIP).
+// Like detectIPv4's, its error names no source to pin the address with.
 func nodeIPv6() (string, error) {
 	addrs, err := interfaceAddrs()
 	if err != nil {
@@ -149,45 +119,17 @@ func nodeIPv6() (string, error) {
 	return "", fmt.Errorf("dual-stack requested but no routable node IPv6 found; assign a ULA/global IPv6 to the node, or pin both addresses as a v4,v6 pair")
 }
 
-// The host paths bring-up writes outside stratum's three roots
-// (version.DataDir, version.ConfDir, version.RunDir) are declared beside
-// version.SystemdUnitPath — the one home, which the owning-package record
-// keys and which this package reads: Prereqs writes, applySysctls loads and
-// Footprint returns them through the version variables. ModulesLoadFile,
-// SysctlConf and SysctlCISConf stay here as read-through aliases because
-// internal/uninstall's delete list names them here; the literals live once,
-// in version, so no second spelling of the paths exists for the writer, the
-// sysctl loader and uninstall's delete list to drift between.
+// The literals live once in version; uninstall's delete list names them from here.
 var (
-	// ModulesLoadFile, SysctlConf and SysctlCISConf alias
-	// version.ModulesLoadFile, version.SysctlConf and version.SysctlCISConf.
 	ModulesLoadFile = version.ModulesLoadFile
 	SysctlConf      = version.SysctlConf
 	SysctlCISConf   = version.SysctlCISConf
-	// CNIDir is where the CNI plugin's network configuration lives.
-	CNIDir = "/etc/cni/net.d"
-	// KubeletDir is the kubelet's default root directory. Stratum's kubelet
-	// keeps its own state under version.DataDir, but its fixed-path serving
-	// cert directory (internal/pki) stays here, and Dirs creates it.
+	CNIDir          = "/etc/cni/net.d"
+	// Stratum's kubelet state lives under DataDir, but its serving-cert dir stays fixed.
 	KubeletDir = "/var/lib/kubelet"
 )
 
-// Footprint returns the paths bring-up writes outside stratum's three roots:
-// the modules-load file, both sysctl files (the CIS one under --cis) and the
-// drop-in of every other registered profile that declares sysctls, the CNI
-// dir, the kubelet dir, the audit log dir, the systemd unit, and containerd's
-// certs.d and registry conf.d file. The paths version declares — the sysctl
-// and modules-load files among them — are named through their variables and
-// the /etc and /var drop-ins through the declarations above, so each path has
-// one home. Uninstall covers every path of this set —
-// the delete targets named from it, except the kubelet dir, which the
-// teardown's removeLegacyKubeletDir removes under its keep-foreign-state
-// contract instead of the plain delete loop — which is why the set is exactly
-// bring-up's: a missing entry leaves a written path undeclared (and
-// unremoved); an extra one makes uninstall delete a path bring-up does not
-// own. /opt/local-path-provisioner is deliberately absent: SELinux only
-// relabels that directory (spec.storage.localPathProvisioner), stratum never
-// writes it.
+// The paths bring-up writes outside stratum's three roots; uninstall deletes each one.
 func Footprint() []string {
 	return append([]string{
 		version.ModulesLoadFile,
@@ -202,10 +144,6 @@ func Footprint() []string {
 	}, ProfileSysctlFiles()...)
 }
 
-// ProfileSysctlFiles are the sysctl drop-ins Prereqs writes for the binary's
-// registered profiles that declare sysctls, other than the cis profile's,
-// which is version.SysctlCISConf. A node runs only a profile its binary
-// registers, so these cover every profile drop-in that binary's nodes carry.
 func ProfileSysctlFiles() []string {
 	var out []string
 	for _, p := range profile.All() {
@@ -219,9 +157,7 @@ func ProfileSysctlFiles() []string {
 	return out
 }
 
-// publicDirs and privateDirs are the on-disk layout created by Dirs. The
-// private dirs hold etcd data, private keys and credentialed kubeconfigs, so
-// they are 0700; the rest are 0755.
+// The private dirs hold etcd data, private keys and credentialed kubeconfigs.
 func publicDirs() []string {
 	return []string{
 		version.ConfDir, version.K8sConfDir,
@@ -234,9 +170,7 @@ func privateDirs() []string {
 	return []string{version.EtcdDataDir, version.PKIDir, version.KubeconfigDir, version.AuditLogDir}
 }
 
-// Dirs creates the on-disk layout used by the control plane. Note MkdirAll
-// does not tighten a dir that already exists, so private modes are enforced
-// with an explicit Chmod.
+// MkdirAll does not tighten an existing dir, so private modes get an explicit Chmod.
 func Dirs() error {
 	for _, d := range publicDirs() {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -251,14 +185,7 @@ func Dirs() error {
 	return tightenEtcdRestoreCopies(version.EtcdDataDir)
 }
 
-// tightenEtcdRestoreCopies sets 0700 on the copies of the etcd data dir a
-// snapshot restore keeps beside it (<dir>.pre-restore-*, <dir>.failed-restore-*).
-// A restore renames the live dir, so a copy made while it was 0755 stays 0755
-// with the whole cluster state in it. Symlinks are left alone, and a copy
-// removed while this runs is not an error. The copies are found by name
-// prefix, not a glob, so the data dir's path is never read as a pattern. A
-// parent that cannot be listed is warned about, not an error: the sweep is
-// best-effort, and Dirs has already made the live data dir private.
+// A restore renames the live dir, so a copy made while it was 0755 stays loose.
 func tightenEtcdRestoreCopies(dataDir string) error {
 	dir, base := filepath.Dir(dataDir), filepath.Base(dataDir)
 	entries, err := os.ReadDir(dir)
@@ -281,17 +208,10 @@ func tightenEtcdRestoreCopies(dataDir string) error {
 	return nil
 }
 
-// profileSysctlFile is where a profile other than cis has its sysctl set
-// written: the sibling of version.SysctlCISConf named for the profile. The
-// cis profile's set goes to version.SysctlCISConf itself, which Prereqs
-// names so the path's one home stays beside the other boot-critical files
-// and uninstall's delete list still covers it.
 func profileSysctlFile(p profile.Profile) string {
 	return filepath.Join(filepath.Dir(version.SysctlCISConf), "99-stratum-"+p.Name+".conf")
 }
 
-// ensurePrivateDir creates d at 0700 and tightens an existing dir that is
-// looser (e.g. one created 0755 by an older release).
 func ensurePrivateDir(d string) error {
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return err
@@ -299,9 +219,7 @@ func ensurePrivateDir(d string) error {
 	return os.Chmod(d, 0o700)
 }
 
-// EnsureBPFFS mounts the BPF filesystem at /sys/fs/bpf with shared propagation
-// when it is not already there. Cilium's mount-bpf-fs init container requires
-// it (systemd hosts mount it at boot; containers and minimal hosts do not).
+// Cilium's mount-bpf-fs init container needs it; systemd hosts only mount it at boot.
 func EnsureBPFFS() {
 	const bpf = "/sys/fs/bpf"
 	if b, err := os.ReadFile("/proc/mounts"); err == nil && strings.Contains(string(b), " "+bpf+" bpf ") {
@@ -316,29 +234,14 @@ func EnsureBPFFS() {
 	_ = exec.Command("mount", "--make-shared", bpf).Run()
 }
 
-// procMountinfo is where the kernel describes the mounts and their
-// propagation. A var so a test can stand in for the file.
 var procMountinfo = "/proc/self/mountinfo"
 
-// runMount runs mount and returns its output with the error, so a failure
-// carries mount's own words rather than a bare "exit status 1". A var so a
-// test can stand in for the binary.
 var runMount = func(args ...string) (string, error) {
 	out, err := exec.Command("mount", args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
-// rootPrivate reports whether the / mount is private, as mountinfo describes
-// it: a / line is private unless it carries a shared:N or master:N tag (the
-// kernel writes each tag as its own optional field before the "-" separator
-// that ends them). ok is false when no line describes the / mount, so the
-// state cannot be told.
-// When several mounts are stacked on /, as in some containers and chroots,
-// the one in effect is the one no other / mount is stacked on, so it decides.
-// It is told by the mount and parent IDs, the first two fields, because the
-// kernel does not promise to list a stacked mount after the one beneath it.
-// The root of the mount tree, such as the rootfs of a host booted from its
-// initramfs alone, names itself as its parent, which is not a mount on it.
+// With stacked mounts on /, the one no other / mount is stacked on decides, by parent ID.
 func rootPrivate(mountinfo string) (private, ok bool) {
 	type rootMount struct {
 		id, parent string
@@ -347,8 +250,7 @@ func rootPrivate(mountinfo string) (private, ok bool) {
 	var roots []rootMount
 	for line := range strings.SplitSeq(mountinfo, "\n") {
 		fields := strings.Fields(line)
-		// fields[4] is the mount point; the optional fields after it end at
-		// the "-" separator that starts the filesystem fields.
+		// fields[4] is the mount point; the optional fields end at the "-" separator.
 		if len(fields) < 6 || fields[4] != "/" {
 			continue
 		}
@@ -371,22 +273,9 @@ func rootPrivate(mountinfo string) (private, ok bool) {
 	return false, false
 }
 
-// privateRootNote is why a private / is made shared: containerd refuses the
-// host-path mounts Cilium's pods make when / is not a shared or slave mount.
 const privateRootNote = "containerd refuses host-path mounts with propagation, such as Cilium's, on a private /"
 
-// EnsureRootShared makes / a recursively shared mount when it is private.
-// systemd makes / shared at boot; other inits (BusyBox, OpenRC) do not, and
-// on those hosts every mount stays private, so containerd refuses the
-// host-to-container bind mounts Cilium's pods make ("path ... is mounted on
-// ... but it is not a shared or slave mount") and the node never becomes
-// Ready. containerd accepts a shared or a slave mount for those, so a root
-// that is already either is left alone; making a slave root shared would also
-// cut it off from the mounts it follows. Cilium's one bidirectional mount, on
-// /sys/fs/bpf, needs a shared mount, which EnsureBPFFS provides whatever / is.
-// The change is recursive, as systemd's is: every mount under / becomes
-// shared too, which on these hosts are all private. Nothing here is fatal: if
-// the mount fails, Cilium's own error will say why.
+// Non-systemd inits leave / private; containerd refuses Cilium's mounts on it.
 func EnsureRootShared() {
 	mi, err := os.ReadFile(procMountinfo)
 	if err != nil {
@@ -409,11 +298,7 @@ func EnsureRootShared() {
 	fmt.Printf("  made / a shared mount (mount --make-rshared /): %s\n", privateRootNote)
 }
 
-// CheckFloor enforces the platform floor before anything starts: cgroup v2 (the
-// runtime is cgroup-v2-only) and a kernel new enough for Cilium's kube-proxy
-// replacement (>=4.19.57 hard floor, >=5.10 target). Failing early with the
-// requirement beats a kubelet and a CNI failing later in ways that do not name
-// it.
+// Failing early names the requirement; a failing kubelet or CNI does not.
 func CheckFloor() error {
 	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err != nil {
 		return fmt.Errorf("cgroup v2 is required (unified hierarchy not mounted at /sys/fs/cgroup) — SKE is cgroup-v2-only")
@@ -432,19 +317,9 @@ func CheckFloor() error {
 	return nil
 }
 
-// baseSysctls are what pod networking needs, set unconditionally.
 const baseSysctls = "net.bridge.bridge-nf-call-iptables=1\nnet.bridge.bridge-nf-call-ip6tables=1\nnet.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n"
 
-// inotifyFloors raise the per-user inotify limits. The kubelet, the control
-// plane, every containerd shim and every root-running container share uid 0's
-// budget, and the EL default of 128 instances runs out on one hyperconverged
-// node with a moderate workload: the pod that needs the 129th fails with "too
-// many open files" (136 in use with about 30 pods). The values are the
-// ones commonly set for Kubernetes nodes (kind sets the same).
-//
-// Floors, not settings: 99-stratum.conf sorts late in /etc/sysctl.d, so a fixed
-// value would lower a host an operator already tuned higher. The rendered value
-// is whichever is larger, the floor or what the kernel has now.
+// Floors, not fixed values: 99-stratum.conf sorts late, so a tuned host keeps its value.
 var inotifyFloors = []struct {
 	key   string
 	floor int
@@ -453,12 +328,8 @@ var inotifyFloors = []struct {
 	{"fs.inotify.max_user_watches", 524288},
 }
 
-// procSys is where the live sysctl values are read. A var so a test can point
-// it at a fixture.
 var procSys = "/proc/sys"
 
-// renderSysctls is 99-stratum.conf: the networking sysctls plus the inotify
-// floors, each at the higher of the floor and the running value.
 func renderSysctls() string {
 	var b strings.Builder
 	b.WriteString(baseSysctls)
@@ -472,7 +343,6 @@ func renderSysctls() string {
 	return b.String()
 }
 
-// readSysctlInt reads one integer sysctl from procSys.
 func readSysctlInt(key string) (int, bool) {
 	raw, err := os.ReadFile(filepath.Join(procSys, filepath.FromSlash(strings.ReplaceAll(key, ".", "/"))))
 	if err != nil {
@@ -482,9 +352,6 @@ func readSysctlInt(key string) (int, bool) {
 	return v, err == nil
 }
 
-// runSysctl runs sysctl and returns its output with the error, so a failure
-// carries sysctl's own words rather than a bare "exit status 1". A var so a
-// test can stand in for the binary.
 var runSysctl = func(args ...string) (string, error) {
 	out, err := exec.Command("sysctl", args...).CombinedOutput()
 	return strings.TrimSpace(string(out)), err
@@ -497,17 +364,7 @@ func sysctlError(args []string, out string, err error) error {
 	return fmt.Errorf("sysctl %s: %w: %s", strings.Join(args, " "), err, out)
 }
 
-// applySysctls loads the sysctl configuration. `sysctl --system` is the right
-// call, since it applies every file in order and an operator's later file
-// still wins. BusyBox's sysctl has no --system, though -- the integration
-// harness has it, and so do some minimal hosts -- and there nothing stratum
-// wrote ever reached the kernel, with only a warning to show for it.
-// So when --system is not supported, stratum's own files are loaded
-// directly, which both implementations support.
-//
-// Only then. procps exits non-zero when one key fails (a bridge key before
-// br_netfilter loads) having still applied every file in order; loading ours
-// again on top would beat an operator's later file.
+// BusyBox's sysctl lacks --system; procps failing one key already applied every file.
 func applySysctls(profileFile string) error {
 	out, err := runSysctl("--system")
 	if err == nil {
@@ -530,29 +387,18 @@ func applySysctls(profileFile string) error {
 
 // PrereqOptions are the node settings host preparation depends on.
 type PrereqOptions struct {
-	// Profile is the node's profile: its sysctl set is written and applied,
-	// and its SELinux requirement holds.
 	Profile profile.Profile
 	// SELinuxOptOut is spec.selinux: false.
 	SELinuxOptOut bool
-	// Existing is a node that was brought up before, which a missing SELinux
-	// policy does not stop (selinux.Options.Existing).
+	// A node brought up before; a missing SELinux policy does not stop it.
 	Existing bool
 }
 
-// selinuxOptions are the SELinux settings host preparation runs with: the
-// node profile's requirement, under its name, the opt-out, and whether the
-// node was brought up before.
 func selinuxOptions(o PrereqOptions) selinux.Options {
 	return selinux.Options{RequiresSELinux: o.Profile.RequiresSELinux, Profile: o.Profile.Name, OptOut: o.SELinuxOptOut, Existing: o.Existing}
 }
 
-// Prereqs registers Stratum's SELinux file contexts and relabels its files,
-// loads kernel modules, applies sysctls, gives Stratum's runc the host's
-// AppArmor runc profile, and disables swap. It also writes the node profile's
-// sysctl set; a profile that declares one depends on it (the cis profile's
-// kubelet protectKernelDefaults is a hard boot gate), so a sysctl-apply
-// failure is then FATAL rather than an opaque kubelet crash-loop later.
+// A profile sysctl-apply failure is fatal: the cis kubelet boot gate needs it.
 func Prereqs(o PrereqOptions) error {
 	if err := CheckFloor(); err != nil {
 		return err
@@ -565,12 +411,7 @@ func Prereqs(o PrereqOptions) error {
 	for _, m := range []string{"overlay", "br_netfilter"} {
 		_ = exec.Command("modprobe", m).Run()
 	}
-	// Persist the module list: without it br_netfilter/overlay are gone after a
-	// reboot and pod networking silently breaks. All three writes here are
-	// boot-critical — a torn one breaks pod networking or the kubelet's
-	// protectKernelDefaults boot gate after a crash — so each goes through the
-	// shared atomic writer (temp file, file fsync, rename, directory fsync),
-	// named through the version path variables.
+	// Without the module list overlay/br_netfilter vanish at reboot, breaking pod networking.
 	if err := WriteFileAtomically(version.ModulesLoadFile, []byte("overlay\nbr_netfilter\n"), 0o644); err != nil {
 		return err
 	}
@@ -594,9 +435,7 @@ func Prereqs(o PrereqOptions) error {
 		}
 		fmt.Printf("  WARN: sysctl --system failed: %v (ip_forward/bridge-nf may be off — pod networking can break)\n", err)
 	}
-	// After the sysctls: sysctl --system sets
-	// kernel.apparmor_restrict_unprivileged_unconfined from the host's own
-	// sysctl.d files, and that setting decides whether runc needs the profile.
+	// sysctl --system sets the restriction sysctl that decides runc's profile need.
 	if err := apparmor.Ensure(os.Stdout); err != nil {
 		return err
 	}

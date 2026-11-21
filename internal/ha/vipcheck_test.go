@@ -21,7 +21,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// servingVIP stands in for a VIP that serves the cluster's apiserver.
 func servingVIP(t *testing.T) {
 	t.Helper()
 	old := VIPServes
@@ -29,7 +28,6 @@ func servingVIP(t *testing.T) {
 	t.Cleanup(func() { VIPServes = old })
 }
 
-// deadVIP stands in for a VIP that nothing serves.
 func deadVIP(t *testing.T) error {
 	t.Helper()
 	err := errors.New("dial tcp 10.10.1.250:6443: connect: no route to host")
@@ -39,9 +37,6 @@ func deadVIP(t *testing.T) error {
 	return err
 }
 
-// A node repointed onto a VIP nothing serves loses every API client, so
-// ha-repoint refuses before it rewrites a kubeconfig, and says what to do
-// first.
 func TestNodeRepointRefusesAVIPThatDoesNotServe(t *testing.T) {
 	cause := deadVIP(t)
 	called := false
@@ -54,8 +49,6 @@ func TestNodeRepointRefusesAVIPThatDoesNotServe(t *testing.T) {
 	}
 }
 
-// Cilium agents pointed at a dead VIP lose the apiserver on every node, so
-// the cluster-wide repoint refuses the same way, before changing anything.
 func TestRepointCiliumRefusesAVIPThatDoesNotServe(t *testing.T) {
 	deadVIP(t)
 	ds := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "cilium", Namespace: "kube-system"}}
@@ -71,9 +64,6 @@ func TestRepointCiliumRefusesAVIPThatDoesNotServe(t *testing.T) {
 	}
 }
 
-// The check is a TLS handshake that trusts only the cluster CA and requires
-// the certificate to cover the VIP: an address that answers with another CA's
-// certificate, or one that does not name the VIP, does not serve the cluster.
 func TestTLSServes(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
@@ -96,8 +86,6 @@ func TestTLSServes(t *testing.T) {
 	}
 }
 
-// The cluster CA comes from whichever of the node's kubeconfigs exists: a
-// worker has only the kubelet's.
 func TestClusterCAFromTheNodesKubeconfigs(t *testing.T) {
 	dir := t.TempDir()
 	oldDir, oldAdmin, oldBoot := version.KubeconfigDir, version.AdminConf, version.BootstrapKubeconfig
@@ -127,9 +115,6 @@ func TestClusterCAFromTheNodesKubeconfigs(t *testing.T) {
 
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
-// When no kubeconfig yields a CA, the error says why for each one that is
-// present: one that does not parse, and one whose certificate-authority file
-// cannot be read, are reported by name rather than counted as read.
 func TestClusterCAReportsWhyNoCAWasFound(t *testing.T) {
 	dir := t.TempDir()
 	oldDir, oldAdmin, oldBoot := version.KubeconfigDir, version.AdminConf, version.BootstrapKubeconfig
@@ -161,9 +146,6 @@ func TestClusterCAReportsWhyNoCAWasFound(t *testing.T) {
 	}
 }
 
-// A check that never reached the VIP, because this node's CA could not be
-// read, is refused as such: not as a VIP that does not answer, and without
-// the VIP set-up steps that would not fix it.
 func TestRepointRefusesALocalCAProblemAsSuch(t *testing.T) {
 	cause := fmt.Errorf("%w: kubelet.kubeconfig: permission denied", errNoClusterCA)
 	old := VIPServes

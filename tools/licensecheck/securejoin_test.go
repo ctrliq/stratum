@@ -2,22 +2,13 @@ package main
 
 import "testing"
 
-// github.com/cyphar/filepath-securejoin mixes licenses per package: its
-// COPYING.md declares "BSD-3-Clause AND MPL-2.0", its root package is
-// BSD-3-Clause, and its pathrs-lite subpackage is MPL-2.0. The check must
-// pass the root package, which stratum links today, and fail as soon as any
-// pathrs-lite package is linked, whether stratum or a dependency such as
-// Helm starts importing it.
-
+// filepath-securejoin mixes licenses per package; pathrs-lite is MPL-2.0.
 const (
 	securejoinRoot = "github.com/cyphar/filepath-securejoin" // also the module path
 	pathrsLite     = securejoinRoot + "/pathrs-lite"
 )
 
-// TestPathrsLiteGuardFixture uses testdata/securejoin, a stub with the real
-// module's paths, SPDX headers and verbatim COPYING.md, LICENSE.BSD and
-// LICENSE.MPL-2.0 from v0.7.0. It is replaced by directory, so it needs
-// neither the network nor the module cache.
+// Uses the testdata/securejoin stub: the real module's paths, headers and COPYING.md.
 func TestPathrsLiteGuardFixture(t *testing.T) {
 	securejoin := module{path: securejoinRoot, dir: "securejoin", copyFrom: "testdata/securejoin"}
 	bsdPackages := []string{
@@ -70,10 +61,7 @@ func TestPathrsLiteGuardFixture(t *testing.T) {
 	})
 }
 
-// realSecurejoinGoSum pins github.com/cyphar/filepath-securejoin v0.7.0 and
-// the golang.org/x/sys version its go.mod requires, so go list resolves the
-// real module from the module cache (or, in CI, the proxy) with no go.mod
-// or go.sum update.
+// Pins securejoin v0.7.0, so go list resolves the real module with no updates.
 const realSecurejoinGoSum = `github.com/cyphar/filepath-securejoin v0.7.0 h1:s0Y3ITPy6sQn5xt54DuYvTF8hu134ooYLUb58DX/HjE=
 github.com/cyphar/filepath-securejoin v0.7.0/go.mod h1:ymLGms/u3BYaviIiuKFnUx8EkQEZeK6cInNoAPJA3o4=
 golang.org/x/sys v0.26.0 h1:KHjCJyddX0LoSTb3J+vWpupP9p0oznkqVk/IfjymZbo=
@@ -89,9 +77,7 @@ require github.com/cyphar/filepath-securejoin v0.7.0
 require golang.org/x/sys v0.26.0 // indirect
 `
 
-// TestPathrsLiteGuardRealModule checks the published v0.7.0 module itself,
-// for both shipped architectures. It never skips: offline it reads the
-// module cache, and in CI the go command downloads the module.
+// Checks the published v0.7.0 module for both shipped architectures.
 func TestPathrsLiteGuardRealModule(t *testing.T) {
 	scratch := func(t *testing.T, imports ...string) string {
 		dir := t.TempDir()

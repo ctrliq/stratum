@@ -12,21 +12,7 @@ import (
 	"testing"
 )
 
-// releasedBaselineTag names the release whose pkg/cli surface released
-// downstream builds were last compiled against. Its exported API is kept in
-// testdata/pkgcli.released.api, so the compatibility check below needs no git
-// tag and no history: it passes in a shallow clone and in one without tags. Regenerating the documentation golden
-// (testdata/pkgcli.api) only records a surface change as deliberate; it cannot
-// bless one, because the diff against the released baseline still fails until
-// the baseline moves. The baseline file is pinned by releasedBaselineSHA256, so
-// it cannot be edited by hand without a visible change to this file either.
-//
-// Moving the baseline is the release-by-release decision that released
-// consumers have moved with the change: point releasedBaselineTag at the
-// release downstream builds now pin, regenerate the file, and set
-// releasedBaselineSHA256 to the sum the run reports:
-//
-//	go test ./tools/apiboundary/ -run TestPkgCLIExportedAPICompatibleWithTheReleasedBaseline -update-baseline
+// The baseline moves only by regenerating it at a new releasedBaselineTag.
 const (
 	releasedBaselineTag    = "v1.37.1-stratum.0-rc.1"
 	releasedBaselineSHA256 = "342eda120cb35bc3d2d87fa188bb3a08a0e6d961a05a2befe06007e8e21fd450"
@@ -42,13 +28,7 @@ func releasedBaselineHeader() string {
 var updateBaseline = flag.Bool("update-baseline", false,
 	"rewrite testdata/pkgcli.released.api from pkg/cli's exported API at releasedBaselineTag")
 
-// TestPkgCLIExportedAPICompatibleWithTheReleasedBaseline diffs the released
-// baseline against HEAD's golden, which TestPkgCLIExportedAPIMatchesTheGolden
-// keeps equal to the live package. An identifier the baseline had that is gone
-// from HEAD, or whose signature, type or value moved, fails the test: a
-// consumer compiled against the released surface stops compiling. Identifiers
-// added since the baseline are reported but allowed, because an addition
-// cannot break a released consumer.
+// Additions are reported but allowed; a removal or retype fails the test.
 func TestPkgCLIExportedAPICompatibleWithTheReleasedBaseline(t *testing.T) {
 	if *updateBaseline {
 		writeReleasedBaseline(t)
@@ -80,10 +60,6 @@ func TestPkgCLIExportedAPICompatibleWithTheReleasedBaseline(t *testing.T) {
 	}
 }
 
-// TestReleasedBaselineCarriesTheAPIsDownstreamBuildsCall pins the entry points
-// a downstream build calls today into the baseline, so removing or retyping one
-// of them fails the compatibility check instead of passing as an identifier
-// added after the release.
 func TestReleasedBaselineCarriesTheAPIsDownstreamBuildsCall(t *testing.T) {
 	baseline := readAPILines(t, releasedBaselinePath)
 	for _, name := range []string{"WithStacks", "WithProfiles", "ExitCode", "StampedVersions"} {
@@ -93,9 +69,6 @@ func TestReleasedBaselineCarriesTheAPIsDownstreamBuildsCall(t *testing.T) {
 	}
 }
 
-// TestAPICompatibilityFailsOnARemovedOrRetypedIdentifier proves the diff
-// itself: each baseline entry point, removed from HEAD or given another
-// signature, is reported as broken, while an identifier added to HEAD is not.
 func TestAPICompatibilityFailsOnARemovedOrRetypedIdentifier(t *testing.T) {
 	baseline := readAPILines(t, releasedBaselinePath)
 	for _, name := range []string{"WithStacks", "WithProfiles", "ExitCode", "StampedVersions"} {
@@ -123,8 +96,6 @@ func TestAPICompatibilityFailsOnARemovedOrRetypedIdentifier(t *testing.T) {
 	}
 }
 
-// apiCompatibility returns the baseline lines HEAD no longer carries, which
-// break a released consumer, and the HEAD lines the baseline lacked.
 func apiCompatibility(baseline, head []string) (broken, added []string) {
 	for _, l := range baseline {
 		if !slices.Contains(head, l) {
@@ -160,10 +131,6 @@ func readAPILines(t *testing.T, path string) []string {
 	return lines
 }
 
-// writeReleasedBaseline extracts pkg/cli's exported API at releasedBaselineTag
-// with the same golden extraction the documentation golden uses. The tag is
-// checked out into a temporary git worktree, so regenerating needs the tag in
-// the local repository; the check itself never does.
 func writeReleasedBaseline(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "baseline")
 	add := exec.Command("git", "worktree", "add", "--detach", dir, releasedBaselineTag)
@@ -180,9 +147,7 @@ func writeReleasedBaseline(t *testing.T) {
 		}
 	})
 
-	// The released tree's go.mod can predate indirect dependencies of its own
-	// dependency graph, so the go command must be allowed to complete go.mod
-	// and go.sum.
+	// The released tree's go.mod can predate indirect dependencies of its own dependency graph.
 	t.Setenv("GOFLAGS", "-mod=mod")
 	pkg, _, _, err := loadExportedTypes(filepath.Join(dir, "pkg", "cli"))
 	if err != nil {

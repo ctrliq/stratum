@@ -1,12 +1,5 @@
 package operator
 
-// Regression guards for the operator's Helm flows. Each test drives
-// reconcileHelmChart end to end against an in-memory Helm backend and pins what
-// stratum makes observable: the HelmChart's status and finalizer, and the
-// release revisions left in Helm's storage. The tests must pass unchanged
-// across a Helm major-version migration, so this file imports no helm.sh
-// package; every Helm-typed construct lives in helmflows_helpers_test.go.
-
 import (
 	"context"
 	"encoding/base64"
@@ -34,9 +27,6 @@ import (
 	kubefake "helm.sh/helm/v4/pkg/kube/fake"
 )
 
-// The flow tests use a HelmChart in a privileged namespace, so it installs as
-// the operator and needs no requester stamp, and its release takes the
-// HelmChart's own namespace and name.
 const (
 	flowNS      = "kube-system"
 	flowName    = "app"
@@ -45,23 +35,14 @@ const (
 
 var flowPolicy = helmPolicy{privilegedNamespaces: []string{flowNS}}
 
-// flowChart is spec.chartContent for an in-memory chart named app.
 func flowChart(t *testing.T, version string) string {
 	t.Helper()
 	return base64.StdEncoding.EncodeToString(makeChartTGZ(t, flowRelease, version))
 }
 
-// flowHCUID numbers the flow HelmCharts, so each carries a metadata.uid no
-// other chart shares. The operator keys its process-wide unwrittenIncomplete
-// and cleanUninstalls records by namespace/name/uid (helmchart.go), and without
-// a UID every flow test's chart shares one key into them.
+// The operator keys its unwrittenIncomplete and cleanUninstalls records by namespace/name/uid.
 var flowHCUID atomic.Int64
 
-// newFlowHC is an adopted HelmChart (it already carries the finalizer, so a
-// reconcile goes straight to Helm work) in a fake dynamic client. Its metadata.uid
-// is unique per call, and the operator's record of unwritten "uninstall
-// incomplete:" statuses is emptied now and when the test ends, so an entry one
-// test leaves behind can reach no other test.
 func newFlowHC(t *testing.T, spec map[string]interface{}) dynamic.Interface {
 	t.Helper()
 	wantNoUnwrittenIncomplete(t, "at the start of a flow test")
@@ -84,10 +65,6 @@ func newFlowHC(t *testing.T, spec map[string]interface{}) dynamic.Interface {
 	)
 }
 
-// wantNoUnwrittenIncomplete fails unless the operator's process-wide record of
-// unwritten "uninstall incomplete:" statuses is empty. newFlowHC calls it
-// before anything in a new test can add an entry, so a failure names an
-// earlier test as the leaker.
 func wantNoUnwrittenIncomplete(t *testing.T, when string) {
 	t.Helper()
 	unwrittenIncompleteMu.Lock()
@@ -108,16 +85,13 @@ func getFlowHC(t *testing.T, dyn dynamic.Interface) *unstructured.Unstructured {
 	return hc
 }
 
-// reconcileFlow runs one reconcile of the stored HelmChart, as one tick of the
-// operator's loop would. The kubeconfig does not exist, so any Helm work that
-// bypasses newActionConfigFn fails instead of reaching a real cluster.
+// The missing kubeconfig makes any Helm work bypassing newActionConfigFn fail.
 func reconcileFlow(t *testing.T, dyn dynamic.Interface) {
 	t.Helper()
 	kubeconfig := filepath.Join(t.TempDir(), "missing-kubeconfig")
 	reconcileHelmChart(context.Background(), dyn, kubeconfig, getFlowHC(t, dyn), "", nil, flowPolicy)
 }
 
-// flowStatus is the subset of HelmChart .status the flows pin.
 type flowStatus struct {
 	phase, message, chartVersion string
 	revision                     int64
@@ -170,7 +144,6 @@ func TestHelmFlowUpgradeOnSpecChange(t *testing.T) {
 	reconcileFlow(t, dyn)
 	wantDeployed(t, dyn, 1, "1.0.0")
 
-	// A new chart version changes the spec hash, so the next tick upgrades.
 	hc := getFlowHC(t, dyn)
 	if err := unstructured.SetNestedField(hc.Object, flowChart(t, "1.1.0"), "spec", "chartContent"); err != nil {
 		t.Fatal(err)
@@ -184,9 +157,6 @@ func TestHelmFlowUpgradeOnSpecChange(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 2, status: "deployed", chartVersion: "1.1.0"})
 }
 
-// A Kubernetes create that fails during install surfaces as phase Failed with
-// an "install: " message carrying the cause, whether the failing create is the
-// chart's own objects or the target namespace (spec.createNamespace).
 func TestHelmFlowInstallFailure(t *testing.T) {
 	cause := errors.New("injected create failure for the Helm flow test")
 	for _, tc := range []struct {
@@ -226,8 +196,6 @@ func TestHelmFlowInstallFailure(t *testing.T) {
 	}
 }
 
-// Deleting the HelmChart uninstalls the release it recorded and only then
-// drops the finalizer.
 func TestHelmFlowDeletionUninstallsAndRemovesFinalizer(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
@@ -254,13 +222,9 @@ func TestHelmFlowDeletionUninstallsAndRemovesFinalizer(t *testing.T) {
 	}
 }
 
-// A deleting HelmChart whose release is gone keeps its finalizer when its
-// status shows an uninstall that never recorded its result, as after an
-// operator restart between Helm's purge and the status write: Helm kept no
-// record of what it left.
 func TestHelmFlowDeletionHoldsAfterUnrecordedUninstall(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
-	useFakeHelm(t, fakeHelmOptions{}) // no release: Helm purged it
+	useFakeHelm(t, fakeHelmOptions{})
 	dyn := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
 	markFlowHCDeletedWithStatus(t, dyn, map[string]interface{}{
 		"phase": hcPhaseUninstalling, "message": uninstallingMessage, "releaseNamespace": flowNS, "releaseName": flowRelease,
@@ -277,9 +241,6 @@ func TestHelmFlowDeletionHoldsAfterUnrecordedUninstall(t *testing.T) {
 	}
 }
 
-// A clean uninstall whose finalizer removal fails is not taken for an
-// unrecorded one: the next reconcile removes the finalizer, even when the
-// status write recording the clean result failed too.
 func TestHelmFlowDeletionRetriesFinalizerRemovalAfterCleanUninstall(t *testing.T) {
 	for _, failStatus := range []bool{false, true} {
 		t.Run(fmt.Sprintf("status write fails: %v", failStatus), func(t *testing.T) {
@@ -319,11 +280,9 @@ func TestHelmFlowDeletionRetriesFinalizerRemovalAfterCleanUninstall(t *testing.T
 	}
 }
 
-// A failed action config runs no uninstall, so it leaves no marker: the next
-// reconcile, finding the release already gone, removes the finalizer.
 func TestHelmFlowDeletionAfterFailedActionConfig(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
-	useFakeHelm(t, fakeHelmOptions{}) // no release: removed by hand
+	useFakeHelm(t, fakeHelmOptions{})
 	failed := false
 	prev := newActionConfigFn
 	newActionConfigFn = func(ctx context.Context, kubeconfig, namespace string, imp *rest.ImpersonationConfig) (*action.Configuration, error) {
@@ -350,9 +309,6 @@ func TestHelmFlowDeletionAfterFailedActionConfig(t *testing.T) {
 	}
 }
 
-// A refused spec.targetNamespace ends an incomplete-uninstall hold, as
-// hardening.md says: containment runs before the hold, whatever the spec hash,
-// and its refusal replaces the "uninstall incomplete:" message.
 func TestRefusedTargetNamespaceEndsTheHold(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	useFakeHelm(t, fakeHelmOptions{})
@@ -367,7 +323,6 @@ func TestRefusedTargetNamespaceEndsTheHold(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The HelmChart's namespace is not privileged under this policy.
 	reconcileHelmChart(context.Background(), dyn, filepath.Join(t.TempDir(), "missing-kubeconfig"), getFlowHC(t, dyn), "", nil, helmPolicy{})
 
 	if st := readFlowStatus(t, dyn); st.phase != hcPhaseFailed || !strings.HasPrefix(st.message, "refusing to install: spec.targetNamespace") {
@@ -375,8 +330,6 @@ func TestRefusedTargetNamespaceEndsTheHold(t *testing.T) {
 	}
 }
 
-// markFlowHCDeletedWithStatus sets the flow HelmChart's deletion timestamp and
-// status.
 func markFlowHCDeletedWithStatus(t *testing.T, dyn dynamic.Interface, status map[string]interface{}) {
 	t.Helper()
 	hc := getFlowHC(t, dyn)
@@ -390,8 +343,6 @@ func markFlowHCDeletedWithStatus(t *testing.T, dyn dynamic.Interface, status map
 	}
 }
 
-// A release left pending-upgrade is rolled back to the previous revision, and
-// the next tick upgrades it cleanly.
 func TestHelmFlowRecoverPendingUpgradeRollsBack(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -414,8 +365,6 @@ func TestHelmFlowRecoverPendingUpgradeRollsBack(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 4, status: "deployed", chartVersion: "1.1.0"})
 }
 
-// fakeKubeClient is the fake Helm backend's Kubernetes client, whose errors a
-// test sets to make one Helm call fail.
 func fakeKubeClient(t *testing.T, h *fakeHelm) *kubefake.FailingKubeClient {
 	t.Helper()
 	kc, ok := h.cfg.KubeClient.(*kubefake.FailingKubeClient)
@@ -425,8 +374,6 @@ func fakeKubeClient(t *testing.T, h *fakeHelm) *kubefake.FailingKubeClient {
 	return kc
 }
 
-// pastBackoff moves the HelmChart's last attempt out of the failed backoff, so
-// the next reconcile retries it.
 func pastBackoff(t *testing.T, dyn dynamic.Interface) {
 	t.Helper()
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
@@ -437,9 +384,6 @@ func pastBackoff(t *testing.T, dyn dynamic.Interface) {
 	})
 }
 
-// A recovery uninstall that fails is reported, and the release it leaves
-// uninstalling stays on the recovery path: the next tick finishes the
-// uninstall instead of upgrading a partly removed release.
 func TestHelmFlowRecoverFailedUninstallIsReportedAndRetried(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -466,10 +410,7 @@ func TestHelmFlowRecoverFailedUninstallIsReportedAndRetried(t *testing.T) {
 	wantDeployed(t, dyn, 1, "1.0.0")
 }
 
-// A recovery that cannot read the release history is reported and retried; it
-// is never taken for a history with nothing to roll back to, which would
-// uninstall a release that is serving. The first storage query is the
-// release lookup, the second the history read.
+// The first storage query is the release lookup, the second the history read.
 func TestHelmFlowRecoverFailedHistoryReadNeverUninstalls(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -499,7 +440,6 @@ func TestHelmFlowRecoverFailedHistoryReadNeverUninstalls(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 3, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// A recovery rollback that fails is reported instead of being taken for done.
 func TestHelmFlowRecoverFailedRollbackIsReported(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -517,10 +457,6 @@ func TestHelmFlowRecoverFailedRollbackIsReported(t *testing.T) {
 	}
 }
 
-// A rollback that was itself cut short leaves a pending-rollback revision on
-// top of the failed upgrade. Recovery rolls back to the last revision that was
-// deployed, not to the revision just below, which is the upgrade that never
-// finished.
 func TestHelmFlowRecoverPendingRollbackTargetsLastDeployed(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -539,10 +475,6 @@ func TestHelmFlowRecoverPendingRollbackTargetsLastDeployed(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 4, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// A rollback that failed marks the upgrade it started from superseded although
-// that upgrade never deployed. Recovery prefers an earlier deployed revision
-// to a superseded one, so it rolls back past it to the revision that actually
-// served.
 func TestHelmFlowRecoverSkipsSupersededThatNeverDeployed(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -557,11 +489,6 @@ func TestHelmFlowRecoverSkipsSupersededThatNeverDeployed(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 4, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// The same failed rollback, started from a recovery after an upgrade was cut
-// short, can also leave no deployed revision: Helm records the upgrade it
-// started from superseded and only then the rollback failed, and a crash
-// between the two writes leaves the rollback pending. The upgrade never served,
-// so recovery passes over it to the revision that completed.
 func TestHelmFlowRecoverSkipsUnservedSupersededWithNothingDeployed(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -576,8 +503,6 @@ func TestHelmFlowRecoverSkipsUnservedSupersededWithNothingDeployed(t *testing.T)
 	wantLatestRelease(t, h, helmRecord{revision: 4, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// A superseded revision with no other proof it served, and nothing completed
-// before it, leaves recovery nothing to roll back to, so it uninstalls.
 func TestHelmFlowRecoverWithOnlyUnservedSupersededUninstalls(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -593,10 +518,6 @@ func TestHelmFlowRecoverWithOnlyUnservedSupersededUninstalls(t *testing.T) {
 	}
 }
 
-// An upgrade cut short after Helm marked the previous revision superseded but
-// before it marked the new one deployed leaves no deployed revision, yet the
-// superseded one served. Recovery rolls back to it instead of uninstalling a
-// working release.
 func TestHelmFlowRecoverFallsBackToSuperseded(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -614,9 +535,6 @@ func TestHelmFlowRecoverFallsBackToSuperseded(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 3, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// A pending upgrade with no earlier revision that was ever deployed or
-// superseded has no good state to roll back to, so it is uninstalled like a
-// first install.
 func TestHelmFlowRecoverWithNothingDeployedUninstalls(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -634,8 +552,6 @@ func TestHelmFlowRecoverWithNothingDeployedUninstalls(t *testing.T) {
 	wantDeployed(t, dyn, 1, "1.1.0")
 }
 
-// A first install left pending-install has nothing to roll back to, so it is
-// uninstalled with its history, and the next tick installs it afresh.
 func TestHelmFlowRecoverPendingInstallUninstalls(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -657,10 +573,6 @@ func TestHelmFlowRecoverPendingInstallUninstalls(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// Every newFlowHC HelmChart carries a metadata.uid of its own. The operator
-// keys its process-wide records of unwritten incomplete statuses and of clean
-// uninstalls by namespace/name/uid, so charts without UIDs would share one
-// entry between tests.
 func TestHelmFlowChartsCarryUniqueUIDs(t *testing.T) {
 	dyn1 := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
 	dyn2 := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
@@ -674,15 +586,10 @@ func TestHelmFlowChartsCarryUniqueUIDs(t *testing.T) {
 	}
 }
 
-// A reconcile whose "uninstall incomplete:" status write keeps failing leaves
-// an entry in the process-wide unwrittenIncomplete record. This test leaves
-// that entry behind with nothing in the test body removing it: the shared
-// fixture must clear the record when the test ends, and the cleanup below
-// fails if the record is not empty again by then.
 func TestHelmFlowUnwrittenIncompleteLeftBehind(t *testing.T) {
 	t.Cleanup(func() { wantNoUnwrittenIncomplete(t, "at the end of a test that left an entry behind") })
 	shortIncompleteWriteBackoff(t)
-	useFakeHelm(t, fakeHelmOptions{}) // no release: Helm purged it
+	useFakeHelm(t, fakeHelmOptions{})
 	dyn := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
 	markFlowHCDeletedWithStatus(t, dyn, map[string]interface{}{
 		"phase": hcPhaseUninstalling, "message": uninstallingMessage, "releaseNamespace": flowNS, "releaseName": flowRelease,
@@ -704,12 +611,6 @@ func TestHelmFlowUnwrittenIncompleteLeftBehind(t *testing.T) {
 	}
 }
 
-// An unwrittenIncomplete entry for one HelmChart must not touch another's
-// reconcile. Before each flow chart carried its own UID, every one of them
-// shared the key planted here, so an entry one test left behind held the next
-// test's chart in place of its own reconcile. The chart reconciled here must
-// deploy as if the entry were not there, and the entry must still be waiting
-// for the chart it belongs to.
 func TestHelmFlowReconcileIgnoresAnotherChartsUnwrittenIncomplete(t *testing.T) {
 	useFakeHelm(t, fakeHelmOptions{})
 	dyn := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
@@ -732,9 +633,6 @@ func TestHelmFlowReconcileIgnoresAnotherChartsUnwrittenIncomplete(t *testing.T) 
 	}
 }
 
-// A recovery whose pre-uninstall marker write is rejected runs no uninstall:
-// the marker is the evidence a later restart must find, so while its write
-// fails the release stays untouched and nothing is recorded as incomplete.
 func TestHelmFlowRecoveryMarkerWriteFailureNeverUninstalls(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -770,11 +668,6 @@ func TestHelmFlowRecoveryMarkerWriteFailureNeverUninstalls(t *testing.T) {
 	}
 }
 
-// An incomplete recovery records the hold in status.uninstallIncomplete — the
-// recover path, the specHash current when it was recorded, Helm's list of the
-// objects it left — and the recorded hold keeps the reinstall back. A clean
-// reinstall under a changed spec clears the field, so a later spec revert
-// cannot re-hold a deployed release.
 func TestHelmFlowRecoveryHoldFieldRecordedAndCleared(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -808,8 +701,6 @@ func TestHelmFlowRecoveryHoldFieldRecordedAndCleared(t *testing.T) {
 		t.Errorf("status message = %q, want the message the hold rebuilds to %q", str(st["message"], ""), want)
 	}
 
-	// The recorded hold keeps the reinstall back while the spec stays as it
-	// was when the hold began.
 	pastBackoff(t, dyn)
 	reconcileFlow(t, dyn)
 
@@ -817,7 +708,6 @@ func TestHelmFlowRecoveryHoldFieldRecordedAndCleared(t *testing.T) {
 		t.Errorf("reinstalled while the hold recorded in status.%s stands; history = %+v", holdField, hist)
 	}
 
-	// A changed spec reinstalls cleanly and clears the field.
 	kc.DummyResources = nil
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 		if err := unstructured.SetNestedField(hc.Object, flowChart(t, "1.1.0"), "spec", "chartContent"); err != nil {

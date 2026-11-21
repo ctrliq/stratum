@@ -6,11 +6,6 @@ import (
 	"testing"
 )
 
-// TestLeafSpecsServiceIP pins the service-IP SAN rule: the apiserver cert carries
-// the kubernetes Service IP of the cluster's actual service CIDR. It arrives as
-// the first IPv4 in apiExtraIPs; 10.96.0.1 is only the default when none does.
-// A later IPv4 extra (the VIP) must stay a SAN of its own and never displace
-// the service IP.
 func TestLeafSpecsServiceIP(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -45,8 +40,6 @@ func TestLeafSpecsServiceIP(t *testing.T) {
 	}
 }
 
-// The apiserver certificate names the configured cluster domain, and
-// only that one; a nil or empty domain is the default.
 func TestAPIServerCertCarriesTheClusterDomain(t *testing.T) {
 	for _, tc := range []struct {
 		name string

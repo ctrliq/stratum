@@ -23,11 +23,7 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// A run that took the lease over owns the node's cordon and records, and a run
-// that lost it must not finish the node, however long its retries go on. The
-// first run's write keeps failing after its lease check (an API outage), the
-// successor takes the lease and claims the node, and the first run's next
-// attempt must leave all of it alone.
+// A run that lost the lease must never finish the node a successor took over.
 func TestFinishRetryNeverFinishesASuccessorsNode(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
@@ -39,7 +35,6 @@ func TestFinishRetryNeverFinishesASuccessorsNode(t *testing.T) {
 			t.Fatal(err)
 		}
 		g := &leaseGuard{lastRenew: time.Now(), holder: "me"}
-		// The outage starts at the finish: the first lease check after the Job.
 		confirmed, confirms, jobDone := time.Time{}, 0, false
 		g.renew = func(ctx context.Context) error {
 			err := renewUpgradeLease(ctx, cs, "me")
@@ -61,7 +56,7 @@ func TestFinishRetryNeverFinishesASuccessorsNode(t *testing.T) {
 				return false, nil, nil
 			}
 			if time.Since(confirmed) <= leaseDuration+leaseRenew {
-				return true, nil, errAPIDown // the finish write cannot reach the API server
+				return true, nil, errAPIDown
 			}
 			if !taken {
 				taken = true
@@ -106,14 +101,12 @@ func TestFinishRetryNeverFinishesASuccessorsNode(t *testing.T) {
 	})
 }
 
-// The node claim is its own fence: with a lease check that passes (the
-// successor took over after it), a write for a node claimed by another run is
-// refused and changes nothing.
+// The node claim is its own fence, even when the lease check passes.
 func TestFinishRefusesANodeClaimedByAnotherRun(t *testing.T) {
 	const target = "v1.37.1"
 	for _, c := range []struct {
 		name       string
-		claim      string // "" = no claim
+		claim      string
 		inProgress string
 		wantErr    bool
 	}{
@@ -147,8 +140,7 @@ func TestFinishRefusesANodeClaimedByAnotherRun(t *testing.T) {
 	}
 }
 
-// A run that takes the lease over takes over a halted run's claim, and the
-// claim names it from then on; an admin's cordon stays an admin's.
+// The lease holder takes over a halted run's claim; an admin's cordon stays an admin's.
 func TestCordonForUpgradeTakesOverAHaltedRunsClaim(t *testing.T) {
 	const target = "v1.37.1"
 	for _, c := range []struct {
@@ -189,9 +181,7 @@ func TestCordonForUpgradeTakesOverAHaltedRunsClaim(t *testing.T) {
 	}
 }
 
-// Once the renewal window has passed the guard is stale, and a renewal that
-// then fails for good (Forbidden, NotFound) is still returned as it came, so
-// the retry loop stops at once instead of running out its window.
+// A terminal renewal error is returned as it came, so the retry loop stops at once.
 func TestConfirmReturnsATerminalRenewalErrorWhenStale(t *testing.T) {
 	res := schema.GroupResource{Resource: "leases"}
 	for name, renewErr := range map[string]error{
@@ -209,10 +199,7 @@ func TestConfirmReturnsATerminalRenewalErrorWhenStale(t *testing.T) {
 	}
 }
 
-// The cordon step is fenced like the finish: while it retries through an API
-// outage, a run that loses the lease must not overwrite the claim of the run
-// that took it over, whether that claim is for the upgrade's cordon or for an
-// admin's. The successor's own finish then still succeeds.
+// A run that loses the lease mid-cordon must not overwrite a successor's claim.
 func TestCordonRetryNeverOverwritesASuccessorsClaim(t *testing.T) {
 	for _, kind := range []string{"v1.37.1", cordonPreexisting} {
 		t.Run(kind, func(t *testing.T) {
@@ -272,8 +259,7 @@ func TestCordonRetryNeverOverwritesASuccessorsClaim(t *testing.T) {
 	}
 }
 
-// Recording the upgrade in progress is the same: refused on a node another run
-// claimed.
+// Same fence: refused on a node another run claimed.
 func TestMarkUpgradeInProgressRefusesANodeClaimedByAnotherRun(t *testing.T) {
 	for name, c := range map[string]struct {
 		claim   string
@@ -299,12 +285,7 @@ func TestMarkUpgradeInProgressRefusesANodeClaimedByAnotherRun(t *testing.T) {
 	}
 }
 
-// A run that halted after cordoning, before it recorded the upgrade in
-// progress, leaves a claim for the target it was taking the node to. The next
-// run may take the node to another target; as the lease holder it takes that
-// claim over, and so undoes the cordon at the end. Left as `preexisting`, the
-// upgrade's own cordon would stay forever. The Job's backstop,
-// which holds no lease and acts for its own target, leaves such a claim alone.
+// Without the takeover, a halted run's claim would keep the node cordoned forever.
 func TestEarlierTargetClaimIsTheTakingOverRunsToUndo(t *testing.T) {
 	const earlier, target = "v1.36.9", "v1.37.1"
 	cs := fakeNode(&corev1.Node{
@@ -328,23 +309,18 @@ func TestEarlierTargetClaimIsTheTakingOverRunsToUndo(t *testing.T) {
 	}
 }
 
-// Only a claim for a valid version is the upgrade's own to take over and undo.
-// Anything else the code did not write (other case, stray whitespace, a kind a
-// newer build adds, an empty kind) fails closed: it is left cordoned and
-// claimed as a cordon found, never uncordoned.
+// Claims the code did not write fail closed: left cordoned, never uncordoned.
 func TestUnknownCordonClaimsFailClosed(t *testing.T) {
 	const target = "v1.37.1"
 	for _, kind := range []string{
 		"Preexisting", "preexisting ", " preexisting", "RELEASED", "released\n",
 		" v1.36.9", "v1.36.9 ", "V1.36.9", "v1.36", "1.36.9", "v1.36.9-rc.1", "v01.36.9", "newer-kind", "",
-		// Shaped like a version, but a component overflows an int: never a real
-		// target (k8sver.ValidTarget accepts these, ParseTarget does not).
+		// Shaped like a version, but a component overflows an int: never a real target.
 		"v99999999999999999999.1.1", "v1.99999999999999999999.1", "v1.36.99999999999999999999",
 		"v9223372036854775808.0.0",
 	} {
 		t.Run(kind, func(t *testing.T) {
-			// With an in-progress record naming the target: a claim that is present
-			// but not a version must not fall back to the older-orchestrator rule.
+			// A non-version claim must not fall back to the older-orchestrator rule.
 			ann := map[string]string{k8sutil.UpgradeCordonAnnotation: kind + "@dead", k8sutil.UpgradeInProgressAnnotation: target}
 			cs := fakeNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "cp1", ResourceVersion: "1", Annotations: ann}, Spec: corev1.NodeSpec{Unschedulable: true}})
 			if err := cordonForUpgrade(context.Background(), cs, "cp1", target, &leaseGuard{holder: "me"}); err != nil {
@@ -368,8 +344,7 @@ func TestUnknownCordonClaimsFailClosed(t *testing.T) {
 	}
 }
 
-// The Job's backstop holds the same line for its own target: a claim equal to a
-// target that is not a real version (an overflowing component) is not released.
+// A claim naming a target that is not a real version is not the backstop's to release.
 func TestBackstopRequiresARealTarget(t *testing.T) {
 	for _, target := range []string{"v99999999999999999999.1.1", "v1.36.99999999999999999999", "newer-kind", ""} {
 		t.Run(target, func(t *testing.T) {

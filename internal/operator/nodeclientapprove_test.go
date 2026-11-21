@@ -253,8 +253,7 @@ func TestNodeClientClaimSurvivesCSRDeletion(t *testing.T) {
 	}
 }
 
-// A lookup the pass cannot complete leaves every request pending: a transient
-// apiserver error must never read as "no such node" or "token is fine".
+// a transient apiserver error must never read as "no such node" or "token is fine".
 func TestNodeClientPassFailsClosedOnLookupErrors(t *testing.T) {
 	const tok = "system:bootstrap:abc123"
 	now := time.Now()
@@ -275,9 +274,6 @@ func TestNodeClientPassFailsClosedOnLookupErrors(t *testing.T) {
 	}
 }
 
-// A registered Node's name is claimed even though no bootstrap CSR approved it,
-// so a request held pending for that name is not approved once the Node is
-// deleted.
 func TestRegisteredNodeNameStaysClaimedAfterNodeDeletion(t *testing.T) {
 	const tok = "system:bootstrap:abc123"
 	now := time.Now()
@@ -298,8 +294,6 @@ func TestRegisteredNodeNameStaysClaimedAfterNodeDeletion(t *testing.T) {
 	}
 }
 
-// A pending CSR names its node and reason on the object, written once, and
-// each join token is looked up once per pass however many requests use it.
 func TestNodeClientPendingReasonIsRecordedOnce(t *testing.T) {
 	const tok = "system:bootstrap:abc123"
 	now := time.Now()

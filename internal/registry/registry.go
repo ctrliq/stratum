@@ -1,24 +1,4 @@
-// Package registry translates an RKE2/k3s-compatible /etc/stratum/registries.yaml
-// into containerd's certs.d configuration so image pulls can be redirected to a
-// mirror (the air-gap / sovereign-registry case).
-//
-// Mechanism (containerd 2.x): the deprecated in-config `registry.mirrors` /
-// `registry.configs` tables were REMOVED, leaving `config_path` (certs.d) as the
-// only supported path. We therefore:
-//   - set `config_path = <CertsDir>` via a conf.d drop-in (containerd's default
-//     config already imports /etc/containerd/conf.d/*.toml, so no surgery on the
-//     generated config.toml);
-//   - write one certs.d/<registry>/hosts.toml per configured registry — every
-//     `mirrors` key, plus every `configs` key that carries auth or TLS on its
-//     own (a configs-only host is pulled directly) — with the endpoints,
-//     per-registry TLS, and — since 2.x has no config.toml auth block —
-//     credentials as an `authorization` request header (Basic user:pass / Bearer
-//     identity token). The registry's own auth/TLS is written as root-level
-//     hosts.toml keys, applied after any mirror endpoints. A hosts.toml that
-//     carries a credential is written 0600.
-//
-// containerd reads certs.d/*/hosts.toml LIVE per pull; only first-time
-// enablement of config_path (the conf.d drop-in) needs a containerd restart.
+// Package registry translates an RKE2/k3s registries.yaml into containerd 2.x certs.d config.
 package registry
 
 import (
@@ -35,30 +15,25 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Config is the RKE2/k3s registries.yaml schema (the subset containerd's certs.d
-// can honor). Field names match RKE2 so an existing file is a drop-in.
+// Config is the RKE2/k3s registries.yaml schema; the field names match RKE2.
 type Config struct {
 	Mirrors map[string]Mirror    `json:"mirrors"`
 	Configs map[string]RegConfig `json:"configs"`
 }
 
-// Mirror lists the endpoints to try for a registry (in order) plus optional
-// regex path rewrites (see note on Rewrites in Render — unsupported by upstream
-// containerd's certs.d and reported, not silently dropped).
+// Mirror lists a registry's endpoints to try, in order, plus unsupported rewrite rules.
 type Mirror struct {
 	Endpoint []string          `json:"endpoint"`
 	Rewrite  map[string]string `json:"rewrite"`
 }
 
-// RegConfig holds the auth + TLS for a specific endpoint host (keyed by host in
-// registries.yaml `configs`).
+// RegConfig holds the auth and TLS of one `configs` host entry.
 type RegConfig struct {
 	Auth Auth `json:"auth"`
 	TLS  TLS  `json:"tls"`
 }
 
-// Auth is registry credentials. Username/Password take precedence; Auth is a
-// pre-encoded base64("user:password"); IdentityToken is a bearer token.
+// Auth is registry credentials; Username/Password take precedence over the pre-encoded Auth.
 type Auth struct {
 	Username      string `json:"username"`
 	Password      string `json:"password"`
@@ -74,31 +49,21 @@ type TLS struct {
 	InsecureSkipVerify bool   `json:"insecure_skip_verify"`
 }
 
-// generatedMarker prefixes every file stratum writes so prune can distinguish
-// stratum-managed certs.d/conf.d files from operator-hand-authored ones. Kept
-// path-free so it is stable under test path redirection.
+// generatedMarker prefixes every file stratum writes, so prune leaves hand-authored ones.
 const generatedMarker = version.GeneratedMarker + " (source: stratum registries.yaml)\n"
 
-// NothingConfigured is the one copy of the "nothing configured" sentence,
-// shared by the CLI apply/check output and the MCP registry tools' notes. It
-// names neither mirrors nor the file's presence, because a file can exist and
-// still configure nothing usable.
+// NothingConfigured is the one shared sentence; a present file can still configure nothing.
 const NothingConfigured = "no registry mirrors or credentials are configured; this node pulls from upstream registries directly"
 
-// DefaultIsNotAFault is the one copy of the reassurance the MCP notes append to
-// NothingConfigured: nothing configured is the common, healthy case.
+// DefaultIsNotAFault is the reassurance the MCP notes append to NothingConfigured.
 const DefaultIsNotAFault = "That is the default and not a fault."
 
-// confdDropin sets config_path so containerd reads certs.d. It targets the
-// containerd 2.x CRI images plugin; the drop-in is merged via containerd's
-// default `imports = ['/etc/containerd/conf.d/*.toml']`. A func (not a const)
-// because version.CertsDir is a var (redirected in tests).
+// confdDropin is a func, not a const: version.CertsDir is a var, redirected in tests.
 func confdDropin() string {
 	return generatedMarker + "[plugins.'io.containerd.cri.v1.images'.registry]\n  config_path = '" + version.CertsDir + "'\n"
 }
 
-// Load parses registries.yaml. An absent file is the common case and returns
-// (nil, nil) — callers treat nil as "nothing configured, nothing to do".
+// Load parses registries.yaml; an absent file returns (nil, nil).
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -114,9 +79,7 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// authHeader renders the value for an `authorization` request header, or "" if
-// the endpoint has no credentials. Basic for user/pass or a pre-encoded blob;
-// Bearer for an identity token.
+// authHeader renders an `authorization` header value, or "" with no credentials.
 func authHeader(a Auth) string {
 	switch {
 	case a.IdentityToken != "":
@@ -129,11 +92,7 @@ func authHeader(a Auth) string {
 	return ""
 }
 
-// endpointHost strips the scheme (and any path) from an endpoint URL so it can
-// be matched against a `configs` key, which RKE2 keys by host[:port].
-// EndpointHost strips the scheme (and any path) from an endpoint URL so it can be
-// matched against a `configs` key, which RKE2 keys by host[:port]. Shared by the
-// renderer and `stratum registry check` so both agree on the configs lookup.
+// EndpointHost strips scheme and path, matching RKE2's host[:port]-keyed `configs` lookup.
 func EndpointHost(endpoint string) string {
 	h := endpoint
 	if i := strings.Index(h, "://"); i >= 0 {
@@ -145,10 +104,7 @@ func EndpointHost(endpoint string) string {
 	return h
 }
 
-// isLoopbackHost reports whether a registries.yaml key is a concrete loopback
-// host (localhost or a loopback IP, with or without port). This mirrors
-// containerd's own localhost special case, which the root server line below
-// exists to defeat.
+// isLoopbackHost mirrors containerd's localhost special case, which the server line defeats.
 func isLoopbackHost(reg string) bool {
 	if h, _, err := net.SplitHostPort(reg); err == nil {
 		reg = h
@@ -162,9 +118,7 @@ func isLoopbackHost(reg string) bool {
 	return false
 }
 
-// certsDirName maps a registries.yaml mirror key to its certs.d directory. RKE2's
-// wildcard "*" (mirror all registries) is containerd's "_default" catch-all dir;
-// used verbatim it would create a literal certs.d/*/ that containerd never reads.
+// certsDirName maps RKE2's wildcard "*" to containerd's "_default"; it is never certs.d/*/.
 func certsDirName(mirrorKey string) string {
 	if mirrorKey == "*" {
 		return "_default"
@@ -172,19 +126,13 @@ func certsDirName(mirrorKey string) string {
 	return mirrorKey
 }
 
-// WildcardCredentialsIgnored is the one copy of the operator warning for a
-// configs."*" entry that carries credentials or a client certificate.
+// WildcardCredentialsIgnored is the one copy of the warning for a configs."*" credential.
 const WildcardCredentialsIgnored = `configs."*" auth and client certificate are not applied: ` +
 	`the catch-all hosts.toml cannot name a server, and containerd turns TLS verification off ` +
 	`for a loopback registry reached that way, so they could be sent to a local listener ` +
 	`unverified; give each registry its own configs entry`
 
-// Effective returns the part of a registry's own `configs` entry that hosts.toml
-// carries, and whether anything was left out. The catch-all "*" entry keeps only
-// its CA and skip_verify: its hosts.toml (_default) has no server, so containerd
-// fills in whichever registry is pulled and, for a loopback one, forces
-// skip_verify — credentials or a client certificate there would reach a local
-// listener without verification. Every other key is returned unchanged.
+// Effective trims configs."*" to its CA and skip_verify: _default has no server.
 func Effective(reg string, c RegConfig) (RegConfig, bool) {
 	if reg != "*" {
 		return c, false
@@ -195,9 +143,7 @@ func Effective(reg string, c RegConfig) (RegConfig, bool) {
 	return c, dropped
 }
 
-// WildcardCredentialsDropped reports whether the config's configs."*" entry
-// carries credentials or a client certificate that Effective leaves out, so
-// every caller warns with WildcardCredentialsIgnored on the same condition.
+// WildcardCredentialsDropped reports whether Effective trimmed configs."*".
 func WildcardCredentialsDropped(c *Config) bool {
 	if c == nil {
 		return false
@@ -206,11 +152,7 @@ func WildcardCredentialsDropped(c *Config) bool {
 	return dropped
 }
 
-// Registries reports every registry the config configures: all mirror keys plus
-// any `configs` key that carries auth or TLS on its own. Sorted, nil-safe. This
-// is the one "what is configured" predicate: a configs-only host is pulled
-// directly, so it needs a hosts.toml even without a mirror, while an entry with
-// neither credentials nor TLS configures nothing containerd can use.
+// Registries reports the mirror keys and configs keys with auth or TLS; a configs-only host counts.
 func Registries(c *Config) []string {
 	if c == nil {
 		return nil
@@ -229,46 +171,23 @@ func Registries(c *Config) []string {
 	return regs
 }
 
-// hasAuthOrTLS reports whether a configs entry carries credentials or TLS on
-// its own. Any non-zero Auth renders an authorization header, so authHeader is
-// the authority for the auth half. The TLS half must match what hostsToml
-// renders: `client` needs BOTH cert and key, so a lone cert_file or key_file
-// would produce a marker-only hosts.toml that shadows the _default ("*")
-// mirror without configuring anything.
+// hasAuthOrTLS: `client` needs both cert and key, or hosts.toml would shadow _default.
 func hasAuthOrTLS(c RegConfig) bool {
 	return authHeader(c.Auth) != "" || c.TLS.CAFile != "" || c.TLS.InsecureSkipVerify || (c.TLS.CertFile != "" && c.TLS.KeyFile != "")
 }
 
-// insecureSkipVerifyWarning is the one copy of the operator warning for a
-// disabled TLS verification, used for mirror endpoints and for the registry's
-// own root-level entry alike.
+// insecureSkipVerifyWarning is one copy of the warning, for mirrors and configs-only alike.
 func insecureSkipVerifyWarning(target string) string {
 	return "insecure_skip_verify is set for " + target + " — TLS verification is DISABLED"
 }
 
-// hostsToml renders a certs.d hosts.toml for one registry. reg is the
-// registries.yaml key and self its own `configs` entry (auth/TLS for pulling
-// from the registry itself); cfgs is looked up per mirror endpoint. secret is
-// true when the output embeds a credential (→ the file must be written 0600).
-// warnings collects non-fatal issues (rewrite rules containerd can't honor, TLS
-// verification disabled, duplicate endpoints skipped).
+// hostsToml renders a certs.d hosts.toml for one registry.
 func hostsToml(reg string, self RegConfig, cfgs map[string]RegConfig, m Mirror) (out string, secret bool, warnings []string) {
 	var b strings.Builder
 	b.WriteString(generatedMarker)
-	// The registry's own auth/TLS must be written BEFORE any [host.*] table:
-	// TOML root keys after the first table header land inside that table, where
-	// containerd would ignore them. They apply to pulls from the registry
-	// itself, which containerd tries after every mirror endpoint. Blank lines
-	// separate the blocks, matching the [host.*] style below.
+	// A TOML root key after the first table header lands inside that table.
 	var root []string
-	// containerd forces skip_verify on an implicit localhost host (no root
-	// `server` in hosts.toml), which would drop TLS verification — and send the
-	// registry's credentials — for a loopback registry configured with TLS. An
-	// explicit server makes the host non-implicit, so containerd keeps the
-	// configured TLS; with skip_verify already set there is nothing to protect.
-	// A bare IPv6 key ("::1", or IPv4-mapped like "::ffff:127.0.0.1") must be
-	// bracketed in a URL: net/url rejects an unbracketed IPv6 literal, which
-	// would make containerd discard the whole hosts.toml.
+	// containerd forces skip_verify on an implicit localhost host; an explicit server does not.
 	if hasAuthOrTLS(self) && !self.TLS.InsecureSkipVerify && isLoopbackHost(reg) {
 		server := "https://" + reg
 		if ip := net.ParseIP(reg); ip != nil && strings.Contains(reg, ":") {
@@ -297,9 +216,7 @@ func hostsToml(reg string, self RegConfig, cfgs map[string]RegConfig, m Mirror) 
 	}
 	seen := map[string]bool{}
 	for _, ep := range m.Endpoint {
-		// Dedup: two identical [host."<ep>"] tables are a TOML "table already
-		// exists" error, which makes containerd reject the WHOLE hosts.toml and
-		// silently drop this registry's mirroring — skip repeats instead.
+		// Two identical [host] tables are a TOML error: containerd drops the file.
 		if seen[ep] {
 			warnings = append(warnings, "duplicate endpoint "+ep+" ignored")
 			continue
@@ -325,30 +242,21 @@ func hostsToml(reg string, self RegConfig, cfgs map[string]RegConfig, m Mirror) 
 		}
 	}
 	if len(m.Rewrite) > 0 {
-		// Upstream containerd's certs.d has no regex path-rewrite; RKE2 implements
-		// it in its own containerd. Surface it rather than silently dropping.
+		// Upstream containerd's certs.d has no regex path-rewrite.
 		warnings = append(warnings, "rewrite rules are not supported by upstream containerd certs.d and were ignored")
 	}
 	return b.String(), secret, warnings
 }
 
-// Result reports what Apply did, so its callers can act on it: runtime.ApplyRegistry
-// restarts containerd when Changed is set and containerd is running (its Restarted
-// is the restart fact a caller reports from), and runtime.EnsureConfig prints Warnings.
+// Result reports what Apply did; a caller restarts containerd when Changed is set.
 type Result struct {
-	Configured bool     // a registries.yaml configuring mirrors or configs (auth/TLS) was present and applied
-	Changed    bool     // the conf.d drop-in was created/updated (restarting containerd is the caller's decision)
+	Configured bool     // a registries.yaml configuring mirrors or configs was present and applied
+	Changed    bool     // the conf.d drop-in was created/updated; restarting containerd is the caller's decision
 	Registries []string // registries a hosts.toml was written for
 	Warnings   []string
 }
 
-// Apply reads registries.yaml and writes the conf.d drop-in + certs.d hosts.toml
-// files, one per configured registry (a mirror key, or a configs key with auth
-// or TLS — Registries is the predicate). It prunes stratum-generated certs.d
-// entries no longer in the config (so removing a mirror or registry config +
-// re-applying removes its redirect) while leaving any operator-hand-authored
-// certs.d dirs untouched. Absent registries.yaml is a no-op. Returns whether
-// containerd needs a restart.
+// Apply writes the drop-in and hosts.toml files, pruning entries left the config.
 func Apply() (Result, error) {
 	var r Result
 	c, err := Load(version.RegistriesConfig)
@@ -360,8 +268,7 @@ func Apply() (Result, error) {
 	}
 	regs := Registries(c)
 	if c == nil || len(regs) == 0 {
-		// Nothing configured: prune any stale stratum drop-in/entries so a removed
-		// registries.yaml fully reverts, then report a no-op.
+		// Prune stale stratum files so a removed registries.yaml fully reverts.
 		changed, err := prune(nil)
 		if err != nil {
 			return r, err
@@ -376,13 +283,10 @@ func Apply() (Result, error) {
 	}
 	keep := map[string]bool{}
 	for _, reg := range regs {
-		// A configs-only reg has no Mirror entry, so hostsToml renders just the
-		// registry's own auth/TLS as root-level keys (zero endpoints).
+		// A configs-only reg has no Mirror entry: hostsToml renders only root keys.
 		self, _ := Effective(reg, c.Configs[reg])
 		content, secret, warns := hostsToml(reg, self, c.Configs, c.Mirrors[reg])
 		r.Warnings = append(r.Warnings, warns...)
-		// certs.d dir name may differ from the mirror key ("*" → "_default"); prune
-		// keys off the DIR name, so keep must too or it would delete what we wrote.
 		dirName := certsDirName(reg)
 		dir := filepath.Join(version.CertsDir, dirName)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -396,20 +300,17 @@ func Apply() (Result, error) {
 		if err := os.WriteFile(hp, []byte(content), mode); err != nil {
 			return r, err
 		}
-		// os.WriteFile does NOT change an existing file's mode, so a hosts.toml that
-		// gains (or loses) a credential on re-apply would keep its old perms — force
-		// it, since a credentialed hosts.toml must be 0600.
+		// os.WriteFile does not chmod an existing file on re-apply.
 		if err := os.Chmod(hp, mode); err != nil {
 			return r, err
 		}
-		keep[dirName] = true                     // prune matches on the certs.d dir name
-		r.Registries = append(r.Registries, reg) // report the configured key
+		keep[dirName] = true
+		r.Registries = append(r.Registries, reg)
 	}
 	if _, err := prune(keep); err != nil {
 		return r, err
 	}
 
-	// The conf.d drop-in enables config_path; writing/updating it needs a restart.
 	changed, err := writeConfd()
 	if err != nil {
 		return r, err
@@ -418,8 +319,7 @@ func Apply() (Result, error) {
 	return r, nil
 }
 
-// writeConfd writes the config_path drop-in idempotently, reporting whether it
-// changed (an unchanged file must NOT trigger a needless containerd restart).
+// writeConfd writes the drop-in idempotently: no needless containerd restart.
 func writeConfd() (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(version.ContainerdConfD), 0o755); err != nil {
 		return false, err
@@ -433,11 +333,7 @@ func writeConfd() (bool, error) {
 	return true, nil
 }
 
-// prune removes stratum-generated certs.d/<reg>/hosts.toml files whose registry is
-// not in keep (nil keep = remove all stratum-generated ones), and the conf.d
-// drop-in when keep is empty. It identifies stratum files by the generated header,
-// so hand-authored certs.d entries are never touched. Returns whether the conf.d
-// drop-in was removed (→ restart).
+// prune removes stratum-generated files not in keep, never hand-authored ones.
 func prune(keep map[string]bool) (confdRemoved bool, err error) {
 	entries, err := os.ReadDir(version.CertsDir)
 	if err != nil && !os.IsNotExist(err) {
@@ -450,12 +346,12 @@ func prune(keep map[string]bool) (confdRemoved bool, err error) {
 		f := filepath.Join(version.CertsDir, e.Name(), "hosts.toml")
 		b, rerr := os.ReadFile(f)
 		if rerr != nil || !strings.HasPrefix(string(b), generatedMarker) {
-			continue // absent or not ours — leave it
+			continue
 		}
 		if err := os.Remove(f); err != nil {
 			return false, err
 		}
-		_ = os.Remove(filepath.Join(version.CertsDir, e.Name())) // rmdir if now empty
+		_ = os.Remove(filepath.Join(version.CertsDir, e.Name()))
 	}
 	if len(keep) == 0 {
 		if b, rerr := os.ReadFile(version.ContainerdConfD); rerr == nil && strings.HasPrefix(string(b), generatedMarker) {

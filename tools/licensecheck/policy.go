@@ -1,5 +1,3 @@
-// policy.go holds the license policy (the allowlist and the exceptions) and
-// evaluates SPDX license expressions against it.
 package main
 
 import (
@@ -11,26 +9,20 @@ import (
 	"unicode"
 )
 
-// allowlist is every license code stratum ships may carry.
 var allowlist = []string{"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "ISC", "0BSD", "Zlib", "BSL-1.0"}
 
 // exception lets one package carry licenses the allowlist does not.
 type exception struct {
-	licenses []string // the SPDX ids it allows
-	decision string   // the human's recorded decision
+	licenses []string
+	decision string // the human's recorded decision
 }
 
-// exceptions is keyed by Go import path or npm package name. Only a human
-// decision adds an entry. Each entry covers the one package it names, so
-// another package of the same module is still checked in full.
+// Only a human decision adds an entry; it covers only the package it names.
 var exceptions = map[string]exception{
-	// go-digest's code is Apache-2.0; its LICENSE.docs puts the
-	// documentation under CC-BY-SA-4.0. Human decision, 2026-10-08.
+	// go-digest's LICENSE.docs is CC-BY-SA-4.0; human decision, 2026-10-08.
 	"github.com/opencontainers/go-digest": {licenses: []string{"CC-BY-SA-4.0"}, decision: "Exception: docs license"},
 }
 
-// judge checks the license expression e, the license of package name, and
-// describes it with source, which says where e came from.
 func judge(name string, e *expr, source string) verdict {
 	allowed := idSet(allowlist)
 	ok, denied := e.eval(allowed)
@@ -56,9 +48,7 @@ func judge(name string, e *expr, source string) verdict {
 	return verdict{levelFail, fmt.Sprintf("license not allowed: %s (%s)", strings.Join(denied, ", "), source)}
 }
 
-// canonical returns the form license ids are compared in: SPDX ids match
-// case-insensitively, and a trailing "+" (this version or any later one)
-// includes the version itself.
+// SPDX ids match case-insensitively; a trailing + includes the version itself.
 func canonical(id string) string {
 	return strings.ToUpper(strings.TrimSuffix(id, "+"))
 }
@@ -71,28 +61,22 @@ func idSet(ids []string) map[string]bool {
 	return set
 }
 
-// noLicense reports whether an SPDX expression is one of the special values
-// that state no license (NONE) or no knowledge of one (NOASSERTION).
 func noLicense(s string) bool {
 	return strings.EqualFold(s, "NONE") || strings.EqualFold(s, "NOASSERTION")
 }
 
-// Expression operators.
 const (
 	opAnd = "AND"
 	opOr  = "OR"
 )
 
-// expr is a parsed SPDX license expression: a license id, or an AND or OR of
-// sub-expressions. "id WITH exception" parses as its license id, because a
-// license exception only adds permissions.
+// "id WITH exception" parses as the id: an exception only adds permissions.
 type expr struct {
-	op   string // "", opAnd or opOr
-	id   string // the license id when op is ""
+	op   string
+	id   string
 	args []*expr
 }
 
-// and returns the conjunction of exprs.
 func and(exprs ...*expr) *expr {
 	if len(exprs) == 1 {
 		return exprs[0]
@@ -100,8 +84,6 @@ func and(exprs ...*expr) *expr {
 	return &expr{op: opAnd, args: exprs}
 }
 
-// eval reports whether e is allowed when exactly the ids in allowed (in
-// canonical form) are, and if not, which ids keep it from being allowed.
 func (e *expr) eval(allowed map[string]bool) (bool, []string) {
 	switch e.op {
 	case "":
@@ -130,7 +112,6 @@ func (e *expr) eval(allowed map[string]bool) (bool, []string) {
 	}
 }
 
-// appendNew appends each id not already in ids.
 func appendNew(ids []string, more ...string) []string {
 	for _, id := range more {
 		if !slices.Contains(ids, id) {
@@ -140,22 +121,18 @@ func appendNew(ids []string, more ...string) []string {
 	return ids
 }
 
-// additionRef matches a custom license addition, which may follow WITH as an
-// exception id does.
+// An AdditionRef may follow WITH as an exception id does.
 var additionRef = regexp.MustCompile(`^(?:DocumentRef-[A-Za-z0-9.-]+:)?AdditionRef-[A-Za-z0-9.-]+$`)
 
-// exceptionID reports whether tok names a license exception: an SPDX
-// exception id or an AdditionRef. A license id such as MPL-2.0 is not one, so
-// "MIT WITH MPL-2.0" does not parse rather than passing as MIT.
+// A license id is not one, so "MIT WITH MPL-2.0" does not parse as MIT.
 func exceptionID(tok string) bool {
 	return spdxExceptionIDs[strings.ToLower(tok)] || additionRef.MatchString(tok)
 }
 
-// licenseID matches an SPDX license id or LicenseRef, with an optional "+".
+// An SPDX license id or LicenseRef, with an optional "+".
 var licenseID = regexp.MustCompile(`^(?:DocumentRef-[A-Za-z0-9.-]+:)?[A-Za-z0-9.-]+\+?$`)
 
-// parseExpr parses an SPDX license expression. AND binds tighter than OR, and
-// operators match in any case, as npm package metadata writes them.
+// AND binds tighter than OR; operators match any case, as npm metadata writes them.
 func parseExpr(s string) (*expr, error) {
 	p := &exprParser{toks: tokenize(s)}
 	if len(p.toks) == 0 {
@@ -215,12 +192,10 @@ func (p *exprParser) next() string {
 	return tok
 }
 
-// or parses and-expressions joined by OR.
 func (p *exprParser) or() (*expr, error) {
 	return p.joined(opOr, p.and)
 }
 
-// and parses WITH-expressions joined by AND.
 func (p *exprParser) and() (*expr, error) {
 	return p.joined(opAnd, p.with)
 }
@@ -245,7 +220,6 @@ func (p *exprParser) joined(op string, operand func() (*expr, error)) (*expr, er
 	return &expr{op: op, args: args}, nil
 }
 
-// with parses a license, optionally followed by WITH and an exception id.
 func (p *exprParser) with() (*expr, error) {
 	e, err := p.atom()
 	if err != nil {
@@ -263,7 +237,6 @@ func (p *exprParser) with() (*expr, error) {
 	return e, nil
 }
 
-// atom parses a license id or a parenthesised expression.
 func (p *exprParser) atom() (*expr, error) {
 	tok := p.next()
 	switch {
@@ -278,8 +251,7 @@ func (p *exprParser) atom() (*expr, error) {
 			return nil, errors.New("license expression has an unclosed parenthesis")
 		}
 		return e, nil
-	// NONE and NOASSERTION may stand alone, which callers check for, but are
-	// no license an expression can combine: "MIT OR NOASSERTION" is unreadable.
+	// NONE and NOASSERTION stand alone only; combined they make it unreadable.
 	case isOperator(tok) || noLicense(tok) || !licenseID.MatchString(tok):
 		return nil, fmt.Errorf("unexpected %q in license expression", tok)
 	}

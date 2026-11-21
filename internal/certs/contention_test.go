@@ -1,30 +1,6 @@
 package certs
 
-// The acceptance suite for pairwise contention, on the certs side. The four
-// maintenance operations — the cluster upgrade, root-CA rotation (rotate-ca),
-// etcd-CA migration (migrate-etcd-ca) and leaf renewal (`certs rotate`, the
-// daily tick's entry point) — must refuse one another at both fences: the
-// shared cluster maintenance Lease (kube-system/stratum-cluster-maintenance,
-// taken by the --cluster orchestrators) and the node maintenance lock
-// (/run/stratum-upgrade.lock, taken by every node-side entry). A fence is a
-// refusal, not a queue: each test here drives a real entry point while another
-// operation holds the fence and asserts the operation-naming refusal, that
-// nothing was written, and that no per-node Job was dispatched.
-//
-// The released lock-file identity is pinned here in behaviour, not constants:
-// a released-style holder — a raw syscall.Flock with a pid-only lock file,
-// what every released binary's lockNode leaves behind — still excludes all
-// three certs entries. The in-process raw flock is the same kernel conflict a
-// second process makes: flock arbitrates open file descriptions, not
-// processes (see nodelock_guard_test.go's header). The released lease
-// identity (kube-system/stratum-cluster-upgrade) is pinned from the upgrade
-// side in internal/upgrade/mixedrelease_test.go.
-//
-// Fixtures and helpers come from the guard tests: prep, kubeVIPNode,
-// stagedCPNode, stagedRotationFiles, assertStagedRotationUnchanged,
-// redirectVar, readLeaf, and the fake clientset behind the adminClientset
-// seam (fakeAdminClientset, thisCPNode, liveMaintenanceLease,
-// countMaintenanceLeaseActions, assertNoNodeJob).
+// Pairwise contention acceptance: the four maintenance operations refuse one another.
 
 import (
 	"io"
@@ -48,8 +24,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// nodeLockRefusal fails unless err is the operation-naming node-lock refusal:
-// the pinned substrings, the holder's operation or pid, and the holder pid.
+// Fails unless err is the operation-naming node-lock refusal naming the holder pid.
 func nodeLockRefusal(t *testing.T, err error, holder string) {
 	t.Helper()
 	if err == nil {
@@ -67,13 +42,6 @@ func nodeLockRefusal(t *testing.T, err error, holder string) {
 	}
 }
 
-// TestMaintenanceOperationsRefuseEachOtherOnTheHost is the pairwise
-// host-level acceptance case: while any one of the four maintenance
-// operations holds the node maintenance lock, each other operation's entry
-// point refuses, names the holder, and changes nothing. The holder takes the
-// lock exactly as its entry point does — the same Acquire call with the same
-// operation string — because the lock is the seam all four meet at; the
-// refuser is the real entry point on a fixture that would otherwise run.
 func TestMaintenanceOperationsRefuseEachOtherOnTheHost(t *testing.T) {
 	holders := []struct {
 		what string
@@ -152,9 +120,7 @@ func TestMaintenanceOperationsRefuseEachOtherOnTheHost(t *testing.T) {
 	}
 }
 
-// liveHeldLease is kube-system/name, held live by holder: renewed now, so an
-// hour from expiring. liveMaintenanceLease is the shared lease's shape; this
-// one also seeds the released upgrade lease for holders that carry both.
+// kube-system/name held live by holder, renewed now; also seeds the released upgrade lease.
 func liveHeldLease(name, holder string) *coordinationv1.Lease {
 	h := holder
 	now := metav1.NewMicroTime(time.Now())
@@ -165,13 +131,6 @@ func liveHeldLease(name, holder string) *coordinationv1.Lease {
 	}
 }
 
-// TestMaintenanceOperationsRefuseEachOtherOnTheCluster is the pairwise
-// cluster-level acceptance case: while a run holds the shared maintenance
-// lease, each --cluster orchestrator refuses, names the holder and the lease,
-// stages nothing, and dispatches no per-node Job. The upgrade holder is
-// seeded with both leases a live upgrade carries — the released
-// stratum-cluster-upgrade and the shared one — and still refuses the cert
-// orchestrators on the first held fence.
 func TestMaintenanceOperationsRefuseEachOtherOnTheCluster(t *testing.T) {
 	holders := []struct {
 		what string
@@ -238,12 +197,6 @@ func TestMaintenanceOperationsRefuseEachOtherOnTheCluster(t *testing.T) {
 	}
 }
 
-// TestReleasedNodeLockHolderExcludesTheNewCertOperations is the released
-// identity pin for the lock file: a released binary holds a raw flock on
-// /run/stratum-upgrade.lock and records only its pid. All three certs
-// entries refuse that holder, naming
-// the pid, so a node mid-maintenance refuses the next build's certs work
-// whatever binary holds it.
 func TestReleasedNodeLockHolderExcludesTheNewCertOperations(t *testing.T) {
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
 	// The released holder: raw flock, pid-only file, no operation recorded.
@@ -283,13 +236,6 @@ func TestReleasedNodeLockHolderExcludesTheNewCertOperations(t *testing.T) {
 	})
 }
 
-// TestLeafRenewalUnderARotateCAHolderHoldsRatherThanReacquires is the
-// nested-call acceptance case on the certs side: the node-side CA phase holds
-// the node maintenance lock for its whole run, so a leaf renewal reached from
-// code that already holds the lock must pass the held-lock capability
-// (Options.NodeLockHeld) and proceed, not reacquire — a second Acquire from
-// the same process refuses against its own fence, which the negative half of
-// this test demonstrates. The holder takes the lock exactly as RotateCA does.
 func TestLeafRenewalUnderARotateCAHolderHoldsRatherThanReacquires(t *testing.T) {
 	kubeVIPNode(t)
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
@@ -318,13 +264,7 @@ func TestLeafRenewalUnderARotateCAHolderHoldsRatherThanReacquires(t *testing.T) 
 	rel2()
 }
 
-// TestClusterFenceIsTakenBeforeTheHostFence pins the lock order across the
-// levels: a rotate-ca --cluster takes the shared maintenance lease first — it
-// is held when the run reaches the host fence — and only the initiator's own
-// node phase meets the node maintenance lock. A host-level contention
-// therefore surfaces as a cluster-fenced run refusing at the host fence,
-// having changed nothing on the cluster: no key Secret staged, no per-node
-// Job, and the lease released again on the refused exit.
+// A --cluster run holds the shared lease before reaching the host fence.
 func TestClusterFenceIsTakenBeforeTheHostFence(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.AdminConf, "missing-admin.conf") // the seam must answer; admin.conf must not be read
@@ -353,13 +293,6 @@ func TestClusterFenceIsTakenBeforeTheHostFence(t *testing.T) {
 	}
 }
 
-// TestStagedRotationRefusalsAreRetained pins the pre-existing refusals the
-// fencing must not swallow or reorder: a rotation already staged on a node
-// refuses a fresh trust-new with the staged message while the node lock is
-// free; at cluster level, both the rotate-ca orchestrator's staged-state guard
-// and the migration's rotation-in-flight guard fire BEFORE the shared lease is
-// taken — even with another run's live lease seeded — so a state-refused run
-// fences nothing.
 func TestStagedRotationRefusalsAreRetained(t *testing.T) {
 	t.Run("the node-side phase refuses a staged rotation", func(t *testing.T) {
 		stagedCPNode(t)
@@ -409,12 +342,6 @@ func TestStagedRotationRefusalsAreRetained(t *testing.T) {
 	})
 }
 
-// TestRollbackCARefusesWhileAMaintenanceOperationHoldsTheNodeLock: the
-// rollback entry of the CA rotation fences like its forward sibling — a
-// by-hand `certs rotate-ca --rollback` beside a live upgrade refuses having
-// touched nothing, instead of rewriting the same PKI the upgrade is
-// re-signing. The holder here takes a raw flock the way a released binary
-// does, so the pin covers the mixed-release window too.
 func TestRollbackCARefusesWhileAMaintenanceOperationHoldsTheNodeLock(t *testing.T) {
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
 	f, err := os.OpenFile(version.NodeUpgradeLockPath, os.O_CREATE|os.O_RDWR, 0o600)

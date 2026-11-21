@@ -19,9 +19,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestNodeIPMoveRefusal: an etcd member restarted with a new
-// explicit address while keeping its recorded membership would render etcd
-// on the new address and could not reconnect. The move is refused.
 func TestNodeIPMoveRefusal(t *testing.T) {
 	member := &NodeState{NodeIP: "192.168.99.12", EtcdInitialCluster: "cp1=https://192.168.99.12:2380"}
 	kubeletOnly := &NodeState{KubeletNodeIP: "192.168.99.12,fd00::12", EtcdInitialCluster: member.EtcdInitialCluster}
@@ -46,20 +43,14 @@ func TestNodeIPMoveRefusal(t *testing.T) {
 			if tc.refuse && !strings.Contains(err.Error(), "etcd member at 192.168.99.12") {
 				t.Errorf("refusal does not name the recorded address: %v", err)
 			}
-			// The refusal must point at the supported
-			// remedy (remove and rejoin), matching installation/_index.md —
-			// not the etcdctl member update/renew-certificates procedure
-			// that was removed because it does not work.
+			// etcdctl member update does not work; the refusal must not point at it.
 			if tc.refuse && !strings.Contains(err.Error(), "stratum uninstall") {
 				t.Errorf("refusal does not say to remove the node: %v", err)
 			}
 			if tc.refuse && strings.Contains(err.Error(), "etcdctl member update") {
 				t.Errorf("refusal still points at the non-working move procedure: %v", err)
 			}
-			// An HA control plane's stale etcd member must
-			// be removed from a remaining control plane first, before this
-			// node is uninstalled and rejoined — not left for whoever
-			// notices the cluster is one member short after the fact.
+			// The stale etcd member must leave a remaining control plane first.
 			if tc.refuse && !strings.Contains(err.Error(), "stratum etcdctl member remove") {
 				t.Errorf("refusal does not say to remove the stale etcd member first: %v", err)
 			}
@@ -89,14 +80,7 @@ func TestSavedControllerIP(t *testing.T) {
 	}
 }
 
-// TestPrepareControllerWritesTheSameNode pins what controller assembly writes,
-// field by field, for the node shapes the start paths rebuild it for: a fresh
-// controller without a VIP, a fresh controller with a VIP and spec.cis, and a
-// restart over a saved two-member state — which must keep its etcd membership
-// instead of being reset to a state=new seed. PKI and kubeconfigs are generated
-// for real in redirected temp dirs, with the host behind its seams, so any
-// change in a saved field, a kubeconfig endpoint, the apiserver SAN list or
-// which files are written fails here.
+// Pins the controller's saved state, kubeconfigs and cert SANs field by field.
 func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 	t.Setenv("NODE_IP", "")
 	origConf, origPKI, origKubeconfig, origAdmin := version.K8sConfDir, version.PKIDir, version.KubeconfigDir, version.AdminConf
@@ -197,25 +181,18 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 			version.AuditPolicyPath = filepath.Join(version.K8sConfDir, "audit-policy.yaml")
 			version.AdmissionConfigPath = filepath.Join(version.K8sConfDir, "admission-config.yaml")
 			version.K8sVersion = "v1.31.4"
-			// EnsureConfig also applies registry files and checks ownership of
-			// the legacy host config. Keep registry effects in this fixture;
-			// unique root/state paths prevent it from claiming a real host file.
+			// EnsureConfig also checks ownership; unique paths keep it off the host.
 			version.RegistriesConfig = filepath.Join(version.K8sConfDir, "registries.yaml")
 			version.CertsDir = filepath.Join(version.K8sConfDir, "certs.d")
 			version.ContainerdConfD = filepath.Join(version.K8sConfDir, "conf.d", "registry.toml")
 			version.ContainerdRuntimeConfD = filepath.Join(version.K8sConfDir, "conf.d", "runtime.toml")
 			version.ContainerdRootDir = filepath.Join(version.K8sConfDir, "containerd-root")
 			version.ContainerdStateDir = filepath.Join(version.K8sConfDir, "containerd-state")
-			// A payload marker (never executed: the rendered config below
-			// short-circuits ensureConfig's content check) satisfies the
-			// payload check WriteConfig makes before rendering.
+			// A payload marker satisfies WriteConfig; the rendered config short-circuits ensureConfig.
 			version.BinDir = t.TempDir()
 			if err := os.WriteFile(filepath.Join(version.BinDir, "containerd"), []byte("#!true\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			// The containerd config a node's payload has already rendered
-			// short-circuits ensureConfig (its content check) without the
-			// containerd binary a unit test has no payload to run.
 			version.ContainerdConfig = filepath.Join(version.K8sConfDir, "containerd.toml")
 			driver := "SystemdCgroup = false"
 			if runtime.CgroupDriver() == "systemd" {
@@ -242,8 +219,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 				t.Errorf("the pod CIDRs trusted on the host were %v, want %q among them", trustedPodCIDRs, tc.want.PodCIDR)
 			}
 
-			// Every kubeconfig targets the recorded endpoint; kube-vip's, only
-			// written with a VIP, keeps the local apiserver it must reach.
+			// kube-vip's kubeconfig, written only with a VIP, keeps the local apiserver.
 			for _, f := range []string{"admin.kubeconfig", "controller-manager.kubeconfig", "scheduler.kubeconfig", "kubelet.kubeconfig", version.SchedulerKubeconfig()} {
 				if !filepath.IsAbs(f) {
 					f = filepath.Join(version.KubeconfigDir, f)
@@ -272,8 +248,7 @@ func TestPrepareControllerWritesTheSameNode(t *testing.T) {
 				t.Errorf("kube-vip.kubeconfig is missing with a VIP: %v", vipErr)
 			}
 
-			// The apiserver cert carries the SAN list bring-up derives: the
-			// service IPs, localhost, the node's addresses, then the VIP.
+			// SAN order: the service IPs, localhost, the node's addresses, the VIP.
 			netc, err := netcfg.Parse(tc.want.PodCIDR, tc.want.ServiceCIDR)
 			if err != nil {
 				t.Fatal(err)

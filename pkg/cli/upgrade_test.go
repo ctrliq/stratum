@@ -9,16 +9,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestUpgradeClusterRefusesAnUnstampedBuildBeforeItsOwnGates pins the
-// upgrade-side half of the stamp guard (its command cases live in
-// up_test.go): the refusal precedes the command's own gates — the --yes
-// confirmation and the orchestrator's --from precondition — and an explicit
-// --target does not buy an unstamped binary out of it, because its node
-// images render :unknown whatever Kubernetes version the rollout aims at.
-// The admin kubeconfig points into a temp dir, so even while the refusal is
-// missing the red path stops at the client build and touches no host. FAILS
-// WITHOUT THE FIX: the command reaches its gates and the orchestrator
-// instead of refusing.
 func TestUpgradeClusterRefusesAnUnstampedBuildBeforeItsOwnGates(t *testing.T) {
 	old := version.K8sVersion
 	version.K8sVersion = "unknown"
@@ -46,32 +36,16 @@ func TestUpgradeClusterRefusesAnUnstampedBuildBeforeItsOwnGates(t *testing.T) {
 	}
 }
 
-// TestUpgradeCommandAcceptsTheOrchestratorsArgv pins the node's half of the
-// upgrade argv contract: the cluster orchestrator runs the staged binary on
-// every node's Job with the flags nodeUpgradeArgv and nodeCheckArgv build
-// (internal/upgrade/orchestrate.go), and a node binary that
-// stops accepting one of them fails every node Job of a rollout that an
-// orchestrator of the current release is still driving — including a rollout
-// already in flight when the flag changes.
-//
-// The argv is written out by hand, with a comment naming its builders,
-// because those are unexported in internal/upgrade and importing them into
-// this test's expectations would widen the package for the test's sake. The
-// command is parsed, never run.
+// nodeUpgradeArgv and friends are unexported in internal/upgrade, so the argv is written by hand
 func TestUpgradeCommandAcceptsTheOrchestratorsArgv(t *testing.T) {
 	const (
 		from   = "/var/lib/stratum/upgrade/stratum-next"
 		target = "v1.37.1"
-		build  = "0123abcd" // readStagedBuild's build ID
-		sum    = "feedface" // hex sha256 of the staged binary
+		build  = "0123abcd"
+		sum    = "feedface"
 	)
 	for _, tc := range []struct {
-		name string
-		// argv is what follows the binary path and "upgrade" in the Job's
-		// exec: stagedUpgradeArgv's --from/--target/--expect-build/
-		// --expect-sha256, then nodeUpgradeArgv's --soak and optional
-		// --skip-snapshot, nodeCheckArgv's --check, or nodeImportImagesArgv's
-		// --import-images.
+		name             string
 		argv             []string
 		wantSoak         int
 		wantSkipSnapshot bool
@@ -92,9 +66,7 @@ func TestUpgradeCommandAcceptsTheOrchestratorsArgv(t *testing.T) {
 				"--expect-build", build, "--expect-sha256", sum,
 				"--check"},
 			wantCheck: true,
-			// The check Job sends no --soak and no --skip-snapshot; it must
-			// land on the command's own defaults, not on a zero that would
-			// change what a later upgrade in the same process would do.
+			// the check Job sends no --soak; it must land on the command's default, not a zero
 			wantSoak: 15,
 		},
 		{
@@ -142,9 +114,6 @@ func TestUpgradeCommandAcceptsTheOrchestratorsArgv(t *testing.T) {
 	}
 }
 
-// TestUpgradeImportImagesRefusesTheModesItCannotCombineWith: --import-images
-// is one node's step of a cluster upgrade, so it is refused beside --cluster,
-// --check and --dry-run before the command does anything else.
 func TestUpgradeImportImagesRefusesTheModesItCannotCombineWith(t *testing.T) {
 	for _, mode := range []string{"--cluster", "--check", "--dry-run"} {
 		t.Run(mode, func(t *testing.T) {

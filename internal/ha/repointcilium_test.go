@@ -13,8 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The VIP reaches every Cilium container through the API, replacing the
-// address the manifest rendered and leaving other variables alone.
 func TestSetCiliumAPIServerPointsEveryContainerAtTheVIP(t *testing.T) {
 	spec := func() corev1.PodSpec {
 		return corev1.PodSpec{
@@ -65,8 +63,6 @@ func TestSetCiliumAPIServerPointsEveryContainerAtTheVIP(t *testing.T) {
 	}
 }
 
-// A cluster without the Cilium objects fails the repoint rather than
-// reporting it done.
 func TestSetCiliumAPIServerFailsWithoutCilium(t *testing.T) {
 	if err := setCiliumAPIServer(context.Background(), fake.NewSimpleClientset(), "10.0.0.10"); err == nil {
 		t.Fatal("repointing a cluster with no Cilium DaemonSet succeeded")

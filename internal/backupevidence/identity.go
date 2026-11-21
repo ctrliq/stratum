@@ -16,21 +16,14 @@ var readerNodeUID = k8sutil.OwnNodeUID
 
 const warningNodeUIDUnknown = "WARN: this node's immutable UID could not be determined; local location and copy identities are unknown"
 
-// identity hashes a domain and an unambiguous sequence of effective settings.
-// Credentials never participate, so rotating them cannot change a copy's ID.
+// Credentials never join the hash: rotating them cannot move a copy's ID.
 func identity(parts ...string) string {
 	b, _ := json.Marshal(parts)
 	sum := sha256.Sum256(b)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// remoteLocationID is the remote store's opaque identity. Credentials never
-// participate (rotating them cannot move a copy's ID), and the prefix
-// participates as the store's effective prefix — Key(""): the prefix spelled
-// the way the store's own key computation spells it. `backups` and `backups/`
-// name the same key space and hash alike, while the bare bucket ("") and a
-// "/" prefix name different key spaces ("backup.db" versus "/backup.db")
-// and must hash apart.
+// Key("") joins the hash, so spellings of one key space hash alike and distinct key spaces apart.
 func remoteLocationID(t *objstore.Target) string {
 	if !t.Enabled() {
 		return ""
@@ -52,8 +45,7 @@ func identifyArtifacts(artifacts []Artifact, location string) {
 	}
 }
 
-// identifyLocations runs after the catalogs, sharing the request deadline so
-// an unavailable API cannot prevent useful local evidence from being read.
+// Shares the request deadline: an unavailable API must not block local evidence.
 func identifyLocations(ctx context.Context, node, dir string, target *objstore.Target, local *LocalResult, remote *RemoteResult) string {
 	var uid string
 	if ctx.Err() == nil && node != "" {

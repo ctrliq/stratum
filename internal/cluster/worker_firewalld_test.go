@@ -10,8 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// recordTrust stands in for the worker's firewalld step and returns every
-// pod CIDR it was asked to trust.
 func recordTrust(t *testing.T) *[]string {
 	t.Helper()
 	var got []string
@@ -32,9 +30,7 @@ func workerState(t *testing.T, st *nodestate.NodeState) {
 	}
 }
 
-// A worker's unit runs a bare `stratum up --worker`, so every start after the
-// join takes the restart path. It must still trust the pod CIDR, and the one
-// the worker joined with, not the default.
+// The reboot unit reruns a bare `stratum up --worker`, so a restart still trusts the pod CIDR.
 func TestWorkerRestartTrustsTheRecordedPodCIDR(t *testing.T) {
 	registerCISForTest(t)
 	got := recordTrust(t)
@@ -56,8 +52,7 @@ func TestWorkerRestartTrustsTheRecordedPodCIDR(t *testing.T) {
 	}
 }
 
-// A legacy worker has no recorded range, but interface-scoped firewalld
-// convergence still runs. It must not invent a CIDR for any other caller.
+// Interface-scoped convergence runs even with no recorded range.
 func TestWorkerRestartWithoutRecordedPodCIDRStillConvergesFirewall(t *testing.T) {
 	got := recordTrust(t)
 	workerState(t, &nodestate.NodeState{Role: "worker", Hostname: "w1"})
@@ -89,8 +84,6 @@ func TestWorkerRestartMigratesExplicitPodCIDR(t *testing.T) {
 	}
 }
 
-// A malformed --pod-cidr is refused before anything on the host changes,
-// firewalld included.
 func TestWorkerJoinRefusesAMalformedPodCIDR(t *testing.T) {
 	got := recordTrust(t)
 	old := version.K8sConfDir

@@ -34,8 +34,6 @@ func TestLockExcludesOtherDataWriter(t *testing.T) {
 	release()
 }
 
-// TestRefuseStartInProgress: a data-replacing operation must
-// not run between a start's preparation and its supervisor becoming visible.
 func TestRefuseStartInProgress(t *testing.T) {
 	held := func(v bool) func() (bool, error) { return func() (bool, error) { return v, nil } }
 	up := func(v bool) func() bool { return func() bool { return v } }

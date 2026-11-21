@@ -13,11 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/procid"
 )
 
-// Older supervisors do not take our locks and can unlink the socket after their
-// listener closes. On Linux, refuse handoff until their parent process exits.
-// This cannot coordinate an old binary launched AFTER the check: migration must
-// stop old versions first, then start the new one. Other platforms are used only
-// for development; Stratum nodes run Linux.
+// Older supervisors can unlink the socket after their listener closes; refuse until they exit.
 func refuseLegacySupervisor() error {
 	if runtime.GOOS != "linux" {
 		return nil
@@ -32,14 +28,7 @@ func refuseLegacySupervisor() error {
 	return nil
 }
 
-// findLegacySupervisor walks procRoot through procid and returns the pid of
-// the top-level `stratum up` process — identity by subcommand plus build
-// information: the candidate must run the up subcommand, and its executable
-// must be built from the Stratum module. self is never reported, nor is a
-// child of self: a child forked to exec another program reads as self, argv
-// and executable alike, until its exec completes. A candidate
-// that exits mid-scan is skipped; a candidate whose binary cannot be inspected
-// fails the scan, so a start never proceeds on an unverified handoff.
+// Identity is subcommand plus build info; fail closed on an uninspectable binary.
 func findLegacySupervisor(procRoot string, self int, readInfo func(string) (*buildinfo.BuildInfo, error)) (int, error) {
 	var found int
 	err := procid.Walk(procRoot, func(p procid.Process) (bool, error) {
@@ -65,9 +54,7 @@ func findLegacySupervisor(procRoot string, self int, readInfo func(string) (*bui
 	return found, nil
 }
 
-// parentPID reads pid's parent from procRoot/<pid>/stat, or 0 when it cannot.
-// The fields after the command name are scanned from its closing parenthesis,
-// since the name itself may hold spaces and parentheses.
+// Scanned from the closing ')': the command name may hold spaces and parentheses.
 func parentPID(procRoot string, pid int) int {
 	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat"))
 	if err != nil {

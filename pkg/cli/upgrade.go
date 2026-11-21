@@ -11,9 +11,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// upgradeNode is upgrade.UpgradeNode behind a seam: the node upgrade needs a
-// real node, so a test can pin `upgrade --check`'s sentinel (*ErrExitCode)
-// only by supplying the outcome itself.
+// a seam: a test pins `upgrade --check`'s sentinel by supplying the outcome itself
 var upgradeNode = upgrade.UpgradeNode
 
 func newUpgradeCommand() *cobra.Command {
@@ -44,10 +42,7 @@ func newUpgradeCommand() *cobra.Command {
 				return fmt.Errorf("--import-images is one node's step of a cluster upgrade; it cannot be combined with --cluster, --check or --dry-run")
 			}
 			if clusterWide {
-				// Before the confirmation gate and the orchestrator: a cluster
-				// rolled from an unstamped binary renders unpullable :unknown
-				// node images and, without --target, aims at Kubernetes
-				// "unknown" (refuseUnstampedBuild has the full why).
+				// before the gates: an unstamped build renders unpullable :unknown node images
 				if err := refuseUnstampedBuild("stratum upgrade --cluster"); err != nil {
 					return err
 				}
@@ -62,8 +57,7 @@ func newUpgradeCommand() *cobra.Command {
 					DrainGraceSec: grace, SoakSec: soak, SkipSnapshot: skipSnap, DryRun: dry,
 				})
 			}
-			// The node upgrade runs as the version it installs, so an installed
-			// binary given a different --from becomes that binary.
+			// the node upgrade runs as the version it installs
 			if err := upgrade.HandOff(os.Stdout, from, os.Args[1:], dry || check); err != nil {
 				return err
 			}
@@ -71,15 +65,12 @@ func newUpgradeCommand() *cobra.Command {
 				Target: target, From: from, SoakSec: soak, SkipSnapshot: skipSnap, DryRun: dry, Check: check,
 				ImportImages: importImgs, ExpectBuild: expect, ExpectSHA256: expectSum,
 			})
-			// --check answers in its exit status: the cluster orchestrator reads
-			// it from the Job's pod before deciding whether to drain.
+			// the cluster orchestrator reads the exit status from the Job's pod before draining
 			if errors.Is(err, upgrade.ErrUpgradeNeeded) {
 				fmt.Println("stratum upgrade: this node needs the upgrade")
 				return &ErrExitCode{Code: upgrade.ExitUpgradeNeeded}
 			}
 			if errors.Is(err, upgrade.ErrPrereqMissing) {
-				// A refused node is not a drainable one: its own exit status says
-				// so, and the refusal itself is what the operator acts on.
 				fmt.Fprintln(os.Stderr, err)
 				return &ErrExitCode{Code: upgrade.ExitPrereqMissing}
 			}
@@ -97,16 +88,12 @@ func newUpgradeCommand() *cobra.Command {
 	fs.BoolVar(&skipSnap, "skip-snapshot", false, "skip the pre-upgrade etcd snapshot on control-plane nodes")
 	fs.BoolVar(&dry, "dry-run", false, "print the plan; make no changes")
 	fs.BoolVar(&check, "check", false, fmt.Sprintf("report whether this node already runs the upgrade binary's version and build, and change nothing: exit 0 if it does, %d if it needs the upgrade, %d if it refuses because the node cannot take the upgrade (SELinux enforcing, or a profile that requires SELinux, with container-selinux, policycoreutils, policycoreutils-python-utils or libselinux-utils missing, or such a profile combined with spec.selinux: false; or kernel.apparmor_restrict_unprivileged_unconfined set and the AppArmor profile for Stratum's runc impossible to build), 1 if it cannot tell (e.g. another upgrade or rollback is running); not with --cluster", upgrade.ExitUpgradeNeeded, upgrade.ExitPrereqMissing))
-	// Set by the cluster upgrade on every node's Job, never by hand: the build
-	// the orchestrator read from its own --from, so a node whose staged copy is
-	// another build refuses rather than answer for it.
+	// set only by the cluster upgrade's per-node Jobs, never by hand
 	fs.StringVar(&expect, "expect-build", "", "refuse unless this upgrade binary has the given build ID")
 	_ = fs.MarkHidden("expect-build")
 	fs.StringVar(&expectSum, "expect-sha256", "", "refuse unless this upgrade binary has the given sha256")
 	_ = fs.MarkHidden("expect-sha256")
-	// Also set only by the cluster upgrade, on every node before the first is
-	// upgraded: the add-ons roll out as soon as one control plane is, and the
-	// other nodes must already hold their images.
+	// set only by the cluster upgrade, before the first node is upgraded
 	fs.BoolVar(&importImgs, "import-images", false, "import this upgrade binary's images into the node's runtime, and change nothing else")
 	_ = fs.MarkHidden("import-images")
 	return cmd

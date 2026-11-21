@@ -30,9 +30,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestRetryDelete pins the cleanup policy: it retries a failing delete,
-// succeeds once the delete succeeds, treats an already-absent Secret as success,
-// and returns the last error when every attempt fails (so the caller warns).
 func TestRetryDelete(t *testing.T) {
 	t.Run("succeeds on a later attempt", func(t *testing.T) {
 		calls := 0
@@ -75,8 +72,6 @@ func TestRetryDelete(t *testing.T) {
 	})
 }
 
-// TestCleanupCarotateKeyNilClientDoesNotPanic: cleanup runs in a defer, so a nil
-// client (e.g. a failed AdminClientset rebuild) must warn, not panic.
 func TestCleanupCarotateKeyNilClientDoesNotPanic(t *testing.T) {
 	cleanupCarotateKey(context.Background(), nil)
 }
@@ -94,7 +89,6 @@ func hasSecret(t *testing.T, cs kubernetes.Interface, name string) bool {
 	return err == nil
 }
 
-// stubGate replaces the apiserver health gate for the test.
 func stubGate(t *testing.T, fn func(context.Context, kubernetes.Interface) error) {
 	t.Helper()
 	old, oldDelay := waitAPIServer, carotateCleanupDelay
@@ -102,9 +96,6 @@ func stubGate(t *testing.T, fn func(context.Context, kubernetes.Interface) error
 	waitAPIServer, carotateCleanupDelay = fn, 0
 }
 
-// runCapture runs fn on a fresh buffer and returns what it wrote. The cleanup
-// helpers take the writer themselves, so the capture is the
-// buffer, not an os.Stdout redirect.
 func runCapture(t *testing.T, fn func(io.Writer)) string {
 	t.Helper()
 	var b bytes.Buffer
@@ -112,9 +103,6 @@ func runCapture(t *testing.T, fn func(io.Writer)) string {
 	return b.String()
 }
 
-// TestCleanupCarotateKeyWaitsForAPIServer pins the ordering: the delete must not be
-// attempted until the apiserver health gate has run, and must still be attempted
-// (and succeed) afterwards. A gate that never opens does not skip the delete.
 func TestCleanupCarotateKeyWaitsForAPIServer(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -141,11 +129,6 @@ func TestCleanupCarotateKeyWaitsForAPIServer(t *testing.T) {
 	}
 }
 
-// TestCleanupCarotateKeyGateLeavesTimeToDelete drives the production gate and a
-// real client-go transport against a /healthz that never answers. The gate must
-// stop on its own budget so the DELETE still reaches the server on the same
-// context (a gate that spent the whole cleanup budget left every
-// DELETE with an expired context and the key behind).
 func TestCleanupCarotateKeyGateLeavesTimeToDelete(t *testing.T) {
 	var deletes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -181,10 +164,6 @@ func TestCleanupCarotateKeyGateLeavesTimeToDelete(t *testing.T) {
 	}
 }
 
-// TestReapLeftoverCarotateKey: the finalize/rollback reaper deletes a true
-// leftover silently, and leaves the key — warning — whenever an etcd-CA migration
-// holds its lock or the lock cannot be read (a local idle
-// transition deleted the key a live migration's followers still needed).
 func TestReapLeftoverCarotateKey(t *testing.T) {
 	lock := secret(etcdMigrationLockSecret, map[string][]byte{"holder": []byte("cp1"), "since": []byte("2026-10-05T23:00:00Z")})
 	own := runtime.Object(keyAt("old", "1", run1))
@@ -227,8 +206,6 @@ func TestReapLeftoverCarotateKey(t *testing.T) {
 	}
 }
 
-// preconditionedDeletes makes the fake clientset enforce delete preconditions
-// the way the apiserver does, and records each delete's options.
 func preconditionedDeletes(t *testing.T, cs *fake.Clientset) *[]metav1.DeleteOptions {
 	t.Helper()
 	var seen []metav1.DeleteOptions
@@ -252,8 +229,6 @@ func preconditionedDeletes(t *testing.T, cs *fake.Clientset) *[]metav1.DeleteOpt
 	return &seen
 }
 
-// keyAt is the key Secret as the apiserver stores it, staged by rotate-ca run
-// `run` ("" = a migrate-etcd-ca key, which carries no run annotation).
 func keyAt(uid, rv, run string) *corev1.Secret {
 	s := secret(caRotateKeySecret, map[string][]byte{"certificate-key": []byte(uid)})
 	s.UID, s.ResourceVersion = types.UID(uid), rv
@@ -265,8 +240,6 @@ func keyAt(uid, rv, run string) *corev1.Secret {
 
 const run1 = "run-1"
 
-// withRunMarker points the node's PKI dir at a temp dir holding the run marker
-// (none if run == ""), the way sign-new leaves it.
 func withRunMarker(t *testing.T, run string) {
 	t.Helper()
 	old := version.PKIDir
@@ -279,14 +252,9 @@ func withRunMarker(t *testing.T, run string) {
 	}
 }
 
-// TestReapLeftoverCarotateKeyRacingMigration is the race where a
-// migrate-etcd-ca takes the lock and publishes its key AFTER recovery has read
-// the lock. Recovery deletes only the key it read first, so the replacement
-// survives; an unconditional delete (or one that read the key after the lock)
-// would remove the live key.
 func TestReapLeftoverCarotateKeyRacingMigration(t *testing.T) {
 	cs := fake.NewSimpleClientset(keyAt("old", "1", run1))
-	deletes := preconditionedDeletes(t, cs)
+	deletes := preconditionedDeletes(t, cs) // registered last, so it runs first and records every attempt
 	stubGate(t, func(context.Context, kubernetes.Interface) error { return nil })
 	withRunMarker(t, run1)
 	secrets := corev1.SchemeGroupVersion.WithResource("secrets")
@@ -294,7 +262,6 @@ func TestReapLeftoverCarotateKeyRacingMigration(t *testing.T) {
 		if a.(k8stesting.GetAction).GetName() != etcdMigrationLockSecret {
 			return false, nil, nil
 		}
-		// The lock read answers "absent"; the migration starts right after it.
 		if err := cs.Tracker().Update(secrets, keyAt("new", "2", ""), caNamespace); err != nil {
 			t.Fatal(err)
 		}
@@ -316,9 +283,6 @@ func TestReapLeftoverCarotateKeyRacingMigration(t *testing.T) {
 	}
 }
 
-// TestReapLeftoverCarotateKeyAbsentIsNoop: a key that is absent at the first read
-// means nothing to do — the lock is not even consulted and nothing is deleted,
-// so a migration that publishes later is never touched.
 func TestReapLeftoverCarotateKeyAbsentIsNoop(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	deletes := preconditionedDeletes(t, cs)
@@ -340,8 +304,6 @@ func TestReapLeftoverCarotateKeyAbsentIsNoop(t *testing.T) {
 	}
 }
 
-// TestReapLeftoverCarotateKeyRetriesKeepPreconditions: every retry of a transient
-// delete failure carries the same UID/resourceVersion of the snapshot.
 func TestReapLeftoverCarotateKeyRetriesKeepPreconditions(t *testing.T) {
 	cs := fake.NewSimpleClientset(keyAt("old", "1", run1))
 	stubGate(t, func(context.Context, kubernetes.Interface) error { return nil })
@@ -353,7 +315,7 @@ func TestReapLeftoverCarotateKeyRetriesKeepPreconditions(t *testing.T) {
 		}
 		return false, nil, nil
 	})
-	deletes := preconditionedDeletes(t, cs) // registered last, so it runs first and records every attempt
+	deletes := preconditionedDeletes(t, cs)
 	runCapture(t, func(w io.Writer) { reapLeftoverCarotateKey(w, context.Background(), cs) })
 	if hasSecret(t, cs, caRotateKeySecret) {
 		t.Fatal("leftover key still present after retries")
@@ -368,10 +330,6 @@ func TestReapLeftoverCarotateKeyRetriesKeepPreconditions(t *testing.T) {
 	}
 }
 
-// TestReapLeftoverCarotateKeyOwnership: recovery removes only the key of the run
-// this node promoted under. Without a marker, with an unannotated key, or with a
-// different run's key it leaves the key and says why, including when a later rotation
-// publishes before the snapshot.
 func TestReapLeftoverCarotateKeyOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -408,9 +366,6 @@ func TestReapLeftoverCarotateKeyOwnership(t *testing.T) {
 	}
 }
 
-// TestReapLeftoverCarotateKeyRetriedFinalize: eligibility lives in the marker, not
-// in the PKI scratch files, so it survives a finalize that fails after
-// FinalizeCA removed the backups and a finalize whose delete failed.
 func TestReapLeftoverCarotateKeyRetriedFinalize(t *testing.T) {
 	cs := fake.NewSimpleClientset(keyAt("k", "1", run1))
 	stubGate(t, func(context.Context, kubernetes.Interface) error { return nil })
@@ -432,7 +387,7 @@ func TestReapLeftoverCarotateKeyRetriedFinalize(t *testing.T) {
 	if !strings.Contains(out, "could not remove the transient CA-rotation key") {
 		t.Errorf("output = %q, want the could-not-remove warning", out)
 	}
-	failing = false // the retried finalize
+	failing = false
 	if out := runCapture(t, func(w io.Writer) { reapLeftoverCarotateKey(w, context.Background(), cs) }); out != "" {
 		t.Errorf("retry output = %q, want silence", out)
 	}
@@ -441,8 +396,6 @@ func TestReapLeftoverCarotateKeyRetriedFinalize(t *testing.T) {
 	}
 }
 
-// TestRecordCarotateRun: sign-new records the run id of the key staged at that
-// moment, and anything less — no key, an unannotated key — clears an older marker.
 func TestRecordCarotateRun(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -463,12 +416,6 @@ func TestRecordCarotateRun(t *testing.T) {
 	}
 }
 
-// TestRecordCarotateRunReadsThroughTheAdminClientSeam: sign-new records the
-// run from the client the package's admin seam builds, so a fixture that
-// stands a fake cluster in for admin.conf is the cluster sign-new reads. A
-// client built from admin.conf behind the seam's back dials whatever that
-// file names — under the VIP fixture, an address nothing answers, waited out
-// on every sign-new — and records nothing.
 func TestRecordCarotateRunReadsThroughTheAdminClientSeam(t *testing.T) {
 	key := keyAt("k", "1", run1)
 	key.Annotations[carotateOperationAnnotation] = carotateOpRotateCA
@@ -483,8 +430,6 @@ func TestRecordCarotateRunReadsThroughTheAdminClientSeam(t *testing.T) {
 	}
 }
 
-// TestSignerPromoted: the .pre-carotate backup is the node-local evidence that
-// sign-new was reached.
 func TestSignerPromoted(t *testing.T) {
 	old := version.PKIDir
 	t.Cleanup(func() { version.PKIDir = old })
@@ -500,9 +445,6 @@ func TestSignerPromoted(t *testing.T) {
 	}
 }
 
-// TestStageCarotateKeyRemovesAmbiguousWrite: a Create that lands but whose
-// response is lost returns an error before the caller's defer is registered; the
-// key must not be left behind.
 func TestStageCarotateKeyRemovesAmbiguousWrite(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	stubGate(t, func(context.Context, kubernetes.Interface) error { return nil })
@@ -521,8 +463,6 @@ func TestStageCarotateKeyRemovesAmbiguousWrite(t *testing.T) {
 	}
 }
 
-// TestStageCarotateKeyKeepsKeyOnSuccess: the success path leaves the key for the
-// followers; the caller's defer removes it at the end of the run.
 func TestStageCarotateKeyKeepsKeyOnSuccess(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	if err := stageCarotateKey(io.Discard, context.Background(), cs, "deadbeef", run1); err != nil {
@@ -535,9 +475,6 @@ func TestStageCarotateKeyKeepsKeyOnSuccess(t *testing.T) {
 	if got.Annotations[carotateRunAnnotation] != run1 || got.Annotations[carotateOperationAnnotation] != carotateOpRotateCA {
 		t.Errorf("staged annotations = %v, want the rotation's operation and run", got.Annotations)
 	}
-	// The owner type: a migration's put refuses the rotation's staged key —
-	// the rotation's followers may still be fetching with it — instead of
-	// overwriting it, and leaves the key as it stands.
 	if err := putStagedKey(context.Background(), cs, "cafe", migrationStagedKeyOwner("cafe")); err == nil {
 		t.Fatal("a migration's put overwrote a rotate-ca run's staged key")
 	}
@@ -547,8 +484,6 @@ func TestStageCarotateKeyKeepsKeyOnSuccess(t *testing.T) {
 	}
 }
 
-// TestRemoveLeftoverCarotateKeyWithoutClient: when no admin client can be built
-// the recovery step must not panic or fail the phase; it names the manual command.
 func TestRemoveLeftoverCarotateKeyWithoutClient(t *testing.T) {
 	old := version.AdminConf
 	t.Cleanup(func() { version.AdminConf = old })
@@ -559,11 +494,6 @@ func TestRemoveLeftoverCarotateKeyWithoutClient(t *testing.T) {
 	}
 }
 
-// The staged-key owner annotations (carotateOperationAnnotation with
-// carotateRunAnnotation) name the operation and the run that own every staged
-// key Secret; the constants live beside the owner type in cacluster.go.
-
-// ownerAnnotations is the annotation pair that names a staged key's owner.
 func ownerAnnotations(op, run string) map[string]string {
 	return map[string]string{
 		carotateOperationAnnotation: op,
@@ -571,10 +501,6 @@ func ownerAnnotations(op, run string) map[string]string {
 	}
 }
 
-// migrationKeyAt is the key Secret as the apiserver stores it, staged by
-// migrate-etcd-ca: the operation annotation names the migration, and the run
-// annotation is the one-way digest of the unique certificate key that names
-// the migration's run.
 func migrationKeyAt(uid, rv, certKey string) *corev1.Secret {
 	s := keyAt(uid, rv, "")
 	s.Annotations = migrationStagedKeyOwner(certKey).annotations()
@@ -582,18 +508,7 @@ func migrationKeyAt(uid, rv, certKey string) *corev1.Secret {
 	return s
 }
 
-// TestKeyOperationsTouchOnlyTheirOwnKey pins one staged-key owner type. Every
-// staged key carries the operation and run annotations that name its owner; a
-// put refuses a Secret the other operation staged instead of overwriting it,
-// and replaces a key of its own operation (a dead run's leftover, or this
-// run's lost-response retry — the resume path); each operation's cleanup and
-// the migration's reap remove only the key their own run put; and every delete
-// carries the UID/resourceVersion preconditions of the snapshot it read.
 func TestKeyOperationsTouchOnlyTheirOwnKey(t *testing.T) {
-	// stageRotation is the rotation's staging entry, exactly as
-	// publishStagedKey calls it; stageMigration is the owner-type put the way
-	// PublishEtcdCA calls it, whose run annotation is a one-way digest of the
-	// migration's own unique certificate key.
 	stageRotation := func(ctx context.Context, cs kubernetes.Interface, keyHex string) error {
 		return stageCarotateKey(io.Discard, ctx, cs, keyHex, run1)
 	}
@@ -667,9 +582,6 @@ func TestKeyOperationsTouchOnlyTheirOwnKey(t *testing.T) {
 			if err := older[tc.op](context.Background(), cs, "older-run-key"); err != nil {
 				t.Fatal(err)
 			}
-			// The maintenance lease excludes a second live run of the
-			// operation, so a key of another run of the SAME operation is a
-			// dead run's leftover — the resume re-stages over it.
 			if err := tc.stage(context.Background(), cs, "deadbeef"); err != nil {
 				t.Fatalf("the re-stage over this operation's own leftover run: %v", err)
 			}
@@ -768,11 +680,6 @@ func TestKeyOperationsTouchOnlyTheirOwnKey(t *testing.T) {
 		}
 	})
 	t.Run("a put that loses the read-create race refuses a foreign key", func(t *testing.T) {
-		// The race: this put's read says the key Secret is absent, but a
-		// stager of the OTHER operation creates it before our Create lands, so
-		// the Create comes back AlreadyExists. The vetting the owner type
-		// exists for must then see the key that appeared: a foreign one is
-		// refused, never overwritten, and the put says so.
 		cs := fake.NewSimpleClientset(migrationKeyAt("k", "1", "their-key"))
 		gots, creates := 0, 0
 		cs.PrependReactor("get", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -806,19 +713,6 @@ func TestKeyOperationsTouchOnlyTheirOwnKey(t *testing.T) {
 	})
 }
 
-// TestEachOperationStoresAndRemovesItsOwnKey pins the staged-key lifecycle of
-// the two operations that share the stratum-carotate Secret: rotate-ca
-// --cluster stores its key under its run id (stageCarotateKey), and
-// migrate-etcd-ca stores the same Secret under the owner type's migration
-// owner (putStagedKey, as PublishEtcdCA calls it), whose run annotation is the
-// unique certificate key that names the migration's run. The operation and run
-// annotations are what the finalize/rollback reaper and each operation's
-// cleanup rely on to tell one operation's leftover from the other's live key,
-// so every staged key carries both. Each row then runs the operation's own
-// cleanup — the cleanupOwnCarotateKey the deferred cleanups of RotateCACluster
-// (cacluster.go) and PublishEtcdCA (etcdcacluster.go) register — which must
-// remove the Secret: a success path that strands it leaves the AES key that
-// decrypts the cluster CA material readable in the cluster.
 func TestEachOperationStoresAndRemovesItsOwnKey(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -857,8 +751,6 @@ func TestEachOperationStoresAndRemovesItsOwnKey(t *testing.T) {
 			if got.Annotations[carotateRunAnnotation] != tc.run {
 				t.Errorf("run annotation = %q, want %q", got.Annotations[carotateRunAnnotation], tc.run)
 			}
-			// The operation's own cleanup, on the detached context both
-			// operations use for it.
 			ctx, cancel := cleanupContext()
 			defer cancel()
 			tc.cleanup(ctx, cs)

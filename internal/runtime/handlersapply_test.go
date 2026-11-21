@@ -13,12 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// handlersHost redirects every path ApplyHandlers and CheckHandlers read to a
-// temp tree: containerd's config, importing both drop-in directories unless
-// withImport is false, the runtime-handler drop-in, the shared conf.d with the
-// registry drop-in in it, and the CDI spec directories. The supervisor socket
-// points at an absent path, so containerd reports not running until a test
-// starts a fakeSupervisor. It returns the shared conf.d directory.
 func handlersHost(t *testing.T, withImport bool) string {
 	t.Helper()
 	root := t.TempDir()
@@ -45,10 +39,7 @@ func handlersHost(t *testing.T, withImport bool) string {
 	return confd
 }
 
-// TestApplyHandlers_ReportsWhetherItRestarted pins ApplyHandlers' contract,
-// cloned from ApplyRegistry's: Restarted is true only when this call restarted
-// containerd, which takes a changed drop-in, a running containerd and a caller
-// that asked for the restart. Changed alone only means the drop-in changed.
+// Restarted is true only when this call restarted containerd, not merely when the file changed.
 func TestApplyHandlers_ReportsWhetherItRestarted(t *testing.T) {
 	t.Run("changed_and_running_restarts_once", func(t *testing.T) {
 		handlersHost(t, true)
@@ -114,7 +105,6 @@ func TestRestartContainerd(t *testing.T) {
 	}
 }
 
-// findings is r's findings at severity s, joined for matching.
 func findings(r HandlerReport, s Severity) string {
 	var out []string
 	for _, f := range r.Findings {
@@ -292,9 +282,7 @@ func TestCheckHandlers(t *testing.T) {
 	})
 }
 
-// A drop-in written without restarting containerd stays pending until a
-// restart: a later apply restarts even though the file no longer changes, and
-// the node is labelled only for the handlers the running containerd loaded.
+// A pending drop-in restarts on a later apply even when the file no longer changes.
 func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T) {
 	handlersHost(t, true)
 	restarts := fakeSupervisor(t, false)
@@ -332,8 +320,6 @@ func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T)
 	}
 }
 
-// A containerd that falls further behind keeps the handlers it loaded, not
-// the ones of the drop-in it never read.
 func TestApplyHandlersKeepsWhatABehindContainerdLoaded(t *testing.T) {
 	handlersHost(t, true)
 	fakeSupervisor(t, false)
@@ -348,8 +334,6 @@ func TestApplyHandlersKeepsWhatABehindContainerdLoaded(t *testing.T) {
 	}
 }
 
-// Any containerd restart loads the drop-in on disk, so a record naming an
-// earlier containerd no longer narrows anything.
 func TestLoadedHandlersIgnoresARecordForAnEarlierContainerd(t *testing.T) {
 	handlersHost(t, true)
 	fakeSupervisor(t, false)
@@ -364,9 +348,6 @@ func TestLoadedHandlersIgnoresARecordForAnEarlierContainerd(t *testing.T) {
 	}
 }
 
-// A reboot or a container restart can hand the new containerd the PID the
-// record names; a record whose start does not match that containerd's was
-// written for an earlier one, and narrows nothing.
 func TestLoadedHandlersIgnoresARecordWhoseContainerdReusedThePID(t *testing.T) {
 	handlersHost(t, true)
 	fakeSupervisor(t, false)
@@ -416,9 +397,7 @@ func TestProcessStartNamesTheBootAndTheStart(t *testing.T) {
 	}
 }
 
-// A drop-in renamed into place whose directory sync failed is on disk, so a
-// retry finds nothing to write: the failed apply records the containerd that
-// has not loaded it, and the retry restarts it.
+// The drop-in is on disk even when its directory sync failed, so a retry finds nothing to write.
 func TestApplyHandlersThatCouldNotSyncTheDropInLeavesTheRestartPending(t *testing.T) {
 	handlersHost(t, true)
 	restarts := fakeSupervisor(t, false)
@@ -438,8 +417,6 @@ func TestApplyHandlersThatCouldNotSyncTheDropInLeavesTheRestartPending(t *testin
 	}
 }
 
-// A conf.d file that does not parse stops containerd whether or not this node
-// declares handlers, so check reports it with none declared too.
 func TestCheckHandlersReadsTheSharedConfDWithNoHandlers(t *testing.T) {
 	confd := handlersHost(t, true)
 	if err := os.WriteFile(filepath.Join(confd, "99-broken.toml"), []byte("version = [\n"), 0o644); err != nil {
@@ -451,10 +428,6 @@ func TestCheckHandlersReadsTheSharedConfDWithNoHandlers(t *testing.T) {
 	}
 }
 
-// The drop-in's path is stratum's, but a file there it did not write may hold
-// an operator's configuration: RequireOwnDropIn, which runtime apply runs,
-// refuses to replace it, while a node start, which must not fail on it,
-// replaces it and says so.
 func TestAForeignDropInIsRefusedByApplyAndReplacedByAStart(t *testing.T) {
 	handlersHost(t, true)
 	mine := "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.kata]\nruntime_type = 'io.containerd.kata.v2'\n"
@@ -486,8 +459,6 @@ func TestAForeignDropInIsRefusedByApplyAndReplacedByAStart(t *testing.T) {
 	}
 }
 
-// containerd imports every shared conf.d file, so one that does not parse is
-// refused by name.
 func TestRequireSharedConfDParses(t *testing.T) {
 	handlersHost(t, true)
 	if err := RequireSharedConfDParses(); err != nil {
@@ -505,10 +476,6 @@ func TestRequireSharedConfDParses(t *testing.T) {
 	}
 }
 
-// runtime apply's preflight and runtime check read the shared conf.d through
-// one reader, so they agree: valid files, stratum's registry drop-in and an
-// nvidia-ctk drop-in among them, pass both, and a file that does not parse
-// fails both, by name.
 func TestApplyAndCheckAgreeOnTheSharedConfD(t *testing.T) {
 	handlersHost(t, true)
 	confd := filepath.Dir(version.ContainerdConfD)

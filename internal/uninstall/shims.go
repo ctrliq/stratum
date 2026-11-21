@@ -12,35 +12,18 @@ import (
 	"time"
 )
 
-// Removing every pod sandbox still left idle runtime shims on a control plane
-// once containerd had stopped: measured, 5 of 11 survived with every container
-// under them already killed, which blocked the uninstall exactly as before.
-// An idle shim holds nothing: the reason not to kill a shim is the containers
-// beneath it, and it has none. So once containerd is down, a
-// Stratum shim with no live child process is stopped; one with a live child
-// is left, and the host-process check that follows still refuses.
+// an idle shim holds nothing: the reason not to kill one is the containers beneath it.
 
-// The shim probe is a field on the run's hostEffects value (fx.shimPIDs), and
-// the process table it inspects is fx.procRoot; the signal itself is the run's
-// fx.signalPID. The idle wait below is read, never written, once the package is
-// initialized, so two Runs cannot race over it; tests shorten it, which is why
-// it stays a variable.
+// Variables, not constants: tests shorten them.
 var idleShimWait = 5 * time.Second
 
-// shimProc is a shim's PID and its start time, which together identify one
-// process: a PID alone can be reused.
+// PID and start time together identify one process: a PID alone can be reused.
 type shimProc struct {
 	pid   int
 	start string
 }
 
-// stopIdleShims sends SIGTERM to every Stratum runtime shim with no live child,
-// then SIGKILL to any still there after idleShimWait, reporting the count
-// through w. Before each signal it checks the PID is still a Stratum shim with
-// the same start time, so a PID reused by another process is never signalled.
-// The signal is the run's signalPID effect; without it there is nothing to
-// signal with, so nothing is signalled and the host-process sweep that follows
-// still refuses.
+// a reused PID must never be signalled: identity is re-checked before each signal.
 func stopIdleShims(w io.Writer, fx *hostEffects) {
 	if fx.signalPID == nil {
 		return
@@ -60,7 +43,6 @@ func stopIdleShims(w io.Writer, fx *hostEffects) {
 	fmt.Fprintf(w, "  stopped %d idle runtime shims (no container left under them)\n", len(idle))
 }
 
-// idleShims is the Stratum shims that have no live child process.
 func idleShims(fx *hostEffects) []shimProc {
 	if fx.shimPIDs == nil {
 		return nil
@@ -82,12 +64,7 @@ func idleShims(fx *hostEffects) []shimProc {
 	return idle
 }
 
-// stillShims is the subset of procs that are still the same Stratum shims. It
-// is best-effort: a shim whose identity cannot be confirmed is skipped, so it
-// is neither waited on nor signalled, and the host-process check that follows
-// still refuses the uninstall if it is really alive. The process table is
-// listed once per call, and each shim is checked on its own so one unreadable
-// start time does not hide the others.
+// best-effort: an unconfirmable shim is skipped, neither waited on nor signalled.
 func stillShims(fx *hostEffects, procs []shimProc) []shimProc {
 	if fx.shimPIDs == nil {
 		return nil
@@ -106,13 +83,7 @@ func stillShims(fx *hostEffects, procs []shimProc) []shimProc {
 	return left
 }
 
-// stillProcs is the subset of procs that are still the same process: still
-// listed by list, with the same start time. Only a confirmed exit (not listed,
-// or its /proc entry gone) or a confirmed identity change (a different start
-// time) counts as gone. A listing failure, or a start time that cannot be read
-// for any other reason, is returned as an error rather than read as gone; each
-// caller chooses whether that fails closed (stillTopLevel) or skips the
-// process (stillShims).
+// only a confirmed exit or identity change counts as gone; unreadable is an error.
 func stillProcs(list func() ([]int, error), fx *hostEffects, procs []shimProc) ([]shimProc, error) {
 	now, err := list()
 	if err != nil {
@@ -133,13 +104,11 @@ func stillProcs(list func() ([]int, error), fx *hostEffects, procs []shimProc) (
 		if start == p.start {
 			left = append(left, p)
 		}
-		// else: a different process now holds this pid, correctly excluded.
 	}
 	return left, nil
 }
 
-// signalShims checks each shim again immediately before its own signal: a
-// signal to one can let a later one's PID be reused before it is reached.
+// a signal to one can let a later PID be reused before it is reached.
 func signalShims(fx *hostEffects, procs []shimProc, sig syscall.Signal) {
 	for _, p := range procs {
 		if len(stillShims(fx, []shimProc{p})) == 1 {
@@ -148,8 +117,7 @@ func signalShims(fx *hostEffects, procs []shimProc, sig syscall.Signal) {
 	}
 }
 
-// startTime is field 22 of /proc/<pid>/stat, the process's start time in clock
-// ticks since boot.
+// field 22 of /proc/<pid>/stat, in clock ticks since boot.
 func startTime(fx *hostEffects, pid int) (string, error) {
 	f, err := statFields(filepath.Join(fx.procRoot, strconv.Itoa(pid), "stat"))
 	if err != nil {
@@ -161,8 +129,7 @@ func startTime(fx *hostEffects, pid int) (string, error) {
 	return f[19], nil
 }
 
-// statFields is the fields of a /proc/<pid>/stat after the command name, which
-// is in parentheses and may contain spaces: state, ppid, ...
+// fields after the command name, which is parenthesized and may contain spaces.
 func statFields(path string) ([]string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -176,9 +143,7 @@ func statFields(path string) ([]string, error) {
 	return strings.Fields(s[i+1:]), nil
 }
 
-// hasLiveChildren reports whether any process that is not a zombie has pid as
-// its parent. An unreadable process table is an error, which the caller reads
-// as "not idle": a shim is only stopped when it is known to hold nothing.
+// a shim is only stopped when it is known to hold nothing.
 func hasLiveChildren(fx *hostEffects, pid int) (bool, error) {
 	entries, err := os.ReadDir(fx.procRoot)
 	if err != nil {
@@ -193,12 +158,10 @@ func hasLiveChildren(fx *hostEffects, pid int) (bool, error) {
 			continue // exited since the listing
 		}
 		if err != nil {
-			// Unreadable is not "no child": a live container could be behind
-			// it.
+			// unreadable is not "no child": a live container could be behind it.
 			return false, fmt.Errorf("read %s/%s/stat: %w", fx.procRoot, e.Name(), err)
 		}
-		// The command name is in parentheses and may contain spaces, so the
-		// fields are read from after the last ')': state, then ppid.
+		// the command name is parenthesized and may hold spaces: read after the last ')'.
 		s := string(stat)
 		i := strings.LastIndexByte(s, ')')
 		if i < 0 {

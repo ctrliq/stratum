@@ -13,11 +13,7 @@ import (
 	"testing"
 )
 
-// TestNoMessageRunsStratumByNameUnderSudo fails on any string in the module's
-// non-test Go code that tells an operator to run `sudo stratum`. sudo on stock
-// Rocky Linux searches only its secure_path, which leaves out the
-// /usr/local/bin stratum is installed in, so that command fails with "command
-// not found". A message names the binary by StratumInstallPath instead.
+// sudo's secure_path on stock Rocky Linux omits /usr/local/bin, so "sudo stratum" fails.
 func TestNoMessageRunsStratumByNameUnderSudo(t *testing.T) {
 	const bare = "sudo stratum"
 
@@ -52,8 +48,7 @@ func TestNoMessageRunsStratumByNameUnderSudo(t *testing.T) {
 		if !bytes.Contains(src, []byte(bare)) {
 			return nil
 		}
-		// Only string literals count: a comment may name the failing command
-		// to explain why the full path is used.
+		// Only string literals count: a comment may name the command to explain the full path.
 		file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
 		if err != nil {
 			return err

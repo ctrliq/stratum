@@ -14,10 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// unregisteredCISController is a control plane whose node state names the cis
-// profile on a binary that registers no profile at all: the node a binary
-// that does not carry the cis profile meets. Its state and etcd data dir
-// live under a private root, and it returns the state file's bytes.
 func unregisteredCISController(t *testing.T) []byte {
 	t.Helper()
 	root := t.TempDir()
@@ -48,8 +44,6 @@ func unregisteredCISController(t *testing.T) []byte {
 	return b
 }
 
-// requireUnregisteredRefusal is the refusal every guarded entry gives: the
-// cis note, wrapping profile.ErrUnregistered, in the entry's voice.
 func requireUnregisteredRefusal(t *testing.T, err error, op string) {
 	t.Helper()
 	if !errors.Is(err, profile.ErrUnregistered) {
@@ -63,8 +57,6 @@ func requireUnregisteredRefusal(t *testing.T, err error, op string) {
 	}
 }
 
-// requireNodeUntouched: the state file is byte-identical and the etcd data
-// dir still holds its member data.
 func requireNodeUntouched(t *testing.T, before []byte) {
 	t.Helper()
 	after, err := os.ReadFile(nodestate.StatePath())
@@ -79,13 +71,6 @@ func requireNodeUntouched(t *testing.T, before []byte) {
 	}
 }
 
-// TestRejoinRefusesAnUnregisteredProfileBeforeAnything: a rejoin on a cis
-// control plane with nothing registered must refuse before anything changes —
-// stopping the apiserver, wiping the etcd data dir, changing the membership
-// and saving node state, and then failing in rejoinStartPod("kube-apiserver")
-// rendering the profile would leave the apiserver down. The profile is
-// resolved straight after the state is read,
-// before the seed is reached, whichever path the seed would have chosen.
 func TestRejoinRefusesAnUnregisteredProfileBeforeAnything(t *testing.T) {
 	member := etcdMember{ID: 2, Name: "cp2", PeerURLs: []string{selfPeer}, ClientURLs: []string{"https://10.0.0.2:2379"}}
 	for _, tc := range []struct {
@@ -118,10 +103,6 @@ func TestRejoinRefusesAnUnregisteredProfileBeforeAnything(t *testing.T) {
 	}
 }
 
-// TestNodeRepointRefusesAnUnregisteredProfileBeforeAnything: ha-repoint
-// rewrites the kubeconfigs and the node state and then restarts the static
-// pods, which render from the profile; on an unregistered one the rewrite
-// landed and the restarts came back as warnings.
 func TestNodeRepointRefusesAnUnregisteredProfileBeforeAnything(t *testing.T) {
 	before := unregisteredCISController(t)
 	touched := []string{}

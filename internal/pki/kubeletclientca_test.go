@@ -11,10 +11,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// assertKubeletTrustsAPIServer checks the kubelet's clientCAFile at one point
-// of a rotation: it carries what ca-bundle.crt carries, and the apiserver's
-// kubelet-client cert verifies against it, so logs, exec and port-forward
-// keep working.
+// The kubelet's clientCAFile matches ca-bundle.crt and verifies apiserver-kubelet-client.
 func assertKubeletTrustsAPIServer(t *testing.T, when string) {
 	t.Helper()
 	if got, want := readPKI(t, KubeletClientBundleBase+"-bundle.crt"), readPKI(t, "ca-bundle.crt"); string(got) != string(want) {
@@ -27,9 +24,7 @@ func assertKubeletTrustsAPIServer(t *testing.T, when string) {
 	}
 }
 
-// genLegacy builds a control plane installed before the kubelet-client CA: no
-// kubelet-client-ca, apiserver-kubelet-client signed by the cluster root, and a
-// kubelet bundle that follows ca-bundle.crt.
+// Installed before the kubelet-client CA: the leaf is root-signed, the bundle follows the root.
 func genLegacy(t *testing.T) {
 	t.Helper()
 	genInto(t)
@@ -57,9 +52,7 @@ func genLegacy(t *testing.T) {
 	}
 }
 
-// assertSplit checks a split node: the kubelet trusts the kubelet-client CA and
-// nothing in ca-bundle.crt, and apiserver-kubelet-client verifies against the
-// kubelet's bundle and not against the root.
+// A split node: the kubelet trusts only the kubelet-client CA, not the root.
 func assertSplit(t *testing.T, when string) {
 	t.Helper()
 	if split, err := KubeletClientSplit(); err != nil || !split {
@@ -82,8 +75,6 @@ func assertSplit(t *testing.T, when string) {
 	}
 }
 
-// A new cluster's first control plane is split from birth: no certificate the
-// cluster root signs can authenticate to a kubelet.
 func TestGenerateAllSplitsANewCluster(t *testing.T) {
 	genInto(t)
 	assertSplit(t, "fresh install")
@@ -97,10 +88,7 @@ func TestGenerateAllSplitsANewCluster(t *testing.T) {
 	assertSplit(t, "restart")
 }
 
-// A rotation on a split node rotates the kubelet-client CA with the root:
-// trust-new widens the kubelet bundle to new‖old, sign-new reissues
-// apiserver-kubelet-client under the new CA, and finalize drops the old one.
-// The root never enters the kubelet bundle.
+// trust-new widens the bundle to new‖old, sign-new reissues, finalize narrows it.
 func TestCARotationRotatesTheKubeletClientCA(t *testing.T) {
 	genInto(t)
 	old := loadCert(t, KubeletClientCAName)
@@ -145,8 +133,6 @@ func TestCARotationRotatesTheKubeletClientCA(t *testing.T) {
 	}
 }
 
-// A rollback after sign-new restores the old kubelet-client CA and a bundle of
-// it alone, and the leaf reissue puts apiserver-kubelet-client back under it.
 func TestCARollbackRestoresTheKubeletClientCA(t *testing.T) {
 	genInto(t)
 	old := loadCert(t, KubeletClientCAName)
@@ -174,8 +160,6 @@ func TestCARollbackRestoresTheKubeletClientCA(t *testing.T) {
 	assertSplit(t, "rollback")
 }
 
-// A trust-new that stopped before writing the kubelet bundle is repaired by
-// sign-new, so the reissued apiserver-kubelet-client is accepted.
 func TestPromoteCARepairsAKubeletBundleTrustNewMissed(t *testing.T) {
 	genInto(t)
 	want := readPKI(t, KubeletClientBundleBase+"-bundle.crt")
@@ -193,8 +177,6 @@ func TestPromoteCARepairsAKubeletBundleTrustNewMissed(t *testing.T) {
 	}
 }
 
-// A split control plane that lost kubelet-client-ca.key rotates only with
-// --force, and a lost kubelet-client-ca.crt refuses even then.
 func TestRotateCAMaterialNeedsTheKubeletClientCA(t *testing.T) {
 	genInto(t)
 	if err := os.Remove(path(KubeletClientCAName, "key")); err != nil {
@@ -216,8 +198,6 @@ func TestRotateCAMaterialNeedsTheKubeletClientCA(t *testing.T) {
 	}
 }
 
-// A split control plane that lost its kubelet bundle rebuilds it from the
-// kubelet-client CA on its next start, never from the root.
 func TestGenerateAllRebuildsALostSplitBundleFromTheKubeletClientCA(t *testing.T) {
 	genInto(t)
 	if err := os.Remove(KubeletClientBundlePath()); err != nil {
@@ -229,8 +209,6 @@ func TestGenerateAllRebuildsALostSplitBundleFromTheKubeletClientCA(t *testing.T)
 	assertSplit(t, "rebuilt")
 }
 
-// A split control plane that lost its bundle still reads as split, so nothing
-// publishes, shares or re-syncs it as if the cluster predated the split.
 func TestKubeletClientSplitWithoutItsBundle(t *testing.T) {
 	genInto(t)
 	if err := os.Remove(KubeletClientBundlePath()); err != nil {
@@ -247,8 +225,6 @@ func TestKubeletClientSplitWithoutItsBundle(t *testing.T) {
 	}
 }
 
-// An unreadable bundle on a split control plane is refused, not re-synced from
-// the root, which would undo the split.
 func TestSyncRefusesAnUnreadableSplitBundle(t *testing.T) {
 	genInto(t)
 	if err := os.WriteFile(KubeletClientBundlePath(), []byte("not PEM"), 0o644); err != nil {
@@ -317,8 +293,6 @@ func TestKubeletClientBundleFollowsARollback(t *testing.T) {
 	}
 }
 
-// A control plane installed before the kubelet had its own clientCAFile has a
-// ca-bundle.crt and no kubelet bundle; GenerateAll on its next start seeds one.
 func TestGenerateAllSeedsTheKubeletClientBundleOnAnExistingNode(t *testing.T) {
 	genLegacy(t)
 	if err := os.Remove(bundleCrtPath(KubeletClientBundleBase)); err != nil {
@@ -356,9 +330,7 @@ func TestEnsureKubeletClientBundleNeedsTheRootBundle(t *testing.T) {
 	}
 }
 
-// The bundle is replaced by rename, not rewritten in place: an in-place write
-// interrupted part way would leave a truncated file that
-// EnsureKubeletClientBundle keeps and the kubelet cannot start on.
+// By rename: an interrupted in-place write would leave a truncated file the kubelet cannot start.
 func TestSyncKubeletClientBundleReplacesByRename(t *testing.T) {
 	genLegacy(t)
 	before, err := os.Stat(KubeletClientBundlePath())
@@ -381,10 +353,7 @@ func TestSyncKubeletClientBundleReplacesByRename(t *testing.T) {
 	assertKubeletTrustsAPIServer(t, "after a re-sync")
 }
 
-// A trust-new that stopped after widening ca-bundle.crt but before syncing the
-// kubelet's bundle leaves the kubelet trusting only the old root; the check
-// sign-new runs first re-syncs it, so the reissued apiserver-kubelet-client is
-// accepted.
+// A trust-new stopped mid-way leaves the kubelet on the old root; the sign-new check re-syncs.
 func TestEnsureKubeletClientTrustsResyncsAStaleBundle(t *testing.T) {
 	genLegacy(t)
 	if err := RotateCAMaterial(false); err != nil {
@@ -417,8 +386,7 @@ func TestEnsureKubeletClientTrustsResyncsAStaleBundle(t *testing.T) {
 	}
 }
 
-// PromoteCA runs the check before it promotes anything, so sign-new never
-// reissues apiserver-kubelet-client under a root the kubelet does not trust.
+// PromoteCA checks before promoting, so sign-new never reissues under an untrusted root.
 func TestPromoteCAResyncsAStaleKubeletClientBundle(t *testing.T) {
 	genLegacy(t)
 	if err := RotateCAMaterial(false); err != nil {

@@ -393,9 +393,6 @@ func TestDashboardCertNamesTheClusterDomain(t *testing.T) {
 	}
 }
 
-// TestDashboardCertNamesTheDefaultDomainWhenNoneIsGiven: an operator handed no
-// cluster domain names the dashboard's Service in the default domain, never in
-// an empty one ("….svc.").
 func TestDashboardCertNamesTheDefaultDomainWhenNoneIsGiven(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, addons.DashboardStack), 0o755); err != nil {

@@ -30,8 +30,6 @@ func shortCertsReach(t *testing.T, wait time.Duration) {
 	certsReachWait, certsAttemptTimeout, certsReachInterval = wait, wait, time.Millisecond
 }
 
-// failingGets is a clientset whose first n reads of stratum-certs fail with
-// err, after which the Secret is served.
 func failingGets(n int, err error) (*fake.Clientset, *int) {
 	cs := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: certsSecret, Namespace: "kube-system"}})
 	calls := 0
@@ -47,8 +45,6 @@ func failingGets(n int, err error) (*fake.Clientset, *int) {
 
 var refused = &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 
-// A join reads stratum-certs through the VIP, which can refuse a connection
-// while the previous control plane settles: the read waits it out.
 func TestGetCertsSecretRetriesAnUnreachableControlPlane(t *testing.T) {
 	shortCertsReach(t, time.Minute)
 	for _, tc := range []struct {
@@ -77,7 +73,6 @@ func TestGetCertsSecretRetriesAnUnreachableControlPlane(t *testing.T) {
 	}
 }
 
-// An answer is a decision, not an outage: it returns at once.
 func TestGetCertsSecretReturnsAnAnswerAtOnce(t *testing.T) {
 	shortCertsReach(t, time.Minute)
 	gr := schema.GroupResource{Resource: "secrets"}
@@ -101,9 +96,6 @@ func TestGetCertsSecretReturnsAnAnswerAtOnce(t *testing.T) {
 	}
 }
 
-// An apiserver that has just come up behind the VIP refuses a valid token
-// until it has read the token Secrets: after an unreachable control plane, an
-// unauthorized answer is waited out too.
 func TestGetCertsSecretWaitsOutUnauthorizedAfterAnOutage(t *testing.T) {
 	shortCertsReach(t, time.Minute)
 	cs := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: certsSecret, Namespace: "kube-system"}})
@@ -125,8 +117,6 @@ func TestGetCertsSecretWaitsOutUnauthorizedAfterAnOutage(t *testing.T) {
 	}
 }
 
-// An expired token still fails within the budget after an outage, with the
-// unauthorized answer.
 func TestGetCertsSecretGivesUpOnUnauthorizedAfterTheBudget(t *testing.T) {
 	shortCertsReach(t, 20*time.Millisecond)
 	cs := fake.NewSimpleClientset()
@@ -144,7 +134,6 @@ func TestGetCertsSecretGivesUpOnUnauthorizedAfterTheBudget(t *testing.T) {
 	}
 }
 
-// The wait is bounded, and the error says how long it waited and why.
 func TestGetCertsSecretGivesUpAfterTheBudget(t *testing.T) {
 	shortCertsReach(t, 20*time.Millisecond)
 	cs, calls := failingGets(1<<30, refused)
@@ -157,9 +146,6 @@ func TestGetCertsSecretGivesUpAfterTheBudget(t *testing.T) {
 	}
 }
 
-// stallingSecrets is a Secret client whose every read blocks until its
-// context ends, as a read does when the VIP holder accepted the connection
-// and then stopped answering.
 type stallingSecrets struct {
 	corev1client.SecretInterface
 	reads int
@@ -171,8 +157,6 @@ func (s *stallingSecrets) Get(ctx context.Context, _ string, _ metav1.GetOptions
 	return nil, ctx.Err()
 }
 
-// A read that stalls ends with the budget instead of outlasting it, and no
-// read starts after the budget is spent.
 func TestGetCertsSecretBoundsAStalledRead(t *testing.T) {
 	shortCertsReach(t, 100*time.Millisecond)
 	certsAttemptTimeout = 30 * time.Millisecond
@@ -190,7 +174,6 @@ func TestGetCertsSecretBoundsAStalledRead(t *testing.T) {
 	}
 }
 
-// A join that is cancelled stops waiting at once.
 func TestGetCertsSecretStopsOnCancel(t *testing.T) {
 	shortCertsReach(t, time.Minute)
 	ctx, cancel := context.WithCancel(t.Context())

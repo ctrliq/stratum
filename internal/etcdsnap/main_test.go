@@ -1,10 +1,6 @@
 package etcdsnap
 
-// The restore takes the node maintenance lock (internal/nodelock), whose lock
-// file lives at version.NodeUpgradeLockPath (/run/stratum-upgrade.lock) -- a
-// path a test run must neither create nor hold. The fence tests redirect it
-// per test (restore_fence_test.go); this TestMain redirects it for the rest of
-// the package, whose fixtures predate the fence and reach Restore without one.
+// TestMain redirects the node maintenance lock path away from /run/stratum-upgrade.lock.
 
 import (
 	"fmt"

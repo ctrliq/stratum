@@ -24,8 +24,6 @@ func pkiBytes(t *testing.T, name string) []byte {
 	return b
 }
 
-// completedRotation runs A→B through finalize and returns B's certificate and the
-// backups of A that an older release's unchecked unlink left behind.
 func completedRotation(t *testing.T) (liveB []byte, residue map[string][]byte) {
 	t.Helper()
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -51,8 +49,6 @@ func restoreResidue(t *testing.T, residue map[string][]byte) {
 	}
 }
 
-// A→B finished, but its finalize left A's backups; B→C then rolls back before
-// sign-new. The rollback must land on B, the rotation's starting signer.
 func TestObsoleteBackupsDoNotRestoreWrongCA(t *testing.T) {
 	kubeVIPNode(t)
 	liveB, residue := completedRotation(t)
@@ -75,7 +71,6 @@ func TestObsoleteBackupsDoNotRestoreWrongCA(t *testing.T) {
 	assertLeafSignedByLiveRoot(t)
 }
 
-// The residue is also reconciled when finalize's own marker is what is left.
 func TestObsoleteBackupsReconciled(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -104,7 +99,6 @@ func TestObsoleteBackupsReconciled(t *testing.T) {
 	}
 }
 
-// Recovery material of an active or half-finished rotation is not residue.
 func TestRotateCAMaterialKeepsRecoveryMaterial(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -153,9 +147,6 @@ func TestRotateCAMaterialKeepsRecoveryMaterial(t *testing.T) {
 	}
 }
 
-// --fetch-shared skips checkCARotationState, so a promoted node must be stopped
-// before the fetch re-stages ca-new and clears the promoted marker: a following
-// sign-new would overwrite ca.pre-carotate.* with the already-new CA.
 func TestFetchSharedOnPromotedNodeKeepsRollbackBackup(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -197,14 +188,9 @@ func TestFetchSharedOnPromotedNodeKeepsRollbackBackup(t *testing.T) {
 	}
 }
 
-// A follower's --fetch-shared lays the initiator's staged root down before
-// RotateCAMaterial runs, which would make an idle node look mid-rotation and
-// keep the obsolete backups. They must go first, so a rollback before sign-new
-// lands on B.
 func TestFetchSharedReconcilesObsoleteBackups(t *testing.T) {
 	kubeVIPNode(t)
 	liveB, residue := completedRotation(t)
-	// Capture the initiator's C material, then return this node to idle B.
 	if err := pki.RotateCAMaterial(false); err != nil {
 		t.Fatal(err)
 	}
@@ -238,9 +224,6 @@ func TestFetchSharedReconcilesObsoleteBackups(t *testing.T) {
 	}
 }
 
-// A promoted node that already holds a full staged pair again (a repeated
-// staging) must be refused before the fetch writes anything, or the refusal's
-// "nothing has been changed" is false.
 func TestFetchSharedRefusesPromotedNodeBeforeFetching(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -283,10 +266,6 @@ func TestFetchSharedRefusesPromotedNodeBeforeFetching(t *testing.T) {
 	}
 }
 
-// A node marked promoted with new CA material staged again (a repeated
-// staging) cannot finish forward: sign-new skips as applied and finalize refuses
-// the staged files. The supported way out is the rollback, which restores the
-// original CA from the backups the staging refusal protects.
 func TestRestagedPromotedNodeRollsBackToOriginalCA(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -307,7 +286,6 @@ func TestRestagedPromotedNodeRollsBackToOriginalCA(t *testing.T) {
 		}
 	}
 
-	// Neither forward phase can finish this node, and the refusal says so.
 	var out bytes.Buffer
 	if err := cpSignNew(&out, CARotateOptions{Phase: PhaseSignNew, Quiet: false}); err != nil || !strings.Contains(out.String(), "sign-new is already applied") {
 		t.Fatalf("sign-new = %v, %q; want it skipped as applied", err, out.String())
@@ -320,8 +298,7 @@ func TestRestagedPromotedNodeRollsBackToOriginalCA(t *testing.T) {
 		t.Fatalf("PrepareStaging = %v, want the rollback route and no finalize advice", err)
 	}
 
-	// The route: the node's own check, then the rollback.
-	if err := cpRollbackCheck(); err != nil { // what `--rollback --check` answers on a control plane
+	if err := cpRollbackCheck(); err != nil { // what --rollback --check answers on a control plane
 		t.Fatalf("cpRollbackCheck = %v", err)
 	}
 	target := pki.RollbackTarget()
@@ -345,7 +322,6 @@ func TestRestagedPromotedNodeRollsBackToOriginalCA(t *testing.T) {
 		t.Errorf("bundle anchors = %d, %v; want 1", n, err)
 	}
 
-	// Rotation can start again from the restored CA.
 	if err := cpTrustNew(io.Discard, CARotateOptions{Phase: PhaseTrustNew, Quiet: true}); err != nil {
 		t.Fatalf("trust-new after the rollback: %v", err)
 	}
@@ -354,8 +330,6 @@ func TestRestagedPromotedNodeRollsBackToOriginalCA(t *testing.T) {
 	}
 }
 
-// A promoted node with nothing staged still finishes forward, so its refusal
-// names finalize as well as the rollback.
 func TestPrepareStagingRefusalOnPromotedNodeWithoutStagedFiles(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -371,8 +345,6 @@ func TestPrepareStagingRefusalOnPromotedNodeWithoutStagedFiles(t *testing.T) {
 	}
 }
 
-// A live file that cannot be read says nothing about its backup, so none are
-// removed: deleting the one that differs would destroy the only copy of a key.
 func TestObsoleteBackupsKeptWhenLiveFileCannotBeRead(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -410,7 +382,6 @@ func TestObsoleteBackupsKeptWhenLiveFileCannotBeRead(t *testing.T) {
 				}
 			}
 
-			// With the live file readable again, the obsolete backups go.
 			if err := os.RemoveAll(live); err != nil {
 				t.Fatal(err)
 			}
@@ -429,15 +400,12 @@ func TestObsoleteBackupsKeptWhenLiveFileCannotBeRead(t *testing.T) {
 	}
 }
 
-// A node whose sign-new promoted but stopped before it recorded the promotion
-// resumes with sign-new, and the files still staged are the rest of that
-// promotion: its refusal sends the operator to sign-new, not to a rollback alone.
 func TestPrepareStagingOnUnmarkedPromotionPointsToSignNew(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
 		t.Fatal(err)
 	}
-	if err := pki.PromoteCA(); err != nil { // sign-new stopped here: sa-new.* is still staged
+	if err := pki.PromoteCA(); err != nil {
 		t.Fatal(err)
 	}
 	if !pki.SignNewResumable() || len(pki.CAStagedFiles()) == 0 || pki.CAPromoted() {
@@ -455,10 +423,6 @@ func TestPrepareStagingOnUnmarkedPromotionPointsToSignNew(t *testing.T) {
 	}
 }
 
-// A forced recovery may have lost an old key, and the backup of it may be the
-// only copy: with --force a missing live file keeps every backup and does not
-// block staging, locally or through --fetch-shared. Without it, the same state
-// refuses (TestObsoleteBackupsKeptWhenLiveFileCannotBeRead).
 func TestForcedStagingKeepsBackupsWhenLiveKeyIsMissing(t *testing.T) {
 	setup := func(t *testing.T) map[string][]byte {
 		t.Helper()
@@ -503,10 +467,6 @@ func TestForcedStagingKeepsBackupsWhenLiveKeyIsMissing(t *testing.T) {
 	})
 }
 
-// One backup equal to its live file shows a rollback that restored but has not
-// finished (its retry repairs the leaves from the backups), so the backups that
-// still differ are its too: interrupted finalize, then a rollback that restored
-// the root, then trust-new --fetch-shared must delete none of them.
 func TestUnfinishedRollbackKeepsEveryBackup(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -526,8 +486,6 @@ func TestUnfinishedRollbackKeepsEveryBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	restoreResidue(t, backups)
-	// The rollback restored the root only: it is equal to its backup, while the
-	// front-proxy and SA backups still differ from their live files.
 	for _, ext := range []string{"crt", "key"} {
 		if err := os.WriteFile(filepath.Join(version.PKIDir, "ca."+ext), backups["ca.pre-carotate."+ext], 0o600); err != nil {
 			t.Fatal(err)
@@ -553,9 +511,6 @@ func TestUnfinishedRollbackKeepsEveryBackup(t *testing.T) {
 	}
 }
 
-// A crash mid-staging leaves half of a staged pair. That node is not idle, so
-// its backups are kept even though the bundle has one anchor, no marker is set
-// and every backup differs from its live file.
 func TestHalfStagedPairKeepsBackups(t *testing.T) {
 	for _, name := range []string{"ca-new.crt", "ca-new.key", "sa-new.key"} {
 		t.Run(name, func(t *testing.T) {

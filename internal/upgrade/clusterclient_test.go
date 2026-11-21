@@ -12,8 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A rollout given a client runs on it; one without falls back to this node's
-// admin.conf, as the CLI does.
+// Without a client it falls back to this node's admin.conf, as the CLI does.
 func TestUpgradeClusterRunsOnTheGivenClient(t *testing.T) {
 	oldConf := version.AdminConf
 	t.Cleanup(func() { version.AdminConf = oldConf })

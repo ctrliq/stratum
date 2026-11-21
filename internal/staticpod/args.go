@@ -12,11 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The component argvs — flag for flag, CIS block included. Rendered from
-// the persisted node state on every write, which preserves the supervisor's
-// ArgsFn semantics: external surgery (`stratum snapshot rejoin/restore`)
-// patches the state and the next Start/WriteAll renders the patched
-// membership.
+// rendered from the persisted node state on every write, preserving ArgsFn semantics.
 
 func etcdArgs(st *nodestate.NodeState) []string {
 	pki := func(f string) string { return filepath.Join(version.PKIDir, f) }
@@ -32,8 +28,7 @@ func etcdArgs(st *nodestate.NodeState) []string {
 		"--initial-cluster", st.EtcdInitialCluster,
 		"--initial-cluster-state", st.EtcdState,
 		"--initial-cluster-token", version.EtcdClusterToken,
-		// Plain-HTTP health endpoint on localhost for the liveness probe
-		// (the client port requires a client cert).
+		// plain-HTTP health endpoint for the liveness probe; the client port needs a cert.
 		"--listen-metrics-urls", fmt.Sprintf("http://127.0.0.1:%d", version.EtcdMetricsPort),
 		"--cert-file", pki("etcd.crt"), "--key-file", pki("etcd.key"),
 		"--trusted-ca-file", pki("etcd-ca-bundle.crt"), "--client-cert-auth",
@@ -75,8 +70,7 @@ func apiserverArgs(st *nodestate.NodeState, p profile.Profile, pki func(string) 
 		"--proxy-client-cert-file=" + pki("front-proxy-client.crt"),
 		"--proxy-client-key-file=" + pki("front-proxy-client.key"),
 	}
-	// The node's profile contributes its flags here, in its order; then the
-	// table's flags every render carries.
+	// profile flags in their order, then the flags every render carries.
 	args = append(args, p.APIServerArgs(version.ProfileLocations(pki))...)
 	args = append(args, enginesettings.APIServerFlags(pki)...)
 	return append(args, enginesettings.ArgvAnchor)
@@ -93,8 +87,7 @@ func cmArgs(st *nodestate.NodeState, pki, kc func(string) string) []string {
 		"--root-ca-file=" + pki("ca-bundle.crt"),
 		"--service-account-private-key-file=" + pki(signer("sa")+".key"),
 		"--use-service-account-credentials=true",
-		// bootstrapsigner signs cluster-info so a joining node can authenticate it
-		// before trusting the CA it carries. Off by default.
+		// bootstrapsigner is off by default; it signs cluster-info for joining nodes.
 		version.ControllerManagerControllersFlag,
 		"--profiling=false", "--bind-address=127.0.0.1",
 		"--allocate-node-cidrs=true", "--cluster-cidr=" + st.PodCIDR,
@@ -119,9 +112,7 @@ func schedulerArgs() []string {
 	}
 }
 
-// kubeVipArgs: one VIP for workers and kubectl alike (one mechanism, no
-// per-worker proxy). Its kubeconfig points at the LOCAL apiserver — leader
-// election through the VIP it manages would be circular.
+// its kubeconfig points at the local apiserver: leader election through the VIP is circular.
 func kubeVipArgs(st *nodestate.NodeState) []string {
 	args := []string{
 		"manager",
@@ -129,11 +120,10 @@ func kubeVipArgs(st *nodestate.NodeState) []string {
 		"--port", fmt.Sprint(version.APIServerPort),
 		"--controlplane",
 		"--leaderElection",
-		"--prometheusHTTPServer", "", // no metrics listener; nothing scrapes it yet
+		"--prometheusHTTPServer", "",
 		"--k8sConfigPath", version.KubeVipKubeconfig(),
 	}
-	// No --interface: kube-vip auto-detects the default-gateway interface and
-	// monitors it. There is no flag for that — omitting it IS the flag.
+	// omitting --interface asks for default-gateway auto-detection; there is no flag for it.
 	if st.VIP.Interface != "" {
 		args = append(args, "--interface", st.VIP.Interface)
 	}

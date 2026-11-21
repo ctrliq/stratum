@@ -15,8 +15,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A published node.yaml must not outlive compensated membership. If syncing
-// it fails, keep both the state and journal for reconciliation on the next run.
+// a published node.yaml must not outlive compensated membership
 var errJoinStatePublished = errors.New("published join state could not be made durable")
 
 var errJoinIntentStale = errors.New("recorded join member is absent; repeat online preparation")
@@ -27,8 +26,7 @@ func saveJoinState(st *nodestate.NodeState) error {
 
 func saveJoinStateWithSync(st *nodestate.NodeState, syncPath func(string) error) error {
 	if err := nodestate.SaveState(st); err != nil {
-		// A previous failed save may already have published node.yaml. Do
-		// not compensate membership while that record can still survive.
+		// a failed save may have published node.yaml; membership must not be compensated over it
 		if _, stateErr := os.Stat(nodestate.StatePath()); !errors.Is(stateErr, fs.ErrNotExist) {
 			return fmt.Errorf("%w: save state: %w", errJoinStatePublished, err)
 		}
@@ -51,8 +49,7 @@ func syncJoinFile(path string) error {
 	return f.Sync()
 }
 
-// Sync the local preparation before recording its durable snapshot. Resuming
-// without the API depends on retaining shared keys and cluster configuration.
+// resuming without the API depends on retaining shared keys and cluster configuration
 func persistJoinPreparation() error {
 	return persistJoinPreparationWithSync(syncJoinFile)
 }
@@ -80,8 +77,7 @@ func persistJoinPreparationWithSync(syncPath func(string) error) error {
 			}
 		}
 	}
-	// Persist the names of directories freshly created by host preparation,
-	// including DataDir itself, before any member can be added remotely.
+	// directory entries created by host preparation must be durable before a remote member add
 	for _, dir := range []string{version.DataDir, filepath.Dir(version.DataDir)} {
 		if err := syncPath(dir); err != nil {
 			return err
@@ -126,8 +122,7 @@ func verifyJoinResumeTrust(pin string) error {
 	return nil
 }
 
-// Prefer a quorum-backed view; fall back to a survivor's own membership only
-// for positive adoption. Callers must not infer absence from that stale view.
+// the quorumless fallback proves presence only; absence must not be inferred from it
 func joinMembershipVia(ips []string, read func(string) (etcdMembership, error)) (etcdMembership, error) {
 	var fallback *etcdMembership
 	var last error

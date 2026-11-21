@@ -23,8 +23,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// errSecondSync is the distinct failure the SA pair test gives the second
-// write's directory sync, so the joined error proves both writes reported.
+// The SA pair test's distinct second-write failure, so the joined error proves both.
 var errSecondSync = errors.New("second dir sync failed")
 
 const (
@@ -75,9 +74,6 @@ func hasStr(ss []string, want string) bool {
 	return false
 }
 
-// TestSubjectDrift pins that a freshly generated node has no drift, that a
-// leaf an earlier release issued in system:masters is reported, and that a
-// missing leaf is not.
 func TestSubjectDrift(t *testing.T) {
 	genInto(t)
 	if got, err := SubjectDrift(tHost, tIP); err != nil || len(got) != 0 {
@@ -114,9 +110,7 @@ func TestSubjectDrift(t *testing.T) {
 	}
 }
 
-// TestCertMatrix asserts every leaf's CN, groups (O), SANs, and EKU match the
-// certificate matrix Kubernetes expects — the contract Node/RBAC authz and
-// conformance depend on.
+// Pins the certificate matrix Node/RBAC authz and conformance depend on.
 func TestCertMatrix(t *testing.T) {
 	genInto(t)
 
@@ -196,8 +190,6 @@ func TestCertMatrix(t *testing.T) {
 	})
 }
 
-// TestLeavesSignedByCA verifies the trust chain: cluster leaves chain to ca,
-// front-proxy-client chains to the *separate* front-proxy CA.
 func TestLeavesSignedByCA(t *testing.T) {
 	genInto(t)
 	ca := loadCert(t, "ca")
@@ -206,10 +198,7 @@ func TestLeavesSignedByCA(t *testing.T) {
 			t.Errorf("%s not signed by ca: %v", leaf, err)
 		}
 	}
-	// etcd's leaves live in their own trust domain: they chain to etcd-ca
-	// and must NOT chain to the cluster root, which is the whole point — a kubelet
-	// certificate is root-signed, so as long as etcd trusted the root, any kubelet
-	// cert was full etcd read/write.
+	// A kubelet cert is root-signed; as long as etcd trusted the root it was full etcd read/write.
 	etcdCA := loadCert(t, "etcd-ca")
 	for _, leaf := range []string{"etcd", "apiserver-etcd-client"} {
 		if err := loadCert(t, leaf).CheckSignatureFrom(etcdCA); err != nil {
@@ -219,8 +208,7 @@ func TestLeavesSignedByCA(t *testing.T) {
 			t.Errorf("%s unexpectedly chains to the cluster root CA", leaf)
 		}
 	}
-	// apiserver-kubelet-client is the kubelets' one trusted client and lives in
-	// its own trust domain too, so nothing else the root signs reaches :10250.
+	// The kubelets' one trusted client; nothing else the root signs reaches :10250.
 	kca := loadCert(t, KubeletClientCAName)
 	if err := loadCert(t, "apiserver-kubelet-client").CheckSignatureFrom(kca); err != nil {
 		t.Errorf("apiserver-kubelet-client not signed by %s: %v", KubeletClientCAName, err)
@@ -232,7 +220,6 @@ func TestLeavesSignedByCA(t *testing.T) {
 	if err := loadCert(t, "front-proxy-client").CheckSignatureFrom(fp); err != nil {
 		t.Errorf("front-proxy-client not signed by front-proxy-ca: %v", err)
 	}
-	// front-proxy-client must NOT chain to the main CA (separate trust domain).
 	if err := loadCert(t, "front-proxy-client").CheckSignatureFrom(ca); err == nil {
 		t.Error("front-proxy-client unexpectedly chains to the main CA")
 	}
@@ -245,7 +232,6 @@ func TestSAKeypairAndKeyPerms(t *testing.T) {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
-	// private keys must be 0600
 	for _, f := range []string{"ca.key", "kubelet.key", "sa.key"} {
 		fi, err := os.Stat(filepath.Join(version.PKIDir, f))
 		if err != nil {
@@ -257,9 +243,6 @@ func TestSAKeypairAndKeyPerms(t *testing.T) {
 	}
 }
 
-// TestRotateLeavesTightensLooseKey: a leaf rotation leaves front-proxy-client.key
-// 0600 even when the key it replaces had been loosened, and the new key is a
-// new file, so a reader holding the loose one never sees it.
 func TestRotateLeavesTightensLooseKey(t *testing.T) {
 	genInto(t)
 	p := filepath.Join(version.PKIDir, "front-proxy-client.key")
@@ -290,8 +273,6 @@ func TestRotateLeavesTightensLooseKey(t *testing.T) {
 	}
 }
 
-// TestIdempotent re-runs GenerateAll and asserts existing certs are reused
-// (not regenerated) — re-running the installer must not churn the PKI.
 func TestIdempotent(t *testing.T) {
 	genInto(t)
 	before, err := os.ReadFile(filepath.Join(version.PKIDir, "apiserver.crt"))
@@ -307,9 +288,6 @@ func TestIdempotent(t *testing.T) {
 	}
 }
 
-// TestRotateLeaves verifies leaf rotation: leaf serial + NotAfter change, the
-// certs still chain to the SAME (unchanged) CA, and ca/front-proxy-ca/sa are
-// left byte-identical (leaf-only rotation never touches them).
 func TestRotateLeaves(t *testing.T) {
 	genInto(t)
 
@@ -334,24 +312,18 @@ func TestRotateLeaves(t *testing.T) {
 	if apiBefore.SerialNumber.Cmp(apiAfter.SerialNumber) == 0 {
 		t.Error("apiserver serial unchanged after rotation") // the real proof of reissue
 	}
-	// NotAfter must not go backwards. (Not strictly-after: x509 NotAfter has 1s
-	// resolution, so a reissue in the same wall-clock second is legitimately equal —
-	// asserting strict advance made this test flaky. The serial check above already
-	// proves the cert was re-minted.)
+	// x509 NotAfter has 1s resolution, so a same-second reissue is legitimately equal.
 	if apiAfter.NotAfter.Before(apiBefore.NotAfter) {
 		t.Errorf("apiserver NotAfter went backwards: before=%s after=%s", apiBefore.NotAfter, apiAfter.NotAfter)
 	}
-	// still trusts the original CA
 	pool := x509.NewCertPool()
 	pool.AddCert(loadCert(t, "ca"))
 	if _, err := apiAfter.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
 		t.Errorf("rotated apiserver does not verify against original CA: %v", err)
 	}
-	// SANs preserved
 	if !contains(apiAfter.DNSNames, tHost) {
 		t.Errorf("rotated apiserver lost hostname SAN: %v", apiAfter.DNSNames)
 	}
-	// CA + SA untouched
 	for _, tc := range []struct {
 		name   string
 		before []byte
@@ -362,8 +334,6 @@ func TestRotateLeaves(t *testing.T) {
 	}
 }
 
-// TestLeafValidityApplied confirms leaves use the (short) LeafValidity while the
-// root CA uses the long CAValidity.
 func TestLeafValidityApplied(t *testing.T) {
 	orig := LeafValidity
 	LeafValidity = 24 * time.Hour
@@ -445,8 +415,6 @@ func countPEMBlocks(t *testing.T, f string) int {
 	return n
 }
 
-// TestGenerateAllWritesBundles: a fresh install has single-cert trust bundles
-// (the CA-rotation seam is a no-op for new clusters).
 func TestGenerateAllWritesBundles(t *testing.T) {
 	genInto(t)
 	if got := len(loadBundle(t, "ca")); got != 1 {
@@ -458,14 +426,11 @@ func TestGenerateAllWritesBundles(t *testing.T) {
 	if got := countPEMBlocks(t, "sa-bundle.pub"); got != 1 {
 		t.Errorf("fresh sa-bundle has %d keys, want 1", got)
 	}
-	// the single bundle cert is exactly the live CA
 	if !loadBundle(t, "ca")[0].Equal(loadCert(t, "ca")) {
 		t.Error("ca-bundle[0] != live ca.crt on fresh install")
 	}
 }
 
-// TestRotateCAMaterialBundles (phase trust-new): new material staged, trust
-// bundles become old‖new, but the live signer is untouched (not yet promoted).
 func TestRotateCAMaterialBundles(t *testing.T) {
 	genInto(t)
 	caBefore, caKeyBefore, saKeyBefore := readPKI(t, "ca.crt"), readPKI(t, "ca.key"), readPKI(t, "sa.key")
@@ -476,7 +441,6 @@ func TestRotateCAMaterialBundles(t *testing.T) {
 	if !CARotationStaged() {
 		t.Error("CARotationStaged() false after staging")
 	}
-	// live signer unchanged (still old until PromoteCA/PromoteSA)
 	if string(readPKI(t, "ca.crt")) != string(caBefore) {
 		t.Error("ca.crt changed before promote")
 	}
@@ -486,7 +450,6 @@ func TestRotateCAMaterialBundles(t *testing.T) {
 	if string(readPKI(t, "sa.key")) != string(saKeyBefore) {
 		t.Error("sa.key changed before promote")
 	}
-	// bundles carry two entries
 	if got := len(loadBundle(t, "ca")); got != 2 {
 		t.Errorf("ca-bundle has %d certs, want 2", got)
 	}
@@ -499,7 +462,6 @@ func TestRotateCAMaterialBundles(t *testing.T) {
 	if n, _ := CABundleCertCount("ca"); n != 2 {
 		t.Errorf("CABundleCertCount=%d, want 2", n)
 	}
-	// ca-new is a valid self-signed CA
 	nc := loadCert(t, "ca-new")
 	if !nc.IsCA {
 		t.Error("ca-new is not a CA")
@@ -507,7 +469,6 @@ func TestRotateCAMaterialBundles(t *testing.T) {
 	if err := nc.CheckSignatureFrom(nc); err != nil {
 		t.Errorf("ca-new not self-signed: %v", err)
 	}
-	// idempotent: re-run reuses staged material
 	stagedBefore := readPKI(t, "ca-new.crt")
 	if err := RotateCAMaterial(false); err != nil {
 		t.Fatalf("RotateCAMaterial rerun: %v", err)
@@ -517,8 +478,6 @@ func TestRotateCAMaterialBundles(t *testing.T) {
 	}
 }
 
-// TestPromoteAndRotateLeaves (phase sign-new): after promote+RotateLeaves every
-// leaf chains to the NEW CA, and still verifies against the old‖new bundle.
 func TestPromoteAndRotateLeaves(t *testing.T) {
 	genInto(t)
 	oldCA := loadCert(t, "ca")
@@ -544,24 +503,18 @@ func TestPromoteAndRotateLeaves(t *testing.T) {
 			t.Errorf("%s not signed by new CA: %v", leaf, err)
 		}
 	}
-	// A ROOT rotation must not drag etcd's leaves along: they belong to etcd-ca.
-	// This is the trap that makes the etcd split fragile — reissuing every leaf
-	// from the root would let a routine `rotate-ca` silently re-sign
-	// apiserver-etcd-client with the cluster root and lock the apiserver out of
-	// its own etcd.
+	// Reissuing every leaf from the root would let a routine rotation re-sign etcd's client leaf.
 	etcdCARot := loadCert(t, "etcd-ca")
 	for _, leaf := range []string{"etcd", "apiserver-etcd-client"} {
 		if err := loadCert(t, leaf).CheckSignatureFrom(etcdCARot); err != nil {
 			t.Errorf("%s left etcd-ca during a ROOT rotation: %v", leaf, err)
 		}
 	}
-	// new-signed apiserver verifies against the old‖new bundle
 	if _, err := loadCert(t, "apiserver").Verify(x509.VerifyOptions{
 		Roots: poolFromBundle(t, "ca"), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		t.Errorf("new-signed apiserver fails against old‖new bundle: %v", err)
 	}
-	// old CA still present in the bundle during sign-new
 	found := false
 	for _, c := range loadBundle(t, "ca") {
 		if c.Equal(oldCA) {
@@ -571,14 +524,11 @@ func TestPromoteAndRotateLeaves(t *testing.T) {
 	if !found {
 		t.Error("old CA missing from bundle during sign-new")
 	}
-	// promote left a rollback backup
 	if _, err := os.Stat(filepath.Join(version.PKIDir, "sa.pre-carotate.key")); err != nil {
 		t.Error("sa.pre-carotate.key missing after PromoteSA")
 	}
 }
 
-// TestFinalizeDropsOld (phase finalize): bundles collapse to new-only and the
-// old CA no longer trusts anything; scratch files are cleaned up.
 func TestFinalizeDropsOld(t *testing.T) {
 	genInto(t)
 	oldCA := loadCert(t, "ca")
@@ -620,8 +570,6 @@ func TestFinalizeDropsOld(t *testing.T) {
 	}
 }
 
-// TestRollbackRestoresOld: rollback after promote restores the original signer
-// byte-for-byte and returns the bundle to a single cert.
 func TestRollbackRestoresOld(t *testing.T) {
 	genInto(t)
 	caBefore, caKeyBefore := readPKI(t, "ca.crt"), readPKI(t, "ca.key")
@@ -651,9 +599,6 @@ func TestRollbackRestoresOld(t *testing.T) {
 	}
 }
 
-// TestRotateCAForce: with the old root's key gone, rotation refuses without
-// --force, and with it still carries the old root's certificate into the
-// bundle, so what the cluster trusts today can verify the new root.
 func TestRotateCAForce(t *testing.T) {
 	genInto(t)
 	old, err := os.ReadFile(filepath.Join(version.PKIDir, "ca.crt"))
@@ -679,9 +624,6 @@ func TestRotateCAForce(t *testing.T) {
 	}
 }
 
-// TestRotateCARequiresForceForEveryLostKey: each old private key, sa.key
-// included, can be gone only under --force, so a rotation that goes ahead
-// without one always records the forced marker that refuses its rollback.
 func TestRotateCARequiresForceForEveryLostKey(t *testing.T) {
 	for _, key := range []string{"ca.key", "front-proxy-ca.key", "sa.key"} {
 		t.Run(key, func(t *testing.T) {
@@ -703,8 +645,6 @@ func TestRotateCARequiresForceForEveryLostKey(t *testing.T) {
 	}
 }
 
-// TestRotateCARefusesWithoutRootCert: with the old root's certificate gone, no
-// rotation can bridge trust, so even --force refuses before staging anything.
 func TestRotateCARefusesWithoutRootCert(t *testing.T) {
 	genInto(t)
 	for _, f := range []string{"ca.crt", "ca.key"} {
@@ -728,9 +668,6 @@ func TestRotateCARefusesWithoutRootCert(t *testing.T) {
 	}
 }
 
-// TestRotateCADerivesALostSAPub: with sa.pub gone and sa.key kept, the
-// apiserver keeps signing with sa.key, so the rotation restores sa.pub from it
-// and carries it into sa-bundle.pub rather than trusting sa-new.pub alone.
 func TestRotateCADerivesALostSAPub(t *testing.T) {
 	genInto(t)
 	before := readPKI(t, "sa.pub")
@@ -747,9 +684,6 @@ func TestRotateCADerivesALostSAPub(t *testing.T) {
 	}
 }
 
-// TestRotateCARefusalWithoutForceWritesNothing: a rotation refused for want of
-// --force changes no file, not even the sa.pub it could derive from sa.key, so
-// its "nothing has been changed" holds.
 func TestRotateCARefusalWithoutForceWritesNothing(t *testing.T) {
 	genInto(t)
 	removePKI(t, "ca.key", "sa.pub")
@@ -762,10 +696,6 @@ func TestRotateCARefusalWithoutForceWritesNothing(t *testing.T) {
 	}
 }
 
-// TestRotateCAResumesAHalfStagedSAKeypair: a forced trust-new stopped between
-// writing sa-new.key and sa-new.pub resumes with the staged key kept and its
-// public half derived from it, not with a new pair a follower's cluster-fetched
-// key would no longer match.
 func TestRotateCAResumesAHalfStagedSAKeypair(t *testing.T) {
 	genInto(t)
 	removePKI(t, "ca.key")
@@ -789,8 +719,6 @@ func TestRotateCAResumesAHalfStagedSAKeypair(t *testing.T) {
 	}
 }
 
-// TestRotateCARefusesWithoutAnOldPublicHalf: a public half that cannot be
-// recovered refuses even with --force, before anything is staged.
 func TestRotateCARefusesWithoutAnOldPublicHalf(t *testing.T) {
 	for name, lost := range map[string][]string{
 		"front-proxy-ca.crt": {"front-proxy-ca.crt"},
@@ -810,9 +738,6 @@ func TestRotateCARefusesWithoutAnOldPublicHalf(t *testing.T) {
 	}
 }
 
-// TestRotateCARefusesARootCertTheBundleDoesNotCarry: a ca.crt copied in from
-// another cluster is not the root this node trusts; carrying it instead would
-// drop the trusted root from the bundle at trust-new.
 func TestRotateCARefusesARootCertTheBundleDoesNotCarry(t *testing.T) {
 	genInto(t)
 	removePKI(t, "ca.key")
@@ -835,12 +760,7 @@ func TestRotateCARefusesARootCertTheBundleDoesNotCarry(t *testing.T) {
 	}
 }
 
-// TestRotateCARefusesALiveSignerThatIsItsStagedReplacement: a node whose live
-// signer is byte-identical to the staged one took a promoted control plane's
-// signers as its own — the shared-cert fetch writes the live files too. The
-// bundles trust-new writes would then carry the new signer twice and drop the
-// old one from a node whose leaves it signed, so the re-run refuses and
-// changes nothing.
+// The shared-cert fetch writes the live files too, so the bundles would carry the new signer twice.
 func TestRotateCARefusesALiveSignerThatIsItsStagedReplacement(t *testing.T) {
 	for name, pairs := range map[string][][2]string{
 		"root CA":        {{"ca-new.crt", "ca.crt"}, {"ca-new.key", "ca.key"}},
@@ -868,7 +788,6 @@ func TestRotateCARefusesALiveSignerThatIsItsStagedReplacement(t *testing.T) {
 	}
 }
 
-// TestRotateCAKeyPerms: staged private keys are 0600.
 func TestRotateCAKeyPerms(t *testing.T) {
 	genInto(t)
 	if err := RotateCAMaterial(false); err != nil {
@@ -885,11 +804,7 @@ func TestRotateCAKeyPerms(t *testing.T) {
 	}
 }
 
-// TestBundleReadersAgreedInputs pins the inputs every bundle parser answers
-// alike: CABundleCertCount and bundleCerts here, parseTrustBundle in
-// internal/certs (which holds the same rows). The three readers share one file,
-// so a row one parser accepts and another refuses is a contract break between
-// them; any move to a single shared parser must keep these answers.
+// One row set across all three trust readers; a disagreement is a contract break.
 func TestBundleReadersAgreedInputs(t *testing.T) {
 	genInto(t)
 	ca, other := readPKI(t, "ca.crt"), readPKI(t, "front-proxy-ca.crt")
@@ -904,8 +819,6 @@ func TestBundleReadersAgreedInputs(t *testing.T) {
 		{"a block whose DER does not parse", badDER, 0},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			// CABundleCertCount reads {base}-bundle.crt; bundleCerts takes a
-			// path. Feed both the same bytes.
 			if err := os.WriteFile(bundleCrtPath("ca"), row.in, 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -941,7 +854,6 @@ func TestBundleReadersAgreedInputs(t *testing.T) {
 	}
 }
 
-// catBytes concatenates PEM fixtures without mutating its arguments.
 func catBytes(parts ...[]byte) []byte {
 	var out []byte
 	for _, p := range parts {
@@ -950,17 +862,7 @@ func catBytes(parts ...[]byte) []byte {
 	return out
 }
 
-// TestOneBundleParser is the pki half of a shared pin with internal/certs'
-// TestOneBundleParser: one row set across all three trust readers, every answer
-// asserted against the policy its reader declares, so a shared PEM decoder
-// cannot erase a consumer's trust policy by accident and cannot reject all
-// leading whitespace indiscriminately. The rows are the inputs today's parsers
-// disagree about — CABundleCertCount (the rotation counter) and bundleCerts
-// (the etcd trust reader) here, parseTrustBundle in internal/certs, which must
-// keep the kubelet's verbatim rules — plus the newline-ended leading whitespace
-// every reader accepts. Each reader must answer exactly as the one shared
-// decoder answers under the reader's declared policy: the three readers differ
-// only by declared policy, never by ad-hoc parsing.
+// The three readers differ only by declared policy, never by ad-hoc parsing.
 func TestOneBundleParser(t *testing.T) {
 	genInto(t)
 	ca, other := readPKI(t, "ca.crt"), readPKI(t, "front-proxy-ca.crt")
@@ -969,17 +871,14 @@ func TestOneBundleParser(t *testing.T) {
 	if blk == nil {
 		t.Fatal("ca.crt is not PEM")
 	}
-	// A block carrying PEM headers still carries its DER: the count and etcd
-	// readers accept it, while the kubelet's parser drops the block outright.
+	// A headered block still carries its DER; the kubelet's parser drops it outright.
 	headers := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Headers: map[string]string{"Proc-Type": "4,ENCRYPTED"}, Bytes: blk.Bytes})
 	foreign := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("not a certificate")})
 	two := catBytes(ca, other)
 	for _, row := range []struct {
 		name string
 		in   []byte
-		// want* of 0: the reader must refuse. The three columns are the
-		// declared policies of CABundleCertCount, bundleCerts and the
-		// kubelet-verbatim worker refresh, in that order.
+		// want* of 0: that reader must refuse.
 		wantCount, wantEtcd, wantKubelet int
 	}{
 		{"a clean bundle of two CA certificates", two, 2, 2, 2},
@@ -988,10 +887,7 @@ func TestOneBundleParser(t *testing.T) {
 		{"a space immediately before BEGIN", catBytes([]byte(" "), ca), 1, 0, 0},
 		{"a tab immediately before BEGIN", catBytes([]byte("\t"), ca), 1, 0, 0},
 		{"a lone CR immediately before BEGIN", catBytes([]byte("\r"), ca), 1, 0, 0},
-		// Whitespace AFTER the last block anchors no block, so it is not the
-		// before-BEGIN case above: client-go's cert.ParseCertsPEM stops
-		// cleanly at it, and the worker parser this policy replaced accepted
-		// it, so a bundle ending in a stray space must not be refused.
+		// Whitespace after the last block anchors no block; client-go's parser stops cleanly at it.
 		{"a space after the final newline", catBytes(ca, []byte(" ")), 1, 1, 1},
 		{"a tab after the final newline", catBytes(ca, []byte("\t")), 1, 1, 1},
 		{"a lone CR after the final newline", catBytes(ca, []byte("\r")), 1, 1, 1},
@@ -1002,7 +898,6 @@ func TestOneBundleParser(t *testing.T) {
 		{"embedded text before a block", catBytes([]byte("owned-by-nobody\n"), ca), 0, 1, 0},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			// The shared decoder's answer under each reader's declared policy.
 			for _, pc := range []struct {
 				what string
 				pol  BundlePolicy
@@ -1026,8 +921,6 @@ func TestOneBundleParser(t *testing.T) {
 					t.Errorf("%s decoded %d certificates from %q, want %d", pc.what, len(certs), row.name, pc.want)
 				}
 			}
-			// The real readers must agree with the shared decoder under their
-			// own declared policies.
 			if err := os.WriteFile(bundleCrtPath("ca"), row.in, 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -1043,10 +936,7 @@ func TestOneBundleParser(t *testing.T) {
 	}
 }
 
-// bundleReaderAgrees fails the test unless the reader's (count, err) answer is
-// exactly the shared decoder's answer for in under the reader's declared
-// policy. Refusal reasons differ — readers wrap the decoder's errors with
-// their own file names — but acceptance must agree to the certificate.
+// Refusal reasons may differ, wrapped with file names; acceptance must agree.
 func bundleReaderAgrees(t *testing.T, reader string, in []byte, pol BundlePolicy, n int, err error) {
 	t.Helper()
 	certs, derr := DecodePEMBundle(in, pol)
@@ -1059,8 +949,6 @@ func bundleReaderAgrees(t *testing.T, reader string, in []byte, pol BundlePolicy
 	}
 }
 
-// TestSigner: the live pair signs while its key is there; with the key gone,
-// the staged pair a forced rotation went ahead with signs until promotion.
 func TestSigner(t *testing.T) {
 	genInto(t)
 	for _, base := range []string{"ca", "sa"} {
@@ -1091,8 +979,6 @@ func TestSigner(t *testing.T) {
 	}
 }
 
-// pkiSnapshot reads every file in the PKI directory, so a test can show a
-// refusal changed nothing.
 func pkiSnapshot(t *testing.T) map[string]string {
 	t.Helper()
 	entries, err := os.ReadDir(version.PKIDir)
@@ -1139,9 +1025,6 @@ func removePKI(t *testing.T, names ...string) {
 	}
 }
 
-// TestRollbackRefusesAForcedRotation: a rotation staged with --force is refused
-// a rollback before and after sign-new, whether this node lost a key or kept
-// them all, because another control plane of the same run may have lost one.
 func TestRollbackRefusesAForcedRotation(t *testing.T) {
 	for _, lost := range [][]string{{"ca.key"}, nil} {
 		t.Run(fmt.Sprintf("lost %v", lost), func(t *testing.T) {
@@ -1165,9 +1048,6 @@ func TestRollbackRefusesAForcedRotation(t *testing.T) {
 	}
 }
 
-// TestRollbackChecksThePairsItWouldRestore: without the forced marker, the
-// refusal turns on whether every pair RollbackCA would leave is complete and
-// matching, not on which backups happen to exist.
 func TestRollbackChecksThePairsItWouldRestore(t *testing.T) {
 	for _, key := range []string{"ca.key", "front-proxy-ca.key", "sa.key"} {
 		t.Run(key+" lost", func(t *testing.T) {
@@ -1222,9 +1102,6 @@ func TestRollbackChecksThePairsItWouldRestore(t *testing.T) {
 	})
 }
 
-// TestSignNewResumes: a forced sign-new that promoted the root and stopped can
-// be finished: SignNewResumable says so, FinishPromotion promotes what is still
-// staged, and the promotion marker ends it.
 func TestSignNewResumes(t *testing.T) {
 	genInto(t)
 	removePKI(t, "ca.key")
@@ -1257,22 +1134,14 @@ func TestSignNewResumes(t *testing.T) {
 	}
 }
 
-// ── atomic single-file writes ───────────────────────────────────────────────
-
-// umask022 pins the process umask for a test that asserts a world-readable
-// mode, so the assertion tests the writer's mode, not the caller's umask.
+// The assertion tests the writer's mode, not the caller's umask.
 func umask022(t *testing.T) {
 	t.Helper()
 	old := syscall.Umask(0o022)
 	t.Cleanup(func() { syscall.Umask(old) })
 }
 
-// TestCertWritesReplaceTheFileNotTruncate: the certificate writer must
-// replace, not truncate. A component that opened the old certificate — the
-// hard link below — keeps reading the old bytes while the file at path becomes
-// a new file holding the reissued certificate; a plain os.WriteFile truncates
-// the shared inode instead, and a component that rereads a half-written
-// certificate fails TLS. The reissued certificate keeps the 0644 mode.
+// A reader holding the old certificate open (the hard link below) keeps the old bytes.
 func TestCertWritesReplaceTheFileNotTruncate(t *testing.T) {
 	umask022(t)
 	genInto(t)
@@ -1300,11 +1169,7 @@ func TestCertWritesReplaceTheFileNotTruncate(t *testing.T) {
 	}
 }
 
-// TestSAKeypairWritesReplaceTheFileNotTruncate: the service-account keypair
-// writer replaces, not truncates — sa.key is what every apiserver verifies
-// service-account tokens with, and a truncated one stops the control plane
-// from starting at all. The old files (the hard links) keep their bytes, and
-// the modes come out exact: 0600 for the signing key, 0644 for the public half.
+// A truncated sa.key stops every apiserver from starting.
 func TestSAKeypairWritesReplaceTheFileNotTruncate(t *testing.T) {
 	umask022(t)
 	genInto(t)
@@ -1346,11 +1211,7 @@ func TestSAKeypairWritesReplaceTheFileNotTruncate(t *testing.T) {
 	}
 }
 
-// TestCertWriteFailureLeavesNothingBehind: a leaf reissue whose certificate
-// write fails (the destination occupied by a directory here) must change
-// nothing — the key of the pair it was reissuing stays the old one, and no
-// temp copy of either file is left in the PKI directory. A write that failed
-// half-way onto a live control plane is worse than one that failed cleanly.
+// A write that failed half-way onto a live control plane is worse than a clean failure.
 func TestCertWriteFailureLeavesNothingBehind(t *testing.T) {
 	genInto(t)
 	before := pkiSnapshot(t)
@@ -1383,23 +1244,14 @@ func TestCertWriteFailureLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-// failDirSync points the pki writers' seams at a directory sync that never
-// completes, the window a power loss leaves behind: the real atomic writer
-// renames the new file into place and then reports ErrNotDurable. The
-// override lasts for one test; the tests that use it are not parallel.
+// The real writer renames the file into place and then reports ErrNotDurable.
 func failDirSync(t *testing.T) {
 	t.Helper()
 	writeSeams = atomicfile.Seams{SyncDir: func(string) error { return syscall.EIO }}
 	t.Cleanup(func() { writeSeams = atomicfile.Seams{} })
 }
 
-// TestNewCACompletesThePairWhenTheCertificateLandsDurably pins the
-// pair-completion contract against a real injected directory-sync failure:
-// NewCA's certificate write renames the new certificate into place and then
-// fails not-durable, and stopping there would strand a certificate with no
-// key — EnsureCA refuses a partial pair, so no retry could repair it. The
-// key must be written anyway, from the same material, the durability error
-// must still go out, and the retry must load the completed pair.
+// EnsureCA refuses a partial pair, so stopping there strands a certificate with no key.
 func TestNewCACompletesThePairWhenTheCertificateLandsDurably(t *testing.T) {
 	version.PKIDir = t.TempDir()
 	failDirSync(t)
@@ -1414,12 +1266,7 @@ func TestNewCACompletesThePairWhenTheCertificateLandsDurably(t *testing.T) {
 	}
 }
 
-// TestIssueCompletesThePairWhenTheCertificateLandsDurably pins the same
-// contract for a leaf: a reissue whose certificate write lands not-durably
-// must still write the matching key, report the error, and leave a pair the
-// next Issue recognizes as current — with the old key still on disk, the
-// skip-if-SANs-match path would run the new certificate against the old key
-// forever.
+// Without completion, the skip-if-SANs-match path pairs the new cert with the old key.
 func TestIssueCompletesThePairWhenTheCertificateLandsDurably(t *testing.T) {
 	version.PKIDir = t.TempDir()
 	ca, err := EnsureCA("ca", "stratum-ca")
@@ -1443,15 +1290,7 @@ func TestIssueCompletesThePairWhenTheCertificateLandsDurably(t *testing.T) {
 	}
 }
 
-// TestNewSAKeypairCompletesThePairWhenTheKeyLandsDurably pins the
-// pair-completion contract for the service-account signing pair: a key write
-// that lands not-durably must still write sa.pub — the apiserver reads it as
-// its token-verification key, and EnsureSAKeypair skips whenever sa.key
-// exists, so a stranded key would never gain its public half — and the
-// retry must find both files. Both halves flow through the seam, so the
-// second call's failure is distinguishable from the first's: the returned
-// error must carry both, not the key write's durability error alone — a
-// second half that failed outright must reach the caller as what it is.
+// EnsureSAKeypair skips whenever sa.key exists, so a stranded key never gains its public half.
 func TestNewSAKeypairCompletesThePairWhenTheKeyLandsDurably(t *testing.T) {
 	version.PKIDir = t.TempDir()
 	var syncs atomic.Int32
@@ -1493,16 +1332,7 @@ func TestNewSAKeypairCompletesThePairWhenTheKeyLandsDurably(t *testing.T) {
 	}
 }
 
-// TestRollbackCompletesThePairWhenTheRestoreLandsDurably pins the pair-completion
-// contract on the rollback: a restore whose first half renames in and then
-// fails its directory sync (ErrNotDurable — the old certificate is already in
-// place) must still restore the matching key from its backup, or the repaired
-// trust material pairs the old certificate with the new signer's key — exactly
-// the brokenness this path exists to repair. The seam fails one sync only, the
-// sa pair's key write, so the rollback carries on to the sa pair, which a
-// rollback that stopped at the first failed sync would never reach: the ca and
-// front-proxy pairs then prove the restore completed them whole, and sa.pub's
-// bytes prove the public half is the backup's, not merely present.
+// A stopped rollback would pair the restored old certificate with the new signer's key.
 func TestRollbackCompletesThePairWhenTheRestoreLandsDurably(t *testing.T) {
 	genInto(t)
 	if err := RotateCAMaterial(false); err != nil {
@@ -1514,9 +1344,7 @@ func TestRollbackCompletesThePairWhenTheRestoreLandsDurably(t *testing.T) {
 	if err := PromoteSA(); err != nil {
 		t.Fatal(err)
 	}
-	// Sync order across the rollback's restores: ca.crt (fails), ca.key,
-	// front-proxy-ca.crt, front-proxy-ca.key, sa.key (fails), sa.pub, ... —
-	// the sa key's write is the one whose directory sync fails here.
+	// The sa key's write is the fifth directory sync, the one that fails here.
 	var syncs atomic.Int32
 	writeSeams = atomicfile.Seams{SyncDir: func(string) error {
 		if syncs.Add(1) == 5 {

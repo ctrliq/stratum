@@ -13,15 +13,9 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// TestClearStaleUpgradeJobs covers the rename's migration path.
-//
-// nodejob.Run replaces a stale Job only when it already carries the name it is
-// about to create, so a Job left under the old truncated name is invisible to
-// it: an interrupted upgrade could keep one privileged Job running while a
-// retry starts a second on the same node.
+// nodejob.Run replaces a stale Job only at its own name; a legacy-named one is invisible to it.
 func TestClearStaleUpgradeJobs(t *testing.T) {
-	// Two node names long enough to be truncated, sharing the prefix the
-	// truncation keeps. This is the collision jobName exists to prevent.
+	// Two names that truncate to the same legacy name: the collision jobName exists to prevent.
 	shared := strings.Repeat("a", 63)
 	nodeA := shared + ".worker-1"
 	nodeB := shared + ".worker-2"
@@ -40,9 +34,7 @@ func TestClearStaleUpgradeJobs(t *testing.T) {
 		}
 	})
 
-	// The case that makes the label check load-bearing: both nodes truncate
-	// to the same legacy name, so deleting by name alone would take the
-	// other node's Job with it.
+	// Both nodes truncate to the same legacy name; deleting by name would take the other's Job.
 	t.Run("a legacy Job belonging to another node is left alone", func(t *testing.T) {
 		legacy := legacyJobName(nodeA)
 		if legacy != legacyJobName(nodeB) {
@@ -58,9 +50,7 @@ func TestClearStaleUpgradeJobs(t *testing.T) {
 		}
 	})
 
-	// The gap sweepUpgradeJobs cannot close: it lists once, and an
-	// older process can create its legacy-named Job afterwards. Deleting that
-	// would interrupt a privileged upgrade mid-change on the host.
+	// sweepUpgradeJobs lists once; a legacy Job created after it would be interrupted mid-host-change.
 	t.Run("a legacy Job still running is refused, not removed", func(t *testing.T) {
 		legacy := legacyJobName(nodeA)
 		cs := fake.NewSimpleClientset(unfinishedLegacyJob(legacy, nodeA))
@@ -84,9 +74,7 @@ func TestClearStaleUpgradeJobs(t *testing.T) {
 		}
 	})
 
-	// A short node name never changed, so its Job is the same object
-	// nodejob.Run would replace itself. Deleting it here would remove a Job
-	// a concurrent run may be polling.
+	// A short node's Job is the one nodejob.Run replaces itself; deleting it here would race it.
 	t.Run("a short node name is left to nodejob.Run", func(t *testing.T) {
 		const short = "worker-1"
 		if legacyJobName(short) != jobName(short) {
@@ -103,13 +91,7 @@ func TestClearStaleUpgradeJobs(t *testing.T) {
 	})
 }
 
-// TestLegacySweepResolvesACrossNameCollision covers the case a preflight used
-// to reject outright: a long node's legacy truncated name can equal a short
-// node's current name, which is never truncated.
-//
-// Refusing the pair made such a cluster permanently unupgradeable, and no
-// manual cleanup could help, because the check never looked at Jobs. The sweep
-// resolves it by ownership instead.
+// A long node's legacy name can equal a short node's current name; ownership resolves it.
 func TestLegacySweepResolvesACrossNameCollision(t *testing.T) {
 	long := strings.Repeat("a", 80)
 	short := strings.TrimPrefix(legacyJobName(long), "stratum-upgrade-")
@@ -128,7 +110,6 @@ func TestLegacySweepResolvesACrossNameCollision(t *testing.T) {
 		}
 	})
 
-	// The half that makes the pair usable rather than merely diagnosable.
 	t.Run("the short node's own Job at that name is left alone", func(t *testing.T) {
 		cs := fake.NewSimpleClientset(finishedLegacyJob(shared, short))
 		if err := clearStaleUpgradeJobs(io.Discard, t.Context(), cs, long); err != nil {
@@ -139,7 +120,6 @@ func TestLegacySweepResolvesACrossNameCollision(t *testing.T) {
 		}
 	})
 
-	// And the short node never sweeps: its legacy name is its current name.
 	t.Run("the short node sweeps nothing", func(t *testing.T) {
 		cs := fake.NewSimpleClientset(finishedLegacyJob(shared, short))
 		if err := clearStaleUpgradeJobs(io.Discard, t.Context(), cs, short); err != nil {
@@ -151,8 +131,6 @@ func TestLegacySweepResolvesACrossNameCollision(t *testing.T) {
 	})
 }
 
-// unfinishedLegacyJob is a Job under the pre-hash name that has neither
-// succeeded nor failed.
 func unfinishedLegacyJob(name, labelNode string) *batchv1.Job {
 	return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
 		Name:        name,
@@ -162,22 +140,14 @@ func unfinishedLegacyJob(name, labelNode string) *batchv1.Job {
 	}}
 }
 
-// finishedLegacyJob is a legacy-named Job that has run to completion, which is
-// the only state removeLegacyUpgradeJob may delete.
+// The only state the sweep may delete.
 func finishedLegacyJob(name, labelNode string) *batchv1.Job {
 	j := unfinishedLegacyJob(name, labelNode)
 	j.Status.Succeeded = 1
 	return j
 }
 
-// TestClearStaleUpgradeJobsFindsAnyName is the property the label selector
-// buys over guessing one name.
-//
-// The previous version computed legacyJobName(node) and looked that up, so it
-// only ever found Jobs named by the one scheme it knew about. Selecting on the
-// node's label value finds every Job targeting the node, whatever named it —
-// which matters because the naming this migrates from is not the only naming
-// that has ever existed.
+// Selecting on the node label finds Jobs under any naming, not just the one scheme known.
 func TestClearStaleUpgradeJobsFindsAnyName(t *testing.T) {
 	const node = "cp1"
 
@@ -196,8 +166,7 @@ func TestClearStaleUpgradeJobsFindsAnyName(t *testing.T) {
 		}
 	})
 
-	// The Job this run is about to create must survive: nodejob.Run replaces
-	// it itself, and deleting it here would race that.
+	// nodejob.Run replaces this Job itself; deleting it here would race that.
 	t.Run("the Job this run will create is left to nodejob.Run", func(t *testing.T) {
 		cs := fake.NewSimpleClientset(finishedLegacyJob(jobName(node), node))
 
@@ -209,7 +178,6 @@ func TestClearStaleUpgradeJobsFindsAnyName(t *testing.T) {
 		}
 	})
 
-	// A running Job under any name stops the run, not just one we can name.
 	t.Run("a running Job under an unrecognised name refuses the run", func(t *testing.T) {
 		stale := "stratum-upgrade-cp1-older"
 		cs := fake.NewSimpleClientset(unfinishedLegacyJob(stale, node))
@@ -224,19 +192,12 @@ func TestClearStaleUpgradeJobsFindsAnyName(t *testing.T) {
 	})
 }
 
-// TestClearStaleUpgradeJobsTrustsTheAnnotationOverTheLabel covers the one case
-// the label selector cannot filter: a Job whose label selects for this node but
-// whose annotation says it targets another.
-//
-// The label may be a hash, so it is a selector, not proof. The annotation is
-// the node name verbatim, so it is the answer. Without this the run would
-// delete — or be blocked by — a Job belonging to a different node.
+// The label may be a hash and the annotation is the node name verbatim.
 func TestClearStaleUpgradeJobsTrustsTheAnnotationOverTheLabel(t *testing.T) {
 	const mine, theirs = "cp1", "cp2"
 
 	mislabelled := func(name string) *batchv1.Job {
 		j := finishedLegacyJob(name, theirs)
-		// Selected for cp1, owned by cp2.
 		j.Labels[upgradeJobLabel] = nodejob.NodeLabelValue(mine)
 		return j
 	}

@@ -43,12 +43,12 @@ func TestParseVersion(t *testing.T) {
 		ok   bool
 	}{
 		{"Kubernetes v1.36.2", "v1.36.2", true},
-		{"Kubernetes v1.36.2-stratum", "v1.36.2", true},                 // SKE build suffix trimmed: Target is the bare upstream version
-		{"Kubernetes v1.37.1-rc.1", "v1.37.1-rc.1", true},               // an upstream prerelease is not the release
-		{"Kubernetes v1.37.1-rc.1-stratum", "v1.37.1-rc.1", true},       // ...with or without the SKE suffix
-		{"Kubernetes v1.30.0-gke.1449000", "v1.30.0-gke.1449000", true}, // a vendor build is kept as reported
+		{"Kubernetes v1.36.2-stratum", "v1.36.2", true},
+		{"Kubernetes v1.37.1-rc.1", "v1.37.1-rc.1", true},
+		{"Kubernetes v1.37.1-rc.1-stratum", "v1.37.1-rc.1", true},
+		{"Kubernetes v1.30.0-gke.1449000", "v1.30.0-gke.1449000", true},
 		{"Kubernetes v1.35.6\n", "v1.35.6", true},
-		{"etcd Version: 3.5.16", "", false}, // no v-prefixed dotted token
+		{"etcd Version: 3.5.16", "", false},
 		{"garbage", "", false},
 	}
 	for _, tt := range tests {
@@ -59,7 +59,6 @@ func TestParseVersion(t *testing.T) {
 	}
 }
 
-// redirect points a package path var at v for the duration of the test.
 func redirect(t *testing.T, p *string, v string) {
 	t.Helper()
 	old := *p
@@ -67,8 +66,7 @@ func redirect(t *testing.T, p *string, v string) {
 	t.Cleanup(func() { *p = old })
 }
 
-// mustNewestSet is the newest backup set, failing the test on a scan error
-// rather than reading it as "no backups".
+// Fails on a scan error rather than reading it as no backups.
 func mustNewestSet(t *testing.T) (string, []backupItem) {
 	t.Helper()
 	sets, err := scanBackupSets()
@@ -78,8 +76,6 @@ func mustNewestSet(t *testing.T) (string, []backupItem) {
 	return newestSet(sets)
 }
 
-// backupFixture redirects every path scanBackupSets scans to temp dirs and
-// returns them (stratum dir, bin dir, DataDir).
 func backupFixture(t *testing.T) (stratumDir, binDir, dataDir string) {
 	t.Helper()
 	stratumDir, binDir, dataDir = t.TempDir(), t.TempDir(), t.TempDir()
@@ -89,17 +85,15 @@ func backupFixture(t *testing.T) (stratumDir, binDir, dataDir string) {
 	return stratumDir, binDir, dataDir
 }
 
-// TestLatestBackupSet: the newest <ts> wins, and ONLY artifacts carrying that
-// exact stamp are in the set — an artifact whose newest backup is older (here
-// containerd) must not be mixed in from another run.
+// Only artifacts carrying the newest exact stamp are in the set; older ones are not mixed in.
 func TestLatestBackupSet(t *testing.T) {
 	stratumDir, binDir, dataDir := backupFixture(t)
 	const tsOld, tsNew = "20260101-000000", "20260628-120000"
 
 	for _, n := range []string{
 		"kubelet", "kubelet.bak-" + tsOld, "kubelet.bak-" + tsNew,
-		"containerd", "containerd.bak-" + tsOld, // no backup in the newest run
-		"runc.tmp", // installer leftover, never a backup
+		"containerd", "containerd.bak-" + tsOld,
+		"runc.tmp",
 	} {
 		if err := os.WriteFile(filepath.Join(binDir, n), []byte("x"), 0o755); err != nil {
 			t.Fatal(err)
@@ -147,21 +141,16 @@ func TestLatestBackupSet(t *testing.T) {
 	}
 }
 
-// TestPruneOldBackups: pruning keeps the newest keep .bak-<ts> sets and removes
-// every older one, across a stamp that spans several files in the dir; a live
-// binary and an installer leftover (neither a backup) are never touched, and the
-// newest set RollbackNode needs must always survive.
+// Keeps the newest keep sets and removes the older ones; live binaries stay untouched.
 func TestPruneOldBackups(t *testing.T) {
 	dir := t.TempDir()
 	const ts1, ts2, ts3 = "20260101-000000", "20260202-000000", "20260303-000000"
 
-	// One stamp spans two host-binary backups; three stamps in all, oldest first.
 	backups := []string{
 		"kubelet.bak-" + ts1, "containerd.bak-" + ts1,
 		"kubelet.bak-" + ts2, "containerd.bak-" + ts2,
 		"kubelet.bak-" + ts3, "containerd.bak-" + ts3,
 	}
-	// Non-backup entries that must be left completely alone.
 	keepAlways := []string{"kubelet", "containerd", "runc.tmp", "other-tool.bak-20250101-000000", "kubelet.bak-", "kubelet.bak-aaa", "kubelet.bak-zzz", "kubelet.bak-20261301-000000", "kubelet.bak-20260230-000000"}
 	for _, n := range append(append([]string{}, backups...), keepAlways...) {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o755); err != nil {
@@ -174,7 +163,6 @@ func TestPruneOldBackups(t *testing.T) {
 		t.Fatalf("pruneOldBackups: %v", err)
 	}
 
-	// The oldest set (ts1) is gone; the newest two (ts2, ts3) survive intact.
 	for _, n := range []string{"kubelet.bak-" + ts1, "containerd.bak-" + ts1} {
 		if _, err := os.Stat(filepath.Join(dir, n)); !os.IsNotExist(err) {
 			t.Errorf("stale backup %q was not pruned (err=%v)", n, err)
@@ -188,15 +176,12 @@ func TestPruneOldBackups(t *testing.T) {
 			t.Errorf("newest backup %q must survive: %v", n, err)
 		}
 	}
-	// Non-backup files untouched.
 	for _, n := range keepAlways {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
 			t.Errorf("non-backup file %q must be left alone: %v", n, err)
 		}
 	}
 
-	// Manifest backup dirs use the "manifests-bak-<ts>" scheme and are pruned
-	// the same way — whole directory sets removed together.
 	updir := t.TempDir()
 	for _, ts := range []string{ts1, ts2, ts3} {
 		if err := os.MkdirAll(filepath.Join(updir, "manifests-bak-"+ts), 0o700); err != nil {
@@ -232,8 +217,7 @@ func TestPruneOldBackupsSharedDirectory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Valid timestamps alone do not establish ownership. Neither unrelated
-	// directories nor directories masquerading as binary backups may be removed.
+	// Valid timestamps alone do not establish ownership.
 	for _, name := range []string{"other-tool.bak-20240101-000000", "stratum.bak-20240101-000000", "manifests-bak-20240101-000000"} {
 		path := filepath.Join(dir, name)
 		if err := os.Mkdir(path, 0o700); err != nil {
@@ -259,7 +243,6 @@ func TestPruneOldBackupsSharedDirectory(t *testing.T) {
 	}
 }
 
-// probeFixture forces ensureNodeUp's supervisor/unit probes for the test.
 func probeFixture(t *testing.T, sup bool, active map[string]bool) {
 	t.Helper()
 	// Every run that passes the guard takes the node lock next.
@@ -276,16 +259,11 @@ func probeFixture(t *testing.T, sup bool, active map[string]bool) {
 	t.Cleanup(func() { runningSupervisor = oldRunning })
 }
 
-// testNode is the node name the gate tests look up, and kubeletProbe is the
-// kubelet check on it, in the shape the probe table takes.
 const testNode = "node-1"
 
 func kubeletProbe(ctx context.Context) error { return kubeletServesInstalled(ctx, testNode) }
 
-// runtimeFixture redirects the running-version probes: disk is what both
-// binaries print for --version, ctrd what the CRI socket reports, kubelet what
-// the Node's nodeInfo does. The default (all equal) is a node that is what it
-// was installed to be.
+// Redirects the installed, CRI and nodeInfo version probes; all equal means the node matches.
 func runtimeFixture(t *testing.T, disk, ctrd, kubelet string) {
 	t.Helper()
 	oldI, oldS, oldK, oldW := installedVersion, servingContainerd, kubeletReports, runtimeProbeWindow
@@ -298,15 +276,12 @@ func runtimeFixture(t *testing.T, disk, ctrd, kubelet string) {
 	})
 }
 
-// nodeUp is the happy-path probe state: supervisor serving, host procs active.
 func nodeUp(t *testing.T) {
 	t.Helper()
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
 }
 
-// TestEnsureNodeUpSupervisorDown: with no supervisor answering, both commands
-// refuse before selecting or touching anything, and the error says how to
-// proceed and that nothing was changed.
+// With no supervisor answering, both commands refuse before touching anything.
 func TestEnsureNodeUpSupervisorDown(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, false, nil)
@@ -326,11 +301,7 @@ func TestEnsureNodeUpSupervisorDown(t *testing.T) {
 	}
 }
 
-// TestEnsureNodeUpKubeletInactive: the upgrade restarts and gates on every
-// host process, so it refuses while one is down. It names both causes as
-// conditions, and offers rollback only when an interrupted upgrade left
-// something to roll back: on a node merely still starting, a rollback would
-// restore the upgrade before the last good one.
+// The upgrade refuses while a host process is down, and offers rollback only when one can recover.
 func TestEnsureNodeUpKubeletInactive(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true})
@@ -344,8 +315,7 @@ func TestEnsureNodeUpKubeletInactive(t *testing.T) {
 		t.Errorf("with no interrupted upgrade, the refusal must not suggest a rollback: %v", err)
 	}
 
-	// An interrupted upgrade whose set restores no host binary: the rollback
-	// would keep the full guard and refuse on the same down unit, so no hint.
+	// A set with no host binary cannot recover the unit, so no hint.
 	writeTestFile(t, stratumInstallPath+".bak-20260928-100000", "old")
 	if err := writeUpgradeMarker(io.Discard, upgradeMarker{TS: "20260928-100000", Target: "v1.37.9"}); err != nil {
 		t.Fatal(err)
@@ -355,7 +325,6 @@ func TestEnsureNodeUpKubeletInactive(t *testing.T) {
 		t.Errorf("a set with no host binary cannot recover the unit, so no rollback hint: %v", err)
 	}
 
-	// One that restores kubelet can: the hint names the interrupted target.
 	writeTestFile(t, filepath.Join(version.BinDir, "kubelet.bak-20260928-100000"), "old")
 	err = UpgradeNode(io.Discard, NodeOptions{})
 	if err == nil || !strings.Contains(err.Error(), "crash-looping after the interrupted upgrade to v1.37.9, `stratum rollback` restores the version before it") {
@@ -363,10 +332,7 @@ func TestEnsureNodeUpKubeletInactive(t *testing.T) {
 	}
 }
 
-// TestRollbackRunsWithAKubeletDown: a kubelet crash-looping on an
-// interrupted upgrade's binaries is the state rollback exists to recover. The
-// supervisor answering is what proves bootstrap's manifest write is done, so
-// rollback gets past the guard to backup-set selection.
+// A kubelet crash-looping on the interrupted upgrade's binaries is the state rollback recovers.
 func TestRollbackRunsWithAKubeletDown(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true})
@@ -376,9 +342,7 @@ func TestRollbackRunsWithAKubeletDown(t *testing.T) {
 	}
 }
 
-// rollbackRestartFixture is a worker whose kubelet is down and has a backup to
-// restore, with the supervisor's restart and roster stubbed: restartUnit
-// records each call and, unless fail names the unit, brings it up.
+// A worker with its kubelet down and a backup to restore; restartUnit records each call.
 func rollbackRestartFixture(t *testing.T, fail string) (restarted *[]string) {
 	t.Helper()
 	_, binDir, _ := backupFixture(t)
@@ -410,10 +374,7 @@ func rollbackRestartFixture(t *testing.T, fail string) (restarted *[]string) {
 	return &calls
 }
 
-// TestRollbackRestartsTheUnitItRecovers: after restoring, a
-// rollback restarts every host unit the supervisor manages — the down kubelet
-// most of all. Skipping units that were not running left the one this exists
-// to recover to the supervisor's own backoff, and the gate to a coin toss.
+// A rollback restarts every host unit the supervisor manages, the down kubelet most of all.
 func TestRollbackRestartsTheUnitItRecovers(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	if err := RollbackNode(io.Discard, RollbackOptions{SoakSec: 1}); err != nil {
@@ -427,8 +388,7 @@ func TestRollbackRestartsTheUnitItRecovers(t *testing.T) {
 	}
 }
 
-// TestRollbackReportsAUnitThatDidNotComeBack: restored files with a host
-// process that never came back on them is not a rollback that succeeded.
+// Restored files with a host process that never came back is not a rollback that succeeded.
 func TestRollbackReportsAUnitThatDidNotComeBack(t *testing.T) {
 	rollbackRestartFixture(t, "kubelet")
 	err := RollbackNode(io.Discard, RollbackOptions{SoakSec: 1})
@@ -439,8 +399,7 @@ func TestRollbackReportsAUnitThatDidNotComeBack(t *testing.T) {
 	}
 }
 
-// TestEnsureNodeUpHappyPath: with the node fully up the guard passes and each
-// sequence proceeds to its next step (node-state load / backup-set selection).
+// With the node fully up the guard passes and each sequence proceeds to its next step.
 func TestEnsureNodeUpHappyPath(t *testing.T) {
 	backupFixture(t)
 	redirect(t, &version.K8sConfDir, t.TempDir()) // no node.yaml there
@@ -456,8 +415,7 @@ func TestEnsureNodeUpHappyPath(t *testing.T) {
 	}
 }
 
-// TestUpgradeNodeDryRunSkipsGuard: --dry-run must preview even on a half-up
-// node — it writes nothing, so the race the guard exists for cannot happen.
+// --dry-run must preview even on a half-up node: it writes nothing.
 func TestUpgradeNodeDryRunSkipsGuard(t *testing.T) {
 	backupFixture(t) // empty BinDir: no kubelet, so the idempotency probe is skipped
 	probeFixture(t, false, nil)
@@ -478,8 +436,7 @@ func TestUpgradeNodeDryRunSkipsGuard(t *testing.T) {
 	}
 }
 
-// TestRollbackNodeNoBackups: with no backup set anywhere and no EtcdSnapshot,
-// rollback must fail with a clear error before touching anything.
+// With no backup set anywhere and no EtcdSnapshot, rollback fails before touching anything.
 func TestRollbackNodeNoBackups(t *testing.T) {
 	backupFixture(t)
 	nodeUp(t)
@@ -492,8 +449,7 @@ func TestRollbackNodeNoBackups(t *testing.T) {
 	}
 }
 
-// TestRollbackNodeDryRun: --dry-run prints every artifact of the selected set
-// and changes nothing on disk.
+// --dry-run prints every artifact of the selected set and changes nothing on disk.
 func TestRollbackNodeDryRun(t *testing.T) {
 	stratumDir, binDir, _ := backupFixture(t)
 	const ts = "20260628-120000"
@@ -527,10 +483,7 @@ func TestRollbackNodeDryRun(t *testing.T) {
 	}
 }
 
-// TestCPComponents: the re-render order is staticpod.NamesFor verbatim — the
-// kube-vip-only-with-VIP rule read from its owner, not restated here — with
-// etcd first, always included. Pinned against NamesFor for a VIP and a no-VIP
-// state, so the two rosters cannot drift apart again.
+// The re-render order is staticpod.NamesFor verbatim, pinned so the rosters cannot drift.
 func TestCPComponents(t *testing.T) {
 	vip := &nodestate.NodeState{Role: "controller", VIP: nodestate.VIP{Address: "192.0.2.100"}}
 	if got := cpComponents(vip); !reflect.DeepEqual(got, staticpod.NamesFor(vip)) {
@@ -545,8 +498,7 @@ func TestCPComponents(t *testing.T) {
 	}
 }
 
-// TestHostSwapOrder: kubelet is the node version marker, so it must be
-// installed LAST; backup/temp leftovers are never treated as payload.
+// Kubelet is the node version marker, so it must be installed last; leftovers are never payload.
 func TestHostSwapOrder(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{
@@ -567,9 +519,7 @@ func TestHostSwapOrder(t *testing.T) {
 	}
 }
 
-// TestUpgradeNodeTargetMismatch: the guard fires before any node state is
-// read or any change is made — staging the wrong artifact must be a clean
-// early error.
+// The guard fires before any node state is read or any change is made.
 func TestUpgradeNodeTargetMismatch(t *testing.T) {
 	err := UpgradeNode(io.Discard, NodeOptions{Target: "v9.9.9"})
 	if err == nil {
@@ -580,9 +530,7 @@ func TestUpgradeNodeTargetMismatch(t *testing.T) {
 	}
 }
 
-// TestManifestBakDirOutsideStaticPodPath: kubelet parses every file in its
-// staticPodPath and would adopt a backup as a second static pod, so the
-// backup dir must never live inside it.
+// Kubelet parses every file in its staticPodPath and would adopt a backup as a static pod.
 func TestManifestBakDirOutsideStaticPodPath(t *testing.T) {
 	bak := manifestBakDir("20260828-000000")
 	if strings.HasPrefix(bak+string(filepath.Separator), staticpod.Dir()+string(filepath.Separator)) {
@@ -590,20 +538,16 @@ func TestManifestBakDirOutsideStaticPodPath(t *testing.T) {
 	}
 }
 
-// TestRestoreAll: good items are restored byte-identically (files, and the
-// manifest set into the manifest dir staticpod owns), and a failed restore is
-// reported by name instead of aborting the rest.
+// Good items restore byte-identically; a failed restore is reported by name, not aborting.
 func TestRestoreAll(t *testing.T) {
 	dir := t.TempDir()
 
-	// A binary whose backup exists.
 	binBak := filepath.Join(dir, "kubelet.bak-ts")
 	binDst := filepath.Join(dir, "kubelet")
 	os.WriteFile(binBak, []byte("old-kubelet"), 0o755)
 	os.WriteFile(binDst, []byte("new-kubelet"), 0o755)
 
-	// A manifest set backup: its restore lands in the manifest dir, so the
-	// config directory the derived files live beside must not be the real one.
+	// The restore lands in the manifest dir; the derived files' config dir must not be real.
 	redirect(t, &version.K8sConfDir, t.TempDir())
 	manBak := filepath.Join(dir, "manifests-bak")
 	os.MkdirAll(manBak, 0o700)
@@ -627,9 +571,7 @@ func TestRestoreAll(t *testing.T) {
 	}
 }
 
-// TestRollbackNodeIncompleteError: the honesty contract — a rollback whose
-// restores failed must say "rollback was INCOMPLETE" and name what is still
-// on the new version.
+// A rollback whose restores failed must say INCOMPLETE and name what is still on the new version.
 func TestRollbackNodeIncompleteError(t *testing.T) {
 	dir := t.TempDir()
 	cause := os.ErrDeadlineExceeded
@@ -658,8 +600,7 @@ func TestRollbackNodeIncompleteError(t *testing.T) {
 		t.Errorf("clean rollback must not claim INCOMPLETE: %v", err)
 	}
 
-	// A host process that does not come back on its restored binary is not a
-	// rollback done, and the marker stays for a retry.
+	// A host process that does not come back is not a rollback done; the marker stays for a retry.
 	swap(t, &unitActive, func(context.Context, string) bool { return false })
 	swap(t, &unitExists, func(name string) bool { return name == "containerd" || name == "kubelet" })
 	var restartedUnits []string
@@ -685,19 +626,7 @@ func TestRollbackNodeIncompleteError(t *testing.T) {
 	}
 }
 
-// TestCopyFileStagingName: the root cause of a staging-name collision, and
-// a collision the staging must not introduce. The kubelet's staticPodPath
-// file source globs `[^.]*` — it parses every NON-hidden file there
-// whatever the name, and hashes the file path into the pod UID, so a
-// visible "etcd.yaml.tmp" lands under etcd's own namespace/name key as
-// a different pod and displaces the running one. The staging name must
-// therefore be hidden — atomicfile's unique hidden temp name, whose
-// uniqueness also keeps two concurrent writers from tearing a single
-// manifest through one shared staging path.
-//
-// The staging file is renamed away (and cleaned up on error) too fast to
-// observe, so dst here is a DIRECTORY: the rename fails and names the staging
-// path in its os.LinkError.
+// dst is a directory: the rename fails and names the staging path in its os.LinkError.
 func TestCopyFileStagingName(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "etcd.yaml.bak")
@@ -738,11 +667,7 @@ func TestCopyFileStagingName(t *testing.T) {
 	}
 }
 
-// TestCopyFileAppliesModePastUmask: os.WriteFile applies its mode only on
-// create and through the umask, so the permissions have to be chmodded on
-// explicitly. This is what makes the identical-content skip below able to
-// match — a 0o755 install that landed 0o750 would be re-installed on every
-// single rollback.
+// os.WriteFile applies its mode only on create and through the umask, so the mode must be chmodded.
 func TestCopyFileAppliesModePastUmask(t *testing.T) {
 	old := syscall.Umask(0o077)
 	defer syscall.Umask(old)
@@ -763,7 +688,6 @@ func TestCopyFileAppliesModePastUmask(t *testing.T) {
 	if fi.Mode().Perm() != 0o755 {
 		t.Fatalf("mode = %v, want -rwxr-xr-x (the umask must not reach an installed binary)", fi.Mode().Perm())
 	}
-	// Now identical in content AND mode, so a second copy must be a no-op.
 	if err := copyFile(io.Discard, src, dst, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -776,11 +700,7 @@ func TestCopyFileAppliesModePastUmask(t *testing.T) {
 	}
 }
 
-// TestCopyFileReplacesSymlink: the identical-content fast path must not fire
-// through a symlink. Every caller promises a regular file renamed into place —
-// atomicInstall installs binaries the supervisor execs — so a dst symlink
-// whose target happens to hold the same bytes at the same mode must still be
-// replaced by a real file, not silently left as a link.
+// The identical-content fast path must not fire through a symlink.
 func TestCopyFileReplacesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "stratum.bak-ts")
@@ -809,10 +729,7 @@ func TestCopyFileReplacesSymlink(t *testing.T) {
 	}
 }
 
-// TestCopyFileClearsPrivilegedBits: the no-op guard compares the whole mode,
-// not Perm(), because setuid/setgid/sticky live outside Perm() and the staged
-// file's chmod to exactly mode would have cleared them. A dst carrying an
-// unexpected setuid bit must be replaced, not preserved by the fast path.
+// The no-op guard compares the whole mode; an unexpected setuid bit must be replaced.
 func TestCopyFileClearsPrivilegedBits(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "stratum.bak-ts")
@@ -823,10 +740,7 @@ func TestCopyFileClearsPrivilegedBits(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("identical"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// os.ModeSetuid, NOT 0o4755: os.FileMode has its own layout for the
-	// special bits, so os.Chmod silently ignores a raw 0o4000 and this test
-	// would pass for the wrong reason. A non-root user cannot set setuid
-	// everywhere either, so the bit is verified below rather than assumed.
+	// os.FileMode has its own layout for the special bits; a raw 0o4000 is silently ignored.
 	if err := os.Chmod(dst, 0o755|os.ModeSetuid); err != nil {
 		t.Fatal(err)
 	}
@@ -847,13 +761,7 @@ func TestCopyFileClearsPrivilegedBits(t *testing.T) {
 	}
 }
 
-// TestManifestSetRestoreCoversTheDerivedFiles: the manifest set the upgrade
-// snapshots into manifestBakDir and restores through restoreAll carries the
-// two render-derived files with it — the apiserver render writes
-// admission-webhook.yaml and webhook-client.kubeconfig on every manifest
-// write, and a rollback's restored manifests are never re-rendered, so nothing
-// else puts them back. The restore must also leave no visible stray file in
-// the directory kubelet watches.
+// The snapshot carries the derived files; restored manifests are never re-rendered.
 func TestManifestSetRestoreCoversTheDerivedFiles(t *testing.T) {
 	_, _, _ = backupFixture(t)
 	confDir := t.TempDir()
@@ -881,13 +789,10 @@ func TestManifestSetRestoreCoversTheDerivedFiles(t *testing.T) {
 		}
 	}
 
-	// The upgrade's snapshot goes where scanBackupSets finds it.
 	if err := staticpod.Snapshot(manifestBakDir(ts)); err != nil {
 		t.Fatal(err)
 	}
 
-	// The upgrade re-renders every manifest, drops one, and rewrites the
-	// derived pair.
 	for name, body := range live {
 		if err := os.WriteFile(filepath.Join(staticpod.Dir(), name), []byte(strings.Replace(body, "old", "new", 1)), 0o600); err != nil {
 			t.Fatal(err)
@@ -902,7 +807,6 @@ func TestManifestSetRestoreCoversTheDerivedFiles(t *testing.T) {
 		}
 	}
 
-	// `stratum rollback` restores exactly the set the scan finds.
 	stamp, items := mustNewestSet(t)
 	if stamp != ts || len(items) != 1 || items[0].name != manifestsItem {
 		t.Fatalf("newest set = %s %+v; want the manifests item of %s", stamp, items, ts)
@@ -951,12 +855,7 @@ func TestManifestSetRestoreCoversTheDerivedFiles(t *testing.T) {
 	}
 }
 
-// TestReplacedComponentsIgnoresTheDerivedFiles: the manifest backup carries
-// admission-webhook.yaml and webhook-client.kubeconfig, which are not static
-// pods. Counting them among the components a restore replaces would have a
-// rollback wait out the full component gate on a pod that never exists, then
-// report the rollback INCOMPLETE over a file kubelet never runs. A hidden
-// staging file in the backup is an in-flight write, never a manifest.
+// Counting derived files among replaced components would gate on a pod that never exists.
 func TestReplacedComponentsIgnoresTheDerivedFiles(t *testing.T) {
 	swap(t, &componentPIDs, func(string) ([]int, error) { return nil, nil })
 	live := t.TempDir()
@@ -1013,12 +912,10 @@ func readTestFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-// TestRollbackGateWaitsForARestartedUnit: a unit just
-// restarted can still be coming up when the soak ends. One sample there fails
-// a rollback that worked; the gate retries within its window instead.
+// A unit just restarted can still be coming up when the soak ends; the gate retries.
 func TestRollbackGateWaitsForARestartedUnit(t *testing.T) {
 	rollbackRestartFixture(t, "")
-	upAt := time.Now().Add(1500 * time.Millisecond) // after the 1s soak
+	upAt := time.Now().Add(1500 * time.Millisecond)
 	old := unitActive
 	unitActive = func(_ context.Context, name string) bool { return name == "containerd" || time.Now().After(upAt) }
 	t.Cleanup(func() { unitActive = old })
@@ -1029,10 +926,7 @@ func TestRollbackGateWaitsForARestartedUnit(t *testing.T) {
 	}
 }
 
-// TestRollbackReportsAFailedOperatorRestart: the operator
-// comes back last and best-effort — the node is already rolled back and a
-// second rollback would not restart it either — but its failure is said, not
-// dropped, and the rollback still ends the upgrade.
+// The operator comes back last and best-effort, but its failure is said, not dropped.
 func TestRollbackReportsAFailedOperatorRestart(t *testing.T) {
 	rollbackRestartFixture(t, "operator")
 	old := unitExists
@@ -1050,10 +944,7 @@ func TestRollbackReportsAFailedOperatorRestart(t *testing.T) {
 	}
 }
 
-// TestSnapshotOnlyRollbackNeedsTheWholeNode: with no host
-// backup to restore, a rollback cannot bring a down kubelet back, and its etcd
-// restore needs kubelet to cycle the etcd pod. It refuses up front, with
-// nothing changed, rather than timing out part-way.
+// With no host backup a rollback cannot bring a down kubelet back, so it refuses up front.
 func TestSnapshotOnlyRollbackNeedsTheWholeNode(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true})
@@ -1065,10 +956,7 @@ func TestSnapshotOnlyRollbackNeedsTheWholeNode(t *testing.T) {
 	}
 }
 
-// TestRollbackWithoutHostBackupsNeedsTheWholeNode: a set
-// that restores no host binary — here only the stratum binary — cannot bring
-// a down kubelet back, so it keeps the full guard. A set that restores kubelet
-// gets past it: TestRollbackRestartsTheUnitItRecovers.
+// A set that restores no host binary keeps the full guard; one that restores kubelet gets past it.
 func TestRollbackWithoutHostBackupsNeedsTheWholeNode(t *testing.T) {
 	stratumDir, _, _ := backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true})
@@ -1085,8 +973,7 @@ func TestRollbackWithoutHostBackupsNeedsTheWholeNode(t *testing.T) {
 	}
 }
 
-// TestNodeGateStaysInsideItsWindow: the apiserver gets what
-// is left of the window as a deadline, not a fresh 60s wait on every retry.
+// The apiserver gets what is left of the window as a deadline, not a fresh wait per retry.
 func TestNodeGateStaysInsideItsWindow(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
@@ -1110,10 +997,7 @@ func TestNodeGateStaysInsideItsWindow(t *testing.T) {
 	}
 }
 
-// TestWaitNodeGateCutsHealthzOffWhenTheWindowExpires: healthz
-// starts with time remaining and is interrupted when the window ends — the gate
-// returns about when the window does, not after the request or the retry sleep
-// finishes.
+// Healthz is interrupted when the window ends, not after the request or retry sleep finishes.
 func TestWaitNodeGateCutsHealthzOffWhenTheWindowExpires(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
@@ -1121,8 +1005,8 @@ func TestWaitNodeGateCutsHealthzOffWhenTheWindowExpires(t *testing.T) {
 	started := make(chan bool, 1)
 	old := waitHealthzCtx
 	waitHealthzCtx = func(ctx context.Context) error {
-		started <- ctx.Err() == nil // time remained when the request began
-		<-ctx.Done()                // a stalled apiserver: only the window ends it
+		started <- ctx.Err() == nil
+		<-ctx.Done()
 		return ctx.Err()
 	}
 	t.Cleanup(func() { waitHealthzCtx = old })
@@ -1142,10 +1026,7 @@ func TestWaitNodeGateCutsHealthzOffWhenTheWindowExpires(t *testing.T) {
 	}
 }
 
-// TestHealthzGatesFailWithinTheirBudgetOnAStalledKubectl: an apiserver
-// that accepts the connection and never answers leaves kubectl hanging. Both
-// upgrade gates must kill it and fail when their budget ends, not hold the
-// upgrade open; through the real k8sutil wait, not a stub.
+// Both gates must kill a stalled kubectl when their budget ends, through the real k8sutil wait.
 func TestHealthzGatesFailWithinTheirBudgetOnAStalledKubectl(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
@@ -1174,9 +1055,7 @@ func TestHealthzGatesFailWithinTheirBudgetOnAStalledKubectl(t *testing.T) {
 	}
 }
 
-// TestRuntimeProbesCompareRunningToInstalled pins that a different
-// containerd (an orphan) serving the CRI socket, or a nodeInfo reporting a
-// different kubelet, is a mismatch; a leading "v" is not.
+// A different runtime or kubelet version is a mismatch; a leading v is not.
 func TestRuntimeProbesCompareRunningToInstalled(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -1209,10 +1088,7 @@ func TestRuntimeProbesCompareRunningToInstalled(t *testing.T) {
 	}
 }
 
-// TestNodeGateFailsOnAnOrphanedRuntime: every unit is active, yet the runtime
-// on the CRI socket is not the installed one — the upgrade's gate and
-// rollback's both fail: unit state alone does not answer which runtime
-// holds the socket.
+// Unit state alone does not answer which runtime holds the CRI socket.
 func TestNodeGateFailsOnAnOrphanedRuntime(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
@@ -1227,10 +1103,7 @@ func TestNodeGateFailsOnAnOrphanedRuntime(t *testing.T) {
 	}
 }
 
-// TestNodeGateChecksKubeletOnEveryNode: a worker with an old kubelet fails both
-// gates even though containerd matches, and so does a controller; a worker
-// whose kubelet matches passes. Workers read their own Node with their kubelet
-// credential, so the check is not controller-only.
+// A worker with an old kubelet fails both gates; it reads its own Node with its own credential.
 func TestNodeGateChecksKubeletOnEveryNode(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
@@ -1256,16 +1129,13 @@ func TestNodeGateChecksKubeletOnEveryNode(t *testing.T) {
 	}
 }
 
-// TestWaitNodeGateFailsOnceTheWindowIsUsedUp: a probe that
-// starts after the rollback window has run out fails; it does not get a fresh
-// allowance. Here the containerd probe, which passes, uses the whole window, so
-// the kubelet probe (and the healthz wait before it on a controller) have none.
+// A probe that starts after the window ran out fails; it does not get a fresh allowance.
 func TestWaitNodeGateFailsOnceTheWindowIsUsedUp(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true, "kubelet": true})
 	runtimeFixture(t, "v1.0.0", "v1.0.0", "v1.0.0")
 	servingContainerd = func(context.Context, string) (string, error) {
-		time.Sleep(150 * time.Millisecond) // longer than the window below
+		time.Sleep(150 * time.Millisecond)
 		return "v1.0.0", nil
 	}
 	kubeletProbed := false
@@ -1286,11 +1156,10 @@ func TestWaitNodeGateFailsOnceTheWindowIsUsedUp(t *testing.T) {
 	}
 }
 
-// TestWaitNodeGateHostPollingEndsWithTheWindow: the wait for
-// host processes is not a fixed 2s sleep past the window.
+// The wait for host processes is not a fixed 2s sleep past the window.
 func TestWaitNodeGateHostPollingEndsWithTheWindow(t *testing.T) {
 	backupFixture(t)
-	probeFixture(t, true, map[string]bool{"containerd": true}) // kubelet never comes up
+	probeFixture(t, true, map[string]bool{"containerd": true})
 	begin := time.Now()
 	err := waitNodeGate(false, testNode, 200*time.Millisecond)
 	if err == nil || !strings.Contains(err.Error(), "kubelet is not active") {
@@ -1301,10 +1170,7 @@ func TestWaitNodeGateHostPollingEndsWithTheWindow(t *testing.T) {
 	}
 }
 
-// TestKubeletCheckReadsTheRegisteredNode: kubelet registers
-// under the persisted NodeState.Hostname (--hostname-override), so both gates
-// must read that Node, not the one the OS hostname names. The fake API serves
-// only the registered name.
+// Both gates must read the registered Node, not the one the OS hostname names.
 func TestKubeletCheckReadsTheRegisteredNode(t *testing.T) {
 	const registered = "registered-node.example"
 	if osName, _ := host.Hostname(); osName == registered {
@@ -1345,8 +1211,7 @@ func TestKubeletCheckReadsTheRegisteredNode(t *testing.T) {
 	}
 }
 
-// TestNodeName: the registered name wins; only with no node state does the OS
-// hostname stand in.
+// The registered name wins; only with no node state does the OS hostname stand in.
 func TestNodeName(t *testing.T) {
 	osName, _ := host.Hostname()
 	for _, tc := range []struct {
@@ -1364,9 +1229,7 @@ func TestNodeName(t *testing.T) {
 	}
 }
 
-// The unchanged-file skip is decided from the descriptor the copy reads, not
-// from the source path: with the path swapped after open, a dst that matches
-// the NEW file at that path must not stop the OLD (open) content installing.
+// The skip is decided from the descriptor the copy reads, not the swapped path.
 func TestCopyOpenedDecidesSkipFromOpenFile(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "src")
@@ -1397,10 +1260,7 @@ func TestCopyOpenedDecidesSkipFromOpenFile(t *testing.T) {
 	}
 }
 
-// TestRollbackRestoresManifestsAfterTheHostRestart: kubelet and containerd
-// restarted while kubelet is replacing a static pod can leave the old pod half
-// torn down and the restored one never started, so the manifests go back only
-// once both have been restarted.
+// The manifests go back only once containerd and kubelet have been restarted.
 func TestRollbackRestoresManifestsAfterTheHostRestart(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	swap(t, &rollbackEtcdTarget, func(string) (string, error) { return "", nil })
@@ -1424,9 +1284,7 @@ func TestRollbackRestoresManifestsAfterTheHostRestart(t *testing.T) {
 	}
 }
 
-// TestRollbackGatesTheRestoredComponent: a component whose manifest the
-// rollback changes is gated only once the process kubelet is replacing has
-// exited, so the old process cannot answer for the restored one.
+// A changed component is gated once the old process exited, so it cannot answer for it.
 func TestRollbackGatesTheRestoredComponent(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	swap(t, &rollbackEtcdTarget, func(string) (string, error) { return "", nil })
@@ -1454,9 +1312,7 @@ func TestRollbackGatesTheRestoredComponent(t *testing.T) {
 	}
 }
 
-// TestRollbackRefusesWhenItCannotFindWhatItReplaces: without the processes a
-// restore replaces, its gates could be answered by them, so the rollback
-// refuses before it changes anything.
+// Without the processes a restore replaces, the gates could be answered by them: refuse first.
 func TestRollbackRefusesWhenItCannotFindWhatItReplaces(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	swap(t, &rollbackEtcdTarget, func(string) (string, error) { return "", nil })
@@ -1474,9 +1330,7 @@ func TestRollbackRefusesWhenItCannotFindWhatItReplaces(t *testing.T) {
 	}
 }
 
-// TestRollbackGatesWhatItRestoresWhateverTheRole: a node whose saved role
-// does not say controller still has every static pod the rollback changed
-// waited for and gated.
+// A node whose saved role does not say controller still has every restored component gated.
 func TestRollbackGatesWhatItRestoresWhateverTheRole(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	swap(t, &rollbackEtcdTarget, func(string) (string, error) { return "", nil })
@@ -1496,8 +1350,7 @@ func TestRollbackGatesWhatItRestoresWhateverTheRole(t *testing.T) {
 	}
 }
 
-// TestReplacedComponentsFailsClosed: a manifest backup that cannot be read
-// is an error before anything changes, not a backup with nothing to restore.
+// A manifest backup that cannot be read is an error before anything changes.
 func TestReplacedComponentsFailsClosed(t *testing.T) {
 	swap(t, &componentPIDs, func(string) ([]int, error) { return nil, nil })
 	dir := t.TempDir()
@@ -1518,9 +1371,7 @@ func TestReplacedComponentsFailsClosed(t *testing.T) {
 	}
 }
 
-// TestRollbackWithoutTheClockKeepsWhatItKnows: a boot clock that fails once
-// the host backups are restored leaves the manifests unrestored, and the
-// incomplete rollback still says what is not back.
+// A boot clock failing after the host restore leaves manifests unrestored, reported as INCOMPLETE.
 func TestRollbackWithoutTheClockKeepsWhatItKnows(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "kubelet")
 	swap(t, &rollbackEtcdTarget, func(string) (string, error) { return "", nil })
@@ -1543,9 +1394,7 @@ func TestRollbackWithoutTheClockKeepsWhatItKnows(t *testing.T) {
 	}
 }
 
-// TestHostOnlyRollbackDoesNotNeedTheClock: a backup set with no manifests
-// replaces no static pod, so it neither refuses nor reports the manifests
-// unrestored when the boot clock cannot be read.
+// A set with no manifests neither refuses nor reports them unrestored without the clock.
 func TestHostOnlyRollbackDoesNotNeedTheClock(t *testing.T) {
 	rollbackRestartFixture(t, "")
 	swap(t, &bootClock, func() (staticpod.Mark, error) {
@@ -1559,23 +1408,16 @@ func TestHostOnlyRollbackDoesNotNeedTheClock(t *testing.T) {
 	}
 }
 
-// TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune: every kind of
-// upgrade backup must survive every consumer — scanBackupSets finds it under
-// its own stamp with the right destination and directory flag, restoreOrder
-// puts the CIS configs first and keeps the scan's order for the rest,
-// hasHostBackup counts only a host binary as one, and pruneOldBackups keeps
-// the two newest stamps of every kind and removes the third. A table that
-// leaves a kind out of any one of these would drop a backup from a rollback or
-// relax its guard without an error.
+// Every backup kind must survive every consumer; one left out would drop from a rollback.
 func TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune(t *testing.T) {
 	const ts1, ts2, ts3 = "20260101-000000", "20260202-000000", "20260303-000000"
 	kinds := []struct {
-		name  string // the name scanBackupSets gives the item
+		name  string
 		bakAt func(stratumDir, binDir, dataDir, ts string) string
 		dstOf func(stratumDir, binDir, dataDir string) string
-		dir   bool // the backup is a directory and dst is the manifest dir
-		cis   bool // the backup is a CIS config dir, restored by restoreCISConfigs
-		host  bool // hasHostBackup must count it as a host binary
+		dir   bool
+		cis   bool
+		host  bool
 		plant func(t *testing.T, stratumDir, binDir, dataDir, ts string)
 		prune func(t *testing.T, stratumDir, binDir, dataDir string)
 	}{
@@ -1624,7 +1466,7 @@ func TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune(t *testing.T) {
 			name:  "profile configs",
 			cis:   true,
 			bakAt: func(_, _, d, ts string) string { return filepath.Join(d, "upgrade", "cisconfig-bak-"+ts) },
-			dstOf: func(_, _, _ string) string { return "" }, // dst unused: restoreCISConfigs knows the live paths
+			dstOf: func(_, _, _ string) string { return "" },
 			plant: func(t *testing.T, _, _, d, ts string) {
 				writeFile(t, filepath.Join(d, "upgrade", "cisconfig-bak-"+ts, "admission.yaml"), "old", 0o600)
 			},
@@ -1643,8 +1485,6 @@ func TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune(t *testing.T) {
 				k.plant(t, stratumDir, binDir, dataDir, ts)
 			}
 
-			// The scan finds each stamp's backup, and only it, with the right
-			// destination and flags.
 			sets, err := scanBackupSets()
 			if err != nil {
 				t.Fatal(err)
@@ -1672,14 +1512,10 @@ func TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune(t *testing.T) {
 				}
 			}
 
-			// Only a host binary backup relaxes the rollback's guard on a down
-			// unit; the stratum binary itself does not.
 			if got := hasHostBackup(sets[ts3]); got != k.host {
 				t.Errorf("hasHostBackup(%s) = %v, want %v", k.name, got, k.host)
 			}
 
-			// The prune keeps the two newest stamps of the kind and removes the
-			// third, so a rollback of the rollback still has something to land on.
 			k.prune(t, stratumDir, binDir, dataDir)
 			for _, ts := range []string{ts2, ts3} {
 				if _, err := os.Stat(k.bakAt(stratumDir, binDir, dataDir, ts)); err != nil {
@@ -1692,9 +1528,6 @@ func TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune(t *testing.T) {
 		})
 	}
 
-	// restoreOrder puts the CIS configs first and keeps the scan's order for
-	// the other three — the order the scan appends: stratum, manifests, then
-	// the BinDir binaries.
 	scanOrder := []backupItem{
 		{name: "stratum"},
 		{name: "manifests", dir: true},
@@ -1712,20 +1545,12 @@ func TestEveryBackupKindRoundTripsThroughScanRestoreAndPrune(t *testing.T) {
 	}
 }
 
-// TestHostProcsAreDerivedFromTheUnits: the upgrade swaps and restarts exactly
-// the supervisor's roster minus the operator, which is restarted separately
-// and LAST, in comps.Units order — and the shipped list is the derivation's
-// output, not a hand-written copy of it. A literal hostProcs, a filter that
-// loses the operator, or a derivation a new roster member does not flow
-// through fails here: the upgrade would restart the operator before the gate,
-// or never hear of a component added to comps.Units.
+// The shipped list is the derivation's output, not a copy that drifts from comps.Units.
 func TestHostProcsAreDerivedFromTheUnits(t *testing.T) {
 	if !reflect.DeepEqual(hostProcs, hostProcsFrom(comps.Units)) {
 		t.Errorf("hostProcs = %v, want the derivation applied to the roster: hostProcsFrom(comps.Units) = %v", hostProcs, hostProcsFrom(comps.Units))
 	}
 
-	// The relation on the real roster, restated independently: every unit but
-	// the operator, in Units order.
 	var want []string
 	for _, u := range comps.Units {
 		if u != "operator" {
@@ -1736,8 +1561,6 @@ func TestHostProcsAreDerivedFromTheUnits(t *testing.T) {
 		t.Errorf("hostProcsFrom(comps.Units) = %v, want %v (comps.Units without the operator, in Units order)", got, want)
 	}
 
-	// A synthetic roster member must flow through the derivation, so adding a
-	// component to comps.Units is a one-place change.
 	augmented := append(slices.Clone(comps.Units), "synthetic-probe")
 	wantSynthetic := append(slices.Clone(want), "synthetic-probe")
 	if got := hostProcsFrom(augmented); !reflect.DeepEqual(got, wantSynthetic) {
@@ -1745,11 +1568,7 @@ func TestHostProcsAreDerivedFromTheUnits(t *testing.T) {
 	}
 }
 
-// TestHostProcsIsInitializedFromTheDerivation parses node.go's declaration and
-// fails when hostProcs is no longer initialized from the derivation on the
-// canonical roster. A hand-written copy of the list is indistinguishable from
-// the derivation by value today — it drifts only when comps.Units changes, and
-// then nothing ties the two together.
+// A hand-written copy is indistinguishable by value; it drifts only when comps.Units changes.
 func TestHostProcsIsInitializedFromTheDerivation(t *testing.T) {
 	t.Parallel() // host-free: parses only its own file
 	fset := token.NewFileSet()
@@ -1766,8 +1585,7 @@ func TestHostProcsIsInitializedFromTheDerivation(t *testing.T) {
 	}
 }
 
-// varInit returns the initializing expression of a package-level var, or nil
-// when the file declares no such var with a value.
+// Returns the initializing expression of a package-level var, or nil.
 func varInit(f *ast.File, name string) ast.Expr {
 	for _, d := range f.Decls {
 		gd, ok := d.(*ast.GenDecl)
@@ -1789,13 +1607,7 @@ func varInit(f *ast.File, name string) ast.Expr {
 	return nil
 }
 
-// TestGateComponentWaitsOnlyForComponentsWithAListener: the gate waits on the
-// static pod's local listener for every component that has one — the set
-// staticpod.HasListener declares — adds /healthz for the apiserver alone, and
-// skips the listenerless ones (kube-vip today). A call wired the wrong way
-// round would make every upgrade of a VIP node wait three minutes on a
-// listener that never comes up and roll back, or let a listening component
-// through ungated.
+// The gate waits on the listener set staticpod.HasListener declares, plus apiserver healthz.
 func TestGateComponentWaitsOnlyForComponentsWithAListener(t *testing.T) {
 	var waited []string
 	swap(t, &waitStaticPodReady, func(name string, _ time.Duration) error {
@@ -1829,15 +1641,7 @@ func TestGateComponentWaitsOnlyForComponentsWithAListener(t *testing.T) {
 	}
 }
 
-// -------------------------------------------------------- one containerd restart per upgrade
-
-// renderFixture redirects every path the real node-config writer touches (the
-// same set internal/runtime's nodeConfigsFixture redirects) and stages a
-// containerd stub that prints a minimal valid `containerd config default` —
-// the captured real default lives with the render tests that regenerate it
-// (internal/runtime/testdata); this stub needs only the settings the render
-// rewrites. registries.yaml stays absent, so the registry apply inside the
-// render is a deterministic no-op.
+// renderFixture redirects every path the node-config writer touches and stages a containerd stub.
 func renderFixture(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -1858,8 +1662,7 @@ func renderFixture(t *testing.T) {
 	version.ContainerdConfD = filepath.Join(dir, "conf.d", "stratum-registry.toml")
 	version.ContainerdRuntimeConfD = filepath.Join(dir, "conf.d", "stratum-runtime.toml")
 	version.K8sConfDir = filepath.Join(dir, "kubelet")
-	// A joined node's PKI: the trust bundle writeKubeletConfig syncs the
-	// kubelet client bundle from.
+	// A joined node's PKI: the trust bundle the kubelet client config syncs from.
 	version.PKIDir = filepath.Join(dir, "pki")
 	if err := os.MkdirAll(version.PKIDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1889,12 +1692,7 @@ state = '/run/containerd'
 	}
 }
 
-// fakeSupervisor serves the supervisor control protocol on a temp unix socket
-// and points version.ControlSocket at it, so comps sees containerd running:
-// status reports pid 100 until a restart op is served, then pid 101 — the new
-// pid comps.Restart's replacement check waits for. Same pattern as
-// internal/runtime's fakeSupervisor. Returns a func counting the restart ops
-// served.
+// Serves the supervisor control protocol; status reports pid 100, then 101 after a restart.
 func fakeSupervisor(t *testing.T) (restarts func() int) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "control.sock")
@@ -1946,16 +1744,7 @@ func fakeSupervisor(t *testing.T) (restarts func() int) {
 	return func() int { mu.Lock(); defer mu.Unlock(); return served }
 }
 
-// TestApplyHostConfigsRestartsContainerdOnceViaItsOwnReload is the upgrade
-// half of one containerd restart per upgrade: the node-config render must
-// restart nothing, so an in-place upgrade restarts containerd at most once —
-// through the upgrade's own reload, which pushes the new argv and restarts
-// the replaced binary, and which is also what gates the legacy-config heal.
-// The real writer runs (only the upgrade's own seams are stubbed), against a
-// fake supervisor reporting containerd as running, so a render inside
-// WriteNodeConfigs that restarted containerd itself would show as a second
-// restart for one upgrade. A resumed upgrade that re-runs this step on
-// current configs must serve no new restart either.
+// The render must restart nothing; the upgrade's own reload is the one containerd restart.
 func TestApplyHostConfigsRestartsContainerdOnceViaItsOwnReload(t *testing.T) {
 	renderFixture(t)
 	restarts := fakeSupervisor(t)
@@ -1993,9 +1782,7 @@ func TestApplyHostConfigsRestartsContainerdOnceViaItsOwnReload(t *testing.T) {
 		t.Errorf("the upgrade's own host actions = %q, want %q — the reload is the single containerd restart, then the heal", calls, want)
 	}
 
-	// A resumed upgrade re-runs this step on current configs: still no restart
-	// from the render, and the upgrade still performs its own reload (the
-	// binary was swapped even though the config did not change).
+	// A resumed upgrade re-runs this step on current configs.
 	before := restarts()
 	if err := applyHostConfigs(io.Discard, st); err != nil {
 		t.Fatal(err)
@@ -2008,17 +1795,9 @@ func TestApplyHostConfigsRestartsContainerdOnceViaItsOwnReload(t *testing.T) {
 	}
 }
 
-// ── the stdout-guard retirement pins ─────────────────────────────────────────
-//
-// Every operation an MCP tool calls takes an io.Writer as its FIRST parameter
-// and reports its progress through it, instead of printing to os.Stdout and
-// being wrapped in internal/mcp's stdout guard. On the stdio transport
-// os.Stdout is the JSON-RPC stream, so a pin that runs the operation on a
-// buffer and proves its progress never touched the process's own stdout is
-// what makes the guard redundant.
+// Every operation an MCP tool calls takes an io.Writer first and reports progress through it.
 
-// captureRealStdout captures the process's ACTUAL stdout while fn runs, so a
-// test can prove an operation left it alone.
+// Captures the process's actual stdout while fn runs.
 func captureRealStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -2041,10 +1820,7 @@ func captureRealStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestUpgradeNode_WritesItsProgressToTheWriter pins the node upgrade's half of
-// the convention: UpgradeNode takes the writer first and its progress — the
-// closing "stratum upgrade: <node> now at ..." line among it — is written
-// there, never to os.Stdout.
+// UpgradeNode takes the writer first; its progress is written there, never to os.Stdout.
 func TestUpgradeNode_WritesItsProgressToTheWriter(t *testing.T) {
 	controllerUpgradeFixture(t, "v1.37.9", 0)
 
@@ -2089,9 +1865,7 @@ func TestPreUpgradeSnapshotWritesProgressThroughWriter(t *testing.T) {
 	}
 }
 
-// TestRollbackNode_WritesItsProgressToTheWriter pins the rollback's half: the
-// same convention on RollbackNode — the writer first, the "restored backup
-// set" progress through it, os.Stdout untouched.
+// The same convention on RollbackNode: writer first, os.Stdout untouched.
 func TestRollbackNode_WritesItsProgressToTheWriter(t *testing.T) {
 	rollbackRestartFixture(t, "")
 
@@ -2111,9 +1885,7 @@ func TestRollbackNode_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestUpgradeCluster_WritesItsProgressToTheWriter pins the orchestrator's
-// half: UpgradeCluster takes the writer first and both the plan header and the
-// closing "Cluster upgrade complete" line reach it, never os.Stdout.
+// UpgradeCluster takes the writer first; the plan header and the complete line reach it.
 func TestUpgradeCluster_WritesItsProgressToTheWriter(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	fastOrchestrator(t, nil)
@@ -2135,17 +1907,13 @@ func TestUpgradeCluster_WritesItsProgressToTheWriter(t *testing.T) {
 		t.Errorf("the cluster upgrade printed on the process's real stdout; it must report through the writer it was handed:\n%s", onStdout)
 	}
 
-	// A run that upgraded nodes leaves the confinement restart steps right
-	// after the complete line: pods the drain does not evict keep running
-	// unconfined until they are recreated.
+	// Pods the drain does not evict keep running unconfined until they are recreated.
 	complete := strings.Index(buf.String(), "Cluster upgrade complete")
 	if complete < 0 || !strings.Contains(buf.String()[complete:], "rollout restart ds/cilium") {
 		t.Errorf("the confinement restart steps do not follow the complete line; the writer has:\n%s", buf.String())
 	}
 
-	// A run that finds every node already current prints none. The build
-	// check answers zero: the nodes run this target already. A fresh cluster,
-	// so the first run's stamps cannot be what makes the nodes current.
+	// The build check answers zero: the nodes run this target already.
 	old := runExitCode
 	t.Cleanup(func() { runExitCode = old })
 	runExitCode = func(context.Context, kubernetes.Interface, nodejob.Spec) (int, error) { return 0, nil }
@@ -2159,7 +1927,6 @@ func TestUpgradeCluster_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// One upgraded node is enough for the confinement restart steps.
 func TestUpgradeClusterPrintsConfinementStepsAfterOneNode(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodeFixture("cp1", true, "10.0.0.9"))
 	fastOrchestrator(t, nil)
@@ -2172,9 +1939,7 @@ func TestUpgradeClusterPrintsConfinementStepsAfterOneNode(t *testing.T) {
 	}
 }
 
-// A run that upgraded a node and then halted prints the confinement restart
-// steps too: a re-run finds that node on this build and upgrades nothing, so
-// it would never print them.
+// A re-run finds that node on this build and upgrades nothing, so it would never print them.
 func TestUpgradeClusterPrintsConfinementStepsWhenItHalts(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	fastOrchestrator(t, nil)
@@ -2194,8 +1959,6 @@ func TestUpgradeClusterPrintsConfinementStepsWhenItHalts(t *testing.T) {
 	}
 }
 
-// A run that upgraded the first control plane and then halted on the second
-// prints the confinement restart steps too.
 func TestUpgradeClusterPrintsConfinementStepsWhenSecondControlPlaneHalts(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodeFixture("cp1", true, "10.0.0.9"), upgradeNodeFixture("cp2", true, "10.0.0.10"))
 	fastOrchestrator(t, nil)
@@ -2215,12 +1978,7 @@ func TestUpgradeClusterPrintsConfinementStepsWhenSecondControlPlaneHalts(t *test
 	}
 }
 
-// TestUpgradeClusterConcurrentWorkerWritesAreSerialized pins the fan-out's
-// writer contract: with workers_max_unavailable >= 2, runBounded's worker
-// goroutines write progress concurrently into the one writer the run was
-// handed, and on the MCP path that writer is a single bytes.Buffer — not safe
-// for concurrent writes. The writer the operation is given must therefore make
-// concurrent Write calls safe itself. Run under -race: a plain buffer fails.
+// Workers write the one writer concurrently; it must serialize its own writes. Run under -race.
 func TestUpgradeClusterConcurrentWorkerWritesAreSerialized(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	fastOrchestrator(t, nil)
@@ -2235,9 +1993,7 @@ func TestUpgradeClusterConcurrentWorkerWritesAreSerialized(t *testing.T) {
 	}
 }
 
-// lockedBuffer is a bare bytes.Buffer behind a mutex, exactly the shape the
-// MCP handler holds: a buffer that is only safe because every writer locks.
-// The pin only holds if the operation serializes its own writes.
+// Exactly the shape the MCP handler holds; the pin holds only if writes serialize.
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
@@ -2255,12 +2011,7 @@ func (b *lockedBuffer) String() string {
 	return b.b.String()
 }
 
-// setRoots redirects the three stratum roots through version.SetRoots for the
-// test and restores the previous roots — and with them every path version
-// derives from them — with t.Cleanup. Unlike the per-var redirect helper, this
-// moves the init-time derivations too (NodeUpgradeLockPath among them), so a
-// test that needs the node's lock or manifest paths off the real /run and
-// /var/lib/stratum layout must use this one.
+// Redirects the roots and the init-time derivations too, like NodeUpgradeLockPath.
 func setRoots(t *testing.T, dataDir, confDir, runDir string) {
 	t.Helper()
 	data, conf, run := version.DataDir, version.ConfDir, version.RunDir
@@ -2268,12 +2019,7 @@ func setRoots(t *testing.T, dataDir, confDir, runDir string) {
 	t.Cleanup(func() { version.SetRoots(data, conf, run) })
 }
 
-// TestNodeLockFollowsTheRunRoot: the node maintenance lock lives at
-// version.NodeUpgradeLockPath, which the version package derives from RunDir
-// once at init. A SetRoots reassignment must move it — the lock file must be
-// created at the redirected path and a second holder must be refused there —
-// or an upgrade under redirected roots would fence on (and create) the
-// compiled-in /run path.
+// The lock path derives from RunDir at init, so a SetRoots reassignment must move it.
 func TestNodeLockFollowsTheRunRoot(t *testing.T) {
 	run := filepath.Join(t.TempDir(), "stratum")
 	setRoots(t, t.TempDir(), t.TempDir(), run)
@@ -2297,15 +2043,7 @@ func TestNodeLockFollowsTheRunRoot(t *testing.T) {
 	}
 }
 
-// TestMovedPathNamesDelegate: assets.DefaultRoot moved into internal/version,
-// where it derives from the data root, and the staging directory has its one
-// home there too (version.StageDir) — internal/upgrade declares no StageDir of
-// its own (TestStagingDirHasOneHome pins that). The old assets name keeps the
-// same value at the default roots — its existing callers (pkg/cli's payload
-// flags) must not silently start answering a different path — so it is checked
-// before any redirect. The staging half pins the CALL-TIME derivation: under a
-// SetRoots redirect, Resolve must answer the redirected version.StageDir, not
-// a copy frozen when this package was compiled or first read the var.
+// The old assets name keeps its value for callers; staging must resolve StageDir at call time.
 func TestMovedPathNamesDelegate(t *testing.T) {
 	if assets.DefaultRoot != version.DefaultRoot {
 		t.Errorf("assets.DefaultRoot = %q, want the moved version.DefaultRoot %q", assets.DefaultRoot, version.DefaultRoot)
@@ -2322,28 +2060,9 @@ func TestMovedPathNamesDelegate(t *testing.T) {
 	}
 }
 
-// The upgrade's stage-then-rename writers — copyFile/copyOpened, which put a
-// restored CIS config or binary back on the node, and copyBytes, which writes
-// the upgrade marker — write live node paths, so each write is a durable
-// single-file write: staged under a hidden unique temp name in the file's own
-// directory, fsynced at its final mode, renamed into place, and the directory
-// fsynced so the rename survives a power loss. That writer is
-// internal/atomicfile's, and its filesystem side effects are this package's
-// own seams (syncFile and syncDir, declared beside the writers in node.go and
-// handed to the writer on every call — the pattern internal/host/systemd.go
-// established for the same reason), so the tests below pin the durability
-// contract through the delegation. A writer that skips either fsync never
-// calls the seam, and the test that needs it fails on the missing call or
-// error.
+// These writers write live node paths, so the durability contract is pinned through the seams.
 
-// TestCopyWritesSyncAtTheFinalModeThenTheDirectory: the file is fsynced at its
-// final mode before the rename — a mode changed after the fsync is not covered
-// by it, so a crash could leave a "successful" write at the temp file's 0600 —
-// and the directory holding the file is fsynced after the rename put the new
-// file in place: until that sync a power loss can bring the old file back
-// under a caller that already acted on the replacement. Pinned through
-// copyBytes (the upgrade marker) and copyFile (the CIS-config restore), at the
-// modes those paths carry today (0600 and 0644).
+// The file is fsynced at its final mode before the rename, and the directory after it.
 func TestCopyWritesSyncAtTheFinalModeThenTheDirectory(t *testing.T) {
 	oldSyncFile, oldSyncDir := syncFile, syncDir
 	t.Cleanup(func() { syncFile, syncDir = oldSyncFile, oldSyncDir })
@@ -2415,13 +2134,7 @@ func TestCopyWritesSyncAtTheFinalModeThenTheDirectory(t *testing.T) {
 	}
 }
 
-// TestCopyWritesFailureBeforeTheRenameKeepsTheOldFile: the failure injection
-// the sync seams make possible, and the whole point of the writer: a write
-// that cannot make its file durable must fail the write, leave the file at dst
-// byte for byte, and leave no staging copy behind — a torn CIS config or
-// upgrade marker where a working one was is the incident this writer exists to
-// prevent. A writer that never fsyncs never calls the seam and fails this test
-// on the missing error.
+// A write that cannot make its file durable must fail it and leave no staging copy behind.
 func TestCopyWritesFailureBeforeTheRenameKeepsTheOldFile(t *testing.T) {
 	oldSyncFile, oldSyncDir := syncFile, syncDir
 	t.Cleanup(func() { syncFile, syncDir = oldSyncFile, oldSyncDir })
@@ -2460,10 +2173,7 @@ func TestCopyWritesFailureBeforeTheRenameKeepsTheOldFile(t *testing.T) {
 	}
 }
 
-// TestCopyWritesReportAnUnsyncedRename: the rename is durable only once the
-// directory holding it is synced, so a failed directory sync is a failed write
-// reported as the writer's ErrNotDurable — the new file is already at dst, and
-// the caller must learn that a power loss could still bring the old one back.
+// A failed directory sync is a failed write, reported as the writer's ErrNotDurable.
 func TestCopyWritesReportAnUnsyncedRename(t *testing.T) {
 	oldSyncFile, oldSyncDir := syncFile, syncDir
 	t.Cleanup(func() { syncFile, syncDir = oldSyncFile, oldSyncDir })
@@ -2496,14 +2206,7 @@ func TestCopyWritesReportAnUnsyncedRename(t *testing.T) {
 	}
 }
 
-// TestRestoreProfileConfigsWritesDurably: the restore path itself, not only the
-// writer beneath it. restoreCISConfigs puts each saved CIS config back through
-// copyFile, so every restored config is fsynced and the config directory
-// synced — a restore that bypassed the durable writer for a raw write would
-// leave the rolled-back apiserver's configs unmade-durable while every
-// copyFile-level test still passed. The restored bytes are in place by the
-// time a directory sync observes them, and the saved files' modes come back as
-// they were (0644 and 0600, as today).
+// The restore path itself goes through the durable writer, not a raw write.
 func TestRestoreProfileConfigsWritesDurably(t *testing.T) {
 	withCISConfigs(t)
 	oldSyncFile, oldSyncDir := syncFile, syncDir
@@ -2526,8 +2229,6 @@ func TestRestoreProfileConfigsWritesDurably(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The record names every path the backup's writer considered, so the two
-	// files it did not save are read as previously absent and removed.
 	var record strings.Builder
 	for _, p := range profileConfigPaths(cisProfile()) {
 		record.WriteString(filepath.Base(p))
@@ -2536,8 +2237,6 @@ func TestRestoreProfileConfigsWritesDurably(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bak, profileConfigRecordName), []byte(record.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The live files as the upgrade left them: all four exist, on the new
-	// release.
 	for _, p := range profileConfigPaths(cisProfile()) {
 		if err := os.WriteFile(p, []byte("new "+filepath.Base(p)), 0o600); err != nil {
 			t.Fatal(err)
@@ -2549,7 +2248,7 @@ func TestRestoreProfileConfigsWritesDurably(t *testing.T) {
 	}
 
 	var syncedDirs []string
-	var inPlace []int // how many of the restored files each directory sync saw
+	var inPlace []int
 	syncFile = oldSyncFile
 	syncDir = func(d string) error {
 		syncedDirs = append(syncedDirs, d)

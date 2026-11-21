@@ -1,5 +1,4 @@
-// Package boundedfile reads small local metadata files without accepting
-// streams or allocating memory proportional to an unchecked file size.
+// Package boundedfile reads small local metadata files without accepting streams or unbounded size.
 package boundedfile
 
 import (
@@ -13,10 +12,7 @@ import (
 // MaxBytes bounds each metadata file, including files that grow during a read.
 const MaxBytes = 1 << 20
 
-// Read requires a regular file and checks cancellation between reads. Opening
-// nonblocking before checking the descriptor's type also rejects a FIFO swapped
-// into place during the open. As with other local filesystem operations, the
-// kernel must return from each syscall before cancellation can be observed.
+// Opening nonblocking also rejects a FIFO swapped into place during the open.
 func Read(ctx context.Context, path string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

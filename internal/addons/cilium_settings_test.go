@@ -29,10 +29,6 @@ func podChecksum(t *testing.T, m []byte, kind, name string) string {
 	return sum
 }
 
-// TestCiliumDefaultSettingsRenderTheShippedManifest: a cluster with no
-// spec.network.cilium renders the manifest as generated plus the BGP secrets
-// Role and RoleBinding, granting nothing, and the agents keep the shipped
-// checksum, so they do not restart.
 func TestCiliumDefaultSettingsRenderTheShippedManifest(t *testing.T) {
 	m := RenderCilium(false, CiliumSettings{})
 	shipped := pinCiliumOperatorToOneReplica(bytes.ReplaceAll(ciliumKPRTrueYAML, []byte(registrySentinel), []byte(ImageRegistry)))
@@ -44,8 +40,6 @@ func TestCiliumDefaultSettingsRenderTheShippedManifest(t *testing.T) {
 	}
 }
 
-// TestCiliumSettingsReachCiliumConfig: each setting sets its own key and
-// leaves the others as shipped.
 func TestCiliumSettingsReachCiliumConfig(t *testing.T) {
 	shipped := ciliumConfigData(t, RenderCilium(false, CiliumSettings{}))
 	for _, tc := range []struct {
@@ -89,8 +83,7 @@ func TestCiliumSettingsReachCiliumConfig(t *testing.T) {
 	}
 }
 
-// TestCiliumSettingsRollTheAgentsAndTheOperator: both read cilium-config only
-// at start, so any change to the settings must change both pod templates.
+// Agent and operator read cilium-config only at start, so both pod templates must change.
 func TestCiliumSettingsRollTheAgentsAndTheOperator(t *testing.T) {
 	shipped := RenderCilium(false, CiliumSettings{})
 	mtu := RenderCilium(false, CiliumSettings{MTU: 9000})
@@ -135,10 +128,6 @@ func TestCiliumSettingsEncodeRoundTrips(t *testing.T) {
 	}
 }
 
-// TestCiliumBGPReadsPeerAuthSecrets: with the BGP control plane on, the agent
-// can read the kube-system Secrets peers authenticate with, as Cilium's chart
-// renders it; with it off the same Role is rendered granting nothing, so the
-// operator's apply takes the access away whichever control plane leads.
 func TestCiliumBGPReadsPeerAuthSecrets(t *testing.T) {
 	rules := func(m []byte) []any {
 		r, _, _ := unstructured.NestedSlice(findObject(t, decodeAll(t, m), "Role", "cilium-bgp-control-plane-secrets").Object, "rules")

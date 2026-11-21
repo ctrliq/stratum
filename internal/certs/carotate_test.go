@@ -87,11 +87,6 @@ func TestCheckWorkerReissueConfig(t *testing.T) {
 	}
 }
 
-// TestCARotationGuard pins the guard: a direct `stratum certs rotate-ca
-// --phase=trust-new` must refuse to stage a second, divergent CA on a node
-// already mid-rotation (which would split the trust domain), while the follower
-// CP path (fetchShared) stays exempt because it legitimately arrives with the
-// initiator's ca-new already staged. Every refusal must name the recovery path.
 func TestCARotationGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -123,12 +118,6 @@ func TestCARotationGuard(t *testing.T) {
 	}
 }
 
-// TestCARotateFlags_Validate pins the CA-rotation argument rule where both
-// front ends must reach it: a request that combines cluster-wide orchestration
-// with a single phase is refused, because a one-phase request would otherwise
-// be turned into a full rotation (or the reverse) by a flag-handling mistake.
-// The table mirrors TestMigrateEtcdCAFlagValidation, which pins the same rule
-// for the etcd-CA migration's flags.
 func TestCARotateFlags_Validate(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -166,9 +155,6 @@ func TestCARotateFlags_Validate(t *testing.T) {
 	}
 }
 
-// TestCARotateFlags_Options pins that the flags build the options the two
-// entry points take, so a front end cannot assemble CARotateOptions by hand
-// and drift from what the validator just accepted.
 func TestCARotateFlags_Options(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -186,11 +172,6 @@ func TestCARotateFlags_Options(t *testing.T) {
 	}
 }
 
-// TestCARotatePhases pins the exported CA-rotation phase list the front ends
-// share: exactly the three phases RotateCA runs, in the only order they may
-// run, spelled as literals so a rename or a dropped phase fails here rather
-// than passing because the list and the assertion were built from the same
-// constants.
 func TestCARotatePhases(t *testing.T) {
 	want := []string{"trust-new", "sign-new", "finalize"}
 	if len(CARotatePhases) != len(want) {
@@ -207,11 +188,6 @@ func TestCARotatePhases(t *testing.T) {
 	}
 }
 
-// TestRerunOfAForcedRotationWithoutForceNamesTheForcedResume: a rotation
-// staged with --force can be neither resumed without the flag (the re-run
-// would un-force it) nor rolled back (pki.RollbackCA refuses every forced
-// rotation), so the refusal must name the forced resume instead of sending the
-// operator to a --rollback that refuses in turn.
 func TestRerunOfAForcedRotationWithoutForceNamesTheForcedResume(t *testing.T) {
 	prepPinned(t)
 	if err := pki.RotateCAMaterial(true); err != nil {

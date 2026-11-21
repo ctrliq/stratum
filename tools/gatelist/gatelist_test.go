@@ -1,55 +1,3 @@
-// This file pins the repo's gate lists against each other.
-//
-// What runs on every pull request is decided by two lists: the steps of the
-// CI lint job (.github/workflows/ci.yml) and the recipes of the Makefile's
-// lint target. Nothing else compares them, so a gate dropped from one
-// list, or registered in neither, passes every check. The rule these tests
-// keep is that the lint job runs `make lint` as its single command step:
-//
-// The first pin freezes the gate set and requires each gate to keep running
-// on pull requests: as a step of the job, or in the lint target's commands.
-// The second pins the other direction: every tools/test-*.sh self-test must
-// be named in the lint target, so a self-test cannot be added without a
-// gate list running it. Both are pins; anything that reopens the split
-// fails here first.
-//
-// Two more pins keep that unification in force. The CI lint job runs
-// `make lint`, so every self-test and the skew pin gate reach pull requests
-// through it, and the pre-push stage of .pre-commit-config.yaml hands its
-// gates to a make target via its make-lint hook. One keeps the Makefile's
-// whole list on PRs forever, and the other keeps a third gate list from
-// re-forming — either the stage hands its gates to a make target or it
-// holds only fast hooks with the config saying so.
-//
-// The same defect exists in the build's image stamps, and the image-stamp
-// pins below hold the same rule there. build/images.txt is
-// the pin surface for images, and every image stamp the linker flags carry —
-// including the CoreDNS, local-path and cilium versions, tags stamped as bare
-// versions — is built from a variable derived from it through
-// tools/mirror-images.sh --list. A stamp spelled instead from a
-// build/versions.mk copy is a second pin held to images.txt by nothing but a
-// comment; deriving every stamp is what lets images.txt carry no must-equal
-// comments and tools/lint-kube-images.sh no checks comparing copies. The
-// pins keep it that way: any stamp reintroduced as a second copy fails here.
-//
-// The pin-policy guard is the one guard here that runs the gate it
-// guards. The policy is branch-aware, and the branch is the one input the
-// pin files cannot carry, so the tests below copy today's tree — the
-// kubernetes_version binaries of build/versions.mk, the go.mod libraries,
-// the build/images.txt tags, the mise.toml kubectl — into scratch git
-// repositories on branches of their own, skew one input at a time, and run
-// tools/lint-kube-images.sh itself. The policy is a deliberate human
-// choice: release/* branches enforce exact library/binary equality; every
-// other branch, main included, allows the libraries' prerelease drift ahead
-// of the binaries but must report it; kubectl stays within
-// upstream-supported skew of kubernetes_version. Two paperwork tests pin
-// the policy's record: where it is written, and that the gate's comment
-// states its rule and cites that place. tools/lint-kube-images.sh reads
-// go.mod and the run's branch and applies the branch-aware rule itself, so
-// every verdict below, release equality, prerelease drift WARNed off
-// release, kubectl within skew, and the image-tag check the gate also runs,
-// is a pinned behavior of the shipped gate.
-
 package gatelist
 
 import (
@@ -66,9 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// The downloaded validator needs no repository credentials. Run its actual
-// recipe with a stub npx so the check proves credential isolation without
-// downloading or executing a package.
+// A stub npx proves credential isolation without downloading the validator.
 func TestRenovateValidatorDoesNotInheritGitHubCredentials(t *testing.T) {
 	// A caller's make context must not turn this execution into a dry run.
 	t.Setenv("MAKEFLAGS", "n")
@@ -110,17 +56,12 @@ func TestRenovateValidatorDoesNotInheritGitHubCredentials(t *testing.T) {
 	}
 }
 
-// ciStep is one step of a GitHub Actions job: its display name and the shell
-// text it runs. A step that only runs an action (`uses:`) has no Run.
+// A step that only runs an action (`uses:`) has no Run.
 type ciStep struct {
 	Name string `json:"name"`
 	Run  string `json:"run"`
 }
 
-// ciLintJobSteps returns the steps of the `lint` job in
-// .github/workflows/ci.yml, in workflow order. The workflow is read
-// relative to this package's directory — the directory `go test` runs in —
-// so the reader needs no network and no build.
 func ciLintJobSteps() ([]ciStep, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
@@ -141,25 +82,12 @@ func ciLintJobSteps() ([]ciStep, error) {
 	return job.Steps, nil
 }
 
-// makeRule is one rule of the Makefile: its literal prerequisite names and
-// the commands of its recipe.
 type makeRule struct {
 	prerequisites []string
 	commands      []string
 }
 
-// makefileCommands returns every command `make <target>` runs in the repo
-// Makefile: the recipes of the target's prerequisites first, then the
-// target's own recipe, in the order make runs them. Recipe lines that are
-// only shell comments are dropped (a comment runs no gate) and backslash
-// continuations are joined into the single command the shell executes.
-// Conditionals inside a recipe are read, not evaluated, so a rule returns
-// every recipe line it spells.
-//
-// The Makefile is read as text, relative to this package's directory, so
-// there is no network and no build. Only literal prerequisite names are
-// resolved: a prerequisite that is a file, or spelled with a make variable
-// (`build: $(NEEDS_DASH)`), names no rule and contributes no commands.
+// Only literal prerequisite names resolve; shell comments run no gate.
 func makefileCommands(target string) ([]string, error) {
 	rules, err := parseMakefile()
 	if err != nil {
@@ -190,10 +118,6 @@ func makefileCommands(target string) ([]string, error) {
 	return commands, nil
 }
 
-// parseMakefile indexes the Makefile's rules by target name. Only rules a
-// caller can name are indexed: special targets (.PHONY), pattern rules
-// (component-%) and variable targets ($(IMAGETAR)) are skipped, as are
-// assignments, which also carry a colon.
 func parseMakefile() (map[string]makeRule, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 	if err != nil {
@@ -207,8 +131,7 @@ func parseMakefile() (map[string]makeRule, error) {
 		switch {
 		case strings.HasPrefix(line, "\t"):
 			if current == "" {
-				// Tab-indented lines outside any recipe belong to
-				// multi-line variable assignments, not to commands.
+				// Tab lines outside any recipe belong to variable assignments.
 				continue
 			}
 			command := strings.TrimPrefix(line, "\t")
@@ -223,8 +146,7 @@ func parseMakefile() (map[string]makeRule, error) {
 			rule.commands = append(rule.commands, command)
 			rules[current] = rule
 		case isConditionalDirective(line):
-			// ifeq/else/endif can sit inside a recipe without ending it;
-			// outside one they are no rule either.
+			// ifeq/else/endif can sit inside a recipe without ending it.
 		default:
 			current = ""
 			target, prereqs, commands, ok := parseRuleLine(line)
@@ -245,8 +167,6 @@ func parseMakefile() (map[string]makeRule, error) {
 	return rules, nil
 }
 
-// isConditionalDirective reports whether the line is one of make's
-// conditionals.
 func isConditionalDirective(line string) bool {
 	for _, directive := range []string{"ifeq", "ifneq", "ifdef", "ifndef", "else", "endif"} {
 		if line == directive || strings.HasPrefix(line, directive+" ") {
@@ -256,9 +176,6 @@ func isConditionalDirective(line string) bool {
 	return false
 }
 
-// parseRuleLine recognizes `target: prerequisites` and the one-line form
-// `target: ; command`, and reports whether the line opens a rule a caller
-// can ask for by name.
 func parseRuleLine(line string) (target string, prereqs, commands []string, ok bool) {
 	if line == "" || line[0] == '#' || line[0] == ' ' || line[0] == '\t' {
 		return "", nil, nil, false
@@ -281,9 +198,7 @@ func parseRuleLine(line string) (target string, prereqs, commands []string, ok b
 	return target, strings.Fields(rest), commands, true
 }
 
-// joinContinuations folds recipe lines that end in a backslash into the one
-// command the shell executes, so a gate spelled across a continuation — the
-// lint target's renovate validator — is a single matchable string.
+// A gate spelled across a continuation must match as one command.
 func joinContinuations(lines []string) []string {
 	joined := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -296,14 +211,7 @@ func joinContinuations(lines []string) []string {
 	return joined
 }
 
-// makefileVariables returns every variable the Makefile assigns, keyed by
-// name, with an assignment's backslash continuations joined into the single
-// value make expands. This is the recipe reader's other half: parseMakefile
-// indexes rules and deliberately skips assignments, and the guards that ask
-// what a variable is built from — not what a recipe runs — read them here.
-// build/versions.mk, which the Makefile includes, is not read: the
-// derivation under guard is defined in the Makefile itself, the way
-// ETCD_IMAGE and SANDBOX_IMAGE are.
+// build/versions.mk is not read: the derivations under guard live in the Makefile.
 func makefileVariables() (map[string]string, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 	if err != nil {
@@ -327,8 +235,7 @@ func makefileVariables() (map[string]string, error) {
 			continue
 		}
 
-		// A continuation line: make folds the backslash, the newline and
-		// the leading whitespace into one separator.
+		// make folds the backslash, newline and leading whitespace into one separator.
 		name := pending
 		text := strings.TrimSpace(line)
 		if strings.HasSuffix(text, "\\") {
@@ -343,18 +250,9 @@ func makefileVariables() (map[string]string, error) {
 	return vars, nil
 }
 
-// assignmentRE matches `NAME := value` at the start of a line, for the
-// assignment operators the Makefile uses. `+=` and `!=` appear nowhere in
-// the file and stay unrecognized: a variable only appended to would resolve
-// through its base assignment, never the appends.
+// `+=` and `!=` appear nowhere in the Makefile and stay unrecognized.
 var assignmentRE = regexp.MustCompile(`^([A-Za-z0-9_]+)[ \t]*(::=|:=|\?=|=)[ \t]*(.*)$`)
 
-// parseAssignment recognizes the Makefile's variable assignments and returns
-// the value as written, backslash included. Rules are not assignments: a
-// rule's colon is never followed by one of the operators, so `lint:
-// lint-shell` and the one-line `target: ; command` stay rules, and
-// tab-indented recipe lines, .PHONY-style special targets and directives
-// (ifeq, else, endif) name no variable either.
 func parseAssignment(line string) (name, value string, ok bool) {
 	match := assignmentRE.FindStringSubmatch(line)
 	if match == nil {
@@ -363,10 +261,7 @@ func parseAssignment(line string) (name, value string, ok bool) {
 	return match[1], match[3], true
 }
 
-// makefileVariable returns the Makefile's definition of one variable, from
-// the index makefileVariables built. A variable the Makefile no longer
-// assigns is an error, so a guard reading a renamed variable fails on the
-// rename, not on an empty answer.
+// A guard reading a renamed variable must fail on the rename, not answer empty.
 func makefileVariable(vars map[string]string, name string) (string, error) {
 	value, ok := vars[name]
 	if !ok {
@@ -375,12 +270,7 @@ func makefileVariable(vars map[string]string, name string) (string, error) {
 	return value, nil
 }
 
-// ciLintGates is the frozen gate list: every gate the CI lint job runs today
-// (.github/workflows/ci.yml), in job order — the eight lint and check
-// scripts, the Cilium manifest render check, the Renovate config validator,
-// the version-fences check, the nine self-tests the job runs, and
-// print-version. A gate leaves this list only deliberately, in the change
-// that retires it.
+// A gate leaves this list only deliberately, in the change that retires it.
 var ciLintGates = []string{
 	"tools/lint-versions.sh",
 	"tools/lint-kube-images.sh",
@@ -405,12 +295,9 @@ var ciLintGates = []string{
 	"print-version",
 }
 
-// makeLintStep matches a job step that invokes make's lint target — `make
-// lint`, alone or among other words. The trailing boundary matters:
-// `make lint-versions` must not count as running the lint target.
+// The trailing boundary: `make lint-versions` must not count as `make lint`.
 var makeLintStep = regexp.MustCompile(`(^|[\s;&|])make[ \t]+lint([\s;&|]|$)`)
 
-// stepRunsGate reports whether one of the steps runs the gate's command.
 func stepRunsGate(steps []ciStep, gate string) bool {
 	for _, step := range steps {
 		if strings.Contains(step.Run, gate) {
@@ -420,7 +307,6 @@ func stepRunsGate(steps []ciStep, gate string) bool {
 	return false
 }
 
-// commandRunsGate reports whether one of the commands runs the gate.
 func commandRunsGate(commands []string, gate string) bool {
 	for _, command := range commands {
 		if strings.Contains(command, gate) {
@@ -430,12 +316,7 @@ func commandRunsGate(commands []string, gate string) bool {
 	return false
 }
 
-// Every gate today's CI lint job runs still runs on pull requests. The
-// job may keep running each gate as its own step, or collapse into
-// `make lint` and hand the gate list to the Makefile — then the lint target
-// must carry the gate. A gate that is neither has stopped running on pull
-// requests, which nothing else notices while the two lists are only
-// hand-maintained.
+// A gate neither a job step nor carried by `make lint` has left pull requests.
 func TestEveryCIGateStillRunsOnPullRequests(t *testing.T) {
 	steps, err := ciLintJobSteps()
 	if err != nil {
@@ -471,10 +352,7 @@ func TestEveryCIGateStillRunsOnPullRequests(t *testing.T) {
 	}
 }
 
-// Every self-test under tools/ is named in the lint target. A self-test
-// is how a gate proves it rejects what it claims to; one that no gate list
-// runs proves nothing. Today twenty scripts exist and the lint target names
-// all twenty.
+// A self-test that no gate list runs proves nothing.
 func TestEverySelfTestIsInTheLintTarget(t *testing.T) {
 	scripts, err := filepath.Glob(filepath.Join("..", "test-*.sh"))
 	if err != nil {
@@ -497,20 +375,9 @@ func TestEverySelfTestIsInTheLintTarget(t *testing.T) {
 	}
 }
 
-// The N-3 kubelet pin gate is the one gate the lint target spells as
-// neither a tools/test-*.sh self-test nor a tools/lint-*.sh script, so the
-// pull-request list below names it separately. The flag is part of the
-// name: run-skew.sh without it drives a live cluster (the weekly job),
-// which is not a pull-request gate.
+// Without --check-pins run-skew.sh drives a live cluster, not a pull request.
 const skewPinGate = "tools/ostests/run-skew.sh --check-pins"
 
-// Every self-test under tools/, and the pin gate, runs on every pull
-// request — directly as a step of the CI lint job, or through the lint target
-// because the job runs `make lint`. The self-test pin above covers the
-// Makefile half of this (the lint target names every self-test); this one
-// pins the workflow half, keeping the gap between the two lists — a gate
-// registered only where no pull request would run it — from reopening as a
-// hand-trimmed step list.
 func TestEverySelfTestRunsOnPullRequests(t *testing.T) {
 	scripts, err := filepath.Glob(filepath.Join("..", "test-*.sh"))
 	if err != nil {
@@ -560,19 +427,13 @@ func TestEverySelfTestRunsOnPullRequests(t *testing.T) {
 	}
 }
 
-// preCommitHook is one hook of .pre-commit-config.yaml: its id and the
-// command pre-commit runs for it. A hook with no entry runs its id
-// (pre-commit's default), so the pre-push check below falls back to the id.
+// A hook with no entry runs its id, pre-commit's default.
 type preCommitHook struct {
 	id    string
 	entry string
 }
 
-// prePushHooks returns every hook registered at the pre-push stage of
-// .pre-commit-config.yaml — the third gate list after the CI lint job and
-// the Makefile's lint target. A hook with no stages key runs at every
-// stage, pre-push included, so it counts too. The file is read relative to
-// this package's directory, like the workflow and the Makefile.
+// A hook with no stages key runs at every stage, pre-push included.
 func prePushHooks() ([]preCommitHook, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".pre-commit-config.yaml"))
 	if err != nil {
@@ -602,20 +463,10 @@ func prePushHooks() ([]preCommitHook, error) {
 	return hooks, nil
 }
 
-// makeTargetEntry matches a hook command that hands its gate list to the
-// Makefile: `make` with a target, alone or inside the shell command the
-// entry spells. The target word is required, so `command -v make` (asking
-// whether the binary exists, not running it) and any "make" inside a
-// longer word do not count.
+// The target word is required, so `command -v make` does not count.
 var makeTargetEntry = regexp.MustCompile(`(?:^|\W)make[ \t]+\S+`)
 
-// configDeclaresFastOnly reports whether .pre-commit-config.yaml says, in
-// a comment, that the pre-push stage holds only fast hooks. The
-// declaration must name the stage and put "fast" beside "only": today's
-// header — anything that builds or reads the whole tree runs on
-// `pre-push` — describes the opposite and must not count, and the section
-// comment "pre-push only: these build, or read the whole tree" puts
-// "only" beside "pre-push", not beside "fast".
+// The wording must name the stage and put "fast" beside "only"; the header says the opposite.
 func configDeclaresFastOnly() (bool, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", ".pre-commit-config.yaml"))
 	if err != nil {
@@ -653,14 +504,7 @@ func configDeclaresFastOnly() (bool, error) {
 	return false, nil
 }
 
-// The pre-push stage is not a third gate list. Either it hands its
-// gates to the Makefile — some hook runs a make target, the one list the
-// CI lint job also runs — or every hook in it is also run by the lint
-// target and the config declares the stage fast-only, which is what makes
-// a push-time-only subset deliberate rather than drift. Anything else is a
-// gate a developer passes locally that no pull request runs. The stage hands
-// to `make lint` today through its make-lint hook; this test keeps
-// whichever arrangement the stage ends up with an honest one.
+// A push-time-only gate list is drift unless the stage hands to make or is fast-only.
 func TestPrePushRunsTheLintTarget(t *testing.T) {
 	hooks, err := prePushHooks()
 	if err != nil {
@@ -699,23 +543,15 @@ func TestPrePushRunsTheLintTarget(t *testing.T) {
 	}
 }
 
-// imageListCommand is the one derivation a stamped tag may be built from:
-// the mirror's --list mode, which prints the mirrored ref of every pin in
-// build/images.txt — registry, name and tag together — so a tag built from
-// it cannot disagree with the payload the airgap bundle carries.
+// A tag built from the mirror's --list output cannot disagree with the payload.
 const imageListCommand = "tools/mirror-images.sh --list"
 
-// ldflagStamp is one -X flag of GO_LDFLAGS: the symbol it stamps and the
-// value it stamps into that symbol.
 type ldflagStamp struct {
 	symbol string
 	value  string
 }
 
-// ldflagStamps returns the -X flags of a joined ldflags value, in the order
-// they are stamped. -X takes its symbol=value as one shell word, the same
-// boundary the go build line splits on, so every stamp survives the
-// whitespace the joined continuations leave between the flags.
+// -X takes symbol=value as one shell word, the boundary go build splits on.
 func ldflagStamps(ldflags string) []ldflagStamp {
 	words := strings.Fields(ldflags)
 	var stamps []ldflagStamp
@@ -730,18 +566,9 @@ func ldflagStamps(ldflags string) []ldflagStamp {
 	return stamps
 }
 
-// variableRefRE matches the variable references a make value can carry:
-// $(NAME), and the name a value hands to make's $(call NAME,...). A
-// function call — $(shell ...), $(filter a,b) — opens with the function's
-// name and then a separator a reference cannot contain, so it names no
-// variable. Variable names may carry a hyphen, so the class allows one —
-// build/versions.mk's last hyphenated names (kube-vip_version,
-// local-path_version) are gone now that image tags derive from
-// build/images.txt, but a make name is free to hyphenate.
+// $(shell ...) and friends open with the function's name, so they name no variable.
 var variableRefRE = regexp.MustCompile(`\$\([ \t]*(?:call[ \t]+)?([A-Za-z0-9_-]+)[ \t]*[,)]`)
 
-// variableRefs returns the names a make value references, in order of
-// appearance.
 func variableRefs(value string) []string {
 	var refs []string
 	for _, match := range variableRefRE.FindAllStringSubmatch(value, -1) {
@@ -750,14 +577,7 @@ func variableRefs(value string) []string {
 	return refs
 }
 
-// builtFromTheImageList reports whether a stamped value is built from the
-// image list: the value references a variable — following the variables
-// that variable references, so a derivation may be spelled through helpers —
-// whose definition runs the list command. ETCD_IMAGE and SANDBOX_IMAGE are
-// the shape this accepts: the flag references the variable, and the
-// variable's definition reads build/images.txt through the mirror. A value
-// spelled from build/versions.mk pins references variables defined outside
-// the Makefile, or none at all, and is refused.
+// A versions.mk-derived value references variables outside the Makefile, or none.
 func builtFromTheImageList(value string, vars map[string]string) bool {
 	walked := map[string]bool{}
 	var derived func(name string) bool
@@ -788,14 +608,7 @@ func builtFromTheImageList(value string, vars map[string]string) bool {
 	return false
 }
 
-// stampedVersionSymbols are the -X symbols that stamp version facts without an
-// *Image name: CoreDNS is stamped twice — once for main, once for the add-on
-// package — and local-path and cilium once each. The list is frozen the way
-// ciLintGates is: a symbol leaves it only deliberately, in the change that
-// moves or retires the stamp, and the test says so when one has.
-// github.com/ctrliq/stratum/internal/version.CiliumVersion joined last; until
-// then the cilium stamp was the one version fact still resolved through a
-// build/versions.mk copy, outside this net.
+// A symbol leaves this frozen list only in the change that moves or retires it.
 var stampedVersionSymbols = []string{
 	"github.com/ctrliq/stratum/internal/version.CorednsVersion",
 	"github.com/ctrliq/stratum/internal/version.CiliumVersion",
@@ -803,13 +616,7 @@ var stampedVersionSymbols = []string{
 	"github.com/ctrliq/stratum/internal/addons.LocalPathVersion",
 }
 
-// stampsAnImageTag reports whether a -X symbol stamps a tag build/images.txt
-// pins. The repo's naming for an image stamp is a symbol ending in Image —
-// every one today: NsenterImage, EtcdImage, the three kube-* images,
-// KubeVipImage and SandboxImage — so the rule also picks up an image
-// stamped later, the drift the image-stamp pin exists to catch. CoreDNS and
-// local-path stamp their tags as bare versions, so their symbols are held in
-// the frozen list beside this.
+// Image stamps end in Image, so the rule also picks up an image stamped later.
 func stampsAnImageTag(symbol string) bool {
 	name := symbol
 	if i := strings.LastIndex(symbol, "."); i >= 0 {
@@ -818,17 +625,6 @@ func stampsAnImageTag(symbol string) bool {
 	return strings.HasSuffix(name, "Image") || slices.Contains(stampedVersionSymbols, symbol)
 }
 
-// Every image tag the binary stamps — and the version facts stamped
-// without an *Image symbol (the CoreDNS, local-path and cilium versions) — is
-// built from a variable derived from the image list, as ETCD_IMAGE and
-// SANDBOX_IMAGE are. build/images.txt is the pin surface for
-// images: a tag stamped from a build/versions.mk copy is a second pin of the
-// same tag, and the two can drift apart exactly the way the gate lists could.
-// Every stamp (the three kube-* images, kube-vip, busybox-as-NsenterImage,
-// CoreDNS, local-path, cilium) is derived off tools/mirror-images.sh --list,
-// with no must-equal comments or lint-kube-images.sh checks guarding copies.
-// This test is the pin — reintroducing a stamp as a second copy fails here,
-// not on an air-gapped node.
 func TestStampedImagesComeFromTheImageList(t *testing.T) {
 	vars, err := makefileVariables()
 	if err != nil {
@@ -875,26 +671,16 @@ func TestStampedImagesComeFromTheImageList(t *testing.T) {
 	}
 }
 
-// builtInRepoImages are the stamped images this repo builds rather than
-// mirrors, so build/images.txt cannot pin them; each maps to the Makefile
-// variable that names it.
+// Images this repo builds rather than mirrors; images.txt cannot pin them.
 var builtInRepoImages = map[string]string{
 	"github.com/ctrliq/stratum/internal/addons.DashImage": "DASH_IMAGE",
 }
 
-// ciliumVersionPinRE matches a cilium_version assignment in
-// build/versions.mk — the second copy of the version build/images.txt pins.
 var ciliumVersionPinRE = regexp.MustCompile(`(?m)^cilium_version[ \t]*=[ \t]*(\S+)`)
 
-// stampedVariablePointers are the spellings of the cilium stamp the
-// build/images.txt comment may point at: the -X symbol the stamp writes, or
-// the Makefile variable derived from this list that feeds it.
 var stampedVariablePointers = []string{"github.com/ctrliq/stratum/internal/version.CiliumVersion", "CILIUM_VERSION"}
 
-// ciliumImageListComment returns the comment block above the
-// quay.io/cilium/cilium pin in build/images.txt: the lines a reader meets
-// before the image line itself. A non-comment line resets the block, so the
-// block is the one belonging to this pin and no other.
+// A non-comment line resets the block, so it belongs to this pin alone.
 func ciliumImageListComment() (string, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "build", "images.txt"))
 	if err != nil {
@@ -917,15 +703,6 @@ func ciliumImageListComment() (string, error) {
 	return "", fmt.Errorf("build/images.txt pins no quay.io/cilium/cilium image")
 }
 
-// The cilium version is pinned by build/images.txt alone. A version copy in
-// build/versions.mk (cilium_version, held to the images.txt tags
-// by nothing but the must-equal comment above them) must stay gone — no gate
-// compares a second copy to the tags, so a re-added one drifts in silence — and
-// the comment must point the reader at the stamp instead: the Makefile derives
-// the stamped value from this list and writes it into
-// github.com/ctrliq/stratum/internal/version.CiliumVersion, the same
-// single-gate pattern every other image fact follows. Either half slipping back
-// reopens that drift, so both are pinned here.
 func TestCiliumVersionIsPinnedOnlyByTheImageList(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "build", "versions.mk"))
 	if err != nil {
@@ -951,12 +728,8 @@ func TestCiliumVersionIsPinnedOnlyByTheImageList(t *testing.T) {
 	}
 }
 
-// kubernetesVersionRE reads kubernetes_version out of build/versions.mk,
-// where the version of the built binaries and the mirrored images is
-// pinned.
 var kubernetesVersionRE = regexp.MustCompile(`(?m)^kubernetes_version *= *(\S+) *$`)
 
-// kubernetesVersion returns kubernetes_version from build/versions.mk.
 func kubernetesVersion() (string, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "build", "versions.mk"))
 	if err != nil {
@@ -968,10 +741,7 @@ func kubernetesVersion() (string, error) {
 	return "", fmt.Errorf("build/versions.mk pins no kubernetes_version")
 }
 
-// libraryVersionEqualTo maps a kubernetes_version to the k8s.io library
-// version that exactly equals it, the way upstream tags its staging
-// repositories: 1.37.1 ↔ v0.37.1. This is the version a release branch's
-// go.mod must carry — what exact library/binary equality means.
+// Upstream tags staging repos to mirror kubernetes_version: 1.37.1 ↔ v0.37.1.
 func libraryVersionEqualTo(kubernetesVersion string) string {
 	return "v0" + strings.TrimPrefix(kubernetesVersion, "1")
 }
@@ -985,10 +755,6 @@ func prereleaseLibraryAheadOf(t *testing.T, kube string) string {
 	return fmt.Sprintf("v0.%d.0-alpha.0", minor+1)
 }
 
-// kubePinFiles are the files tools/lint-kube-images.sh reads, copied into
-// every scratch run: the gate itself, the binary pins, the image pins, the
-// library pins, and the dev-tool pins. A directory with exactly these is a
-// tree the gate can run in.
 var kubePinFiles = []string{
 	"tools/lint-kube-images.sh",
 	"build/versions.mk",
@@ -997,19 +763,11 @@ var kubePinFiles = []string{
 	"mise.toml",
 }
 
-// pinScratch is a throwaway checkout of the pin surface on one branch: the
-// gate's files as the single commit of a private git repository under a
-// temp dir go test removes with the test.
 type pinScratch struct {
 	root string
 }
 
-// newPinScratch builds the scratch: the repo's pin files copied in, the
-// edits applied, then everything committed on branch. The commit exists
-// so every way the gate can ask git for the current branch — rev-parse,
-// symbolic-ref, branch --show-current — answers with the branch, not with
-// an unborn-HEAD error; and the scratch being its own repository means no
-// branch of the repo running the tests leaks into the verdict.
+// The commit keeps the branch resolvable; the scratch is its own repository.
 func newPinScratch(t *testing.T, branch string, edits ...func(root string) error) *pinScratch {
 	t.Helper()
 
@@ -1050,10 +808,7 @@ func newPinScratch(t *testing.T, branch string, edits ...func(root string) error
 	return &pinScratch{root: root}
 }
 
-// runGate runs the scratch's copy of tools/lint-kube-images.sh and returns
-// its combined output and exit status. The environment is cut to PATH and
-// HOME so nothing of the caller — a CI ref, a make context — can flip the
-// branch the gate detects or change what it runs.
+// The environment is cut so a CI ref or make context cannot flip the branch.
 func (s *pinScratch) runGate() (string, int, error) {
 	cmd := exec.Command("bash", "tools/lint-kube-images.sh")
 	cmd.Dir = s.root
@@ -1068,8 +823,6 @@ func (s *pinScratch) runGate() (string, int, error) {
 	return string(out), 0, nil
 }
 
-// rewriteLines rewrites a file line by line: every line becomes what edit
-// returns for it.
 func rewriteLines(path string, edit func(string) string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -1082,16 +835,9 @@ func rewriteLines(path string, edit func(string) string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
-// stagingLibraryVersionRE matches the version of a kubernetes staging
-// library requirement — v0.<minor>.<patch>[-prerelease], the shape whose
-// minor and patch mirror kubernetes_version — and not the k8s.io modules
-// that version on their own: k8s.io/utils and kube-openapi carry v0.0.0-
-// pseudo-versions, klog a v2.
+// Must not match k8s.io/utils, kube-openapi or klog, which version on their own.
 var stagingLibraryVersionRE = regexp.MustCompile(`^v0\.[1-9][0-9]*\.`)
 
-// pinLibrariesTo returns a scratch edit that rewrites every kubernetes
-// staging library requirement of the scratch go.mod to one version — the
-// shape of a tree whose libraries exactly track its binaries.
 func pinLibrariesTo(version string) func(root string) error {
 	return func(root string) error {
 		return rewriteLines(filepath.Join(root, "go.mod"), func(line string) string {
@@ -1108,12 +854,8 @@ func pinLibrariesTo(version string) func(root string) error {
 	}
 }
 
-// kubectlPinRE matches the kubectl entry of mise.toml, minor-pinned the
-// way the repo pins it today.
 var kubectlPinRE = regexp.MustCompile(`^(\s*kubectl\s*=\s*")[^"]*(")`)
 
-// pinKubectlTo returns a scratch edit that rewrites the kubectl pin of the
-// scratch mise.toml, keeping the entry's own shape.
 func pinKubectlTo(version string) func(root string) error {
 	return func(root string) error {
 		return rewriteLines(filepath.Join(root, "mise.toml"), func(line string) string {
@@ -1122,14 +864,8 @@ func pinKubectlTo(version string) func(root string) error {
 	}
 }
 
-// kubeApiserverTagRE matches the tag on the kube-apiserver line of
-// build/images.txt.
 var kubeApiserverTagRE = regexp.MustCompile(`(registry\.k8s\.io/kube-apiserver:)[^@]+(@)`)
 
-// skewKubeApiserverImage returns a scratch edit that rewrites the
-// kube-apiserver tag of the scratch build/images.txt to a version
-// kubernetes_version does not pin — the drift the gate has failed on
-// since before this guard, and must keep failing on after it.
 func skewKubeApiserverImage(tag string) func(root string) error {
 	return func(root string) error {
 		return rewriteLines(filepath.Join(root, "build", "images.txt"), func(line string) string {
@@ -1138,24 +874,16 @@ func skewKubeApiserverImage(tag string) func(root string) error {
 	}
 }
 
-// pinPolicyClause is one clause of the branch-aware pin policy: groups of
-// alternative phrases, where a text states the clause when it matches at
-// least one phrase from every group. The alternatives give the wording its
-// freedom; what is pinned is the substance. Phrases are regexps matched
-// against lowercased text.
+// Phrases are regexps on lowercased text; the alternatives give wording freedom.
 type pinPolicyClause struct {
 	name   string
 	groups [][]string
 }
 
-// phraseAsWords shows a clause phrase as the words a writer writes: the
-// word boundaries and escapes are the matcher's, not the message's.
 func phraseAsWords(phrase string) string {
 	return strings.NewReplacer(`\b`, "", `\.`, ".", `\s`, " ").Replace(phrase)
 }
 
-// missingFrom names one group the text nowhere matches, shown as the words
-// a writer would use, or "" when the text states the clause.
 func (c pinPolicyClause) missingFrom(text string) string {
 	for _, group := range c.groups {
 		stated := false
@@ -1176,11 +904,6 @@ func (c pinPolicyClause) missingFrom(text string) string {
 	return ""
 }
 
-// pinPolicyClauses are the three clauses of the pin policy: release
-// branches enforce exact library/binary equality; main allows prerelease
-// drift but reports it (today's 1.37.1 binaries vs v0.38.0-alpha.0
-// libraries warns, not fails); kubectl is enforced within
-// upstream-supported skew (1.36 vs 1.37 passes).
 var pinPolicyClauses = []pinPolicyClause{
 	{
 		name: "release branches enforce exact library/binary equality",
@@ -1207,9 +930,6 @@ var pinPolicyClauses = []pinPolicyClause{
 	},
 }
 
-// pinPolicyMissing returns the first clause the text does not state, with
-// the group of phrases it nowhere matches — or "" when the text states
-// all three.
 func pinPolicyMissing(text string) string {
 	lower := strings.ToLower(text)
 	for _, clause := range pinPolicyClauses {
@@ -1220,13 +940,8 @@ func pinPolicyMissing(text string) string {
 	return ""
 }
 
-// pinPolicyDocuments are the two places the repo states build policy:
-// the pin manifest's
-// header rules, which already state the other pin rules, and AGENTS.md.
 var pinPolicyDocuments = []string{"build/versions.mk", "AGENTS.md"}
 
-// pinPolicyHolders returns the build-policy documents that state all
-// three clauses of the pin policy.
 func pinPolicyHolders() ([]string, error) {
 	var holders []string
 	for _, doc := range pinPolicyDocuments {
@@ -1241,8 +956,6 @@ func pinPolicyHolders() ([]string, error) {
 	return holders, nil
 }
 
-// gateCommentText returns the comment text of tools/lint-kube-images.sh —
-// the lines that make the gate self-describing.
 func gateCommentText() (string, error) {
 	raw, err := os.ReadFile(filepath.Join("..", "lint-kube-images.sh"))
 	if err != nil {
@@ -1257,11 +970,7 @@ func gateCommentText() (string, error) {
 	return strings.Join(comments, "\n"), nil
 }
 
-// The branch-aware pin policy is documented where the repo states
-// build policy — build/versions.mk's header rules or AGENTS.md. A rule a
-// human chose that no document states lives only in the gate that enforces
-// it, which is how the next reader comes to change it without knowing it
-// was a decision.
+// A human rule no document states lives only in the gate that enforces it.
 func TestPinPolicyIsDocumented(t *testing.T) {
 	var lacking []string
 	for _, doc := range pinPolicyDocuments {
@@ -1278,11 +987,6 @@ func TestPinPolicyIsDocumented(t *testing.T) {
 	}
 }
 
-// The gate's own comment states the rule it enforces and cites the
-// document the policy is written in. The branch rule is a decision a human
-// made, not a fact of the tree, and the comment is where the next reader
-// learns that and where they are sent to read the policy itself. A target
-// guard — red until the gate carries that comment.
 func TestPinPolicyGateStatesItsRuleAndCitesItsPolicy(t *testing.T) {
 	comments, err := gateCommentText()
 	if err != nil {
@@ -1312,9 +1016,7 @@ func TestPinPolicyGateStatesItsRuleAndCitesItsPolicy(t *testing.T) {
 	t.Errorf("the gate's comment cites none of the documents that state the pin policy — name %s in it", strings.Join(bases, " or "))
 }
 
-// Off a release branch the gate reports prerelease library drift
-// without failing. Set the drift explicitly so these cases still exercise
-// that policy when the repository's real pins legitimately match.
+// The drift is set explicitly so the cases exercise the policy when real pins match.
 func TestPinPolicyGateReportsDriftWithoutFailingOffRelease(t *testing.T) {
 	kube, err := kubernetesVersion()
 	if err != nil {
@@ -1322,10 +1024,7 @@ func TestPinPolicyGateReportsDriftWithoutFailingOffRelease(t *testing.T) {
 	}
 	library := prereleaseLibraryAheadOf(t, kube)
 
-	// The second branch is the shape pull requests, worktrees and any
-	// other non-release checkout carry: the gate must treat every branch
-	// that is not a release branch the way it treats main, or `make lint`
-	// fails on the very branches it runs on.
+	// The gate must treat every non-release branch the way it treats main.
 	for _, branch := range []string{"main", "feature/pin-policy-guard"} {
 		t.Run(branch, func(t *testing.T) {
 			scratch := newPinScratch(t, branch, pinLibrariesTo(library))
@@ -1428,11 +1127,6 @@ func TestPinPolicyGateReadsSingleLineStagingRequirement(t *testing.T) {
 	}
 }
 
-// Release branches enforce exact library/binary equality. The same
-// tree that warns on main fails on release/* — a release branch is where
-// the shipped binaries and the compiled-in libraries must be one version —
-// and a go.mod whose libraries equal kubernetes_version passes. The branch
-// is numbered after the manifest the way a real release branch is.
 func TestPinPolicyGateEnforcesEqualityOnReleaseBranches(t *testing.T) {
 	kube, err := kubernetesVersion()
 	if err != nil {
@@ -1469,16 +1163,7 @@ func TestPinPolicyGateEnforcesEqualityOnReleaseBranches(t *testing.T) {
 	})
 }
 
-// kubectl is checked within upstream-supported skew of
-// kubernetes_version — one minor older or newer, upstream's own rule — on
-// every branch, because mise.toml's kubectl is the one dev tool pinned
-// against the pinned cluster. The libraries are equalized in every case
-// so a failure can name only kubectl. Within-skew holds today (1.36
-// against 1.37); beyond skew, either
-// direction, fails. The one-minor-ahead case is left out on purpose: the
-// repo's own tighter rule — mise.toml's kubectl tracks
-// kubernetes_version rather than drifting ahead of it — may forbid what
-// upstream allows, and this guard pins only the upstream edge.
+// Libraries equalized so a failure names only kubectl; one minor ahead untested.
 func TestPinPolicyGateChecksKubectlWithinUpstreamSkew(t *testing.T) {
 	kube, err := kubernetesVersion()
 	if err != nil {
@@ -1536,11 +1221,6 @@ func TestPinPolicyGateChecksKubectlWithinUpstreamSkew(t *testing.T) {
 	})
 }
 
-// The image-tag check keeps its verdict alongside the pin-policy checks.
-// The scratch skews only the kube-apiserver tag, with the
-// libraries equalized, so the failure can name only the image — the guard
-// file's "test mismatched image tags independently". A pin: the gate
-// fails on this today.
 func TestPinPolicyGateStillFailsOnMismatchedImageTags(t *testing.T) {
 	kube, err := kubernetesVersion()
 	if err != nil {

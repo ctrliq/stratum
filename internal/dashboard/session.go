@@ -19,29 +19,16 @@ import (
 )
 
 const (
-	// cookieName is the session cookie.
 	cookieName = "stratum_session"
-	// csrfHeader carries the per-session token on mutating requests.
 	csrfHeader = "X-Stratum-CSRF"
-	// defaultTTL is the session lifetime. A session cannot outlive it even if
-	// the bearer token inside would still be accepted by the apiserver.
+	// A session cannot outlive it even if the bearer token would still be accepted.
 	defaultTTL = 12 * time.Hour
 )
 
 // errInvalidSession covers a missing, tampered or expired cookie.
 var errInvalidSession = errors.New("invalid session")
 
-// session is the cookie payload. Subject and Groups are what the apiserver
-// said the token belongs to (SelfSubjectReview at login); Token is the bearer
-// token itself, sealed.
-//
-// The envelope is base64url(payload) "." base64url(HMAC(payload)),
-// which supplies integrity and a server-checked expiry. The payload carries
-// a live credential, and a signature is not confidentiality — a signed
-// cookie is readable by anyone holding it. So Token is separately sealed
-// with AES-GCM under a key derived from the same secret.
-// The HMAC still covers the sealed bytes, so neither layer can be stripped or
-// swapped without the other noticing.
+// A signed cookie is readable by anyone holding it, so the token is AES-GCM-sealed.
 type session struct {
 	Subject  string   `json:"sub"`
 	Groups   []string `json:"grp,omitempty"`
@@ -52,7 +39,6 @@ type session struct {
 	Token string `json:"tok"`
 }
 
-// sessions mints and verifies cookies.
 type sessions struct {
 	key    []byte
 	aead   cipher.AEAD
@@ -61,12 +47,7 @@ type sessions struct {
 	now    func() time.Time
 }
 
-// newSessions derives both the signing key and the sealing key from secret.
-//
-// The keys are separated rather than shared: the sealing key encrypts a live
-// cluster credential and the signing key's output is published in every
-// cookie, and one secret used for two purposes is the kind of reuse that only
-// looks harmless until one of the two primitives changes.
+// The sealing key encrypts a live credential; the signing key's output is public.
 func newSessions(secret []byte, ttl time.Duration, secure bool) (*sessions, error) {
 	if ttl <= 0 {
 		ttl = defaultTTL
@@ -88,19 +69,15 @@ func derive(secret []byte, purpose string) []byte {
 	return sum[:]
 }
 
-// newSessionSecret is the process's session secret: 32 random bytes, held in
-// memory only, used when no --session-key-file is given.
+// 32 random bytes held in memory only, used when no --session-key-file is given.
 func newSessionSecret() ([]byte, error) {
 	b := make([]byte, 32)
 	_, err := rand.Read(b)
 	return b, err
 }
 
-// minSessionKey is the shortest --session-key-file accepted.
 const minSessionKey = 32
 
-// loadSessionSecret reads the session secret from path, or makes an in-memory
-// one when path is empty.
 func loadSessionSecret(path string) ([]byte, error) {
 	if path == "" {
 		return newSessionSecret()
@@ -115,9 +92,7 @@ func loadSessionSecret(path string) ([]byte, error) {
 	return b, nil
 }
 
-// seal encrypts the bearer token. A fresh GCM nonce per session is required:
-// reusing one under the same key is a total loss of confidentiality for both
-// sessions involved.
+// Reusing a GCM nonce under the same key is a total loss of confidentiality.
 func (m *sessions) seal(token string) (string, error) {
 	nonce := make([]byte, m.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
@@ -172,8 +147,6 @@ func (m *sessions) sign(payload []byte) string {
 	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
 }
 
-// parse verifies a cookie value: signature, then expiry, then that the
-// payload still carries everything a session needs.
 func (m *sessions) parse(value string) (session, error) {
 	p, sig, ok := strings.Cut(value, ".")
 	if !ok {
@@ -190,16 +163,13 @@ func (m *sessions) parse(value string) (session, error) {
 	if err := json.Unmarshal(payload, &s); err != nil {
 		return session{}, errInvalidSession
 	}
-	// Token is checked here and not only where it is used: a session with no
-	// credential in it would otherwise reach the proxy and be forwarded with
-	// no Authorization header at all.
+	// A tokenless session would reach the proxy with no Authorization header.
 	if s.Subject == "" || s.Nonce == "" || s.Token == "" || m.now().Unix() >= s.Expires {
 		return session{}, errInvalidSession
 	}
 	return s, nil
 }
 
-// cookie builds the Set-Cookie for value; expire=true clears it.
 func (m *sessions) cookie(value string, expire bool) *http.Cookie {
 	c := &http.Cookie{
 		Name:     cookieName,
@@ -218,7 +188,6 @@ func (m *sessions) cookie(value string, expire bool) *http.Cookie {
 	return c
 }
 
-// csrfToken derives the CSRF token for a session: HMAC(key, "csrf:"+nonce).
 func (m *sessions) csrfToken(s session) string {
 	h := hmac.New(sha256.New, m.key)
 	h.Write([]byte("csrf:" + s.Nonce))
@@ -229,7 +198,6 @@ func (m *sessions) checkCSRF(s session, token string) bool {
 	return token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(m.csrfToken(s))) == 1
 }
 
-// fromRequest reads and verifies the session cookie.
 func (m *sessions) fromRequest(r *http.Request) (session, error) {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
@@ -237,8 +205,6 @@ func (m *sessions) fromRequest(r *http.Request) (session, error) {
 	}
 	return m.parse(c.Value)
 }
-
-// ---- request context -------------------------------------------------------
 
 type ctxKey int
 
@@ -249,17 +215,14 @@ const (
 	ctxRequestID
 )
 
-// actorHolder lets the access log, which runs outside the session layer, learn
-// who the request ran as once the inner layer has resolved it.
+// Lets the access log, outside the session layer, learn who the request ran as.
 type actorHolder struct{ subject string }
 
 func withActorHolder(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ctxActor, &actorHolder{})
 }
 
-// actorFrom is read by the access log after the handler has returned, so the
-// holder is only ever written on the one goroutine serving the request and
-// needs no lock.
+// Read after the handler returns; writes stay on the one goroutine, so no lock.
 func actorFrom(ctx context.Context) string {
 	if h, ok := ctx.Value(ctxActor).(*actorHolder); ok {
 		return h.subject
@@ -272,16 +235,12 @@ func sessionFrom(ctx context.Context) (session, bool) {
 	return s, ok
 }
 
-// tokenFrom returns the caller's bearer token, unsealed by requireSession.
-// The proxy reads it here rather than unsealing again so there is exactly one
-// place a cookie becomes a credential.
+// One place a cookie becomes a credential: the proxy reads it, not unseals.
 func tokenFrom(ctx context.Context) (string, bool) {
 	t, ok := ctx.Value(ctxToken).(string)
 	return t, ok
 }
 
-// requireSession resolves the cookie, unseals the bearer token into the
-// request context, or answers 401.
 func (m *sessions) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s, err := m.fromRequest(r)

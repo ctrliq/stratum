@@ -87,7 +87,6 @@ func TestCompletedJobCleanupWarningsStayOffStdout(t *testing.T) {
 	}
 }
 
-// TestBuild pins the privileged pod spec.
 func TestBuild(t *testing.T) {
 	j := Build(testSpec())
 
@@ -110,8 +109,6 @@ func TestBuild(t *testing.T) {
 	if ps.NodeName != "node1" {
 		t.Errorf("NodeName = %q", ps.NodeName)
 	}
-	// Not critical unless asked: a critical pod may evict workloads to be
-	// admitted, past every PDB.
 	if ps.PriorityClassName != "" {
 		t.Errorf("PriorityClassName = %q, want none for a Job that did not ask", ps.PriorityClassName)
 	}
@@ -172,7 +169,6 @@ func TestTruncName(t *testing.T) {
 	}
 }
 
-// statusReactor makes every Jobs.Get return a job carrying the given status.
 func statusReactor(st batchv1.JobStatus) clienttesting.ReactionFunc {
 	return func(a clienttesting.Action) (bool, runtime.Object, error) {
 		ga := a.(clienttesting.GetAction)
@@ -220,7 +216,7 @@ func TestRun(t *testing.T) {
 
 	t.Run("running job times out", func(t *testing.T) {
 		cs := fake.NewSimpleClientset()
-		cs.PrependReactor("get", "jobs", statusReactor(batchv1.JobStatus{})) // never completes
+		cs.PrependReactor("get", "jobs", statusReactor(batchv1.JobStatus{}))
 		s := testSpec()
 		s.PollAttempts = 2
 		err := Run(context.Background(), cs, s)
@@ -230,9 +226,6 @@ func TestRun(t *testing.T) {
 	})
 }
 
-// TestRunRidesOutAnAPIServerRestart: on a one-node cluster the
-// upgrade restarts the API server the poll reads from. Reads that fail meanwhile
-// are retried, not the end of a Job that is still changing the host.
 func TestRunRidesOutAnAPIServerRestart(t *testing.T) {
 	restore := pollInterval
 	pollInterval = 0
@@ -312,8 +305,7 @@ func TestWaitReady(t *testing.T) {
 	}
 }
 
-// A successful old Job must never satisfy Run: foreground deletion can take
-// multiple polls, and only the replacement's status determines the result.
+// Foreground deletion can take polls; only the replacement's status counts.
 func TestRunReplacesStaleJob(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		name := "replacement succeeds"
@@ -355,11 +347,9 @@ func TestRunReplacesStaleJob(t *testing.T) {
 							t.Fatal(err)
 						}
 						deleting = false
-						return false, nil, nil // tracker now returns NotFound
+						return false, nil, nil // tracker yields NotFound
 					}
 					if creates == 1 {
-						// Run inspects the existing Job before replacing it: it
-						// must see the stale, finished one here.
 						return false, nil, nil
 					}
 					obj, err := cs.Tracker().Get(resource, s.Namespace, s.Name)
@@ -464,10 +454,6 @@ func TestPollingCancellation(t *testing.T) {
 	}
 }
 
-// TestRunNeverReplacesARunningJob: a Job still running, or
-// being deleted with its Pod still up, belongs to a run that is alive or
-// crashed mid-change on that node. Replacing it would interrupt the change on
-// the host, so Run refuses and leaves it exactly as it was.
 func TestRunNeverReplacesARunningJob(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -525,12 +511,7 @@ func TestFinished(t *testing.T) {
 	}
 }
 
-// TestBuildIsValidForALongNodeName is the check the fake clientset cannot make.
-//
-// A node name is a DNS subdomain and may be 253 characters; a label value may
-// be 63. A node name over 63 characters must not go straight into the label:
-// a real API server rejects the Job outright — while the fake, which validates
-// nothing, accepts it and every test passes.
+// The fake clientset validates nothing; a real API server rejects the Job.
 func TestBuildIsValidForALongNodeName(t *testing.T) {
 	const labelKey = "stratum.ciq.com/upgrade"
 
@@ -554,15 +535,12 @@ func TestBuildIsValidForALongNodeName(t *testing.T) {
 					t.Errorf("label %s=%q is not a valid label value: %v", k, v, errs)
 				}
 			}
-			// The ownership answer must survive the hashing.
 			if got := JobNode(j, labelKey); got != node {
 				t.Errorf("JobNode = %q, want the full node name", got)
 			}
 		})
 	}
 
-	// Two nodes must not share a label value, or the hash would make them
-	// indistinguishable to anything selecting on it.
 	t.Run("distinct nodes get distinct label values", func(t *testing.T) {
 		a := strings.Repeat("a", 70) + "1"
 		b := strings.Repeat("a", 70) + "2"
@@ -571,8 +549,6 @@ func TestBuildIsValidForALongNodeName(t *testing.T) {
 		}
 	})
 
-	// A Job written before the annotation existed still answers, because a
-	// node whose name did not fit could not have had a Job at all.
 	t.Run("a pre-annotation Job still answers", func(t *testing.T) {
 		j := Build(Spec{Namespace: "kube-system", Name: "n", Node: "cp1", LabelKey: labelKey})
 		j.Annotations = nil
@@ -582,13 +558,6 @@ func TestBuildIsValidForALongNodeName(t *testing.T) {
 	})
 }
 
-// TestRunRefusesAJobItDoesNotOwn covers the Job that neither sweep can reach.
-//
-// The upgrade sweeps visit nodes the cluster currently has. A node that has
-// been REMOVED leaves its Job behind, and if that Job's name is one a current
-// node now wants, Run is the only thing standing between them — so replacing
-// by name alone would silently delete a departed node's object, which is the
-// cross-owner deletion the naming exists to prevent.
 func TestRunRefusesAJobItDoesNotOwn(t *testing.T) {
 	const ns, name, labelKey = "kube-system", "stratum-upgrade-shared", "stratum.ciq.com/upgrade"
 
@@ -616,7 +585,6 @@ func TestRunRefusesAJobItDoesNotOwn(t *testing.T) {
 		}
 	})
 
-	// An owner that cannot be established is not this node's.
 	t.Run("a Job with no owner is refused", func(t *testing.T) {
 		orphan := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
 		orphan.Status.Succeeded = 1
@@ -627,15 +595,12 @@ func TestRunRefusesAJobItDoesNotOwn(t *testing.T) {
 		}
 	})
 
-	// The ordinary path must still work: this node's own finished Job is
-	// exactly what Run is supposed to replace.
 	t.Run("this node's own finished Job is still replaced", func(t *testing.T) {
 		mine := Build(spec("cp1"))
 		mine.Status.Succeeded = 1
 		cs := fake.NewSimpleClientset(mine)
 
-		// Run polls for completion; the recreated Job is never finished in
-		// a fake, so the ownership gate passing is what this asserts.
+		// The recreated Job is never finished in a fake, so this asserts the ownership gate passed.
 		err := Run(t.Context(), cs, spec("cp1"))
 		if err != nil && strings.Contains(err.Error(), "belongs to node") {
 			t.Errorf("Run refused this node's own Job: %v", err)
@@ -644,12 +609,10 @@ func TestRunRefusesAJobItDoesNotOwn(t *testing.T) {
 }
 
 func TestCriticalJobIsSystemNodeCritical(t *testing.T) {
-	// Test the priorityClass helper function directly
 	if got := priorityClass(true); got != "system-node-critical" {
 		t.Errorf("priorityClass(true) = %q", got)
 	}
 
-	// Test that Spec.Critical=true results in the correct PriorityClassName in the pod spec
 	spec := Spec{
 		Name:      "test-job",
 		Node:      "test-node",
@@ -665,9 +628,7 @@ func TestCriticalJobIsSystemNodeCritical(t *testing.T) {
 	}
 }
 
-// A read the API server never answers must not stretch the poll past
-// attempts * pollInterval: the read is held to the interval and a poll sleeps
-// only what is left of it.
+// A stalled read must not stretch the poll past attempts * pollInterval.
 func TestWaitReadyStaysWithinItsAttemptsWhenReadsStall(t *testing.T) {
 	oldPoll, oldGet := pollInterval, getCallTimeout
 	pollInterval, getCallTimeout = 50*time.Millisecond, 10*time.Second
@@ -676,7 +637,7 @@ func TestWaitReadyStaysWithinItsAttemptsWhenReadsStall(t *testing.T) {
 		t.Fatalf("readTimeout = %s, want the poll interval %s", got, pollInterval)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done() // never answers
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 	cs, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})

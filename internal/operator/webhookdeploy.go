@@ -1,27 +1,6 @@
 package operator
 
-// webhookdeploy.go — delivery of the admission webhook in stratum's host-process
-// operator model.
-//
-// The operator is a supervised host process on the control-plane node(s), not an
-// in-cluster Deployment, so there is no pod for a Service selector to find. The
-// webhook is delivered instead by:
-//
-//   - a serving cert minted IN MEMORY from the cluster CA (webhookdeploy mints it
-//     with pki.IssuePEM, re-minting periodically so a CA rotation is picked up
-//     without a restart); the MutatingWebhookConfiguration's caBundle is the
-//     cluster CA trust bundle, so the apiserver trusts the cert;
-//   - a Service (kube-system/stratum-operator-webhook) with NO selector, whose
-//     endpoints are supplied by...
-//   - a per-node EndpointSlice this operator instance owns: it registers its own
-//     node IP on start and removes it on shutdown. Every control-plane operator
-//     runs the (stateless) webhook and registers its own slice, so admission is
-//     highly available and needs no leader coupling — unlike a single
-//     leader-managed endpoint, a lost leader does not take stamping down.
-//
-// Admission fails closed for tenant writes; the configured privileged
-// namespaces are exempt. Endpoint publication stops when serving fails, and
-// bring-up retries.
+// A supervised host process, not a pod: no Service selector can find it.
 
 import (
 	"context"
@@ -51,44 +30,28 @@ const (
 	webhookNamespace   = "kube-system"
 	webhookServiceName = "stratum-operator-webhook"
 	webhookConfigName  = "stratum-operator-requester"
-	// webhookServicePort is the port the apiserver dials on the Service; it maps
-	// to the operator's webhookPort on the backing node.
 	webhookServicePort = 443
-	// webhookEnsureInterval re-asserts the delivery objects (Service, webhook
-	// config, this node's EndpointSlice) so a deleted one is restored promptly
-	// rather than leaving admission unrouted for a cert-refresh window.
+	// Restores a deleted delivery object promptly, not a cert-refresh window later.
 	webhookEnsureInterval = time.Minute
-	// webhookRetryInterval backs off the initial bring-up when the CA is not yet
-	// readable or the apiserver is not yet up.
+	// Backs off bring-up while the CA is unreadable or the apiserver is not up.
 	webhookRetryInterval       = 30 * time.Second
 	webhookHeartbeatAnnotation = group + "/webhook-heartbeat"
 	webhookEndpointTTL         = 3 * webhookEnsureInterval
 )
 
-// certRefreshInterval re-mints the serving cert and re-asserts the caBundle so
-// a CA rotation (which swaps the live signer) is picked up without a restart.
-// It is a variable so tests can shrink the interval; production keeps the
-// twelve-hour default.
+// Re-mints the serving cert so a CA rotation needs no restart; variable for tests.
 var certRefreshInterval = 12 * time.Hour
 
-// webhookListen binds the webhook's port on every address. It is a variable
-// so tests can serve on a free loopback port instead.
+// A variable so tests can serve on a free loopback port.
 var webhookListen = func() (net.Listener, error) { return net.Listen("tcp", fmt.Sprintf(":%d", webhookPort)) }
 
-// webhookDNSNames are the serving-cert SANs — the names the apiserver uses to
-// reach the Service, which is what it validates the cert against (it verifies the
-// Service DNS name even when routed through an endpoint IP). The full name ends in
-// the cluster's DNS domain; an empty domain names the default one.
+// The apiserver validates the cert against the Service DNS name even over an endpoint IP.
 func webhookDNSNames(domain string) []string {
 	svc := webhookServiceName + "." + webhookNamespace + ".svc"
 	return []string{svc, svc + "." + netcfg.DomainOr(domain)}
 }
 
-// certCache holds the current serving cert behind a read/write lock so the TLS
-// server's GetCertificate callback returns the latest across a re-mint. domain is
-// the cluster's DNS domain every cert it holds names, so the first mint and each
-// re-mint agree; it is set at construction and never changes, so the lock does
-// not guard it.
+// domain is set at construction and never changes, so the lock does not guard it.
 type certCache struct {
 	mu     sync.RWMutex
 	cert   *tls.Certificate
@@ -110,8 +73,6 @@ func (c *certCache) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	return c.cert, nil
 }
 
-// mintServingCert signs a fresh in-memory serving cert from the cluster CA, naming
-// the Service in the cluster's DNS domain.
 func mintServingCert(domain string) (*tls.Certificate, error) {
 	ca, err := pki.LoadCA(pki.Signer("ca"))
 	if err != nil {
@@ -133,13 +94,6 @@ func mintServingCert(domain string) (*tls.Certificate, error) {
 	return &pair, nil
 }
 
-// runWebhook brings up and maintains the admission webhook for the lifetime of
-// ctx: it serves admission over HTTPS, keeps the delivery objects (Service,
-// MutatingWebhookConfiguration, this node's EndpointSlice) in place, and on
-// shutdown deregisters this node's endpoint so the apiserver stops routing to a
-// dead server. Bring-up failures are logged and retried; tenant admission remains
-// unavailable until serving and delivery recover. domain is the cluster's DNS
-// domain the serving cert names.
 func runWebhook(ctx context.Context, cs kubernetes.Interface, nodeName, nodeIP, domain string, signers *requesterSignerHolder, privileged []string) {
 	for ctx.Err() == nil {
 		runWebhookOnce(ctx, cs, nodeName, nodeIP, domain, signers, privileged)
@@ -154,14 +108,11 @@ func runWebhook(ctx context.Context, cs kubernetes.Interface, nodeName, nodeIP, 
 func runWebhookOnce(ctx context.Context, cs kubernetes.Interface, nodeName, nodeIP, domain string, signers *requesterSignerHolder, privileged []string) {
 	cache := &certCache{domain: domain}
 
-	// Block (retrying) until the first serving cert is minted — the server cannot
-	// start without one. A missing CA here means this node is not a control-plane
-	// node with PKI, in which case the webhook simply never comes up on it.
+	// A missing CA here means this node has no PKI; the webhook never comes up.
 	if !mintInto(ctx, cache) {
-		return // ctx cancelled during bring-up
+		return
 	}
 
-	// Bind before publishing a Ready endpoint. A bind failure never registers.
 	listener, err := webhookListen()
 	if err != nil {
 		log.Printf("webhook listen: %v", err)
@@ -171,16 +122,9 @@ func runWebhookOnce(ctx context.Context, cs kubernetes.Interface, nodeName, node
 	maintainWebhook(ctx, cs, nodeName, nodeIP, cache, func(ctx context.Context) error { return runWebhookServer(ctx, listener, cache.get, signers) }, privileged)
 }
 
-// maintainWebhook serves the webhook and keeps the delivery objects in place
-// until ctx is cancelled or serving stops. privileged is the configured
-// privileged-namespace set, threaded through to buildWebhookConfig's
-// NamespaceSelector. It is a required parameter rather than variadic so a
-// refactor that stops forwarding the set fails to compile instead of silently
-// omitting the namespace exemption; a caller that wants no exemption passes
-// nil explicitly.
+// privileged is required so stopping its forwarding fails to compile, not silently.
 func maintainWebhook(ctx context.Context, cs kubernetes.Interface, nodeName, nodeIP string, cache *certCache, serve func(context.Context) error, privileged []string) {
-	// A stopped listener must stop endpoint publication as well. The supervisor
-	// loop retries the complete server/delivery lifecycle after deregistration.
+	// A stopped listener must stop endpoint publication as well.
 	serverCtx, stopServer := context.WithCancel(ctx)
 	defer stopServer()
 	serverDone := make(chan error, 1)
@@ -200,10 +144,6 @@ func maintainWebhook(ctx context.Context, cs kubernetes.Interface, nodeName, nod
 		}
 	}()
 
-	// Assert the delivery objects, then keep them fresh. The delivery objects are
-	// re-asserted on a short interval (not just the cert-refresh tick) so a deleted
-	// Service, EndpointSlice, or webhook config is restored within a minute rather
-	// than being absent for up to a cert-refresh window.
 	ensureWebhookObjects(serverCtx, cs, nodeName, nodeIP, privileged)
 
 	ensure := time.NewTicker(webhookEnsureInterval)
@@ -221,8 +161,6 @@ func maintainWebhook(ctx context.Context, cs kubernetes.Interface, nodeName, nod
 		case <-ensure.C:
 			ensureWebhookObjects(serverCtx, cs, nodeName, nodeIP, privileged)
 		case <-certRefresh.C:
-			// Re-mint so a CA rotation (new live signer) is picked up. A transient
-			// failure just keeps the existing (still long-lived) cert.
 			if cert, err := mintServingCert(cache.domain); err != nil {
 				log.Printf("stratum-operator: refresh webhook serving cert: %v", err)
 			} else {
@@ -232,9 +170,6 @@ func maintainWebhook(ctx context.Context, cs kubernetes.Interface, nodeName, nod
 	}
 }
 
-// mintInto mints a serving cert naming the cache's domain into the cache,
-// retrying on failure until it succeeds or ctx is cancelled. Returns false only
-// if ctx was cancelled first.
 func mintInto(ctx context.Context, cache *certCache) bool {
 	for {
 		cert, err := mintServingCert(cache.domain)
@@ -251,9 +186,7 @@ func mintInto(ctx context.Context, cache *certCache) bool {
 	}
 }
 
-// ensureWebhookObjects asserts the Service, the MutatingWebhookConfiguration
-// (with the current CA bundle), and this node's EndpointSlice. Each is
-// best-effort and independently logged so one failing does not block the others.
+// Each object is asserted independently so one failure does not block the others.
 func ensureWebhookObjects(ctx context.Context, cs kubernetes.Interface, nodeName, nodeIP string, privileged []string) {
 	if err := ensureWebhookService(ctx, cs); err != nil {
 		log.Printf("stratum-operator: ensure webhook Service: %v", err)
@@ -272,8 +205,7 @@ func ensureWebhookObjects(ctx context.Context, cs kubernetes.Interface, nodeName
 	}
 }
 
-// buildWebhookService is the pure Service builder (no selector: endpoints come
-// from the operator-managed EndpointSlices).
+// No selector: endpoints come from the operator-managed EndpointSlices.
 func buildWebhookService() *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -298,7 +230,6 @@ func ensureWebhookService(ctx context.Context, cs kubernetes.Interface) error {
 	cur, err := svcs.Get(ctx, webhookServiceName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, err = svcs.Create(ctx, want, metav1.CreateOptions{})
-		// Another control-plane operator won the create race; it converges next tick.
 		if apierrors.IsAlreadyExists(err) {
 			return nil
 		}
@@ -307,20 +238,13 @@ func ensureWebhookService(ctx context.Context, cs kubernetes.Interface) error {
 	if err != nil {
 		return err
 	}
-	// Preserve the immutable ClusterIP; re-assert the ports and CLEAR any selector
-	// on the fetched object. A stray selector would make kube-proxy publish
-	// selector-matched pod endpoints alongside the operator-managed EndpointSlices,
-	// routing admission to unintended pods.
+	// A stray selector would publish pod endpoints alongside the managed slices.
 	cur.Spec.Ports = want.Spec.Ports
 	cur.Spec.Selector = nil
 	_, err = svcs.Update(ctx, cur, metav1.UpdateOptions{})
 	return err
 }
 
-// buildWebhookConfig is the pure MutatingWebhookConfiguration builder. It is
-// split out so the policy (failurePolicy, rules, namespace exemption) is
-// unit-testable without a cluster. privileged is the configured set, normalized
-// once here.
 func buildWebhookConfig(caBundle []byte, privileged []string) *admissionregistrationv1.MutatingWebhookConfiguration {
 	scope := admissionregistrationv1.NamespacedScope
 	return &admissionregistrationv1.MutatingWebhookConfiguration{
@@ -345,25 +269,16 @@ func buildWebhookConfig(caBundle []byte, privileged []string) *admissionregistra
 					admissionregistrationv1.Update,
 				},
 				Rule: admissionregistrationv1.Rule{
-					// k8sutil owns the HelmChart group/version pair so the
-					// rule cannot drift off the CRDs' group.
+					// k8sutil owns the group/version pair so the rule cannot drift off the CRDs' group.
 					APIGroups:   []string{k8sutil.HelmChartGroup},
 					APIVersions: []string{k8sutil.HelmChartVersion},
 					Resources:   []string{"helmcharts", "helmchartconfigs"},
 					Scope:       &scope,
 				},
 			}},
-			// Fail closes replay on CREATE: name/spec bindings cannot distinguish
-			// recreation while the webhook is unavailable.
-			FailurePolicy: ptr.To(admissionregistrationv1.Fail),
-			MatchPolicy:   ptr.To(admissionregistrationv1.Equivalent),
-			// Exempt exactly the configured privileged namespaces, normalized
-			// once here: the same set whose HelmCharts may install as the
-			// operator, so a privileged namespace's bring-up never waits on the
-			// webhook and one option governs install authorization and
-			// admission exemption. An empty set omits the selector — the webhook
-			// then matches every namespace and unstamped writes fail closed,
-			// matching the reconciler's deny-all reading of an empty set.
+			// Fail closes replay on CREATE: recreation is indistinguishable while the webhook is down.
+			FailurePolicy:           ptr.To(admissionregistrationv1.Fail),
+			MatchPolicy:             ptr.To(admissionregistrationv1.Equivalent),
 			NamespaceSelector:       privilegedNamespaceSelector(normalizePrivilegedNamespaces(privileged)),
 			SideEffects:             ptr.To(admissionregistrationv1.SideEffectClassNone),
 			TimeoutSeconds:          ptr.To[int32](5),
@@ -394,13 +309,11 @@ func ensureWebhookConfig(ctx context.Context, cs kubernetes.Interface, caBundle 
 	return err
 }
 
-// endpointSliceName is this node's slice name — one slice per node so instances
-// never contend on a shared object.
+// One slice per node, so instances never contend on a shared object.
 func endpointSliceName(nodeName string) string {
 	return webhookServiceName + "-" + sanitizeName(nodeName)
 }
 
-// buildEndpointSlice is the pure EndpointSlice builder for one node's endpoint.
 func buildEndpointSlice(nodeName, nodeIP string) *discoveryv1.EndpointSlice {
 	ip := primaryIP(nodeIP)
 	addrType := discoveryv1.AddressTypeIPv4
@@ -442,8 +355,7 @@ func ensureEndpointSlice(ctx context.Context, cs kubernetes.Interface, nodeName,
 	if err != nil {
 		return err
 	}
-	// AddressType is immutable; if it changed (a node that flipped IP family),
-	// replace the slice rather than patch it.
+	// AddressType is immutable; a family flip must replace the slice.
 	if cur.AddressType != want.AddressType {
 		if err := slices.Delete(ctx, want.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			return err
@@ -462,9 +374,7 @@ func ensureEndpointSlice(ctx context.Context, cs kubernetes.Interface, nodeName,
 	return err
 }
 
-// Each serving instance renews its own heartbeat. Surviving instances remove
-// stale peers after three missed renewals; graceful shutdown still deletes at
-// once. Preconditions prevent a stale observation from deleting a renewed slice.
+// Preconditions keep a stale observation from deleting a slice renewed since.
 func pruneWebhookEndpoints(ctx context.Context, cs kubernetes.Interface, now time.Time) error {
 	api := cs.DiscoveryV1().EndpointSlices(webhookNamespace)
 	list, err := api.List(ctx, metav1.ListOptions{LabelSelector: discoveryv1.LabelServiceName + "=" + webhookServiceName + "," + group + "/managed-by=" + fieldManager})
@@ -488,9 +398,7 @@ func deleteEndpointSlice(ctx context.Context, cs kubernetes.Interface, nodeName 
 	return cs.DiscoveryV1().EndpointSlices(webhookNamespace).Delete(ctx, endpointSliceName(nodeName), metav1.DeleteOptions{})
 }
 
-// primaryIP returns the first IP from a possibly comma-joined dual-stack node IP
-// ("v4,v6"). The EndpointSlice addressType is single-family, so one slice carries
-// the node's primary address; the apiserver reaches the webhook over it.
+// The EndpointSlice addressType is single-family, so one slice carries the primary address.
 func primaryIP(nodeIP string) string {
 	for _, p := range strings.Split(nodeIP, ",") {
 		if p = strings.TrimSpace(p); p != "" {
@@ -500,9 +408,6 @@ func primaryIP(nodeIP string) string {
 	return nodeIP
 }
 
-// sanitizeName lowercases and reduces s to an RFC-1123-safe object-name segment
-// (a node's hostname is usually already valid; this guards the odd uppercase or
-// underscore).
 func sanitizeName(s string) string {
 	s = strings.ToLower(s)
 	var b strings.Builder

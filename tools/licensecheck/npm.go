@@ -1,4 +1,3 @@
-// npm.go checks the npm packages bundled into the dashboard.
 package main
 
 import (
@@ -29,8 +28,7 @@ func checkNpm(file string, rep *reporter, stderr io.Writer) error {
 	if pkgs == nil {
 		return fmt.Errorf("reading %s: want a JSON array of {name, version, license}", file)
 	}
-	// The dashboard bundles react at least, so an empty list means the
-	// listing broke, and passing it would check nothing.
+	// The dashboard bundles react, so an empty list means the listing broke.
 	if len(pkgs) == 0 {
 		return fmt.Errorf("reading %s: lists no packages", file)
 	}
@@ -56,9 +54,6 @@ func checkNpm(file string, rep *reporter, stderr io.Writer) error {
 	return nil
 }
 
-// npmVerdict checks the SPDX expression in a package's license field. An
-// empty field, or one that is not an SPDX expression (such as "SEE LICENSE
-// IN LICENSE.md"), is an unknown license.
 func npmVerdict(p npmPackage) verdict {
 	license := strings.TrimSpace(p.License)
 	if license == "" || noLicense(license) {

@@ -15,20 +15,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// stageToTempDir redirects the staging layout for one test through the
-// documented SetRoots + t.Cleanup helper: version.SetRoots recomputes
-// version.StageDir from the redirected data root, and Resolve resolves the
-// stage directory at call time, so staging follows. It returns the redirected
-// stage directory. This package declares no StageDir var of its own to
-// redirect.
 func stageToTempDir(t *testing.T) string {
 	t.Helper()
 	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
 	return version.StageDir
 }
 
-// fakeUpgradeBinary builds a stand-in upgrade binary: leading bytes for the
-// ELF, then the ZIP-append payload (same shape as internal/assets' tests).
 func fakeUpgradeBinary(t *testing.T, members map[string]string) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -125,14 +117,7 @@ func TestResolveFromPayloadMissingRequired(t *testing.T) {
 	}
 }
 
-// TestResolveStagingFollowsTheDataRoot: Resolve resolves the stage directory
-// through version.StageDir at call time, so a SetRoots redirect of the data
-// root moves where the payload is extracted — binaries under its bin/, image
-// archives under its images/. Pinned across two redirects: a second call after
-// a second redirect must answer the NEW version.StageDir, which is what
-// separates a call-time derivation from one frozen at package init or
-// memoized at the first call — either would go to the compiled-in
-// /var/lib/stratum/upgrade/staged and never follow the redirect.
+// Two redirects: a call-time derivation answers each; a frozen or memoized one cannot.
 func TestResolveStagingFollowsTheDataRoot(t *testing.T) {
 	bin := fakeUpgradeBinary(t, map[string]string{
 		"bin/kubelet":               "kubelet-binary",
@@ -159,12 +144,6 @@ func TestResolveStagingFollowsTheDataRoot(t *testing.T) {
 	}
 }
 
-// TestStagingDirHasOneHome parses payload.go and fails when this package
-// declares a StageDir var of its own or compiles the staging path in as a
-// literal. The one home for the staging directory is version.StageDir,
-// derived from the data root; a second declaration here drifts from every
-// redirected layout, and the same pattern pins node.go's hostProcs
-// (TestHostProcsIsInitializedFromTheDerivation).
 func TestStagingDirHasOneHome(t *testing.T) {
 	t.Parallel() // host-free: parses only its own file
 	fset := token.NewFileSet()

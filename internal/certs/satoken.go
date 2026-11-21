@@ -1,10 +1,3 @@
-// Mounted ServiceAccount tokens and the old signing key. Finalize drops the old
-// ServiceAccount key from the apiserver's verification set, so a token still
-// signed by it gets 401 from that moment. After sign-new every token the
-// apiserver issues carries the new key's id, but one that was issued before (a
-// kubelet restarted while another control plane still signed with the old key)
-// stays mounted until the kubelet re-issues it. This file finds those tokens on
-// a node, which is what the finalize gate runs on every node.
 package certs
 
 import (
@@ -36,9 +29,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// ExitStaleTokens is the exit status of `rotate-ca --scan-tokens` on a node that
-// mounts a token signed by the old key. The scan Job's answer is its exit status,
-// as the upgrade --check Job's is (internal/upgrade.ExitUpgradeNeeded).
+// ExitStaleTokens is the scan Job's exit status when it found a stale token.
 const ExitStaleTokens = 10
 
 // ErrStaleTokens is ScanTokens' error when it found such a token.
@@ -46,16 +37,12 @@ var ErrStaleTokens = errors.New("this node mounts a token signed by the old serv
 
 // Vars, so tests can shorten them.
 var (
-	// tokenGateWait is how long --cluster keeps checking for a node to be clean.
-	// The unattended refresh of a projected token comes 80% of the way through its
-	// hour, and the spike measured a worst case of about 50.5 minutes.
+	// tokenGateWait must cover a projected token's refresh, up to ~50 of its 60 minutes.
 	tokenGateWait = 60 * time.Minute
 	tokenGatePoll = time.Minute
-	// tokenSettle is how long to wait once every node is clean: client-go re-reads
-	// its token file once a minute.
+	// client-go re-reads a token file once a minute; tokenSettle waits that out.
 	tokenSettle = 2 * time.Minute
-	// kubeletReissueWait is how long a restarted kubelet has to re-issue the
-	// tokens (the spike measured about a second).
+	// a restarted kubelet re-issues its tokens in about a second
 	kubeletReissueWait = 30 * time.Second
 	kubeletReissuePoll = 2 * time.Second
 
@@ -64,18 +51,15 @@ var (
 	jobLogs        = nodejob.Logs
 )
 
-// scanTokens is the scan Job's phase name in its Job's name.
 const scanTokens = "scan-tokens"
 
-// A scan Job restarts a kubelet (up to 90s) and waits for it to re-issue, so it
-// gets far less than a phase Job. Both limits move together, as for caJobDeadline.
+// a scan Job restarts the kubelet, so it gets far less time than a phase Job
 const (
 	scanJobDeadline     = 5 * time.Minute
 	scanJobPollAttempts = 60
 )
 
-// kubeletRoot is the kubelet's --root-dir (internal/cluster/processes.go). Vars,
-// so tests can point them at a directory.
+// kubeletRoot is the kubelet's --root-dir; vars, so tests can point them elsewhere.
 var (
 	kubeletRoot = filepath.Join(version.DataDir, "kubelet")
 	pkiDir      = version.PKIDir
@@ -84,8 +68,7 @@ var (
 // keyIDPattern is a key id: base64url, unpadded, of a SHA-256.
 var keyIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
-// saKeyID is the id the apiserver puts in the kid header of a token it signs with
-// the key: the base64url SHA-256 of the key's PKIX DER encoding.
+// saKeyID is the kid the apiserver puts in a token it signs: base64url SHA-256 of the PKIX DER.
 func saKeyID(pubPEM []byte) (string, error) {
 	blk, _ := pem.Decode(pubPEM)
 	if blk == nil || blk.Type != "PUBLIC KEY" {
@@ -103,9 +86,7 @@ func saKeyID(pubPEM []byte) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
 }
 
-// oldSAKeyID is the id of the key sign-new retired on this node. The error wraps
-// fs.ErrNotExist when there is none: finalize already removed it, or sign-new
-// never ran here.
+// oldSAKeyID wraps fs.ErrNotExist when finalize removed the key or sign-new never ran here.
 func oldSAKeyID() (string, error) {
 	b, err := os.ReadFile(filepath.Join(pkiDir, pki.PreRotationBackupName("sa.pub")))
 	if err != nil {
@@ -118,8 +99,7 @@ func oldSAKeyID() (string, error) {
 	return kid, nil
 }
 
-// tokenKeyID is the kid in a JWT's header. ok is false for anything that is not a
-// JWT with one: a projected token for another issuer is not ours to judge.
+// ok is false for anything that is not a JWT with a kid.
 func tokenKeyID(token string) (kid string, ok bool) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 3 {
@@ -164,16 +144,7 @@ func listStaleTokens(st []staleToken) string {
 	return strings.Join(s, ", ")
 }
 
-// findStaleTokens reads every projected ServiceAccount token under the kubelet's
-// root and returns those whose kid is oldKid. A token that is gone by the time it
-// is read (its pod was deleted) is not stale.
-//
-// It walks the directories rather than filepath.Glob, which swallows a directory
-// it cannot read: a pod directory that cannot be listed may hold a stale token,
-// and the gate must fail on it, not pass.
-//
-// A scan that ran out of time is a failure, never a clean result: ctx is checked
-// on entry and again before a result is returned, for every caller.
+// walks by hand: filepath.Glob swallows a directory it cannot read, and one may hold a stale token
 func findStaleTokens(ctx context.Context, root, oldKid string) ([]staleToken, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -208,18 +179,7 @@ func findStaleTokens(ctx context.Context, root, oldKid string) ([]staleToken, er
 	return stale, nil
 }
 
-// staleInVolume is the files, relative to a projected volume, that hold a token
-// signed by oldKid. A service-account token source writes to a path the pod spec
-// chooses, nested or not, so every file is read, not just one named "token". The
-// kubelet's atomic writer keeps the current files under what ..data points at,
-// and the older generations beside it; only the current ones count.
-//
-// The kubelet can publish a new generation, and remove the one being read, at any
-// moment, and both can hold the same old-key token: a scan of the removed one
-// that skipped what it could not read would call a still-mounted token clean. So a
-// scan counts only if ..data points at the same generation before and after it and
-// nothing in it went missing; otherwise it starts again, and when it cannot get
-// such a scan it fails. A volume that is gone (its pod was deleted) is clean.
+// every file is read; the scan counts only if ..data is stable across it and nothing went missing
 func staleInVolume(ctx context.Context, vol, oldKid string) ([]string, error) {
 	for attempt := 0; attempt < scanAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -247,17 +207,13 @@ func staleInVolume(ctx context.Context, vol, oldKid string) ([]string, error) {
 	return nil, fmt.Errorf("scan %s: the volume kept changing under the scan (%d attempts), so no complete read of it could be made", vol, scanAttempts)
 }
 
-// scanAttempts bounds staleInVolume's retries; a kubelet publishes a generation
-// once in a while, not continually. scanHook runs between choosing a generation
-// and reading it, so a test can replace it there.
+// scanHook runs between choosing a generation and reading it, so a test can replace it there.
 var (
 	scanAttempts = 5
 	scanHook     = func() {}
 )
 
-// currentGeneration is the directory ..data points at, or vol itself for a volume
-// that has no ..data (not written by the kubelet's atomic writer). Its error wraps
-// fs.ErrNotExist for a ..data that points at nothing.
+// currentGeneration's error wraps fs.ErrNotExist for a ..data that points at nothing.
 func currentGeneration(vol string) (string, error) {
 	if _, err := os.Lstat(filepath.Join(vol, "..data")); errors.Is(err, fs.ErrNotExist) {
 		if _, err := os.Stat(vol); err != nil {
@@ -268,8 +224,7 @@ func currentGeneration(vol string) (string, error) {
 	return filepath.EvalSymlinks(filepath.Join(vol, "..data"))
 }
 
-// walkTokens reads every file under root. complete is false if anything in it
-// went missing: the generation was removed while it was read.
+// complete is false if anything went missing: the generation was removed while it was read.
 func walkTokens(ctx context.Context, root, oldKid string) (found []string, complete bool, err error) {
 	complete = true
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
@@ -303,9 +258,7 @@ func walkTokens(ctx context.Context, root, oldKid string) (found []string, compl
 	return found, complete, err
 }
 
-// readDirIfExists lists a directory's entries. A directory that is not there (a
-// pod with no projected volumes, or one deleted mid-scan) has none; any other
-// error is the caller's to fail on.
+// readDirIfExists lists a directory's entries; one that is not there has none.
 func readDirIfExists(dir string) ([]string, error) {
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -321,11 +274,6 @@ func readDirIfExists(dir string) ([]string, error) {
 	return names, nil
 }
 
-// scanNode finds this node's stale tokens. With restart it restarts the kubelet
-// once if there are any, which re-issues every projected token, and scans again
-// until they are gone or kubeletReissueWait has passed. A cancelled ctx fails the
-// scan: it restarts nothing and never answers clean once it is done (the restart
-// itself, once begun, is not interrupted); findStaleTokens enforces that.
 func scanNode(ctx context.Context, w io.Writer, oldKid string, restart bool) ([]staleToken, error) {
 	return scanNodeWithFence(ctx, w, oldKid, restart, nil)
 }
@@ -338,8 +286,7 @@ func scanNodeWithFence(ctx context.Context, w io.Writer, oldKid string, restart 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Walking mounted tokens can take time. Reconfirm the cluster fence after
-	// that read, then acquire the host fence before restarting the kubelet.
+	// the token read can take time, so the cluster fence is reconfirmed after it
 	if confirm != nil {
 		if err := confirm("restarting the kubelet to reissue tokens"); err != nil {
 			return nil, err
@@ -368,16 +315,12 @@ func scanNodeWithFence(ctx context.Context, w io.Writer, oldKid string, restart 
 	}
 }
 
-// ScanTokens is `certs rotate-ca --scan-tokens`, the per-node scan Job: it prints
-// one line per mounted token signed by the key with id oldKid and returns
-// ErrStaleTokens if there were any. With restart it restarts the kubelet
-// first when there are, and reports what is left.
+// ScanTokens is `certs rotate-ca --scan-tokens`, the per-node scan Job
 func ScanTokens(w io.Writer, oldKid string, restart bool) error {
 	if !keyIDPattern.MatchString(oldKid) {
 		return fmt.Errorf("--old-kid %q is not a service-account key id", oldKid)
 	}
-	// Inside the Job's own deadline (scanJobDeadline), so a scan that cannot finish
-	// fails here, with its own message, rather than being killed.
+	// inside the Job's own deadline, so a scan that cannot finish fails here
 	ctx, cancel := context.WithTimeout(context.Background(), scanJobDeadline-time.Minute)
 	defer cancel()
 	stale, err := scanNode(ctx, w, oldKid, restart)
@@ -393,14 +336,12 @@ func ScanTokens(w io.Writer, oldKid string, restart bool) error {
 	return nil
 }
 
-// staleLinePrefix starts each offender line of the scan, so the orchestrator
-// reads them out of the Job's log among whatever else it printed.
+// staleLinePrefix starts an offender line, so the orchestrator reads them out of the Job's log.
 const staleLinePrefix = "stale-token"
 
 func parseStaleLines(log string) []staleToken {
 	var out []staleToken
 	for _, l := range strings.Split(log, "\n") {
-		// The volume is the rest of the line: a token path may hold a space.
 		if f := strings.SplitN(strings.TrimSpace(l), " ", 3); len(f) == 3 && f[0] == staleLinePrefix {
 			out = append(out, staleToken{PodUID: f[1], Volume: f[2]})
 		}
@@ -408,7 +349,6 @@ func parseStaleLines(log string) []staleToken {
 	return out
 }
 
-// scanNodeArgv is the argv of a node's scan Job; shell-free, as caNodeArgv is.
 func scanNodeArgv(oldKid string, restart bool) []string {
 	argv := []string{
 		"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--",
@@ -422,7 +362,6 @@ func scanNodeArgv(oldKid string, restart bool) []string {
 	return argv
 }
 
-// scanNodeJob runs the scan on a remote node.
 func scanNodeJob(ctx context.Context, w io.Writer, cs kubernetes.Interface, n cnode, oldKid string, restart bool) ([]staleToken, error) {
 	spec := nodejob.Spec{
 		Output:         w,
@@ -458,8 +397,7 @@ func scanNodeJob(ctx context.Context, w io.Writer, cs kubernetes.Interface, n cn
 	return stale, nil
 }
 
-// nameStale fills in the namespace/name of each token's pod. Best effort: a pod
-// that cannot be resolved is still reported by its uid.
+// an unresolved pod is still reported by its uid
 func nameStale(ctx context.Context, cs kubernetes.Interface, node string, stale []staleToken) {
 	if len(stale) == 0 {
 		return
@@ -473,28 +411,21 @@ func nameStale(ctx context.Context, cs kubernetes.Interface, node string, stale 
 		byUID[string(pods.Items[i].UID)] = pods.Items[i].Namespace + "/" + pods.Items[i].Name
 	}
 	for i := range stale {
-		// Keep a Pod the caller already set (a stand-in for offenders whose uids
-		// it could not read) unless the uid resolves.
 		if name, ok := byUID[stale[i].PodUID]; ok {
 			stale[i].Pod = name
 		}
 	}
 }
 
-// tokenScanner scans one node, restarting its kubelet first if restart is set and
-// the node has stale tokens. An empty result is a clean node.
+// An empty result is a clean node.
 type tokenScanner func(ctx context.Context, n cnode, restart bool) ([]staleToken, error)
 
-// clusterTokenScanner scans the node this runs on directly and every other node
-// with a Job.
 func clusterTokenScanner(w io.Writer, cs kubernetes.Interface, me, oldKid string, confirm func(string) error) tokenScanner {
 	return func(ctx context.Context, n cnode, restart bool) ([]staleToken, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		// Even a read-only remote scan creates a privileged Job. The token gate
-		// can last an hour, so the check at its entry cannot authorize later Jobs
-		// or a kubelet restart after another run has taken the lease.
+		// each Job needs its own check: the gate can last an hour, past any earlier one
 		if err := confirm("scanning tokens on node " + n.Name); err != nil {
 			return nil, err
 		}
@@ -513,13 +444,7 @@ func clusterTokenScanner(w io.Writer, cs kubernetes.Interface, me, oldKid string
 	}
 }
 
-// waitTokensClean returns once a scan of every node, in one pass, finds no token
-// signed by the old key, and then waits tokenSettle for the clients to re-read
-// them. A node that has some gets its kubelet restarted, once, whether or not the
-// restart cleared them; after that it is only scanned again, until tokenGateWait
-// is up. The wait bounds the scans too, not just the passes between them. It is a
-// check, not a sleep: it returns the moment every node is clean, and a node it
-// cannot scan fails it.
+// returns once every node scans clean in one pass, then waits tokenSettle
 func waitTokensClean(ctx context.Context, w io.Writer, nodes []cnode, scan tokenScanner) error {
 	gctx, cancel := context.WithTimeout(ctx, tokenGateWait)
 	defer cancel()
@@ -561,9 +486,7 @@ func waitTokensClean(ctx context.Context, w io.Writer, nodes []cnode, scan token
 	return sleepCtx(ctx, tokenSettle)
 }
 
-// finalizeTokenGateForKey is the token arm of the finalize preflight: no node
-// may drop the old key, whose id oldKid is, while a token it signed is still
-// mounted anywhere.
+// no node may hold a token the old key signed while finalize is to drop that key
 func finalizeTokenGateForKey(ctx context.Context, w io.Writer, cs kubernetes.Interface, nodes []cnode, me string, confirm func(string) error, oldKid string) error {
 	if err := waitTokensClean(ctx, w, nodes, clusterTokenScanner(w, cs, me, oldKid, confirm)); err != nil {
 		return err
@@ -572,9 +495,7 @@ func finalizeTokenGateForKey(ctx context.Context, w io.Writer, cs kubernetes.Int
 	return nil
 }
 
-// warnLegacyTokenSecrets says which kubernetes.io/service-account-token Secrets
-// hold a token signed by the old key. It does not block: those are not mounted
-// tokens the kubelet can re-issue, and whoever uses one decides what to do.
+// warns only: those Secrets are not mounted tokens the kubelet can re-issue
 func warnLegacyTokenSecrets(ctx context.Context, w io.Writer, cs kubernetes.Interface, oldKid string) {
 	stale, err := legacyStaleSecrets(ctx, cs, oldKid)
 	if err != nil {
@@ -585,8 +506,6 @@ func warnLegacyTokenSecrets(ctx context.Context, w io.Writer, cs kubernetes.Inte
 	}
 }
 
-// legacyStaleSecrets is the namespace/name of each service-account token Secret
-// whose token the key with id oldKid signed.
 func legacyStaleSecrets(ctx context.Context, cs kubernetes.Interface, oldKid string) ([]string, error) {
 	sl, err := cs.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{FieldSelector: "type=" + saTokenSecretType})
 	if err != nil {
@@ -605,19 +524,14 @@ func legacyStaleSecrets(ctx context.Context, cs kubernetes.Interface, oldKid str
 	return out, nil
 }
 
-// localTokenGate is the same check for `--phase=finalize` on one control plane:
-// this node's tokens only, no kubelet restart. A node with no old key has nothing
-// to check: it finalized already, or never reached sign-new.
+// the same check for --phase=finalize: this node's tokens only, no kubelet restart
 func localTokenGate(ctx context.Context, w io.Writer, o CARotateOptions) error {
 	if o.SkipTokenCheck {
 		return nil
 	}
 	oldKid, err := oldSAKeyID()
 	if errors.Is(err, fs.ErrNotExist) {
-		// No backup means finalize already ran, or sign-new never did, only if the
-		// verification bundle holds a single key. PromoteSA writes the backup only
-		// when it could read sa.pub, and promotes either way, so a bundle that
-		// still holds two keys is a rotation whose old key cannot be identified.
+		// no backup with two keys still trusted is an unidentifiable old key, not a finalized node
 		n, berr := saBundleKeys()
 		if berr != nil {
 			return fmt.Errorf("cannot tell whether this node still trusts an old service-account key: %w (--skip-token-check with --force finalizes without the check)", berr)
@@ -648,11 +562,7 @@ func localTokenGate(ctx context.Context, w io.Writer, o CARotateOptions) error {
 		"Restart this node's kubelet to re-issue them and run finalize again, or pass --skip-token-check", len(stale), listStaleTokens(stale))
 }
 
-// saBundleKeys is how many public keys sa-bundle.pub, the set the apiserver
-// verifies tokens against, holds: 2 while a rotation is under way, 1 once
-// finalize collapsed it. A node with no bundle holds none. It counts with the
-// parser the apiserver loads the bundle with, which also takes a certificate's
-// key, so a bundle it cannot parse is an error, never a count of one.
+// counted with the parser the apiserver loads the bundle with; unparseable is an error, not one
 func saBundleKeys() (int, error) {
 	b, err := os.ReadFile(filepath.Join(pkiDir, "sa-bundle.pub"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -668,7 +578,6 @@ func saBundleKeys() (int, error) {
 	return len(keys), nil
 }
 
-// sleepCtx waits d, or until ctx is cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()

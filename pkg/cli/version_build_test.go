@@ -9,9 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// `version --build` prints the build ID alone: the cluster upgrade reads it
-// from the staged binary to pin every node to one build, and the release
-// stamp cannot do that -- every untagged commit before a release shares it.
+// the release stamp cannot pin a build: every untagged commit before a release shares it
 func TestVersionBuildPrintsTheBuildID(t *testing.T) {
 	old := version.BuildID
 	version.BuildID = "0123abcd-dirty-feedbeef"

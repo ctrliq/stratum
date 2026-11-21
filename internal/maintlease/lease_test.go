@@ -1,29 +1,5 @@
 package maintlease
 
-// Tests for the cluster-wide maintenance Lease: the self-renewing Lease taken
-// by every cluster-scoped maintenance orchestrator (upgrade, CA rotation,
-// etcd-CA migration) before it dispatches node work. The lease name and
-// namespace are parameters — this package pins behavior, not identity, so no
-// released lease name is written here; the identities of the individual
-// operations are pinned by internal/upgrade's own tests through its wrappers.
-//
-// The API the tests pin:
-//
-//	func Acquire(ctx context.Context, cs kubernetes.Interface, namespace, name, holder, op string) (*Guard, func(), error)
-//	func Renew(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) error
-//	func Release(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string)
-//	var ErrTaken
-//	type Guard with methods Err, Confirm, Observe, ID
-//
-// injectable vars:
-//
-//	Now = time.Now; Duration = 60s; RenewEvery = 20s; CallTimeout = 10s
-//
-// Acquire creates the lease if absent, refuses while another holder holds it
-// live, and otherwise takes it with a resourceVersion compare-and-swap. A
-// renewal goroutine keeps it live; Release deletes it only while it still
-// names this holder.
-
 import (
 	"context"
 	"errors"
@@ -74,11 +50,6 @@ func storedLease(t *testing.T, cs *fake.Clientset) *coordinationv1.Lease {
 	return l
 }
 
-// TestAcquireCreatesTheLeaseWhenAbsent: a free cluster gets a fresh lease at
-// exactly the namespace and name the caller asked for — they are parameters,
-// not constants of this package — naming the caller, with the release func
-// ready. Two leases in two namespaces at the same time prove nothing is
-// hardcoded.
 func TestAcquireCreatesTheLeaseWhenAbsent(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -103,7 +74,6 @@ func TestAcquireCreatesTheLeaseWhenAbsent(t *testing.T) {
 		t.Errorf("renew time = %v, want the acquire time %v", l.Spec.RenewTime, now)
 	}
 
-	// A second lease under another name and namespace is independent.
 	g2, release2, err := Acquire(ctx, cs, "other-ns", "other-maintenance", "m1/100/1", testOp)
 	if err != nil {
 		t.Fatalf("a second lease under another name: %v", err)
@@ -117,9 +87,6 @@ func TestAcquireCreatesTheLeaseWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestAcquireRefusesWhileHeldLive: a live lease held by someone else refuses
-// the take-over, naming the operation, the holder, and how the lease frees
-// itself, and leaves the holder's lease untouched.
 func TestAcquireRefusesWhileHeldLive(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -144,10 +111,6 @@ func TestAcquireRefusesWhileHeldLive(t *testing.T) {
 	}
 }
 
-// TestAcquireTakesAFreeLease: a lease whose holder is gone is taken over with
-// a compare-and-swap update of the existing object, not a create. Gone means
-// expired past its duration, or a lease that names no holder, or one without
-// the fields that say how long it lives.
 func TestAcquireTakesAFreeLease(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -177,14 +140,6 @@ func TestAcquireTakesAFreeLease(t *testing.T) {
 	}
 }
 
-// TestAcquireHonoursAStoredDurationOnlyUpToDuration: every stratum run writes
-// Duration into the lease, so a longer stored duration came from something
-// else — a hand edit, or a client allowed to update the lease without being a
-// stratum run — and honouring it would keep the fence held long after its
-// holder stopped renewing, while the refusal promised expiry within Duration.
-// Such a lease lives at most Duration past its last renewal, and while it is
-// live the refusal names the delete that frees it. A lease with the duration
-// stratum writes refuses and frees exactly as before, message included.
 func TestAcquireHonoursAStoredDurationOnlyUpToDuration(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -246,8 +201,6 @@ func TestAcquireHonoursAStoredDurationOnlyUpToDuration(t *testing.T) {
 	})
 }
 
-// A client-supplied future renewal must not promise an expiry within Duration.
-// Keep the fence intact: a skewed clock may belong to a live maintenance run.
 func TestAcquireFutureRenewalNamesSafeRecovery(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	for _, ahead := range []time.Duration{time.Second, 24 * time.Hour} {
@@ -281,9 +234,6 @@ func TestAcquireFutureRenewalNamesSafeRecovery(t *testing.T) {
 	}
 }
 
-// TestAcquireRefusesWhenTheCreateRaces: two runs reaching an absent lease at
-// the same moment must not both hold it — the loser of the create gets an
-// error, and the winner's lease stands.
 func TestAcquireRefusesWhenTheCreateRaces(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -298,10 +248,6 @@ func TestAcquireRefusesWhenTheCreateRaces(t *testing.T) {
 	}
 }
 
-// TestAcquireSurfacesAnUpdateConflict: the take-over of an existing lease is a
-// compare-and-swap on its resourceVersion. A racing taker makes one of the two
-// updates fail with a conflict, and that failure reaches the caller instead of
-// being retried into a steal.
 func TestAcquireSurfacesAnUpdateConflict(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -323,9 +269,6 @@ func TestAcquireSurfacesAnUpdateConflict(t *testing.T) {
 	}
 }
 
-// TestRenewExtendsALiveLeaseAndRejectsATakeover: renewal by the holder pushes
-// the expiry out so a second run is still refused; renewal after someone else
-// took the lease fails, naming who holds it now; a missing lease is an error.
 func TestRenewExtendsALiveLeaseAndRejectsATakeover(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	cs := fake.NewSimpleClientset()
@@ -354,9 +297,6 @@ func TestRenewExtendsALiveLeaseAndRejectsATakeover(t *testing.T) {
 	}
 }
 
-// conflictOnUpdate makes the next n lease updates fail with a conflict, after
-// first applying change, when given, to the stored lease: a write that landed
-// between the renewal's read and its update.
 func conflictOnUpdate(t *testing.T, cs *fake.Clientset, n int, change func(*coordinationv1.Lease)) *atomic.Int32 {
 	t.Helper()
 	var calls atomic.Int32
@@ -383,10 +323,6 @@ func conflictOnUpdate(t *testing.T, cs *fake.Clientset, n int, change func(*coor
 	return &calls
 }
 
-// TestRenewRetriesItsOwnConflict: a renewal whose update conflicts with
-// another write by the same holder, such as the background renewal racing a
-// Confirm, reads the lease again and renews it rather than failing with the
-// bare conflict.
 func TestRenewRetriesItsOwnConflict(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -414,9 +350,6 @@ func TestRenewRetriesItsOwnConflict(t *testing.T) {
 	}
 }
 
-// TestRenewConflictWithATakeoverIsErrTaken: a conflict caused by another
-// holder taking the lease is a takeover, not a retry, and names the new
-// holder.
 func TestRenewConflictWithATakeoverIsErrTaken(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -440,9 +373,6 @@ func TestRenewConflictWithATakeoverIsErrTaken(t *testing.T) {
 	}
 }
 
-// TestRenewGivesUpOnAPersistentConflict: a conflict that never clears is
-// retried a bounded number of times and then returned, still a conflict and
-// naming the lease, so Confirm's callers keep treating it as retryable.
 func TestRenewGivesUpOnAPersistentConflict(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -466,9 +396,6 @@ func TestRenewGivesUpOnAPersistentConflict(t *testing.T) {
 	}
 }
 
-// TestReleaseDeletesOnlyWhileHolder: release by the holder deletes the lease,
-// releasing an already-gone lease is a no-op, and a run that lost its lease
-// never deletes the successor's on its way out.
 func TestReleaseDeletesOnlyWhileHolder(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	cs := fake.NewSimpleClientset()
@@ -478,12 +405,11 @@ func TestReleaseDeletesOnlyWhileHolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	Release(ctx, cs, testNS, testName, "m1/100/1") // the lease is already gone
+	Release(ctx, cs, testNS, testName, "m1/100/1")
 	if _, err := cs.CoordinationV1().Leases(testNS).Get(ctx, testName, metav1.GetOptions{}); err == nil {
 		t.Fatal("release left the lease behind")
 	}
 
-	// The stale run's release: its lease expired and a successor took over.
 	_, releaseOwned, err := Acquire(ctx, cs, testNS, testName, "m1/100/1", testOp)
 	if err != nil {
 		t.Fatal(err)
@@ -495,15 +421,12 @@ func TestReleaseDeletesOnlyWhileHolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release2()
-	Release(ctx, cs, testNS, testName, "m1/100/1") // the stale run finally exits
+	Release(ctx, cs, testNS, testName, "m1/100/1")
 	if l := storedLease(t, cs); l.Spec.HolderIdentity == nil || *l.Spec.HolderIdentity != "m2/200/2" {
 		t.Fatalf("the successor's lease was removed or changed: %v", l.Spec.HolderIdentity)
 	}
 }
 
-// TestRenewalLoopKeepsTheLeaseLiveAndStopsOnRelease: the renewal goroutine
-// keeps the lease live without a manual call, a competing run is refused while
-// it does, and release stops the loop and deletes the lease for good.
 func TestRenewalLoopKeepsTheLeaseLiveAndStopsOnRelease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldLog := log.Writer()
@@ -544,20 +467,12 @@ func TestRenewalLoopKeepsTheLeaseLiveAndStopsOnRelease(t *testing.T) {
 	})
 }
 
-// TestRenewalLoopRidesOutAnAPIServerGap: while the API server is unreachable
-// the guard goes stale one renewal interval before expiry — nothing new may
-// start — and the first renewal that succeeds afterwards, which is a
-// compare-and-swap on a lease still naming this run, clears it again.
 func TestRenewalLoopRidesOutAnAPIServerGap(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldLog := log.Writer()
 		t.Cleanup(func() { log.SetOutput(oldLog) })
 		cs := fake.NewSimpleClientset()
 
-		// The reactor goes in before Acquire: the renewal goroutine that
-		// Acquire starts reads the reactor chain, and writing it while it
-		// runs would race under -race. A flag gates it so the acquire-time
-		// Get still succeeds: the API server is up until the outage begins.
 		var down atomic.Bool
 		gapEnd := time.Now().Add(45 * time.Second)
 		cs.PrependReactor("get", "leases", func(clienttesting.Action) (bool, runtime.Object, error) {
@@ -573,18 +488,16 @@ func TestRenewalLoopRidesOutAnAPIServerGap(t *testing.T) {
 		}
 		defer release()
 
-		// The API server goes down right after the acquire and comes back
-		// 45s in: renewals fail at the 20s and 40s ticks and succeed at 60s.
 		down.Store(true)
 
-		time.Sleep(Duration - RenewEvery + time.Second) // two failed renewal ticks
+		time.Sleep(Duration - RenewEvery + time.Second)
 		synctest.Wait()
 		err = guard.Err()
 		if err == nil || !strings.Contains(err.Error(), "may be taken by another run") {
 			t.Fatalf("no renewal for %s: %v, want the guard stale", Duration-RenewEvery, err)
 		}
 
-		time.Sleep(2 * RenewEvery) // the gap ended; the next tick renews
+		time.Sleep(2 * RenewEvery)
 		synctest.Wait()
 		if err := guard.Err(); err != nil {
 			t.Fatalf("a same-holder renewal after the gap left the guard tripped: %v", err)
@@ -592,9 +505,6 @@ func TestRenewalLoopRidesOutAnAPIServerGap(t *testing.T) {
 	})
 }
 
-// TestRenewalLoopStopsTheRunOnATakeover: once another run holds the lease the
-// guard is lost for good — the loop sees it on its next tick, and a renewal
-// that succeeds afterwards does not bring it back.
 func TestRenewalLoopStopsTheRunOnATakeover(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldLog := log.Writer()
@@ -614,8 +524,6 @@ func TestRenewalLoopStopsTheRunOnATakeover(t *testing.T) {
 			t.Fatalf("the guard tripped before the takeover: %v", err)
 		}
 
-		// A successor takes the live lease over, as a takeover does: it
-		// rewrites the holder in place.
 		l := storedLease(t, cs)
 		successor, renewed := "m2/200/2", metav1.NewMicroTime(time.Now())
 		l.Spec.HolderIdentity, l.Spec.RenewTime = &successor, &renewed
@@ -628,17 +536,13 @@ func TestRenewalLoopStopsTheRunOnATakeover(t *testing.T) {
 		if err := guard.Err(); !errors.Is(err, ErrTaken) {
 			t.Fatalf("the guard after a takeover = %v, want it lost with ErrTaken", err)
 		}
-		guard.Observe(nil, time.Now()) // even a renewal that now succeeds
+		guard.Observe(nil, time.Now())
 		if err := guard.Err(); !errors.Is(err, ErrTaken) {
 			t.Fatalf("a lost lease came back: %v", err)
 		}
 	})
 }
 
-// TestLeaseDurationsAreInjectableWithTheReleasedDefaults: the timings are
-// package vars so tests and other operations can tighten or stretch them, and
-// the defaults are the released 60s duration, 20s renewal interval, and a call
-// timeout that bounds each API call inside the renewal interval.
 func TestLeaseDurationsAreInjectableWithTheReleasedDefaults(t *testing.T) {
 	if Duration != 60*time.Second || RenewEvery != 20*time.Second || CallTimeout != 10*time.Second {
 		t.Fatalf("defaults = %s/%s/%s, want 60s/20s/10s", Duration, RenewEvery, CallTimeout)
@@ -664,12 +568,6 @@ func TestLeaseDurationsAreInjectableWithTheReleasedDefaults(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// TestAcquireCompatibleRetriesATransientTake: a fence take through a VIP can
-// lose its in-flight call to a kube-vip leadership handoff — a connection
-// reset the apiserver never saw. The take retries the transient failure
-// within AcquireRetryBudget and takes the fence on the retry; a take that
-// landed server-side before the connection died converges the same way,
-// because the retry's read finds the lease under this holder.
 func TestAcquireCompatibleRetriesATransientTake(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -697,9 +595,6 @@ func TestAcquireCompatibleRetriesATransientTake(t *testing.T) {
 	}
 }
 
-// TestAcquireCompatibleStopsImmediatelyOnATakenFence: refusing fast against a
-// live maintenance run is the fence's contract, so a take that names another
-// live holder must not wait out the retry budget.
 func TestAcquireCompatibleStopsImmediatelyOnATakenFence(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	held, renewed := "other/2/2", metav1.NewMicroTime(now.Add(-2*time.Second))
@@ -722,11 +617,6 @@ func TestAcquireCompatibleStopsImmediatelyOnATakenFence(t *testing.T) {
 	}
 }
 
-// TestAcquireCompatibleStopsOnARefusedDial: nothing listening is a
-// deployment's current reality, not a transient blip — a cold start takes the
-// fence against an apiserver that is not up yet, and its contract is to skip
-// the fence at once. A refused dial stops the take immediately, so the
-// caller's classification sees the dial error and not a retry budget's wrap.
 func TestAcquireCompatibleStopsOnARefusedDial(t *testing.T) {
 	budget := AcquireRetryBudget
 	AcquireRetryBudget = 5 * time.Second
@@ -746,10 +636,6 @@ func TestAcquireCompatibleStopsOnARefusedDial(t *testing.T) {
 	}
 }
 
-// TestAcquireCompatibleRetriesAMidCallReset: the CI failure this retry exists
-// for — a fence take through a VIP lost to a kube-vip leadership handoff,
-// which surfaces as a connection reset on an established call. The take
-// retries it and takes the fence once the blip passes.
 func TestAcquireCompatibleRetriesAMidCallReset(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	var calls atomic.Int32
@@ -775,8 +661,6 @@ func resetErr() error {
 	return &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}
 }
 
-// TestReleaseRetriesThroughAVIPHandoff: a release lost to a kube-vip
-// leadership handoff is retried, so the fence is not left held for Duration.
 func TestReleaseRetriesThroughAVIPHandoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
@@ -808,9 +692,6 @@ func TestReleaseRetriesThroughAVIPHandoff(t *testing.T) {
 	})
 }
 
-// TestReleaseGivesUpWithinItsBudgetAndSaysSo: a release that cannot reach the
-// apiserver stops at ReleaseRetryBudget and logs, a failed read included, so
-// a run never hangs on its way out and the stale lease is explained.
 func TestReleaseGivesUpWithinItsBudgetAndSaysSo(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var logged strings.Builder
@@ -832,10 +713,6 @@ func TestReleaseGivesUpWithinItsBudgetAndSaysSo(t *testing.T) {
 	})
 }
 
-// TestAcquireCompatibleReleasesATakeThatLandedBeforeItGaveUp: a take whose
-// create reached the apiserver but whose answer was lost, followed by a
-// retry budget spent on resets, leaves the lease under this holder. The
-// take releases it on the way out instead of leaving it held for Duration.
 func TestAcquireCompatibleReleasesATakeThatLandedBeforeItGaveUp(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
@@ -881,9 +758,6 @@ func TestAcquireCompatibleReleasesATakeThatLandedBeforeItGaveUp(t *testing.T) {
 	})
 }
 
-// TestReleaseRetriesARefusedConnection: a release that meets a refused dial
-// (an apiserver restarting, a VIP moving) retries it and deletes the lease
-// once the apiserver answers, though a take stops at one at once.
 func TestReleaseRetriesARefusedConnection(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
@@ -906,9 +780,6 @@ func TestReleaseRetriesARefusedConnection(t *testing.T) {
 	})
 }
 
-// TestAcquireCompatibleReleasesATakeCancelledAfterItLanded: a create that
-// committed but whose answer the caller's cancellation cut off leaves the
-// lease under this holder; the take releases it on its way out.
 func TestAcquireCompatibleReleasesATakeCancelledAfterItLanded(t *testing.T) {
 	fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
 	cs := fake.NewSimpleClientset()
@@ -936,8 +807,6 @@ func TestAcquireCompatibleReleasesATakeCancelledAfterItLanded(t *testing.T) {
 	}
 }
 
-// TestReleaseRetriesAnEOF: a release whose answer is cut off by a closed
-// connection retries it and deletes the lease once the apiserver answers.
 func TestReleaseRetriesAnEOF(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))
@@ -963,9 +832,6 @@ func TestReleaseRetriesAnEOF(t *testing.T) {
 	})
 }
 
-// TestAcquireCompatibleReleasesATakeWhoseAnswerHitEOF: a create that
-// committed but whose answer was lost to a closed connection leaves the lease
-// under this holder; a take that cannot converge releases it on its way out.
 func TestAcquireCompatibleReleasesATakeWhoseAnswerHitEOF(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fakeClock(t, time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC))

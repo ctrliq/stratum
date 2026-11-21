@@ -15,12 +15,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// useStageDataDir points version.DataDir and version.EtcdDataDir into a fresh
-// temp dir and returns that dir. The node data dir itself is not created, the
-// way uninstall leaves it, and the data lock lands beside it in the temp dir.
-// The temp dir is resolved through symlinks (macOS's /var is a link to
-// /private/var) so that a relative --root, made absolute against the working
-// directory, spells the same path as version.DataDir.
+// resolved through symlinks (macOS /var) so a relative root spells DataDir's path.
 func useStageDataDir(t *testing.T) string {
 	t.Helper()
 	tmp, err := filepath.EvalSymlinks(t.TempDir())
@@ -34,8 +29,6 @@ func useStageDataDir(t *testing.T) string {
 	return tmp
 }
 
-// holdDataLock takes the etcd data lock, as uninstall does before it removes
-// the data dir, and keeps it until the test ends.
 func holdDataLock(t *testing.T) {
 	t.Helper()
 	release, err := etcddata.Lock(version.EtcdDataDir)
@@ -45,9 +38,7 @@ func holdDataLock(t *testing.T) {
 	t.Cleanup(release)
 }
 
-// tryDataLock takes the etcd data lock and releases it at once, returning the
-// lock's error when it is held. flock locks belong to the open file, so the
-// attempt also conflicts with a lock held elsewhere in this process.
+// flock locks belong to the open file, so this also conflicts with a lock held in-process.
 func tryDataLock() error {
 	release, err := etcddata.Lock(version.EtcdDataDir)
 	if err != nil {
@@ -57,12 +48,7 @@ func tryDataLock() error {
 	return nil
 }
 
-// stubStagePayload replaces the payload extraction for the test and returns
-// the roots it was asked to stage into. Each call runs during, when set, at
-// the point the real extraction writes its files, then writes one staged
-// file under the root and reports it, or returns fail instead when fail is
-// set. The test binary carries no payload, so without the stub a stage that
-// ignored the lock would still leave nothing on disk to catch it by.
+// the test binary carries no payload, so an unlocked stage would leave no trace to catch.
 func stubStagePayload(t *testing.T, during func(), fail error) *[]string {
 	t.Helper()
 	old := stagePayload
@@ -88,8 +74,6 @@ func stubStagePayload(t *testing.T, during func(), fail error) *[]string {
 	return &roots
 }
 
-// runStage runs `stratum stage --root root` and returns its error. The staged
-// paths the command prints are captured and dropped.
 func runStage(t *testing.T, root string) error {
 	t.Helper()
 	var err error
@@ -103,18 +87,11 @@ func runStage(t *testing.T, root string) error {
 	return err
 }
 
-// TestStageIntoTheDataDirFailsWhileTheDataLockIsHeld: uninstall holds the etcd
-// data lock while it deletes the node data dir, as `stratum up` and the HA join
-// do while they stage into it. A `stratum stage` into that dir must take the
-// same lock and, finding it held, fail with the lock's error before it
-// extracts anything; otherwise it recreates part of the dir uninstall is
-// removing. The flag is compared once made absolute and cleaned, so every
-// spelling of the data dir counts.
+// otherwise stage recreates part of the data dir uninstall is deleting.
 func TestStageIntoTheDataDirFailsWhileTheDataLockIsHeld(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// fromTemp runs the command from the temp dir holding the data dir,
-		// so a relative root resolves against it.
+		// runs the command from the temp dir, so a relative root resolves against it.
 		fromTemp bool
 		root     func(dataDir string) string
 	}{
@@ -304,11 +281,7 @@ func TestStageIntoAnUnrelatedSymlinkIgnoresTheDataLock(t *testing.T) {
 	}
 }
 
-// TestStageIntoAnotherRootIgnoresTheDataLock: only the node data dir is
-// guarded. CI stages into temp dirs as an unprivileged user, who cannot create
-// the lock beside /var/lib/stratum, so any other root, including one that only
-// shares the data dir's path as a string prefix, stages exactly as before
-// whether or not the lock is held.
+// CI stages into temp dirs as an unprivileged user who cannot create the lock.
 func TestStageIntoAnotherRootIgnoresTheDataLock(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -334,12 +307,7 @@ func TestStageIntoAnotherRootIgnoresTheDataLock(t *testing.T) {
 	}
 }
 
-// TestStageIntoTheDataDirHoldsTheDataLockAcrossStaging: with nobody else
-// holding it, a stage into the node data dir holds the etcd data lock for the
-// whole extraction, so an uninstall that starts meanwhile is refused instead of
-// deleting files mid-write. It releases the lock afterwards whether staging
-// succeeded or failed, so the `stratum up` or uninstall that follows is not
-// locked out.
+// holding the lock across extraction stops an uninstall deleting files mid-write.
 func TestStageIntoTheDataDirHoldsTheDataLockAcrossStaging(t *testing.T) {
 	errStage := errors.New("stage stub: no space left on device")
 	for _, tc := range []struct {

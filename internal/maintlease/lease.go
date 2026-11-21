@@ -1,7 +1,4 @@
-// Package maintlease holds self-renewing cluster maintenance Leases. Upgrade,
-// certificate rotation, migration and renewal use a common fence; the released
-// upgrade identity is retained to exclude old upgrades during transition.
-// Leases stay renewed until release and expire if their holder dies.
+// Package maintlease holds self-renewing cluster maintenance Leases.
 package maintlease
 
 import (
@@ -22,42 +19,21 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// ErrTaken reports that another run holds the lease.
 var ErrTaken = errors.New("the lease is held by another run")
 
-// Vars so tests and other operations can use a fake clock or different
-// timings. The defaults are the released upgrade timings: a 60 s duration,
-// renewal every 20 s, and a timeout that bounds each API call.
 var (
 	Duration   = 60 * time.Second
 	RenewEvery = 20 * time.Second
 	Now        = time.Now
-	// CallTimeout bounds each lease API call. Without it a blackholed
-	// request hung the renewal goroutine, so a lost lease was never observed,
-	// and hung release, so the run never exited.
+	// Bounds each lease API call; a blackholed request otherwise hangs the renewal loop.
 	CallTimeout = 10 * time.Second
-	// AcquireRetryBudget bounds the transient-error retry of a fence take.
-	// A control plane taking the fence through a VIP loses in-flight calls to
-	// kube-vip leadership handoffs — a connection reset the apiserver never
-	// saw — and one request that landed server-side anyway converges on the
-	// retry, because the next read finds the lease under this holder.
-	// AcquireRetryBudget = 0 disables the retry.
+	// Retries transient take failures: a take through a VIP loses calls to kube-vip handoffs.
 	AcquireRetryBudget = 30 * time.Second
-	// ReleaseRetryBudget bounds the transient-error retry of a release. A
-	// release lost to the same VIP handoff a take survives would leave the
-	// fence held for Duration, and every fenced command in that window would
-	// refuse. ReleaseRetryBudget = 0 makes a release a single attempt.
+	// A release lost to a VIP handoff must retry, or the fence stays held for Duration.
 	ReleaseRetryBudget = 15 * time.Second
 )
 
-// heldByOther returns the other holder's description when l is a live lease
-// held by someone else, or "" when it is free to take. Pure.
-//
-// The lease lives for its stored duration, but never longer than Duration.
-// Every stratum run writes Duration, so a longer stored duration came from
-// something else — a hand edit, or a client allowed to update the lease that
-// is not a stratum run — and honouring it would keep the fence held long after
-// its holder stopped renewing.
+// A stored duration longer than Duration did not come from stratum, so it is capped.
 func heldByOther(l *coordinationv1.Lease, holder string, now time.Time) string {
 	if l.Spec.HolderIdentity == nil || *l.Spec.HolderIdentity == "" || *l.Spec.HolderIdentity == holder {
 		return ""
@@ -67,33 +43,23 @@ func heldByOther(l *coordinationv1.Lease, holder string, now time.Time) string {
 	}
 	expires := l.Spec.RenewTime.Add(min(storedDuration(l), Duration))
 	if !now.Before(expires) {
-		return "" // expired: its holder died without releasing it
+		return ""
 	}
 	return fmt.Sprintf("%s, renewed %s ago", *l.Spec.HolderIdentity, now.Sub(l.Spec.RenewTime.Time).Round(time.Second))
 }
 
-// storedDuration is the duration l records. l.Spec.LeaseDurationSeconds must
-// be set.
 func storedDuration(l *coordinationv1.Lease) time.Duration {
 	return time.Duration(*l.Spec.LeaseDurationSeconds) * time.Second
 }
 
-// Guard reports whether this run still holds the lease. It is lost for good
-// at once if someone else holds it. With no renewal for one renewal interval
-// before expiry it is only doubtful: it may have been taken, so nothing new
-// is started, but one renewal that succeeds clears it. That renewal is a
-// compare-and-swap on a lease still naming this run, so nobody held it in
-// between. This is what lets a run ride out its own API server restarting.
-// An in-flight node Job is not aborted.
+// lost is permanent; stale clears on one successful same-holder renewal, a compare-and-swap.
 type Guard struct {
 	mu        sync.Mutex
 	lastRenew time.Time
 	lost      error
 	stale     error
-	// renew is one renewal attempt, for Confirm. Unset in tests that only
-	// drive Observe.
-	renew func(context.Context) error
-	// holder is this run's identity on the lease.
+	// Unset in tests that only drive Observe.
+	renew  func(context.Context) error
 	holder string
 	now    func() time.Time
 	// compatible fences the released upgrade identity during mixed-release runs.
@@ -124,13 +90,7 @@ func (g *Guard) Err() error {
 	return g.compatible.Err()
 }
 
-// Confirm renews the lease now and returns nil only once that succeeded: a
-// same-holder renewal is a compare-and-swap, so it proves nobody held the
-// lease since the last one. Err alone cannot say that, as it only reflects
-// the renewals the background loop has made so far: after a long step, such
-// as an API outage, a successor may already hold the lease before the next
-// tick sees it. A takeover is lost for good and wraps ErrTaken; any other
-// failure is for the caller to retry. A nil guard (dry-run, tests) is held.
+// A successful same-holder renewal is a compare-and-swap, so it proves nobody held the lease.
 func (g *Guard) Confirm(ctx context.Context) error {
 	if g == nil {
 		return nil
@@ -157,8 +117,7 @@ func (g *Guard) Confirm(ctx context.Context) error {
 		now = Now
 	}
 	g.Observe(err, now())
-	// An answer retrying cannot change is returned as it came, whatever state
-	// the guard is in: Forbidden or NotFound on the lease, or a takeover.
+	// Terminal errors return as they came even when the guard is now lost or stale.
 	if err != nil && terminalAPIError(err) {
 		return err
 	}
@@ -168,7 +127,6 @@ func (g *Guard) Confirm(ctx context.Context) error {
 	return err
 }
 
-// Observe records one renewal attempt's outcome. Pure apart from the lock.
 func (g *Guard) Observe(err error, now time.Time) {
 	if g == nil {
 		return
@@ -190,10 +148,7 @@ func (g *Guard) Observe(err error, now time.Time) {
 	}
 }
 
-// terminalAPIError is an answer that retrying cannot change: a lease taken by
-// another run, or an API 4xx other than a timeout, a conflict (the callers
-// re-read) or throttling. Anything else, network errors and 5xx included, is
-// the API server not being ready yet.
+// An API 4xx other than timeout, conflict or throttling; anything else may still clear.
 func terminalAPIError(err error) bool {
 	if errors.Is(err, ErrTaken) {
 		return true
@@ -206,12 +161,7 @@ func terminalAPIError(err error) bool {
 	return c >= 400 && c < 500 && c != http.StatusRequestTimeout && c != http.StatusConflict && c != http.StatusTooManyRequests
 }
 
-// Acquire takes the named maintenance lease or refuses. It returns a Guard to
-// check before destructive steps, and a release func that stops renewal and
-// deletes the lease if it is still ours. The lease is created if absent; a
-// live lease held by another run refuses, naming the operation; an expired or
-// empty one is taken over with a resourceVersion compare-and-swap. A renewal
-// goroutine keeps it live until release or the process dies.
+// Refuses a live lease held by another run; takes an expired one by resourceVersion CAS.
 func Acquire(ctx context.Context, cs kubernetes.Interface, namespace, name, holder, op string) (*Guard, func(), error) {
 	return AcquireWithClock(ctx, cs, namespace, name, holder, op, Now)
 }
@@ -243,9 +193,7 @@ func AcquireWithClock(ctx context.Context, cs kubernetes.Interface, namespace, n
 	default:
 		checkedAt := clock()
 		if other := heldByOther(cur, holder, checkedAt); other != "" {
-			// Renewal timestamps are supplied by clients. Never steal a live
-			// fence on a clock-skew guess, or promise bounded expiry when its
-			// timestamp can postpone it arbitrarily.
+			// Renewal timestamps are client-supplied; a future one must not read as expiring soon.
 			if cur.Spec.RenewTime.Time.After(checkedAt) {
 				return nil, nil, fmt.Errorf("another %s is in progress (%s); two runs at once are not safe. The lease %s/%s "+
 					"records a renewal time in the future (%s); check the holder's clock. Waiting %s may not free it: "+
@@ -253,9 +201,7 @@ func AcquireWithClock(ctx context.Context, cs kubernetes.Interface, namespace, n
 					op, other, namespace, name, cur.Spec.RenewTime.Time.UTC().Format(time.RFC3339Nano), Duration,
 					op, namespace, name, ErrTaken)
 			}
-			// A duration stratum did not set means the holder may not be a
-			// stratum run either, and one that keeps renewing never lets the
-			// lease expire: name the delete rather than promise an expiry.
+			// A duration stratum did not set means the holder may not be a stratum run.
 			if d := storedDuration(cur); d > Duration {
 				return nil, nil, fmt.Errorf("another %s is in progress (%s); two runs at once are not safe. The lease %s/%s "+
 					"records a duration of %s, longer than the %s stratum writes, so stratum did not set it and waiting may "+
@@ -266,8 +212,7 @@ func AcquireWithClock(ctx context.Context, cs kubernetes.Interface, namespace, n
 				"or if its process is gone the lease %s/%s expires on its own within %s: %w", op, other, namespace, name, Duration, ErrTaken)
 		}
 		cur.Spec = desired
-		// The resourceVersion makes this a compare-and-swap: a racing taker
-		// makes one of the two updates fail with a conflict.
+		// resourceVersion makes this a compare-and-swap; a racing taker hits a conflict.
 		if _, err := leases.Update(actx, cur, metav1.UpdateOptions{}); apierrors.IsConflict(err) {
 			return nil, nil, fmt.Errorf("take the lease %s/%s: %w: %w", namespace, name, ErrTaken, err)
 		} else if err != nil {
@@ -304,22 +249,14 @@ func AcquireWithClock(ctx context.Context, cs kubernetes.Interface, namespace, n
 	}, nil
 }
 
-// Renew pushes the lease's expiry out for holder. It fails with an error
-// wrapping ErrTaken when another run holds the lease now, and passes an API
-// error — NotFound on a deleted lease among them — to the caller as it came.
+// Fails wrapping ErrTaken when another run holds the lease now.
 func Renew(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) error {
 	return RenewWithClock(ctx, cs, namespace, name, holder, Now)
 }
 
-// renewConflictAttempts bounds how many times one renewal reads the lease
-// again after a compare-and-swap conflict.
 const renewConflictAttempts = 5
 
-// RenewWithClock renews using the same clock as AcquireWithClock. A conflict
-// on the update means the lease changed since it was read, most often by this
-// run's own background renewal landing first, so the lease is read again:
-// still naming holder, nobody else took it and the renewal is retried; naming
-// another holder, it wraps ErrTaken.
+// On a conflict, read the lease again and retry while it still names this holder.
 func RenewWithClock(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string, clock func() time.Time) error {
 	leases := cs.CoordinationV1().Leases(namespace)
 	var err error
@@ -348,11 +285,7 @@ func RenewWithClock(ctx context.Context, cs kubernetes.Interface, namespace, nam
 	return fmt.Errorf("renew the lease %s/%s: still conflicting after %d attempts: %w", namespace, name, renewConflictAttempts, err)
 }
 
-// Release deletes the lease only while it is still ours, with the
-// resourceVersion as a precondition, so it never deletes a successor's. Each
-// call is bounded by CallTimeout, and a transient failure or a conflict is
-// retried within ReleaseRetryBudget. A release that gives up says so: the
-// lease then expires on its own within Duration.
+// Deletes only while the lease still names holder; transient failures retry within budget.
 func Release(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) {
 	if ReleaseRetryBudget <= 0 {
 		if err := releaseOnce(ctx, cs, namespace, name, holder); err != nil {
@@ -383,11 +316,7 @@ func Release(ctx context.Context, cs kubernetes.Interface, namespace, name, hold
 	}
 }
 
-// releaseRetryable reports whether a failed release attempt is worth another
-// within the budget: anything a take retries, a conflict, and a refused
-// connection too. A take stops at a refused dial so a cold start skips the
-// fence at once; a release meets one when the apiserver restarts or the VIP
-// moves under it, and giving up there leaves the fence held for Duration.
+// A take stops at a refused dial (a cold start skips the fence); a release retries one.
 func releaseRetryable(err error) bool {
 	if transientTakeError(err) || apierrors.IsConflict(err) {
 		return true
@@ -396,8 +325,7 @@ func releaseRetryable(err error) bool {
 	return errors.As(err, &op) && op.Op == "dial" && errors.Is(err, syscall.ECONNREFUSED)
 }
 
-// releaseOnce is one release attempt. A lease that is gone or names another
-// holder is not this run's to delete, and counts as released.
+// A lease that is gone or names another holder is not ours to delete, and counts as released.
 func releaseOnce(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) error {
 	actx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
@@ -422,10 +350,7 @@ func releaseOnce(ctx context.Context, cs kubernetes.Interface, namespace, name, 
 	return err
 }
 
-// AcquireCompatible takes the released upgrade fence before the common fence.
-// Holding both, rather than just checking the old name, prevents an old upgrade
-// from starting after the check. Old certificate operations still need their
-// Secret and staged-rotation guards until every node adopts the common fence.
+// Takes the released upgrade fence too, so an old upgrade cannot start after the check.
 func AcquireCompatible(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) (*Guard, func(), error) {
 	legacy, releaseLegacy, err := acquireRetrying(ctx, cs, namespace, "stratum-cluster-upgrade", holder)
 	if err != nil {
@@ -440,14 +365,7 @@ func AcquireCompatible(ctx context.Context, cs kubernetes.Interface, namespace, 
 	return common, func() { releaseCommon(); releaseLegacy() }, nil
 }
 
-// transientTakeError reports whether err is the kind of transport failure a
-// fence take through a VIP survives by retrying: a connection reset, dropped
-// mid-call or closed before the answer arrived (EOF) — a kube-vip leadership handoff the apiserver never saw — a timed
-// out request, or a 5xx/429/408 answer. A refused DIAL is deliberately not
-// transient: nothing listening is a deployment's current reality, not a blip —
-// a cold start takes the fence against an apiserver that is not up yet, and
-// retrying would delay every such start instead of skipping the fence at once,
-// which is the caller's contract.
+// A refused dial is excluded: a cold start legitimately meets an apiserver not up yet.
 func transientTakeError(err error) bool {
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
@@ -466,12 +384,7 @@ func transientTakeError(err error) bool {
 	return false
 }
 
-// acquireRetrying takes one lease, retrying transient failures within
-// AcquireRetryBudget. A refusal that names another live holder (ErrTaken) and
-// every other terminal answer stop immediately — refusing fast against a live
-// run is the fence's contract, not a failure to survive. The retry cannot
-// double-take either: a take that reached the apiserver before the connection
-// died shows up as this holder's lease, and Acquire takes its own lease over.
+// Retries transient failures within the budget; a refusal naming a live holder stops at once.
 func acquireRetrying(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) (*Guard, func(), error) {
 	if AcquireRetryBudget <= 0 {
 		return Acquire(ctx, cs, namespace, name, holder, "maintenance run")
@@ -500,7 +413,7 @@ func acquireRetrying(ctx context.Context, cs kubernetes.Interface, namespace, na
 		}
 		uncertain = true
 		if ctx.Err() != nil {
-			return nil, nil, err // the caller canceled: surface its cause, not the budget's
+			return nil, nil, err
 		}
 		if rctx.Err() != nil {
 			return nil, nil, fmt.Errorf("take the maintenance lease %s/%s: %w (last attempt: %v)", namespace, name, rctx.Err(), last)
@@ -515,9 +428,7 @@ func acquireRetrying(ctx context.Context, cs kubernetes.Interface, namespace, na
 	}
 }
 
-// ConfirmWithin waits for a successful ownership check within a bounded API
-// recovery window. Permanent errors stop immediately; a transient outage never
-// authorizes further changes until a same-holder renewal succeeds.
+// Retries until a confirm succeeds or the budget ends; a terminal error stops at once.
 func (g *Guard) ConfirmWithin(ctx context.Context, budget time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()

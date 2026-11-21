@@ -10,8 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/cluster"
 )
 
-// A worker join hands PrepareWorker the spec.node flags apart from the config
-// file's, so the merge, and which source a refusal names, are PrepareWorker's.
 func TestRunUpWorkerJoinHandsOnTheNodeFacts(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "nvidia-container-runtime")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -38,8 +36,6 @@ func TestRunUpWorkerJoinHandsOnTheNodeFacts(t *testing.T) {
 	}
 }
 
-// A restart reads no spec.node from the file and passes only the flags it was
-// given; a flag not given stays nil so the saved field is kept.
 func TestRunUpWorkerRestartHandsOnOnlyTheGivenNodeFlags(t *testing.T) {
 	saved := &cluster.NodeState{Role: "worker", Hostname: "w1", NodeIP: "10.50.0.4", Server: "https://10.50.0.3:6443"}
 	call, err := runUpWorker(t, runUpOptions{runtimeHandlers: []string{"nvidia=/usr/bin/nvidia-container-runtime"}},
@@ -58,8 +54,6 @@ func TestRunUpWorkerRestartHandsOnOnlyTheGivenNodeFlags(t *testing.T) {
 	}
 }
 
-// A malformed or refused flag stops runUp before anything else: the start
-// lock it takes next is never created.
 func TestRunUpRefusesABadNodeFlagBeforeAnything(t *testing.T) {
 	for _, o := range []runUpOptions{
 		{nodeLabels: []string{"zone"}},
@@ -83,8 +77,6 @@ func TestRunUpRefusesABadNodeFlagBeforeAnything(t *testing.T) {
 	}
 }
 
-// A control plane reads spec.node from its file, so the worker flags without
-// --worker would be dropped: each is refused, named with its field.
 func TestUpRefusesTheNodeFlagsWithoutWorker(t *testing.T) {
 	err := upFlagConflict(runUpOptions{nodeLabels: []string{"zone=a"}, nodeTaints: []string{"d:NoSchedule"}, runtimeHandlers: []string{"nvidia=/usr/bin/x"}})
 	if err == nil {
@@ -100,9 +92,6 @@ func TestUpRefusesTheNodeFlagsWithoutWorker(t *testing.T) {
 	}
 }
 
-// A control-plane --join reads spec.node, so the refusal of the node flags
-// points there rather than telling the operator to drop them; the network
-// flags beside them are still to be removed.
 func TestUpJoinRefusalPointsTheNodeFlagsAtSpecNode(t *testing.T) {
 	join := runUpOptions{join: "https://10.0.0.11:6443", nodeLabels: []string{"zone=a"}}
 	err := upFlagConflict(join)
@@ -118,9 +107,6 @@ func TestUpJoinRefusalPointsTheNodeFlagsAtSpecNode(t *testing.T) {
 	}
 }
 
-// A worker join whose config file declares a handler with no binary on the
-// host is refused before the run takes its start lock, so staging and the
-// SELinux relabel that follow it never touch the host.
 func TestRunUpRefusesAJoinsMissingHandlerBinaryBeforeAnything(t *testing.T) {
 	join := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa"}
 	config := "spec:\n  selinux: false\n  node:\n    runtimeHandlers:\n      nvidia: /nonexistent/nvidia-container-runtime\n"

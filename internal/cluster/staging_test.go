@@ -236,8 +236,7 @@ func TestJoinedStagingRecoversLostAcknowledgment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The follower joined an existing publication, so its request ID differs
-	// from the cluster publication ID. A crash loses its local receipt.
+	// the follower's request ID differs from the cluster publication ID; a crash loses its receipt.
 	if err := os.Remove(filepath.Join(version.ManifestsDir, stagedFingerprintName)); err != nil {
 		t.Fatal(err)
 	}

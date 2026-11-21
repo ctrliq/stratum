@@ -8,37 +8,16 @@ import (
 	"time"
 )
 
-// Etcd health, for callers that have to prove a raft cluster is whole before
-// doing something irreversible to it (the etcd CA drop-root gate).
-//
-// This package already dials peers' etcd for MemberAdd/MemberRemove, but it had
-// no way to ASK one how it is — so "is the cluster healthy" could only be
-// answered indirectly, by whether the apiservers were serving. That is a real
-// signal and the gate still uses it, but it is not the same question: an
-// apiserver talks to its own local etcd, so N healthy apiservers prove N etcds
-// are individually up and prove nothing about whether they agree.
-//
-// Dropping a trust anchor is exactly the operation where that distinction
-// matters. A member that is up but partitioned will not survive its peers
-// narrowing their trust, and it is invisible to a per-node liveness check.
-
-// EtcdMemberHealth is one member's answer. Err set means the member did not
-// answer, which is never treated as healthy.
 type EtcdMemberHealth struct {
 	Leader uint64
 	Errors []string
 	Err    error
 }
 
-// Healthy reports whether this member answered, knows a leader, and raised no
-// alarms of its own.
 func (m EtcdMemberHealth) Healthy() bool {
 	return m.Err == nil && m.Leader != 0 && len(m.Errors) == 0
 }
 
-// EtcdMemberStatus asks the etcd at cpIP how it is. A member with no leader is
-// reported, not hidden: it is up, it is answering, and it is not part of a
-// working quorum.
 func EtcdMemberStatus(cpIP string) EtcdMemberHealth {
 	ep := etcdEndpoint(cpIP)
 	var h EtcdMemberHealth
@@ -59,21 +38,12 @@ func EtcdMemberStatus(cpIP string) EtcdMemberHealth {
 	return h
 }
 
-// EtcdClusterHealthy fails closed: every named member must answer, must know a
-// leader, and every member must name the SAME leader.
-//
-// The agreement check is the point. Per-member health is satisfied by a split
-// brain — two partitions, each with a leader, each locally convinced it is fine
-// — and a split brain is the one condition under which narrowing etcd's trust
-// cluster-wide cannot be walked back, because the partition that loses will not
-// accept the anchor the other half kept.
+// Per-member health alone is satisfied by a split brain; the leader-agreement check catches it.
 func EtcdClusterHealthy(cpIPs []string) error {
 	return etcdClusterHealthyWith(cpIPs, EtcdMemberStatus)
 }
 
-// Pass the per-member query explicitly so the aggregation — which is the part
-// with the branches, and where the split-brain check that justifies this
-// function lives — can be tested without a cluster.
+// Takes the per-member query as a parameter so the aggregation can be tested without a cluster.
 func etcdClusterHealthyWith(cpIPs []string, status func(string) EtcdMemberHealth) error {
 	if len(cpIPs) == 0 {
 		return fmt.Errorf("etcd health: no control-plane addresses to check")

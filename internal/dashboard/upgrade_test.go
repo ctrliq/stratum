@@ -17,16 +17,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// The exec terminal is a WebSocket through the proxy, and it is the one path
-// where the ported middleware earns its keep: responseRecorder has to
-// implement Hijack (and Unwrap and Flush) or httputil.ReverseProxy cannot take
-// the connection over, and the terminal breaks with everything else still
-// working. Nothing else here drives a real upgrade, so this does.
-//
-// It also pins the two things a unit test on rewriteRequest cannot see about
-// an upgrade: that the session's token reaches the apiserver on the handshake
-// (a browser cannot put it there), and that the negotiated subprotocol —
-// v4.channel.k8s.io, which carries the exec stream framing — survives.
+// Pins that the session token reaches the handshake and the subprotocol survives.
 func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 	var gotAuth, gotProto, gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,8 +30,6 @@ func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 			_, _ = w.Write([]byte(`{"status":{"userInfo":{"username":"dev","groups":[]}}}`))
 			return
 		}
-		// Accept the upgrade and echo one frame, the way the apiserver's exec
-		// endpoint would once the channel is open.
 		conn, buf, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			t.Errorf("upstream could not hijack: %v", err)
@@ -73,7 +62,6 @@ func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 	dash := httptest.NewServer(srv.routes())
 	defer dash.Close()
 
-	// A real session, minted the way login does.
 	cookieValue, _, err := sess.issue("dev", nil, "the-session-token")
 	if err != nil {
 		t.Fatalf("issue: %v", err)
@@ -87,8 +75,7 @@ func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
-	// The handshake a browser sends: no Authorization and no CSRF header,
-	// because it cannot set either on a WebSocket.
+	// A browser cannot set Authorization or CSRF on a WebSocket handshake.
 	req := "GET /k8s/api/v1/namespaces/default/pods/web-0/exec?command=sh&stdin=true&tty=true HTTP/1.1\r\n" +
 		"Host: " + addr + "\r\n" +
 		"Upgrade: websocket\r\nConnection: Upgrade\r\n" +
@@ -107,11 +94,9 @@ func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 		t.Fatalf("read status line: %v", err)
 	}
 	if !strings.Contains(status, "101") {
-		// Read a little of the body so a refusal is legible in the failure.
 		rest, _ := io.ReadAll(io.LimitReader(br, 512))
 		t.Fatalf("upgrade not switched: %q %s", status, rest)
 	}
-	// Drain the response headers.
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
@@ -122,8 +107,6 @@ func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 		}
 	}
 
-	// The tunnel is open in both directions: this is what an exec keystroke
-	// and its echo are.
 	if _, err := conn.Write([]byte("keystroke\n")); err != nil {
 		t.Fatalf("write through the tunnel: %v", err)
 	}
@@ -146,10 +129,7 @@ func TestExecUpgradeCarriesTheTokenAndSubprotocol(t *testing.T) {
 	}
 }
 
-// A log follow and a watch must reach the browser as they arrive, not when
-// the upstream finishes. That is what FlushInterval: -1 buys, and it fails
-// silently: the drawer just shows nothing until the pod exits, which looks
-// like a pod with no output rather than a broken proxy.
+// A buffered follow fails silently: nothing shows until the pod exits.
 func TestFollowStreamsBeforeTheUpstreamFinishes(t *testing.T) {
 	release := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +137,6 @@ func TestFollowStreamsBeforeTheUpstreamFinishes(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "first log line\n")
 		_ = http.NewResponseController(w).Flush()
-		// Hold the response open, as `kubectl logs -f` on a live pod does.
 		<-release
 		_, _ = io.WriteString(w, "last log line\n")
 	}))
@@ -199,9 +178,6 @@ func TestFollowStreamsBeforeTheUpstreamFinishes(t *testing.T) {
 		t.Fatalf("follow: got %d", resp.StatusCode)
 	}
 
-	// The read has to complete while the upstream is still holding the
-	// response open, which is the whole claim: a proxy that buffers a follow
-	// delivers nothing until the pod exits.
 	line, err := bufio.NewReader(resp.Body).ReadString('\n')
 	if err != nil {
 		t.Fatalf("the first log line never arrived within 5s; the proxy is buffering a follow instead of streaming it: %v", err)
@@ -211,16 +187,12 @@ func TestFollowStreamsBeforeTheUpstreamFinishes(t *testing.T) {
 	}
 }
 
-// Flush commits the response headers, so a handler that flushes a stream and
-// then panics must NOT get a JSON 500 appended to what is already on the wire.
-// recoverMiddleware decides that from responseRecorder.wrote, which Flush has
-// to set for the same reason Write does.
+// Flush commits headers; recoverMiddleware decides from responseRecorder.wrote.
 func TestRecoverDoesNotAppendToAnAlreadyFlushedStream(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := accessLog(log)(recoverMiddleware(log)(http.HandlerFunc(
 		func(w http.ResponseWriter, _ *http.Request) {
-			// Flush with nothing written yet: net/http commits an implicit
-			// 200 here, which is the state the recorder has to notice.
+			// net/http commits an implicit 200 here, the state the recorder must see.
 			_ = http.NewResponseController(w).Flush()
 			panic("a stream that dies halfway")
 		})))
@@ -244,8 +216,6 @@ func TestRecoverDoesNotAppendToAnAlreadyFlushedStream(t *testing.T) {
 	}
 }
 
-// ...but a panic BEFORE anything is committed must still produce the 500, or
-// the caller gets an empty 200 for a server fault.
 func TestRecoverAnswersWhenNothingWasWritten(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := accessLog(log)(recoverMiddleware(log)(http.HandlerFunc(

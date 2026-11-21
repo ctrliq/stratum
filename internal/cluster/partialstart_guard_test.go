@@ -14,25 +14,9 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Pins the retry contract after a first start fails part-way: netconfig is
-// persisted during the network resolution and node.yaml only after the whole
-// assembly succeeds, and a refused start writes nothing. A partial first
-// start journals its preparation (journalPartialPreparation, written when
-// the assembly fails after the network resolution persisted netconfig), and
-// the node is PENDING, not established, so the retry with a corrected
-// spec.network converges onto the correction. The corrected-network
-// recovery and refusal acceptance is pinned end to end in prepare_test.go
-// (TestRetryWithACorrectedNetworkConvergesOnAPartialFirstStart,
-// TestCorrectedNetworkRefusedOnAnEstablishedNode).
-
-// errCertificates is the part-way failure of the first start: after the
-// network resolution saved netconfig, at the certificate step, before SaveState
-// ran.
+// The part-way failure: after netconfig persisted, at the certificate step.
 var errCertificates = errors.New("certificate generation failed")
 
-// runFirstStart replaces the assembly seam with one that runs the real
-// ResolveNet and BeforeCerts hooks PrepareController wires, and then reports
-// assembleErr (nil for a start that reaches SaveState).
 func runFirstStart(t *testing.T, choice host.NodeIPChoice, assembleErr error) {
 	t.Helper()
 	saved := assembleNode
@@ -51,9 +35,6 @@ func runFirstStart(t *testing.T, choice host.NodeIPChoice, assembleErr error) {
 	t.Cleanup(func() { assembleNode = saved })
 }
 
-// failFirstStart runs the failed first start and returns the netconfig bytes
-// it left. The failure must not have saved node.yaml: that write follows the
-// whole assembly.
 func failFirstStart(t *testing.T, cfg *ClusterConfig, choice host.NodeIPChoice) string {
 	t.Helper()
 	runFirstStart(t, choice, errCertificates)
@@ -70,12 +51,6 @@ func failFirstStart(t *testing.T, cfg *ClusterConfig, choice host.NodeIPChoice) 
 	return string(b)
 }
 
-// TestRetryAfterAFailedFirstStart pins the retry: a first start that failed
-// part-way is a PENDING node, so the retry adopts spec.network — the same spec
-// re-persists the recorded network, a corrected CIDR or a corrected domain
-// converges onto the correction and is persisted — while the missing node.yaml
-// stays the ordinary first-boot case for the address and the etcd membership,
-// and every retry persists a node.yaml carrying the network it adopted.
 func TestRetryAfterAFailedFirstStart(t *testing.T) {
 	const pod, svc, domain = "10.42.0.0/16", "10.43.0.0/16", "first.internal"
 	for _, tc := range []struct {
@@ -101,10 +76,6 @@ func TestRetryAfterAFailedFirstStart(t *testing.T) {
 				t.Fatalf("the retry after a failed first start: %v", err)
 			}
 
-			// The saved node.yaml carries the network the retry adopted, with
-			// the resolved address and a fresh single-member state=new: the
-			// missing node.yaml was the ordinary first boot, so the corrected
-			// network changes neither.
 			saved, err := LoadState()
 			if err != nil {
 				t.Fatalf("the retry saved no node.yaml: %v", err)
@@ -121,8 +92,6 @@ func TestRetryAfterAFailedFirstStart(t *testing.T) {
 					saved.EtcdInitialCluster, saved.EtcdState, saved.EtcdHasPeers)
 			}
 
-			// The retried start completed, so the node is established on the
-			// network it converged onto: netconfig says the same.
 			want := tc.wantPod + "\n" + tc.wantSvc + "\n" + tc.wantDm + "\n"
 			if b, rerr := os.ReadFile(version.NetConfigPath); rerr != nil || string(b) != want {
 				t.Errorf("netconfig after the retry = %q, %v; want %q", b, rerr, want)
@@ -131,13 +100,6 @@ func TestRetryAfterAFailedFirstStart(t *testing.T) {
 	}
 }
 
-// TestWALOnlyMemberDataHoldsTheRecordedNetwork pins the journal's conservative
-// reading of etcd member history: a node whose member directory holds only a
-// write-ahead log segment — the database gone — is not a node whose history
-// can be dismissed. The journal exists so a corrected spec.network can
-// converge after a start that stopped before anything depended on the
-// recorded values; WAL-only member data is the opposite of that, so the node
-// keeps the recorded network whatever the journal says.
 func TestWALOnlyMemberDataHoldsTheRecordedNetwork(t *testing.T) {
 	assemblyFixture(t)
 	origEtcd := version.EtcdDataDir

@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// bundleHost points the PKI dir, node state dir and netconfig path at temp
-// locations and writes the mandatory shared certs, so collectBundle can run
-// without a cluster. The netconfig file itself is left for each test to write.
 func bundleHost(t *testing.T) {
 	t.Helper()
 	origPKI, origConf, origNet := version.PKIDir, version.K8sConfDir, version.NetConfigPath
@@ -30,9 +27,6 @@ func bundleHost(t *testing.T) {
 	}
 }
 
-// A control plane that lost netconfig and has not restarted still
-// shares the cluster's domain, recovered from node state, so a joiner that sets
-// no clusterDomain does not recover cluster.local and join on the wrong domain.
 func TestCollectBundleSharesTheRecoveredDomainWhenNetConfigIsLost(t *testing.T) {
 	bundleHost(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller", ClusterDomain: "fuzz.internal"}); err != nil {
@@ -46,7 +40,6 @@ func TestCollectBundleSharesTheRecoveredDomainWhenNetConfigIsLost(t *testing.T) 
 	if got := string(files[netconfigEntry]); got != want {
 		t.Errorf("bundle netconfig = %q, want %q", got, want)
 	}
-	// What the joiner's DownloadCerts writes is a netconfig it reads back as that domain.
 	joiner := t.TempDir()
 	if _, err := applyBundle(joiner, files); err != nil {
 		t.Fatal(err)
@@ -57,8 +50,6 @@ func TestCollectBundleSharesTheRecoveredDomainWhenNetConfigIsLost(t *testing.T) 
 	}
 }
 
-// An existing netconfig is shared as written, and a legacy two-line one is shared
-// as two lines, which is also what a default-domain Save writes.
 func TestCollectBundleSharesTheExistingNetConfig(t *testing.T) {
 	bundleHost(t)
 	if err := netcfg.Save("10.42.0.0/16", "10.43.0.0/16", "fuzz.internal"); err != nil {
@@ -83,8 +74,6 @@ func TestCollectBundleSharesTheExistingNetConfig(t *testing.T) {
 	}
 }
 
-// A first-start-shaped host with neither a file nor node state still shares the
-// defaults, as the bundle did before it was built from Load.
 func TestCollectBundleSharesTheDefaultsWithNoRecordedState(t *testing.T) {
 	bundleHost(t)
 	files, err := collectBundle(false)
@@ -96,8 +85,6 @@ func TestCollectBundleSharesTheDefaultsWithNoRecordedState(t *testing.T) {
 	}
 }
 
-// A netconfig that cannot be read or validated, or a node state that cannot be
-// read, stops the upload with an error; it is never shared as the default.
 func TestCollectBundleFailsInsteadOfDefaulting(t *testing.T) {
 	t.Run("corrupt netconfig", func(t *testing.T) {
 		bundleHost(t)
@@ -120,10 +107,6 @@ func TestCollectBundleFailsInsteadOfDefaulting(t *testing.T) {
 	})
 }
 
-// A bad cluster domain in node state, with netconfig lost, is refused on
-// the donor by Load, ResolveDomain and collectBundle, so nothing is uploaded for
-// a joiner to fail on after it has downloaded the CA. A space and a newline
-// would otherwise reach the netconfig line every joiner reads.
 func TestCollectBundleRefusesABadDomainInNodeState(t *testing.T) {
 	for name, domain := range map[string]string{"a space": "a b", "a newline": "a\nb"} {
 		t.Run(name, func(t *testing.T) {
@@ -148,9 +131,6 @@ func TestCollectBundleRefusesABadDomainInNodeState(t *testing.T) {
 	}
 }
 
-// TestCollectBundleSharesTheRecordedRangesWhenNetConfigIsLost: a custom-range,
-// custom-domain control plane that lost netconfig shares the ranges and domain
-// its node state records, not the default ranges, with joining control planes.
 func TestCollectBundleSharesTheRecordedRangesWhenNetConfigIsLost(t *testing.T) {
 	bundleHost(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{
@@ -167,11 +147,6 @@ func TestCollectBundleSharesTheRecordedRangesWhenNetConfigIsLost(t *testing.T) {
 	}
 }
 
-// TestCollectBundleRotatingLeavesOutALostOldKey: the CA rotation's re-upload
-// goes ahead without an old signing key a forced rotation went ahead without,
-// but only when the rotation is recorded as forced and that key's staged
-// replacement is there. Any other missing
-// entry, and every missing entry outside a rotation, still stops the upload.
 func TestCollectBundleRotatingLeavesOutALostOldKey(t *testing.T) {
 	want := map[string]string{
 		"ca.key":             "ca-new.key",
@@ -226,9 +201,6 @@ func TestCollectBundleRotatingLeavesOutALostOldKey(t *testing.T) {
 	})
 }
 
-// TestCollectBundleAfterAForcedRotationThatLostSAPub: a forced trust-new on a
-// control plane that lost sa.pub but kept sa.key leaves material the rotation's
-// re-upload can share, so the run does not halt at the upload on every resume.
 func TestCollectBundleAfterAForcedRotationThatLostSAPub(t *testing.T) {
 	bundleHost(t)
 	for _, f := range []string{"ca.crt", "ca.key", "front-proxy-ca.crt", "front-proxy-ca.key", "sa.key", "sa.pub"} {
@@ -256,8 +228,6 @@ func TestCollectBundleAfterAForcedRotationThatLostSAPub(t *testing.T) {
 	}
 }
 
-// TestRequireControlPlanePKIRotating: the staged root key stands in for a lost
-// one only on a forced rotation's re-upload, never for `token create`.
 func TestRequireControlPlanePKIRotating(t *testing.T) {
 	bundleHost(t)
 	if err := os.Remove(filepath.Join(version.PKIDir, "ca.key")); err != nil {
@@ -288,10 +258,6 @@ func markForced(t *testing.T) {
 	}
 }
 
-// A downloaded bundle that carries ca-bundle.crt moves the kubelet's
-// clientCAFile with it; one that does not leaves the kubelet's bundle alone.
-// HA joins, follower rotation fetches and etcd-CA migration fetches all apply a
-// bundle this way, and none of them rewrites the kubelet's bundle elsewhere.
 func TestApplyDownloadedBundleSyncsTheKubeletClientBundle(t *testing.T) {
 	t.Run("carries the kubelet's bundle from a split cluster", func(t *testing.T) {
 		bundleHost(t)
@@ -339,10 +305,6 @@ func TestApplyDownloadedBundleSyncsTheKubeletClientBundle(t *testing.T) {
 	})
 }
 
-// The kubelet client-CA entries are shared only once the kubelets trust a
-// kubelet-client CA: split, or part way through the migration. A cluster that
-// predates the split shares exactly what an earlier release did, so an older
-// joiner, which refuses entries it does not know, can still join it.
 func TestCollectBundleSharesTheKubeletClientCAOnlyOnceTheKubeletsTrustIt(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -411,8 +373,6 @@ func TestCollectBundleRequiresEverySplitKubeletClientEntry(t *testing.T) {
 	}
 }
 
-// Outside a rotation a split cluster has no staged kubelet-client-ca-new, and
-// the bundle is collected without it.
 func TestCollectBundleSharesASplitClusterOutsideARotation(t *testing.T) {
 	bundleHost(t)
 	if _, err := pki.NewCA("root", "stratum-ca"); err != nil {

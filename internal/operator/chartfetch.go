@@ -22,10 +22,7 @@ import (
 	repo "helm.sh/helm/v4/pkg/repo/v1"
 )
 
-// LocateChart does not expose getter injection in the pinned Helm SDK. Use
-// its repository resolution and downloader directly, with requests owned by
-// this reconcile, so timeout and leadership loss stop network I/O before the
-// next pass starts. There is no detached download worker.
+// LocateChart in the pinned Helm SDK takes no injected getters; requests follow ctx.
 func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) (string, error) {
 	locate := strings.TrimSpace(spec.chart)
 	if spec.repo == "" {
@@ -42,11 +39,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 	var entry *repo.Entry
 	if spec.repo != "" {
 		if !isOCI(spec.repo) {
-			// An http(s) spec.repo takes the repositories.yaml entry naming the
-			// same repository: its TLS files feed the backing transport built
-			// below, its credentials authenticate the index resolution and the
-			// archive download — the binding a named chart reference gets from
-			// its owner scan.
+			// The entry carries the TLS files and credentials for index and archive fetches.
 			var err error
 			entry, err = repoURLEntry(spec.repo, settings)
 			if err != nil {
@@ -54,10 +47,6 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 			}
 		}
 	} else if !isOCI(locate) {
-		// Helm's downloader adds this named repository's authentication and
-		// TLS options after resolving its cached index. Preserve its TLS files
-		// in the backing transport; the builtin HTTP getter below still owns
-		// authentication and the passCredentialsAll origin policy.
 		var err error
 		entry, err = chartRepositoryEntry(locate, settings)
 		if err != nil {
@@ -71,10 +60,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 	transport.TLSClientConfig = tlsConfig
 	var next http.RoundTripper = transport
 	if entry != nil && len(tlsConfig.Certificates) > 0 && !entry.PassCredentialsAll {
-		// The client certificate is a credential like the basic auth below, so
-		// it follows the same origin rule: an index can point the archive, or
-		// a redirect, at another host, which must not be handed the entry's
-		// certificate unless the entry sets pass_credentials_all.
+		// The client certificate is a credential like the basic auth: withheld off-origin.
 		other := transport.Clone()
 		other.TLSClientConfig = tlsConfig.Clone()
 		other.TLSClientConfig.Certificates = nil
@@ -87,9 +73,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 	if err != nil {
 		return "", err
 	}
-	// WithTransport accepts only *http.Transport. Its protocol forwarding
-	// seam lets the builtin getter retain its authentication/header behavior
-	// while the actual RoundTrip and body reads follow this reconcile's context.
+	// WithTransport accepts only *http.Transport; protocol forwarding routes RoundTrips through ctx.
 	forwarding := &http.Transport{}
 	forwarding.RegisterProtocol("http", bound)
 	forwarding.RegisterProtocol("https", bound)
@@ -106,11 +90,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 	} else if spec.repo != "" {
 		options := []repo.FindChartInRepoURLOption{repo.WithChartVersion(spec.version)}
 		if entry != nil {
-			// Authenticate the index resolution against the matched entry. No
-			// TLS options here: the getter's transport is already the one built
-			// from chartFetchTLSConfig, and these options would be inert. Helm
-			// binds the credentials to the entry's own URL, so they go to
-			// another host only with pass_credentials_all.
+			// Authenticate the index with the entry; the transport already carries its TLS files.
 			options = append(options, repo.WithUsernamePassword(entry.Username, entry.Password), repo.WithPassCredentialsAll(entry.PassCredentialsAll))
 		}
 		locate, err = repo.FindChartInRepoURL(spec.repo, locate, providers, options...)
@@ -119,24 +99,13 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 		}
 	}
 	if u, err := url.Parse(locate); err == nil && u.Host != "" && (u.Scheme == "http" || u.Scheme == "https") {
-		// The archive URL is already resolved: either an absolute spec.chart or
-		// one resolved against spec.repo's index above. Download it with Helm's
-		// getter and content cache directly: ChartDownloader would re-resolve
-		// it through cached indexes — failing "no cached repo found" on any
-		// registered repository that lacks one — and repeat the optional owner
-		// scan while rejecting unrelated unreadable repository indexes again.
+		// The URL is already resolved; ChartDownloader would re-resolve and re-scan it.
 		if settings.ContentCache == "" {
 			return "", fmt.Errorf("content cache must be set")
 		}
 		options := []getter.Option{getter.WithURL(locate), getter.WithAcceptHeader("application/gzip,application/octet-stream")}
 		if entry == nil && spec.repo != "" {
-			// An index-resolved archive with no entry matching spec.repo still
-			// deserves the owner scan the downloader would have run: it binds
-			// the credentials of the registered repository whose cached index
-			// lists this archive, when those indexes happen to be readable.
-			// chartFetchTLSConfig has already run, so a scanned owner's TLS
-			// files are not applied here — the same as every other archive
-			// fetch for a spec.repo without a matching entry.
+			// An index-resolved archive with no matching entry still gets the owner scan.
 			var err error
 			entry, err = chartRepositoryEntry(locate, settings)
 			if err != nil {
@@ -144,14 +113,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 			}
 		}
 		if entry != nil {
-			// Bind credentials to the repository origin, not the archive's:
-			// an index can point at another host or port. Helm's getter origin
-			// check compares scheme and host verbatim, so when the archive
-			// names the entry's own origin, bind under the archive's spelling
-			// — a lowercased entry URL would withhold the credentials from an
-			// upper-case spelling of the same host — while another origin keeps
-			// the normalized entry URL and stays unauthenticated unless the
-			// entry sets pass_credentials_all.
+			// Bind under the archive's own spelling: the getter compares scheme and host verbatim.
 			bound := normalizeRepoURL(entry.URL)
 			if e, err := url.Parse(entry.URL); err == nil &&
 				strings.EqualFold(u.Scheme, e.Scheme) && strings.EqualFold(u.Host, e.Host) {
@@ -183,10 +145,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 	return path, err
 }
 
-// Match the downloader's owner selection for both repo/chart references and
-// absolute archive URLs found in a registered repository's cached index. Its
-// TLS options are opaque getter options, so choose the same entry before
-// constructing the context-bound backing transport.
+// chartRepositoryEntry matches the downloader's owner selection for repo refs and archive URLs.
 func chartRepositoryEntry(ref string, settings *cli.EnvSettings) (*repo.Entry, error) {
 	file, err := repo.LoadFile(settings.RepositoryConfig)
 	if errors.Is(err, os.ErrNotExist) {
@@ -223,13 +182,7 @@ func chartRepositoryEntry(ref string, settings *cli.EnvSettings) (*repo.Entry, e
 	return nil, nil
 }
 
-// repoURLEntry returns the repositories.yaml entry whose URL names the same
-// repository as repoURL: equal after normalizeRepoURL, so same scheme, host,
-// path and query. The first match in file order wins, mirroring Helm's own
-// owner scan. No entry is not an error — a spec.repo with no matching entry
-// must fetch anonymously rather than with some other repository's
-// credentials — but an unreadable file is, exactly as chartRepositoryEntry
-// treats one.
+// repoURLEntry returns the repositories.yaml entry whose URL equals repoURL; nil, not an error.
 func repoURLEntry(repoURL string, settings *cli.EnvSettings) (*repo.Entry, error) {
 	file, err := repo.LoadFile(settings.RepositoryConfig)
 	if errors.Is(err, os.ErrNotExist) {
@@ -247,16 +200,7 @@ func repoURLEntry(repoURL string, settings *cli.EnvSettings) (*repo.Entry, error
 	return nil, nil
 }
 
-// normalizeRepoURL canonicalizes a repository URL for equality comparison:
-// scheme and host are lowercased (DNS names and schemes are case-insensitive),
-// userinfo and fragment are dropped so only the location identifies the
-// repository, an empty path is the root, and a trailing slash is dropped so
-// ".../charts" and ".../charts/" name one repository. The path is compared in
-// its escaped form exactly as written: Helm fetches the spec.repo path
-// verbatim, so cleaning empty or dot segments would equate a URL that
-// resolves elsewhere on the server and hand the entry's credentials to it.
-// Path case is significant, the query is compared exactly, and unparseable
-// input is returned unchanged so a comparison simply misses.
+// normalizeRepoURL lowercases scheme and host and drops userinfo, fragment and the trailing slash.
 func normalizeRepoURL(ref string) string {
 	u, err := url.Parse(ref)
 	if err != nil {
@@ -275,10 +219,7 @@ func normalizeRepoURL(ref string) string {
 	return u.String()
 }
 
-// originTransport sends a request through own when it goes to the repository
-// entry's origin (scheme and host, port included, compared ignoring case) and
-// through other everywhere else, redirect hops included. An entry URL that does
-// not parse matches nothing, so its certificate is never presented.
+// originTransport sends requests to the entry's origin through own, everything else through other.
 type originTransport struct {
 	scheme, host string
 	own, other   http.RoundTripper
@@ -303,8 +244,7 @@ func chartFetchTLSConfig(spec helmSpec, entry *repo.Entry) (*tls.Config, error) 
 	cfg := &tls.Config{InsecureSkipVerify: spec.insecureSkipTLSVerify} // explicitly gated by the operator policy
 	caPEM := []byte(spec.repoCA)
 	if entry != nil {
-		// Local repository configuration is administrator-owned; the spec
-		// flag above has already passed the operator's insecure-repo policy.
+		// Local repository configuration is administrator-owned; its insecure flag is theirs to set.
 		cfg.InsecureSkipVerify = cfg.InsecureSkipVerify || entry.InsecureSkipTLSVerify
 		if entry.CAFile != "" {
 			var err error

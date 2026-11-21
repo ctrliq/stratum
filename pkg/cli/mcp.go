@@ -16,7 +16,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// newMCPCommand builds `stratum mcp`.
 func newMCPCommand(cfg rootConfig) *cobra.Command {
 	var (
 		allowWrite       bool
@@ -58,9 +57,7 @@ func newMCPCommand(cfg rootConfig) *cobra.Command {
 			log := opts.NewLogger()
 			opts.Logger = log
 
-			// Built, not connected: NewConnector contacts nothing, so the server starts
-			// against an unreachable or absent cluster and reports that per tool call
-			// instead of refusing to boot.
+			// NewConnector contacts nothing, so the server boots against an absent cluster.
 			conn, nodeConn := newConnectors(kubeconfig, kubeContext, requestTimeout, log)
 
 			srv := mcpsrv.NewServer(opts)
@@ -86,13 +83,7 @@ func newMCPCommand(cfg rootConfig) *cobra.Command {
 			log.Info("MCP tools registered",
 				"count", len(reg.Registered()), "tools", reg.Registered(), "sets", names)
 
-			// cmd/stratum/main.go calls Execute, not ExecuteContext, so
-			// cmd.Context() is context.Background() for every stratum invocation —
-			// and Background().Done() is nil, so without this the cancellation path
-			// in Serve is unreachable and a Ctrl-C kills the process with sessions
-			// in flight. The shared interrupt context owns the signal set (SIGHUP
-			// included) and the second-signal kill; deriving from cmd.Context()
-			// means a host that cancels its own context still stops the server.
+			// cmd.Context() is Background for every stratum run; without this Ctrl-C kills mid-session.
 			ctx, stop := interrupt.DerivedContext(cmd.Context())
 			defer stop()
 
@@ -123,33 +114,18 @@ func newMCPCommand(cfg rootConfig) *cobra.Command {
 	return cmd
 }
 
-// newConnectors builds the server's two connectors. conn is the configurable
-// connector the operator scopes with --kubeconfig, --context and
-// --request-timeout, falling back to this node's admin.conf; nodeConn stands
-// explicitly on admin.conf — not on the fallback precedence, so the node
-// credential does not move with the operator's environment — and carries the
-// same --request-timeout, which the node-local tools (token_list) obey.
-//
-// Neither connects: NewConnector contacts nothing, so the server starts
-// against an unreachable or absent cluster and reports that per tool call
-// instead of refusing to boot.
+// conn is operator-scoped; nodeConn stands on admin.conf, never the operator's env.
 func newConnectors(kubeconfig, kubeContext string, requestTimeout time.Duration, log *slog.Logger) (conn, nodeConn *kube.Connector) {
 	conn = kube.NewConnector(kube.Options{
 		Kubeconfig: kubeconfig,
 		Context:    kubeContext,
 		Timeout:    requestTimeout,
-		// On a Stratum control plane there is no $KUBECONFIG and no ~/.kube/config,
-		// and the node is not a pod — so without this the generic Kubernetes tools
-		// cannot reach the very cluster this binary is managing. It is
-		// cluster-admin, which is why Secrets are refused at the read tier
-		// regardless of what the credential is allowed to do.
+		// No $KUBECONFIG or ~/.kube/config exists on a node; cluster-admin, hence Secrets refused.
 		FallbackKubeconfig: version.AdminConf,
 		Logger:             log,
 	})
 	nodeConn = kube.NewConnector(kube.Options{
-		// The node-local tools' credential: the internal admin kubeconfig —
-		// super-admin.conf where the node carries one, admin.conf otherwise —
-		// explicit, never the operator's --kubeconfig.
+		// The node-local tools' credential, never the operator's --kubeconfig.
 		KubeconfigPath: k8sutil.InternalAdminConf,
 		Timeout:        requestTimeout,
 		Logger:         log,
@@ -157,14 +133,7 @@ func newConnectors(kubeconfig, kubeContext string, requestTimeout time.Duration,
 	return conn, nodeConn
 }
 
-// registerAll registers the engine's own tools — the catalog beside the
-// handlers in internal/mcp, admitted row by row — then every contributed
-// tool set. conn is the operator-scoped configurable connector; nodeConn is
-// the explicit admin.conf connector the node-local tools ride. Both are
-// required: a node-credential tool registered with the configurable connector
-// standing in for the node one would wire a handler to the wrong credential
-// while every declaration still read true, exactly the drift that requiring
-// both connectors prevents.
+// Both connectors are required, so a node-credential tool cannot ride the wrong credential.
 func registerAll(r *Registrar, cfg rootConfig, conn, nodeConn *kube.Connector) error {
 	r.nodeConn = nodeConn
 	// Derived from the Registrar rather than passed in beside it.
@@ -194,12 +163,7 @@ func catalogTier(t mcpsrv.Tier) (Tier, bool) {
 	return TierRead, false
 }
 
-// addCatalogTool admits one catalog descriptor through the same checks
-// AddTool applies to contributed tool sets: the annotations must agree with
-// the tier, a tier the operator has not enabled silently skips the tool, and
-// a second claim on a name is a startup failure, not a shadowing. The tool
-// is built here, from the descriptor's tier, so a catalog row can never
-// register annotations its tier contradicts.
+// Built from the descriptor's tier, so a catalog row cannot contradict its annotations.
 func (r *Registrar) addCatalogTool(d mcpsrv.Tool) {
 	if r == nil {
 		return
@@ -221,9 +185,7 @@ func (r *Registrar) addCatalogTool(d mcpsrv.Tool) {
 		t = ReadTool(d.Name, d.Description)
 	case TierWrite:
 		t = WriteTool(d.Name, d.Description)
-		// DestructiveTool, not WriteTool, though the tier stays write: the
-		// handler refuses some targets without --allow-destructive, and the
-		// annotation says so to the client.
+		// The tier stays write: the handler refuses some targets without --allow-destructive.
 		if d.Destructive {
 			t = DestructiveTool(d.Name, d.Description)
 		}
@@ -249,10 +211,7 @@ func (r *Registrar) addCatalogTool(d mcpsrv.Tool) {
 
 	d.Add(r.srv, t)
 	r.registered = append(r.registered, d.Name)
-	// The credential source the row declared, recorded beside the admission:
-	// every admitted tool must declare which Kubernetes credential it uses,
-	// and a row that declares none records an empty source, which the
-	// credential-source pin fails on.
+	// Every admitted tool must declare which Kubernetes credential it uses.
 	if r.credentials == nil {
 		r.credentials = make(map[string]string)
 	}

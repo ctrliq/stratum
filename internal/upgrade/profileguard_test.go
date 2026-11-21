@@ -11,11 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestUpgradeRefusesANodeWhoseProfileThisBinaryDoesNotRegister: a cis worker
-// upgraded with an engine binary is refused before the binary installs
-// itself, with --check and without, and the refusal carries the cis note.
-// A worker is never resolved by the control-plane
-// refresh, so this guard is the only one it meets.
 func TestUpgradeRefusesANodeWhoseProfileThisBinaryDoesNotRegister(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

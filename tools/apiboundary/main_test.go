@@ -34,8 +34,6 @@ func wantLeak(t *testing.T, violations []string, name, path string) {
 	t.Errorf("missed %s; got:\n%s", name, strings.Join(violations, "\n"))
 }
 
-// The fixture must compile: the check reads go/types and compiler export
-// data, so a fixture that does not build fails before any leak is reported.
 func TestInternalAPILeaks(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": "module example.com/boundary\n\ngo 1.23.0\n",
@@ -87,7 +85,7 @@ var Wrapped = privateWrapper{}
 	want := []string{
 		"Direct", "Alias", "Defined", "Explicit", "Callback", "WithCallback",
 		"CallbackResult", "Hooks", "Nested", "InlineInterface", "Parenthesized",
-		"Receiver", // its leaky method is reached via the receiver type, not by name
+		"Receiver",
 		"DefaultConfig", "Constructed", "NewConfig", "Second", "Configs", "DefaultKind",
 	}
 	for _, name := range want {
@@ -136,7 +134,6 @@ var Config = public.New()
 	}
 }
 
-// A directory name and its declared package name can differ.
 func TestImportPackageNameMismatch(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": "module example.com/boundary\n\ngo 1.23.0\n",
@@ -156,10 +153,6 @@ func Get() *renamed.Secret { return nil }
 	wantLeak(t, violations, "Get", "example.com/boundary/internal/weird")
 }
 
-// TestGenericConstraintLeaks covers three ways a generic declaration's
-// type-parameter constraint can reference an internal type: an exported
-// generic function, an exported generic type, and a union constraint term
-// (~int | internal.Foo).
 func TestGenericConstraintLeaks(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": "module example.com/boundary\n\ngo 1.24.0\n",
@@ -188,14 +181,6 @@ func MakeUnion[T ~int | state.Secret]() T { var zero T; return zero }
 	}
 }
 
-// TestIndirectionCannotHideALeak covers the ways a leak can hide behind
-// indirection that a pure syntax match would miss: a local, unexported type
-// alias with no internal-looking name in sight at the use site, and a
-// public sibling package's own alias of an internal type (so the only
-// "internal" mention is two hops away from the exported declaration that
-// actually leaks it). go/types resolves both the same way it resolves
-// everything else — through to the true underlying type — with no special
-// case needed for either.
 func TestIndirectionCannotHideALeak(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": "module example.com/boundary\n\ngo 1.23.0\n",
@@ -227,12 +212,6 @@ func ViaPublicAlias() *public.Alias { return nil }
 	wantLeak(t, violations, "ViaPublicAlias", "example.com/boundary/internal/state")
 }
 
-// A dot import binds every exported name from the imported package
-// directly into scope with no qualifier — go/types resolves the identifier
-// to its real declaring package regardless, so an actual leak through one
-// is still caught, and (unlike a blanket "any dot import of internal/* is
-// suspicious" rule) a dot-imported internal package that's never actually
-// used in an exported signature is correctly left alone.
 func TestDotImports(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": "module example.com/boundary\n\ngo 1.23.0\n",
@@ -285,10 +264,6 @@ func TestTypeLoadingFailureIsAnError(t *testing.T) {
 	}
 }
 
-// An import that can never resolve makes the whole package fail to build,
-// which loadExportedTypes needs to succeed even to check the syntactically
-// simplest declaration — same failure path as TestTypeLoadingFailureIsAnError,
-// via a different kind of build break.
 func TestUnresolvableImportIsAnError(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod":     "module example.com/boundary\n\ngo 1.23.0\n",
@@ -391,10 +366,6 @@ type Ignored state.Config
 	}
 }
 
-// TestOnlyThisModulesInternalsAreFlagged is the scoping test, and it uses
-// one fixture for both halves on purpose: a dependency's internal type and
-// our own arrive at the exported API by the identical route, so the only
-// thing that can distinguish them is the module scope.
 func TestOnlyThisModulesInternalsAreFlagged(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": `module example.com/boundary
@@ -409,9 +380,6 @@ replace example.com/dep => ./dep
 		"dep/internal/hidden/hidden.go": `package hidden
 type Secret struct{ Path string }
 `,
-		// Exactly the shape TestPublicWrappersCannotHideLeaks proves is a
-		// leak when the wrapper is ours: an exported field of an internal
-		// type, reachable from an exported declaration.
 		"dep/pub/pub.go": `package pub
 import "example.com/dep/internal/hidden"
 type Wrapper struct { Value hidden.Secret }
@@ -444,8 +412,6 @@ func FromThisModule() ours.Wrapper { return ours.Wrapper{} }
 	}
 }
 
-// TestNestedModuleInternalsAreNotOurs is the case a path prefix cannot
-// decide.
 func TestNestedModuleInternalsAreNotOurs(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod": `module example.com/boundary
@@ -493,10 +459,6 @@ func FromThisModule() ours.Wrapper { return ours.Wrapper{} }
 	}
 }
 
-// TestModulePathMayContainInternal pins both directions for a module whose
-// own path carries an internal segment, because the obvious simplification
-// here — scan the whole import path instead of the part after the module
-// path — gets one of them wrong.
 func TestModulePathMayContainInternal(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod":                  "module example.com/internal/boundary\n\ngo 1.24.0\n",
@@ -526,8 +488,6 @@ func NotALeak() pub.Config { return pub.Config{} }
 	}
 }
 
-// A package whose name merely contains "internal" is not an internal package
-// — only a full path segment makes one.
 func TestInternalMustBeAWholePathSegment(t *testing.T) {
 	dir := writeFixture(t, map[string]string{
 		"go.mod":                     "module example.com/boundary\n\ngo 1.24.0\n",

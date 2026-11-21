@@ -13,24 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The survey's contract, stated as tests.
-//
-// Two channels, from one TLS 1.2 handshake:
-//
-//	AcceptableCAs   the trust axis — has the etcd anchor, still trusts a root
-//	the served leaf the leaf axis  — which CA signed this member's etcd cert
-//
-// Neither alone decides a state. Every test below moves exactly one axis and
-// asserts the state it produces, which is what pins that both are being read.
-
-// remoteEtcd stands up a listener configured exactly as etcd's client listener
-// is, on a non-loopback address, so the survey exercises its PEER path rather
-// than the byte-identical local comparison.
-//
-// trustRoot / trustEtcdCA select the client CA pool (--trusted-ca-file), and
-// leaf selects which CA signed the certificate the member serves. Those are
-// independent on a real cluster mid-migration, and the point of the survey is
-// that it reads both.
+// etcd's client listener on a non-loopback address, so the survey exercises its peer path.
 func remoteEtcd(t *testing.T, trustEtcdCA, trustRoot bool, leaf string) string {
 	t.Helper()
 	srv, err := tls.LoadX509KeyPair(path(leaf, "crt"), path(leaf, "key"))
@@ -66,10 +49,7 @@ func remoteEtcd(t *testing.T, trustEtcdCA, trustRoot bool, leaf string) string {
 			}()
 		}
 	}()
-	// Hand back the node's real IP as the address. The dial seam below sends the
-	// connection to the loopback listener, but the probe identity-checks the
-	// address it was ASKED for — so this exercises the remote peer path, which
-	// dialling 127.0.0.1 would silently bypass in favour of the local one.
+	// The probe identity-checks the address it was asked for, so the remote peer path runs.
 	redirectProbeDial(t, ln.Addr().String())
 	_, port, err := net.SplitHostPort(ln.Addr().String())
 	if err != nil {
@@ -78,9 +58,7 @@ func remoteEtcd(t *testing.T, trustEtcdCA, trustRoot bool, leaf string) string {
 	return net.JoinHostPort(tIP, port)
 }
 
-// redirectProbeDial points the probes' one network call at a loopback listener
-// while leaving the address they judge untouched. An optional timeout overrides
-// the production probeTimeout, so tests that exercise timeout paths stay fast.
+// Points the dial at a loopback listener; the optional timeout keeps timeout tests fast.
 func redirectProbeDial(t *testing.T, to string, timeout ...time.Duration) {
 	t.Helper()
 	d := probeTimeout
@@ -94,13 +72,11 @@ func redirectProbeDial(t *testing.T, to string, timeout ...time.Duration) {
 	t.Cleanup(func() { dialProbeTLS = saved })
 }
 
-// surveyAt is ProbeEtcdTrustAt, named for what the tests are asserting.
 func surveyAt(t *testing.T, addr string) EtcdRemoteTrust {
 	t.Helper()
 	return ProbeEtcdTrustAt(addr)
 }
 
-// TestSurveyReadsBothAxes walks the four states, moving one axis at a time.
 func TestSurveyReadsBothAxes(t *testing.T) {
 	genInto(t)
 	migrateAll(t) // gives us an etcd CA and etcd-CA-signed leaves to serve
@@ -119,10 +95,7 @@ func TestSurveyReadsBothAxes(t *testing.T) {
 		{"both anchors, etcd-CA-signed leaf", true, true, true, EtcdStateIssueNew},
 		// The end state, and the only one that closes the etcd trust hole.
 		{"etcd-CA only, etcd-CA-signed leaf", true, false, true, EtcdStateMigrated},
-		// Trust and leaves disagree: this member's etcd would reject its own
-		// apiserver. On disk EtcdTrust.State calls this not-migrated because a
-		// follower passes through it mid-phase; as a SURVEYED resting state it is
-		// a broken node and must not be classified.
+		// Trust and leaves disagree: a surveyed resting state here is a broken node.
 		{"etcd-CA only, root-signed leaf", true, false, false, EtcdStateUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -138,8 +111,7 @@ func TestSurveyReadsBothAxes(t *testing.T) {
 	}
 }
 
-// rootSignedEtcdLeaf mints an etcd server leaf under the CLUSTER ROOT, i.e. what
-// an unmigrated member serves, and returns its basename.
+// Mints an etcd server leaf under the CLUSTER ROOT, what an unmigrated member serves.
 func rootSignedEtcdLeaf(t *testing.T) string {
 	t.Helper()
 	ca, err := loadCA("ca")
@@ -161,10 +133,7 @@ func rootSignedEtcdLeaf(t *testing.T) string {
 	return ""
 }
 
-// TestSurveyIsUnknownWhenEtcdIsUnreachable. "etcd is down on that node" is not a
-// gap in the survey — it is the answer, and the answer is unknown, which
-// refuses. A survey that guessed here would let drop-root proceed against a
-// member nobody could reach.
+// Unknown, which refuses; a guess would let drop-root proceed against an unreachable member.
 func TestSurveyIsUnknownWhenEtcdIsUnreachable(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -186,17 +155,12 @@ func TestSurveyIsUnknownWhenEtcdIsUnreachable(t *testing.T) {
 	}
 }
 
-// TestSurveyRejectsAnImpostorListener is the peer-identity check, and it is the
-// one the remote form could not inherit: peerIsLocalEtcd compares the served
-// leaf byte-for-byte against THIS node's etcd.crt, which by construction cannot
-// work against a peer. The replacement identifies the leaf structurally, and it
-// must still refuse a listener that is not that node's etcd.
+// The peer-identity check: it must refuse a listener that is not that node's etcd.
 func TestSurveyRejectsAnImpostorListener(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
 
-	// An impostor serving a certificate signed by a CA this node does not hold.
-	// On a real node this is any local process binding 2379 while etcd is down.
+	// An impostor with a leaf signed by a CA this node does not hold.
 	other := t.TempDir()
 	saved := version.PKIDir
 	version.PKIDir = other
@@ -224,15 +188,7 @@ func TestSurveyRejectsAnImpostorListener(t *testing.T) {
 	}
 }
 
-// TestSurveyRefusesALeafFromAnUnknownCA. A member serving a certificate this
-// node cannot place — a root a rotation replaced and then discarded, say —
-// leaves the leaf axis unreadable. Unreadable is unknown, not "probably fine".
-//
-// A hand-built EtcdRemoteTrust would exercise none of the probe — it would
-// pass against an implementation that classifies the shape as not-migrated.
-// This stands up a listener serving a foreign leaf that is
-// otherwise structurally valid — right CN, right SAN — so the ONLY thing that
-// can reject it is the issuer check.
+// An unplaceable leaf is unknown, not "probably fine"; only the issuer check rejects it.
 func TestSurveyRefusesALeafFromAnUnknownCA(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -262,9 +218,7 @@ func TestSurveyRefusesALeafFromAnUnknownCA(t *testing.T) {
 	}
 }
 
-// TestSurveyTreatsAnUnnameableAnchorAsUnknown. An acceptable-CA Subject the
-// surveying node cannot name may well be a Kubernetes root — which is exactly
-// what drop-root must not be run against. Refuse rather than classify.
+// An unnameable anchor may be a Kubernetes root, exactly what drop-root must not run against.
 func TestSurveyTreatsAnUnnameableAnchorAsUnknown(t *testing.T) {
 	p := EtcdRemoteTrust{TrustsEtcdAnchor: true, LeafUnderEtcdCA: true, UnknownAnchors: 1}
 	if got := p.State(); got != EtcdStateUnknown {
@@ -275,10 +229,7 @@ func TestSurveyTreatsAnUnnameableAnchorAsUnknown(t *testing.T) {
 	}
 }
 
-// stalledListener stands up a RAW TCP listener that accepts and never writes:
-// exactly what a just-restarted etcd looks like while its listener is open but
-// it is still replaying its WAL. The probe's read blocks until its (shortened)
-// deadline.
+// A raw TCP listener that accepts and never writes: a just-restarted etcd replaying its WAL.
 func stalledListener(t *testing.T) string {
 	t.Helper()
 	var held []net.Conn
@@ -305,11 +256,7 @@ func stalledListener(t *testing.T) string {
 	return net.JoinHostPort(tIP, port)
 }
 
-// TestSurveyStalledListenerIsTransient pins the resume rule:
-// a TCP connect that succeeds and then a handshake that never answers is etcd
-// STARTING UP, not a node that cannot be classified. It is still unknown —
-// never a plausible-looking state — but it is marked transient so the
-// orchestrator may re-probe instead of refusing on the first attempt.
+// A connect that succeeds then never answers is etcd starting up: unknown, but transient.
 func TestSurveyStalledListenerIsTransient(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -332,9 +279,7 @@ func TestSurveyStalledListenerIsTransient(t *testing.T) {
 	}
 }
 
-// TestSurveyRefusedIsTransient. Nothing is listening YET is the same
-// just-restarted situation seen a moment earlier, so it is transient too —
-// still unknown, still refusing, but re-probeable.
+// Nothing listening yet is the same just-restarted situation, so it is transient too.
 func TestSurveyRefusedIsTransient(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -362,18 +307,12 @@ func TestSurveyRefusedIsTransient(t *testing.T) {
 	}
 }
 
-// TestSurveyDefiniteUnknownsAreNotTransient. Transiency is reserved for etcd
-// not serving yet; every other unknown is definite and must stay non-transient,
-// because a retry that re-asked an impostor would eventually read the same
-// impostor. The two live cases reuse the impostor and foreign-CA stands from
-// the tests above; the synthetic ones cover the states only a full probe can
-// otherwise reach.
+// Transiency is reserved for etcd not serving yet; a retry would re-read the same impostor.
 func TestSurveyDefiniteUnknownsAreNotTransient(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
 
-	// An impostor: a structurally valid etcd leaf signed by a root this node
-	// does not hold.
+	// A structurally valid etcd leaf signed by a root this node does not hold.
 	other := t.TempDir()
 	saved := version.PKIDir
 	version.PKIDir = other
@@ -388,10 +327,8 @@ func TestSurveyDefiniteUnknownsAreNotTransient(t *testing.T) {
 	}
 	impostor := remoteEtcd(t, false, true, "etcd")
 	version.PKIDir = saved
-	// Surveyed now: the next remoteEtcd points the one dial seam at its own
-	// listener, whatever address is asked for.
+	// Surveyed now: the next remoteEtcd points the one dial seam at its own listener.
 	impostorProbe := surveyAt(t, impostor)
-
 	// A foreign issuer under an otherwise placeable etcd leaf.
 	foreign := t.TempDir()
 	version.PKIDir = foreign
@@ -411,8 +348,7 @@ func TestSurveyDefiniteUnknownsAreNotTransient(t *testing.T) {
 		"impostor listener": impostorProbe,
 		"foreign issuer":    surveyAt(t, foreignLeaf),
 	}
-	// Each answer came from its own listener: the impostor trusts only a root,
-	// the foreign stand only an etcd CA.
+	// Each answer came from its own listener: the impostor trusts only a root.
 	if p := probeCases["impostor listener"]; !p.TrustsRoot || p.TrustsEtcdAnchor {
 		t.Errorf("impostor listener: not answered by the impostor: %+v", p)
 	}
@@ -431,9 +367,7 @@ func TestSurveyDefiniteUnknownsAreNotTransient(t *testing.T) {
 		}
 	}
 
-	// The remaining definite unknowns are reachable only through State()'s
-	// other branches; none of them sets Err, so transiency is false by
-	// construction — pinned here so it stays that way.
+	// The remaining definite unknowns never set Err, so transiency is false by construction.
 	synthetic := map[string]EtcdRemoteTrust{
 		"unnameable anchor":     {TrustsEtcdAnchor: true, LeafUnderEtcdCA: true, UnknownAnchors: 1},
 		"trust/leaf split":      {TrustsEtcdAnchor: true, LeafUnderRoot: true},
@@ -446,10 +380,7 @@ func TestSurveyDefiniteUnknownsAreNotTransient(t *testing.T) {
 	}
 }
 
-// TestSurveyTrustBothAfterStall is the resume scenario end to end at the probe
-// level: the first connection stalls (etcd replaying its WAL), a later one is
-// answered by an etcd that has rejoined raft and widened its trust — and the
-// same survey that refused before now classifies trust-both.
+// End to end: the first probe stalls, a later one is answered by an etcd that rejoined raft.
 func TestSurveyTrustBothAfterStall(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -467,11 +398,7 @@ func TestSurveyTrustBothAfterStall(t *testing.T) {
 	}
 }
 
-// TestSurveyDialTimeoutIsNotTransient pins the line the transient kinds stop
-// at: a dial that never connected — host down, route gone — is reported as
-// unreachable but is NOT transient, because nothing on that host is going to
-// start answering on its own. Only refused and answered-but-stalled dials,
-// which a restarting etcd produces, carry errEtcdNotServing.
+// A never-connected dial is unreachable, not transient; refused and stalled dials are.
 func TestSurveyDialTimeoutIsNotTransient(t *testing.T) {
 	err := notServingError("10.0.0.5:2379", &net.OpError{
 		Op:  "dial",

@@ -22,8 +22,6 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 )
 
-// jobPod is the Pod the Job controller would have made for the Job with uid,
-// its container terminated with code.
 func jobPod(s Spec, uid, container string, code int32) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -37,7 +35,6 @@ func jobPod(s Spec, uid, container string, code int32) *corev1.Pod {
 	}
 }
 
-// failedJob answers every Get with a failed Job whose UID is uid.
 func failedJob(uid string) clienttesting.ReactionFunc {
 	return func(a clienttesting.Action) (bool, runtime.Object, error) {
 		ga := a.(clienttesting.GetAction)
@@ -48,8 +45,6 @@ func failedJob(uid string) clienttesting.ReactionFunc {
 	}
 }
 
-// A check Job answers with its exit status: success is 0, and a
-// failure is the code its container exited with, not just "failed".
 func TestRunExitCode(t *testing.T) {
 	restore := pollInterval
 	pollInterval = 0
@@ -71,11 +66,9 @@ func TestRunExitCode(t *testing.T) {
 			t.Errorf("RunExitCode = %d, %v; want 10, nil", code, err)
 		}
 	})
-	// The previous check's Job was deleted in the background and its Pod,
-	// exit 0, is still there beside this one's. Its answer is not this one's.
+	// The previous check's Job was deleted in the background; its Pod lingers beside this one's.
 	t.Run("an earlier Job's Pod does not answer", func(t *testing.T) {
-		// Named so the stale Pod lists first: a selector by Job name alone
-		// would read its 0.
+		// Named so the stale Pod lists first: a selector by Job name alone would read its 0.
 		cs := fake.NewSimpleClientset(jobPod(s, "aaa-old", s.Container, 0), jobPod(s, "zzz-new", s.Container, 10))
 		cs.PrependReactor("get", "jobs", failedJob("zzz-new"))
 		if code, err := RunExitCode(ctx, cs, s); err != nil || code != 10 {
@@ -89,8 +82,6 @@ func TestRunExitCode(t *testing.T) {
 			t.Errorf("RunExitCode = %v, want an error saying the status is unknown", err)
 		}
 	})
-	// Evicted at admission under node pressure: the container never ran, and
-	// the error says why rather than only that no status exists.
 	t.Run("evicted before it ran", func(t *testing.T) {
 		pod := jobPod(s, "new", s.Container, 0)
 		pod.Status = corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted", Message: "The node had condition: [DiskPressure]."}
@@ -116,8 +107,6 @@ func TestRunExitCode(t *testing.T) {
 	})
 }
 
-// Logs is the log of this Job's Pod, found by the Job's UID as RunExitCode's
-// code is: an earlier Job's Pod, left behind under the same name, does not answer.
 func TestLogs(t *testing.T) {
 	ctx := context.Background()
 	s := testSpec()
@@ -144,8 +133,6 @@ func TestLogs(t *testing.T) {
 	})
 }
 
-// succeededJob answers every Get with a succeeded Job whose UID is uid, until
-// the Job is deleted.
 func succeededJob(uid string, deleted *bool) clienttesting.ReactionFunc {
 	return func(a clienttesting.Action) (bool, runtime.Object, error) {
 		ga := a.(clienttesting.GetAction)
@@ -159,8 +146,6 @@ func succeededJob(uid string, deleted *bool) clienttesting.ReactionFunc {
 	}
 }
 
-// A succeeded Job is deleted as soon as it is seen, so its log must be read
-// first: Logs after RunExitCode finds no Job, and RunExitCodeLogs still answers.
 func TestRunExitCodeLogs(t *testing.T) {
 	restore := pollInterval
 	pollInterval = 0
@@ -226,9 +211,7 @@ func TestRunExitCodeLogs(t *testing.T) {
 	})
 }
 
-// A kubelet that accepts the log request and never answers costs the read its
-// timeout, not the run: the Job's exit status still comes back, with
-// ErrLogUnread. The fake clientset ignores contexts, so this one is served.
+// The fake clientset ignores contexts, so the stalled read is served over httptest.
 func TestRunExitCodeLogsBoundsAStalledLog(t *testing.T) {
 	restorePoll, restoreLog := pollInterval, logReadTimeout
 	pollInterval, logReadTimeout = 0, 50*time.Millisecond

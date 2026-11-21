@@ -17,9 +17,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Exercise the registered production handler, not a probe of a package-global
-// client builder: constructing another server must leave this one's credential
-// and request timeout intact.
 func TestCatalogNodeCredentialsStayWithTheirServer(t *testing.T) {
 	fakeStratumHost(t)
 	var callsA, callsB atomic.Int32

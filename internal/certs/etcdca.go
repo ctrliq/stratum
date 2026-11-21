@@ -1,16 +1,4 @@
-// The per-node half of `stratum certs migrate-etcd-ca`: one phase, on
-// this node, followed by the restart the phase requires.
-//
-// internal/pki owns the file surgery and every safety guard; this file owns the
-// two things a primitive deliberately does not — deciding whether the phase is
-// already applied, and restarting the component whose in-memory state the write
-// does not reach. pki.MigrateEtcdTrustBoth's doc comment states the second
-// obligation outright: "Nothing in-tree owns that restart yet ... So the restart
-// is the caller's responsibility." This is that caller.
-//
-// The cluster driver (etcdcacluster.go) invokes this same code path on every
-// control plane, through a Job, so a `--cluster` run and three hand-run
-// `--phase` invocations do exactly the same thing on each node.
+// The per-node half of migrate-etcd-ca: one phase, then the restart the phase requires.
 package certs
 
 import (
@@ -33,57 +21,23 @@ type EtcdCAOptions struct {
 	Quiet       bool
 }
 
-// etcdMigrationRestart names the components each phase must bounce, and why.
-//
-// This is deliberately NOT restartControlPlane(), which bounces all five static
-// pods plus kubelet and the operator. That set is right for a ROOT rotation,
-// where every leaf and every kubeconfig moves. Here the only material that
-// changes is etcd's trust bundle and the two etcd leaves, so controller-manager,
-// scheduler, kubelet and the operator hold nothing that moved — and kube-vip
-// holds the VIP, which a needless bounce would migrate. Three phases times N
-// control planes made that the difference between restarting kubelet once and
-// restarting it nine times, on a change that touches no kubelet material.
-//
-// Why each entry is present:
-//
-//	trust-both  etcd only. Its CA pool is built once at listener construction and
-//	            never reloads, so the widened bundle is inert until it restarts.
-//	            The apiserver's --etcd-cafile points at the same file, but a
-//	            WIDER anchor set invalidates nothing it currently accepts.
-//	issue-new   etcd then the apiserver, in that order. etcd picks up its new
-//	            etcd-CA-signed server/peer leaf; the apiserver then picks up its
-//	            new etcd-CA-signed client leaf. Reversing it would hand the new
-//	            client cert to an etcd still serving under the old one — which
-//	            trust-both makes survivable, but only by accident.
-//	drop-root   etcd only. The narrowed bundle is what etcd must reload; the
-//	            apiserver's copy still contains the etcd CA, so it keeps
-//	            verifying etcd's server certificate without a bounce.
-//	rollback    etcd then the apiserver: both leaves were re-derived under the
-//	            cluster root, same ordering argument as issue-new.
+// Only etcd material moves; etcd restarts before the apiserver so its client leaf lands second.
 var etcdMigrationRestart = map[string][]string{
 	pki.EtcdPhaseTrustBoth: {"etcd"},
 	pki.EtcdPhaseIssueNew:  {"etcd", "kube-apiserver"},
 	pki.EtcdPhaseDropRoot:  {"etcd"},
 	pki.EtcdPhaseRollback:  {"etcd", "kube-apiserver"},
-	// re-add-root: etcd only. Trust widens, no leaf moves, so the apiserver's
-	// client certificate is still one this etcd accepts and its own copy of the
-	// bundle still verifies etcd's server certificate.
+	// re-add-root: trust widens, no leaf moves, so the apiserver's copy still verifies etcd.
 	EtcdPhaseReAddRoot: {"etcd"},
 }
 
-// EtcdPhaseReAddRoot is the first pass of a forced un-migration: widen trust
-// cluster-wide before any leaf moves. It is a certs-level phase rather than a
-// pki one because it exists purely to give the ORCHESTRATOR an ordering it can
-// make safe; a single node has no use for it.
+// EtcdPhaseReAddRoot is the widening first pass of a forced un-migration.
 const EtcdPhaseReAddRoot = "re-add-root"
 
 // EtcdCAPhases are the forward phases, in the only order they may be run.
 var EtcdCAPhases = []string{pki.EtcdPhaseTrustBoth, pki.EtcdPhaseIssueNew, pki.EtcdPhaseDropRoot}
 
-// EtcdCAAllPhases is every phase a single-node migrate-etcd-ca accepts: the
-// forward phases plus rollback, the way back. The cluster orchestrator runs
-// only EtcdCAPhases, in EtcdCAPhases' order; rollback is never a scheduled
-// step, and re-add-root exists only inside a forced --cluster un-migration.
+// EtcdCAAllPhases is the forward phases plus rollback, what a single node accepts.
 var EtcdCAAllPhases = []string{
 	pki.EtcdPhaseTrustBoth, pki.EtcdPhaseIssueNew, pki.EtcdPhaseDropRoot, pki.EtcdPhaseRollback,
 }
@@ -98,36 +52,13 @@ type EtcdCAFlags struct {
 	FetchShared bool
 }
 
-// Validate rejects contradictory, incomplete or misspelled arguments rather
-// than silently picking one, on a command that restarts etcd on every control
-// plane. Both front ends run it before anything touches the host: the CLI's
-// RunE and the MCP tool's handler return its error verbatim, so a refusal
-// spells the CLI's flag names (--cluster, --phase) and no front end can
-// rebuild the rules, or their wording, by hand.
-//
-// It lives here, not in pkg/cli, because the cluster driver builds the per-node
-// Job argv for THIS command (etcdNodeArgv) and the Job runs it through the same
-// CLI — so the rules and the argv have to agree, and a rule that lives only in
-// pkg/cli cannot be checked against the argv that must satisfy it. An earlier
-// version had them disagree: the argv carried `--phase rollback --force` while
-// the CLI accepted --force only alongside the separate --rollback bool, so every
-// follower Job failed flag validation. The initiator does not go through cobra
-// (the driver runs it in-process), so it succeeded — splitting the cluster's
-// trust rather than failing cleanly.
+// Runs before anything touches the host; the driver's Job argv must satisfy the same rules.
 func (f EtcdCAFlags) Validate() error {
 	const cmd = "stratum certs migrate-etcd-ca"
-	// --rollback is the operator's spelling of the rollback phase;
-	// --phase=rollback is the orchestrator's. Either means the same thing.
 	rollingBack := f.Rollback || f.Phase == pki.EtcdPhaseRollback || f.Phase == EtcdPhaseReAddRoot
 	switch {
 	case f.Phase == EtcdPhaseReAddRoot && !f.Force:
-		// re-add-root has no replay guard of its own — the orchestrator needs it
-		// to run on nodes that HAVE completed drop-root, which is exactly what
-		// every other writer of etcd trust refuses. That makes a bare
-		// single-node invocation a way to re-open the etcd trust hole (the cluster
-		// root accepted as an etcd client CA) on one node with no warning, so it
-		// carries the same named opt-in as the rollback it is the first half of. Every orchestrator path that emits it is a forced
-		// un-migration and already passes --force.
+		// Re-opens the etcd trust hole on one node, so it needs the named opt-in --force gives.
 		return fmt.Errorf("%s: --phase=%s re-adds the cluster root to this node's etcd trust, which RE-OPENS the etcd trust hole on it. "+
 			"It is the first pass of a forced un-migration, not a standalone operation: run `%s --cluster --rollback --force --yes`, "+
 			"or pass --force if you are driving the passes by hand on every control plane",
@@ -144,13 +75,9 @@ func (f EtcdCAFlags) Validate() error {
 	case f.FetchShared && f.Phase != pki.EtcdPhaseTrustBoth:
 		return fmt.Errorf("%s: --fetch-shared only applies to --phase=%s", cmd, pki.EtcdPhaseTrustBoth)
 	case f.Phase == "" && !f.Cluster && !f.Rollback:
-		// --cluster runs every phase itself; a bare --rollback lands on the
-		// rollback phase in Options. Anything else has no phase to run.
 		return fmt.Errorf("%s: phase is required: pass --cluster (drive all phases) or --phase=<%s> (single node)",
 			cmd, strings.Join(EtcdCAAllPhases, "|"))
 	case f.Phase != "" && f.Phase != EtcdPhaseReAddRoot && !slices.Contains(EtcdCAAllPhases, f.Phase):
-		// re-add-root is exempt: the first case above already refused it without
-		// --force, and with --force it is the orchestrator's own pass-one argv.
 		return fmt.Errorf("%s: unknown phase %q: want one of %s", cmd, f.Phase, strings.Join(EtcdCAAllPhases, ", "))
 	}
 	return nil
@@ -172,16 +99,7 @@ type nodeIdent struct {
 	APISANs  *pki.APISANs
 }
 
-// MigrateEtcdCA runs one phase on this node.
-//
-// The node maintenance lock comes before anything is decided about the phase —
-// before the node identity, the applied-phase check, the shared-CA fetch or
-// the first write — so an invocation beside a live upgrade or other maintenance
-// operation refuses with the operation-naming lock message, and the defer
-// releases the lock on every exit. The lockable entry is the exported one: the
-// cluster driver's in-process initiator and every node Job (which run the same
-// CLI command) reach it, while the lock-free migrateEtcdCAWith stays the seam
-// the cluster tests drive.
+// MigrateEtcdCA runs one phase on this node behind the node maintenance lock.
 func MigrateEtcdCA(w io.Writer, o EtcdCAOptions) error {
 	release, err := acquireNodeLock("certs migrate-etcd-ca", false)
 	if err != nil {
@@ -205,8 +123,7 @@ func MigrateEtcdCA(w io.Writer, o EtcdCAOptions) error {
 		})
 }
 
-// etcdNodeOps are the effectful operations a phase performs on a node: pulling
-// the cluster's shared etcd CA, and bouncing a static pod.
+// etcdNodeOps are the effectful operations a phase performs on a node.
 type etcdNodeOps struct {
 	fetchShared func() error
 	podExists   func(string) bool
@@ -214,12 +131,7 @@ type etcdNodeOps struct {
 	waitPod     func(string) error
 }
 
-// Pass the node identity and the effectful operations explicitly, for the same
-// reason restartControlPlaneGuarded does: so phase sequencing, distribution and
-// restart failures can be exercised without a live control plane or a timeout's
-// worth of waiting. The cluster tests drive THIS function, not a
-// re-implementation of it, so the ordering they assert is the ordering that
-// ships.
+// Passes the node identity and operations explicitly, as restartControlPlaneGuarded does.
 func migrateEtcdCAWith(w io.Writer, o EtcdCAOptions, id nodeIdent, ops etcdNodeOps) error {
 	if _, ok := etcdMigrationRestart[o.Phase]; !ok {
 		return fmt.Errorf("certs: unknown etcd-CA migration phase %q (want %s, %s, %s or %s)",
@@ -229,44 +141,21 @@ func migrateEtcdCAWith(w io.Writer, o EtcdCAOptions, id nodeIdent, ops etcdNodeO
 		return fmt.Errorf("certs: %s is a control-plane operation and this node runs no etcd "+
 			"(no %s) — workers hold no etcd leaf and never migrate", o.Phase, staticpod.Path("etcd"))
 	}
-	// Decide whether this node is already past the phase BEFORE fetching
-	// anything. The fetch writes the cluster's CURRENT etcd trust bundle over
-	// this node's, so running it for a phase that is about to be skipped can
-	// narrow the bundle on disk while nothing restarts etcd to adopt it — on a
-	// resumed run whose initiator already completed drop-root, that is a
-	// drop-root file write on a follower that never passed the cluster-wide
-	// gate. Nothing breaks immediately; it breaks at that node's next restart
-	// for any reason, far from the cause.
-	//
-	// Skipping also means no restart is owed: a phase that wrote nothing has
-	// nothing for the running process to adopt, and bouncing etcd anyway would
-	// be gratuitous churn on the most fragile component — three phases across N
-	// control planes on every resumed run.
-	//
-	// Rollback and re-add-root are exempt: neither is skippable (EtcdPhaseApplied
-	// has no case for either), and neither fetches. Both are idempotent, so a
-	// resumed un-migration re-running them rewrites the same bundle.
+	// The fetch overwrites this node's bundle before anything restarts etcd, so decide the skip first.
 	if o.Phase != pki.EtcdPhaseRollback && o.Phase != EtcdPhaseReAddRoot {
 		applied, err := pki.EtcdPhaseApplied(o.Phase)
 		if err != nil {
 			return fmt.Errorf("certs: refusing %s — cannot determine this node's etcd trust state: %w", o.Phase, err)
 		}
 		if applied {
-			// Strictly past this phase. Skipping is what makes a resumed
-			// --cluster run possible at all: its loop restarts at trust-both,
-			// and replaying that against a node that has dropped the root would
-			// (rightly) trip the replay guard, leaving no way forward.
+			// A resumed run restarts its loop at trust-both, which a past-phase node refuses.
 			etcdstep(w, o, fmt.Sprintf("Skip %s — already applied on this node", o.Phase))
 			return nil
 		}
 	}
 
 	if o.FetchShared {
-		// Follower CP: pull the initiator's etcd CA (and the cluster's current
-		// etcd trust bundle) so every control plane shares ONE anchor.
-		// MigrateEtcdTrustBoth refuses to mint one here precisely so that a
-		// failure to distribute surfaces as a distribution error rather than as
-		// a quorum loss two phases later.
+		// MigrateEtcdTrustBoth refuses to mint here, so a failure surfaces as a distribution error.
 		etcdstep(w, o, "Fetch the cluster's etcd CA from the initiator")
 		if err := ops.fetchShared(); err != nil {
 			return fmt.Errorf("fetch shared etcd CA material: %w", err)
@@ -294,8 +183,7 @@ func migrateEtcdCAWith(w io.Writer, o EtcdCAOptions, id nodeIdent, ops etcdNodeO
 	return nil
 }
 
-// applyEtcdPhase runs the pki primitive for one phase. The caller has already
-// established that the phase is owed, so every path here writes.
+// applyEtcdPhase runs the pki primitive for one phase already judged owed.
 func applyEtcdPhase(w io.Writer, o EtcdCAOptions, id nodeIdent) error {
 	hostname, nodeIP, apiExtra := id.Hostname, id.NodeIP, id.APISANs
 	switch o.Phase {
@@ -303,10 +191,7 @@ func applyEtcdPhase(w io.Writer, o EtcdCAOptions, id nodeIdent) error {
 		etcdstep(w, o, "Re-add the cluster root to etcd's trust (no leaf moves)")
 		return pki.MigrateEtcdReAddRoot()
 	case pki.EtcdPhaseRollback:
-		// Never skippable, and never silently forced. Plain rollback undoes a
-		// FAILED issue-new and refuses on a node past drop-root; --force is the
-		// named opt-in that un-migrates one, and it re-opens the etcd trust hole on this node
-		// until the cluster is re-migrated.
+		// Plain rollback refuses past drop-root; --force is the named opt-in there.
 		etcdstep(w, o, "Re-derive this node's etcd leaves under the cluster root")
 		if o.Force {
 			return pki.MigrateEtcdRollbackFromMigrated(hostname, nodeIP, apiExtra)
@@ -317,9 +202,7 @@ func applyEtcdPhase(w io.Writer, o EtcdCAOptions, id nodeIdent) error {
 	switch o.Phase {
 	case pki.EtcdPhaseTrustBoth:
 		etcdstep(w, o, "Widen etcd's trust to etcd-ca ‖ cluster root")
-		// allowMint only on the node that starts the migration. A follower that
-		// mints its own anchor looks healthy right through this phase and breaks
-		// the cluster at issue-new.
+		// allowMint only on the initiator: a follower that mints breaks the cluster at issue-new.
 		return pki.MigrateEtcdTrustBoth(!o.FetchShared)
 	case pki.EtcdPhaseIssueNew:
 		etcdstep(w, o, "Reissue this node's etcd leaves under etcd-ca")

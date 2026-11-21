@@ -1,7 +1,4 @@
-// This test sits in the external package because it reads kubeconfig's
-// endpoint, and kubeconfig imports pki, which imports netcfg: from inside
-// package netcfg that import would be a cycle.
-
+// External because kubeconfig imports pki, which imports netcfg: an internal one would cycle.
 package netcfg_test
 
 import (
@@ -14,11 +11,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestGrantServerURLNeverInheritsTheLocalLoopbackEndpoint pins the split
-// between the two endpoint purposes. Without a VIP, a local component
-// kubeconfig targets this node's loopback apiserver (kubeconfig.NodeServerURL)
-// — fine for a client on this node, and exactly what a remote join grant must
-// never name: a joiner handed 127.0.0.1 dials itself.
+// A local kubeconfig may target loopback, exactly what a remote grant must never name.
 func TestGrantServerURLNeverInheritsTheLocalLoopbackEndpoint(t *testing.T) {
 	orig := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()

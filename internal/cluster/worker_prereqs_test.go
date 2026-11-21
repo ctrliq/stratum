@@ -10,11 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// A worker's unit runs a bare `stratum up --worker`, so every start after the
-// join takes the restart path. It must still prepare the host -- after a
-// reboot or an upgrade that is the only place the node's sysctls, including
-// the inotify limits, can land -- with the CIS mode and SELinux opt-out it
-// joined with.
+// After a reboot the restart is the only place the node's sysctls can land.
 func TestWorkerRestartPreparesTheHost(t *testing.T) {
 	registerCISForTest(t)
 	workerScratchHost(t)
@@ -36,15 +32,12 @@ func TestWorkerRestartPreparesTheHost(t *testing.T) {
 		t.Errorf("host prerequisites on restart: calls = %+v, want one with the cis profile, the opt-out and Existing", calls)
 	}
 
-	// A failure stops the start, as it does on a control plane.
 	hostPrereqs = func(host.PrereqOptions) error { return errors.New("cgroup v2 is required") }
 	if _, err := PrepareWorker(context.Background(), WorkerOptions{}); err == nil {
 		t.Errorf("worker restart ignored a failed host preparation")
 	}
 }
 
-// A restart that finds spec.selinux changed in the worker's config file uses
-// and saves the new setting.
 func TestWorkerRestartTakesAChangedSELinuxSetting(t *testing.T) {
 	workerScratchHost(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "worker", Hostname: "w1"}); err != nil {
@@ -69,8 +62,7 @@ func TestWorkerRestartTakesAChangedSELinuxSetting(t *testing.T) {
 	}
 }
 
-// A CIS worker whose config sets spec.selinux: false is refused before the
-// opt-out is saved, so removing it from the file is enough to start again.
+// Removing the line from the config must be enough to start again.
 func TestWorkerRestartRefusesACISOptOutBeforeSavingIt(t *testing.T) {
 	registerCISForTest(t)
 	workerScratchHost(t)
@@ -95,9 +87,7 @@ func TestWorkerRestartRefusesACISOptOutBeforeSavingIt(t *testing.T) {
 	}
 }
 
-// A restart whose config file does not set spec.selinux keeps the opt-out
-// saved at join and says so, since leaving the line out is not the way to
-// clear it.
+// Leaving spec.selinux out is not the way to clear the saved opt-out.
 func TestWorkerRestartKeepsASavedOptOutWhenUnset(t *testing.T) {
 	workerScratchHost(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "worker", Hostname: "w1", SELinuxOptOut: true}); err != nil {
@@ -126,8 +116,6 @@ func TestWorkerRestartKeepsASavedOptOutWhenUnset(t *testing.T) {
 	}
 }
 
-// A restart of a worker that saved no opt-out, whose config file does not set
-// spec.selinux, stays confined and prints no notice: the common case.
 func TestWorkerRestartWithoutAnOptOutPrintsNoNotice(t *testing.T) {
 	workerScratchHost(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "worker", Hostname: "w1"}); err != nil {
@@ -156,8 +144,7 @@ func TestWorkerRestartWithoutAnOptOutPrintsNoNotice(t *testing.T) {
 	}
 }
 
-// A restart that reads spec.selinux: true clears the saved opt-out without a
-// notice: the setting was given, not merely left out.
+// spec.selinux: true is a setting, not a line left out.
 func TestWorkerRestartClearsTheOptOutOnSELinuxTrue(t *testing.T) {
 	workerScratchHost(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "worker", Hostname: "w1", SELinuxOptOut: true}); err != nil {

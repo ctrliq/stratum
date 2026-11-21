@@ -11,9 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// restoreCopiesNode lays out a data dir parent with two restore copies and
-// the things beside them that must never be listed or removed: the live data
-// dir, a file and a symlink named like copies, and an unrelated dir.
 func restoreCopiesNode(t *testing.T) (pre, failed string) {
 	t.Helper()
 	root := t.TempDir()
@@ -47,7 +44,6 @@ func restoreCopiesNode(t *testing.T) (pre, failed string) {
 	return pre, failed
 }
 
-// setTreeTime gives dir and everything under it the modification time at.
 func setTreeTime(t *testing.T, dir string, at time.Time) {
 	t.Helper()
 	err := filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error {
@@ -61,9 +57,6 @@ func setTreeTime(t *testing.T, dir string, at time.Time) {
 	}
 }
 
-// TestRestoreCopiesListsOnlyWhatRestoreKept: the listing finds the
-// pre-restore and failed-restore dirs, oldest first with their sizes, and
-// nothing else beside the data dir.
 func TestRestoreCopiesListsOnlyWhatRestoreKept(t *testing.T) {
 	pre, failed := restoreCopiesNode(t)
 	copies, err := RestoreCopies()
@@ -81,9 +74,6 @@ func TestRestoreCopiesListsOnlyWhatRestoreKept(t *testing.T) {
 	}
 }
 
-// TestRemoveRestoreCopiesRemovesOnlyThemUnderTheLock: removal takes
-// the etcd data lock, so it cannot race a restore, and leaves the live data
-// dir and everything that is not a restore copy alone.
 func TestRemoveRestoreCopiesRemovesOnlyThemUnderTheLock(t *testing.T) {
 	pre, failed := restoreCopiesNode(t)
 	held := false
@@ -138,8 +128,6 @@ func TestRemoveRestoreCopiesRemovesOnlyThemUnderTheLock(t *testing.T) {
 	}
 }
 
-// TestRemoveRestoreCopiesRemovesNothingWithoutTheLock: while another operation
-// holds the data lock, nothing is removed.
 func TestRemoveRestoreCopiesRemovesNothingWithoutTheLock(t *testing.T) {
 	pre, failed := restoreCopiesNode(t)
 	shown, err := RestoreCopies()
@@ -162,8 +150,6 @@ func TestRemoveRestoreCopiesRemovesNothingWithoutTheLock(t *testing.T) {
 	}
 }
 
-// TestRemoveRestoreCopiesRemovesEachPathOnce: a copy named
-// twice is removed once and reported once.
 func TestRemoveRestoreCopiesRemovesEachPathOnce(t *testing.T) {
 	restoreCopiesNode(t)
 	dataDir := version.EtcdDataDir
@@ -185,8 +171,6 @@ func TestRemoveRestoreCopiesRemovesEachPathOnce(t *testing.T) {
 	}
 }
 
-// TestIsRestoreCopyPath: only a clean path beside the data dir, named the way
-// Restore names its copies, counts.
 func TestIsRestoreCopyPath(t *testing.T) {
 	restoreCopiesNode(t)
 	for path, want := range map[string]bool{
@@ -212,10 +196,6 @@ func TestHumanBytes(t *testing.T) {
 	}
 }
 
-// TestRemoveRestoreCopiesKeepsWhatChangedAfterTheListing: a
-// restore can run between the listing and the removal. The copy it creates,
-// or one it changes, is one nobody has verified, so only the copies the
-// operator was shown, still unchanged, are removed.
 func TestRemoveRestoreCopiesKeepsWhatChangedAfterTheListing(t *testing.T) {
 	pre, failed := restoreCopiesNode(t)
 	dataDir := version.EtcdDataDir
@@ -238,9 +218,6 @@ func TestRemoveRestoreCopiesKeepsWhatChangedAfterTheListing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// After the listing: a restore creates a new copy, the failed-restore
-	// copy's top directory changes, and a file deep inside another copy
-	// changes, which leaves that copy's top directory's own time untouched.
 	fresh := version.EtcdDataDir + ".pre-restore-20260926-130000"
 	if err := os.MkdirAll(filepath.Join(fresh, "member"), 0o700); err != nil {
 		t.Fatal(err)

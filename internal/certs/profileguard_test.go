@@ -21,10 +21,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// unregisteredProfileCP is a control plane whose node state names the cis
-// profile on a binary that registers no profile at all: the node a binary
-// that does not carry the cis profile meets. It carries the apiserver and
-// etcd manifests, so every certs operation takes its control-plane path.
 func unregisteredProfileCP(t *testing.T) {
 	t.Helper()
 	kubeVIPNode(t)
@@ -53,8 +49,6 @@ func unregisteredProfileCP(t *testing.T) {
 	t.Cleanup(func() { _ = profile.SetRegistered(prev) })
 }
 
-// hostFiles hashes every file under the PKI, kubeconfig and kubernetes
-// directories, the files a certs operation writes.
 func hostFiles(t *testing.T) map[string][32]byte {
 	t.Helper()
 	out := map[string][32]byte{}
@@ -77,12 +71,6 @@ func hostFiles(t *testing.T) map[string][32]byte {
 	return out
 }
 
-// TestCertsOperationsRefuseANodeWhoseProfileThisBinaryDoesNotRegister: every
-// certs entry — the leaf rotation, each CA rotation and migration phase and
-// each cluster orchestrator — resolves the node's profile before its first
-// write, and refuses with the cis note. Before the guard they ran on
-// to the static-pod restart or the finalize preflight, which stop on the same
-// profile only after the leaves were reissued and the kubeconfigs rewritten.
 func TestCertsOperationsRefuseANodeWhoseProfileThisBinaryDoesNotRegister(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -153,8 +141,7 @@ func TestCertsOperationsRefuseANodeWhoseProfileThisBinaryDoesNotRegister(t *test
 	}
 }
 
-// A node with no state yet runs no profile, so the guard lets the operation
-// go on to resolve the node the way its first boot did.
+// No node state runs no profile, so the guard lets the operation through.
 func TestRequireNodeProfileAcceptsANodeWithoutState(t *testing.T) {
 	redirectVar(t, &version.K8sConfDir, filepath.Join(t.TempDir(), "kubernetes"))
 	if err := RequireNodeProfile("rotate"); err != nil {

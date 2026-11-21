@@ -1,10 +1,6 @@
 package upgrade
 
-// The image import a cluster upgrade runs on every node before it upgrades the
-// first one. The first control plane's add-on manifests roll out cluster-wide
-// as soon as it restarts, onto nodes still on the previous release; those
-// nodes must already hold the new images, because the mirror the manifests
-// name is not reachable from an airgapped node, nor anonymously from any.
+// Nodes on the old release must hold the new images before the first control plane rolls out.
 
 import (
 	"context"
@@ -24,8 +20,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// jobLog records, in order, the image imports and the per-node upgrade Jobs a
-// run dispatches, as "import:<node>" and "upgrade:<node>".
 type jobLog struct {
 	mu     sync.Mutex
 	events []string
@@ -43,8 +37,6 @@ func (l *jobLog) all() []string {
 	return slices.Clone(l.events)
 }
 
-// recordJobs answers for the nodes as fastOrchestrator does and logs every
-// import and upgrade Job; importErr, when set, fails the import on that node.
 func recordJobs(t *testing.T, importErr map[string]error) *jobLog {
 	t.Helper()
 	fastOrchestrator(t, nil)
@@ -106,9 +98,7 @@ func TestUpgradeClusterStopsBeforeAnyCordonWhenAnImportFails(t *testing.T) {
 	}
 }
 
-// TestUpgradeClusterImportsNothingAfterTheMaintenanceLeaseIsTaken: each import
-// confirms both leases first, so a successor that took the shared lease just
-// before the import phase stops the run before any Job touches a host.
+// Each import confirms both leases, so a successor stops the run before any Job.
 func TestUpgradeClusterImportsNothingAfterTheMaintenanceLeaseIsTaken(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	log := recordJobs(t, nil)
@@ -125,9 +115,7 @@ func TestUpgradeClusterImportsNothingAfterTheMaintenanceLeaseIsTaken(t *testing.
 	}
 }
 
-// TestImportImagesOnEveryNodeWarnsAndSkipsANotReadyNode: a NotReady node
-// cannot run the import's pod, so the run warns about it and goes on, as it
-// does for that node's build check.
+// A NotReady node cannot run the import's pod.
 func TestImportImagesOnEveryNodeWarnsAndSkipsANotReadyNode(t *testing.T) {
 	log := recordJobs(t, nil)
 	nodes := []Node{{Name: "cp1", IsCP: true, Ready: true}, {Name: "w1"}}
@@ -151,9 +139,7 @@ func TestImportImagesOnEveryNodeWarnsAndSkipsANotReadyNode(t *testing.T) {
 	}
 }
 
-// TestUpgradeClusterSkipsTheImportForAnUpgradeBinaryWithoutIt: an upgrade
-// binary from before the step would refuse --import-images, so the run warns
-// and upgrades the nodes as it did before the step existed.
+// An older staged binary rejects --import-images; the run warns and proceeds.
 func TestUpgradeClusterSkipsTheImportForAnUpgradeBinaryWithoutIt(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	log := recordJobs(t, nil)
@@ -173,9 +159,7 @@ func TestUpgradeClusterSkipsTheImportForAnUpgradeBinaryWithoutIt(t *testing.T) {
 	}
 }
 
-// TestUpgradeClusterStopsWhenTheProbeFails: a probe that fails other than by
-// rejecting the flag says nothing about the step, so the run stops before
-// anything is cordoned rather than go on without the images.
+// A failed probe says nothing about the step; stop rather than run without the images.
 func TestUpgradeClusterStopsWhenTheProbeFails(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	log := recordJobs(t, nil)
@@ -194,10 +178,6 @@ func TestUpgradeClusterStopsWhenTheProbeFails(t *testing.T) {
 	}
 }
 
-// TestStagedImportsImagesAsksTheBinary runs the probe against fake upgrade
-// binaries: one that accepts `upgrade --import-images --help`, one that
-// rejects the flag as a build without the step does, and two that fail
-// another way, which are errors rather than "no".
 func TestStagedImportsImagesAsksTheBinary(t *testing.T) {
 	for _, tc := range []struct {
 		name, script  string
@@ -250,8 +230,6 @@ func TestNodeImportImagesArgvAsksTheStagedBinaryToImportImages(t *testing.T) {
 	}
 }
 
-// importFixture is a node that passes the guard and the lock, whose upgrade
-// payload resolves to imagesDir, and records the image imports.
 func importFixture(t *testing.T, imagesDir string) *[]string {
 	t.Helper()
 	resumeFixture(t)

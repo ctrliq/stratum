@@ -19,8 +19,7 @@ func withNetConfig(t *testing.T) {
 	t.Cleanup(func() { version.NetConfigPath, version.K8sConfDir, version.PKIDir = origNet, origConf, origPKI })
 }
 
-// The cluster domain rides in netconfig, so HA joins, `token create` and cert
-// rotation see the domain the cluster was initialised with.
+// The domain rides in netconfig, so joins and rotation see the initialised one.
 func TestClusterDomainPersists(t *testing.T) {
 	withNetConfig(t)
 	if c, err := Load(); err != nil || c.ClusterDomain != netdefault.ClusterDomain {
@@ -76,8 +75,6 @@ func writeNetConfig(t *testing.T, body string) {
 	}
 }
 
-// A control plane that joined a cluster and restarts with no
-// spec.network.clusterDomain keeps the domain it joined with.
 func TestResolveDomainKeepsThePersistedDomain(t *testing.T) {
 	withNetConfig(t)
 	writeNetConfig(t, netdefault.PodCIDR+"\n"+netdefault.ServiceCIDR+"\nfuzz.internal\n")
@@ -88,9 +85,7 @@ func TestResolveDomainKeepsThePersistedDomain(t *testing.T) {
 	}
 }
 
-// A different configured domain is refused rather than half-applied, including
-// cluster.local on a cluster initialised with another domain, and a custom
-// domain on a cluster that predates the recorded one (a two-line netconfig).
+// Refused rather than half-applied, in both directions of mismatch.
 func TestResolveDomainRefusesAMismatch(t *testing.T) {
 	withNetConfig(t)
 	for _, tc := range []struct{ body, configured, persisted string }{
@@ -116,10 +111,7 @@ func TestResolveDomainFirstStart(t *testing.T) {
 	}
 }
 
-// An established node with no netconfig (a legacy cluster, or a lost
-// file) is on the domain its node state records, else cluster.local. An unset
-// or matching clusterDomain is accepted and a different one refused, rather
-// than adopted as a first start.
+// A differing domain is refused, not adopted as a first start.
 func TestResolveDomainEstablishedNodeWithoutNetConfig(t *testing.T) {
 	establish := map[string]func(t *testing.T){
 		"node state records a domain": func(t *testing.T) {
@@ -171,8 +163,6 @@ func TestResolveDomainRefusesAnUnreadableNodeState(t *testing.T) {
 	}
 }
 
-// A netconfig that exists but is unreadable or invalid is an error from
-// Load, rather than a silent default domain.
 func TestLoadFailsOnACorruptNetConfig(t *testing.T) {
 	for name, body := range map[string]string{
 		"wrong line count": "just one line\n",
@@ -189,10 +179,7 @@ func TestLoadFailsOnACorruptNetConfig(t *testing.T) {
 	}
 }
 
-// Save never writes a netconfig whose domain Load would read back
-// differently. Empty is the default, written in the two-line format (see
-// TestDefaultDomainNetConfigStaysTwoLines), and an invalid domain is refused
-// with nothing written.
+// An invalid domain is refused with nothing written.
 func TestSaveNormalisesAndValidatesTheDomain(t *testing.T) {
 	withNetConfig(t)
 	if err := Save(netdefault.PodCIDR, netdefault.ServiceCIDR, ""); err != nil {
@@ -221,12 +208,7 @@ func TestSaveNormalisesAndValidatesTheDomain(t *testing.T) {
 	}
 }
 
-// Save replaces netconfig atomically. PrepareController saves on every
-// start, and a write that failed partway through an in-place WriteFile left an
-// empty file that every later start rejected. A failed replace keeps the
-// previous valid file; a failed first write leaves the live path absent; and
-// neither leaves a temp file behind. The failure is a directory that denies
-// creating the temp file, as in host's InstallUnit test.
+// A failed replace keeps the previous file; a failed first write leaves the path absent.
 func TestSaveFailureKeepsThePreviousNetConfig(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses the directory permissions this test relies on")
@@ -303,10 +285,7 @@ func assertNoTempFiles(t *testing.T) {
 	}
 }
 
-// Load recovers the domain of an established node whose netconfig is
-// absent, so callers that read the domain through it (rotation, the upgrade
-// reissue, `token create`) never see cluster.local on a custom-domain cluster.
-// A first start, with neither node state nor the CA, is still the defaults.
+// Load recovers the domain, so callers never see cluster.local on a custom domain.
 func TestLoadWithoutNetConfigRecoversTheDomain(t *testing.T) {
 	t.Run("node state records a domain", func(t *testing.T) {
 		withNetConfig(t)
@@ -356,11 +335,7 @@ func TestLoadWithoutNetConfigRecoversTheDomain(t *testing.T) {
 	})
 }
 
-// The binary before the cluster domain was persisted reads exactly two
-// lines, and PrepareController rewrites netconfig through Save on every start.
-// A default-domain cluster must therefore keep the two-line file, or a rollback
-// after an upgrade leaves it unable to start. Only a custom domain adds a third
-// line.
+// A default-domain cluster must keep the two-line file, or a rollback cannot start.
 func TestDefaultDomainNetConfigStaysTwoLines(t *testing.T) {
 	withNetConfig(t)
 	read := func() string {
@@ -385,8 +360,7 @@ func TestDefaultDomainNetConfigStaysTwoLines(t *testing.T) {
 		t.Errorf("Save with a custom domain wrote %q, want %q", got, want)
 	}
 
-	// A legacy two-line file round-trips unchanged: Load then Encode (what Save
-	// and the shared-cert bundle write) gives the same bytes.
+	// A legacy two-line file round-trips unchanged through Load then Encode.
 	legacy := "10.42.0.0/16\n10.43.0.0/16\n"
 	writeNetConfig(t, legacy)
 	c, err := Load()
@@ -404,9 +378,7 @@ func TestDefaultDomainNetConfigStaysTwoLines(t *testing.T) {
 	}
 }
 
-// With netconfig lost, Load recovers the pod and
-// service ranges from node state along with the domain, validated through Parse,
-// and falls back to the default field by field only where the state has none.
+// Load recovers ranges from node state with the domain, validated through Parse.
 func TestLoadWithoutNetConfigRecoversTheRanges(t *testing.T) {
 	save := func(t *testing.T, st *nodestate.NodeState) {
 		t.Helper()

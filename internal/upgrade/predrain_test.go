@@ -19,10 +19,6 @@ import (
 
 var errStopAtJob = errors.New("stopped at the upgrade Job")
 
-// preDrain runs upgradeOneNode on one node of a fake cluster, with the build
-// check answering code and the upgrade Job stopping the run before it would
-// change the host. It returns what upgradeOneNode returned, whether the node
-// ended up cordoned, and which Jobs were started.
 func preDrain(t *testing.T, n Node, code int, checkErr error) (out nodeOutcome, cordoned bool, checks, upgrades int, err error) {
 	t.Helper()
 	cs := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: n.Name}})
@@ -59,10 +55,6 @@ func preDrain(t *testing.T, n Node, code int, checkErr error) (out nodeOutcome, 
 	return out, got.Spec.Unschedulable, checks, upgrades, err
 }
 
-// The branch that decides whether a node at target is drained, driven through
-// upgradeOneNode itself rather than its parts: on this build
-// it is left alone, on another build it is upgraded, and a check that could
-// not answer leaves it exactly as it was.
 func TestUpgradeOneNodeDrainsOnlyWhatTheCheckSays(t *testing.T) {
 	atTarget := Node{Name: "w1", Version: "v1.37.1", Ready: true}
 
@@ -90,32 +82,24 @@ func TestUpgradeOneNodeDrainsOnlyWhatTheCheckSays(t *testing.T) {
 			t.Errorf("err=%v cordoned=%v upgrades=%d; want an error, not cordoned, no upgrade", err, cordoned, upgrades)
 		}
 	})
-	// Behind target, the check answers "needs the upgrade" -- and is where
-	// its staged binary meets the pin, before the cordon.
 	t.Run("behind target: checked, then upgraded", func(t *testing.T) {
 		_, cordoned, checks, upgrades, err := preDrain(t, Node{Name: "w1", Version: "v1.37.0", Ready: true}, ExitUpgradeNeeded, nil)
 		if !errors.Is(err, errStopAtJob) || !cordoned || checks != 1 || upgrades != 1 {
 			t.Errorf("err=%v cordoned=%v checks=%d upgrades=%d; want one check, then the upgrade Job", err, cordoned, checks, upgrades)
 		}
 	})
-	// ...so a staged binary that is not the rollout's stops it there, with
-	// nothing cordoned.
 	t.Run("behind target, another binary staged: untouched", func(t *testing.T) {
 		_, cordoned, _, upgrades, err := preDrain(t, Node{Name: "w1", Version: "v1.37.0", Ready: true}, 1, nil)
 		if err == nil || cordoned || upgrades != 0 {
 			t.Errorf("err=%v cordoned=%v upgrades=%d; want an error, not cordoned, no upgrade", err, cordoned, upgrades)
 		}
 	})
-	// NotReady behind target skips the check — its pod could not start —
-	// and goes straight to the upgrade.
 	t.Run("behind target, NotReady: upgraded without a check", func(t *testing.T) {
 		_, cordoned, checks, upgrades, err := preDrain(t, Node{Name: "w1", Version: "v1.37.0", Ready: false}, 0, nil)
 		if !errors.Is(err, errStopAtJob) || !cordoned || checks != 0 || upgrades != 1 {
 			t.Errorf("err=%v cordoned=%v checks=%d upgrades=%d; want no check and the upgrade Job", err, cordoned, checks, upgrades)
 		}
 	})
-	// NotReady at target: its pod could not start, so it is not asked -- no
-	// wait on a deadline, no halt -- and it is reported unchecked, not current.
 	t.Run("NotReady at target: left alone, reported unchecked", func(t *testing.T) {
 		n := Node{Name: "w1", Version: "v1.37.1", Ready: false}
 		out, cordoned, checks, upgrades, err := preDrain(t, n, 0, nil)
@@ -123,8 +107,6 @@ func TestUpgradeOneNodeDrainsOnlyWhatTheCheckSays(t *testing.T) {
 			t.Errorf("out=%v err=%v cordoned=%v checks=%d upgrades=%d; want unchecked with no check, no cordon", out, err, cordoned, checks, upgrades)
 		}
 	})
-	// Interrupted after its kubelet swap: the resumed finish. The check sees
-	// its marker and answers "needs the upgrade".
 	t.Run("interrupted at target: checked, then finished", func(t *testing.T) {
 		n := Node{Name: "w1", Version: "v1.37.1", InProgress: "v1.37.1", Ready: true}
 		_, cordoned, checks, upgrades, err := preDrain(t, n, ExitUpgradeNeeded, nil)
@@ -132,13 +114,6 @@ func TestUpgradeOneNodeDrainsOnlyWhatTheCheckSays(t *testing.T) {
 			t.Errorf("err=%v cordoned=%v checks=%d upgrades=%d; want one check, then the upgrade Job", err, cordoned, checks, upgrades)
 		}
 	})
-	// ...and when its Job had already finished and only the stamp was lost,
-	// the check answers "current". It still takes the full path, so the
-	// stamp clears the in-progress record and the node is uncordoned; an
-	// early return would strand both.
-	// ...and when the Node status has not caught up with the kubelet swap, so
-	// the API still shows the old version: the annotation is what says the
-	// upgrade to this target was never stamped.
 	t.Run("in progress to target, API version stale, Job already done: still finished", func(t *testing.T) {
 		n := Node{Name: "w1", Version: "v1.37.0", InProgress: "v1.37.1", Ready: true}
 		out, cordoned, checks, upgrades, err := preDrain(t, n, 0, nil)
@@ -155,8 +130,6 @@ func TestUpgradeOneNodeDrainsOnlyWhatTheCheckSays(t *testing.T) {
 	})
 }
 
-// The upgrade path records the upgrade on the Node before its Job, so the
-// wiring under test is the real one, not a shortcut.
 func TestUpgradeOneNodeRecordsTheUpgradeBeforeItsJob(t *testing.T) {
 	cs := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "w1"}})
 	oldCheck, oldRun := runExitCode, runNodeJob
@@ -175,8 +148,6 @@ func TestUpgradeOneNodeRecordsTheUpgradeBeforeItsJob(t *testing.T) {
 	}
 }
 
-// The plan says what the run will do: a NotReady node at target is left
-// alone, so the dry-run must not promise it a build check.
 func TestPlanStateMatchesWhatTheRunDoes(t *testing.T) {
 	const target = "v1.37.1"
 	for _, tt := range []struct {

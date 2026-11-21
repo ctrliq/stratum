@@ -44,46 +44,31 @@ type JoinOptions struct {
 	Token   string
 	CAHash  string
 	CertKey string
-	NodeIP  string // --node-ip ("" when not given)
-	// ConfigNodeIP is spec.network.nodeIP. Kept apart from NodeIP so the join
-	// logs which one won (host.ResolveNodeIP has the whole precedence).
+	NodeIP  string
+	// spec.network.nodeIP, kept apart from NodeIP so the join logs which one won.
 	ConfigNodeIP string
-	Operator     bool // run the stratum-operator host service on this CP too (leader-elected)
-	CertRenew    bool // install the cert auto-renew timer on this CP too
-	// Profile is the node profile this control plane runs, by name; "" for
-	// none. CIS is its legacy spelling, true exactly for the cis profile, which
-	// the join's key agreement and config writers still read.
+	Operator     bool // the stratum-operator host service here too (leader-elected)
+	CertRenew    bool // install the cert auto-renew timer here too
+	// The node profile's name ("" for none); CIS is its legacy spelling.
 	Profile string
 	CIS     bool
-	// SELinuxOptOut is this control plane's spec.selinux: false.
+	// This control plane's spec.selinux: false.
 	SELinuxOptOut bool
-	VIP           nodestate.VIP // the cluster VIP this CP joins (kube-vip election)
-	// PodCIDR/ServiceCIDR are spec.network.podCIDR and serviceCIDR, "" when
-	// unset. They cannot override the cluster's ranges, which ride in with the
-	// shared certs: a different one refuses the join (checkJoinNetwork).
+	VIP           nodestate.VIP
+	// spec.network pod/service CIDRs; a value differing from the cluster's refuses the join.
 	PodCIDR     string
 	ServiceCIDR string
-	// ClusterDomain is spec.network.clusterDomain, "" when unset. It cannot
-	// override the cluster's domain, which rides in with the shared certs: a
-	// different one refuses the join (checkJoinDomain).
+	// spec.network.clusterDomain; a value differing from the cluster's refuses the join.
 	ClusterDomain string
-	// Cilium is this control plane's spec.network.cilium. It must be the
-	// cluster's, which rides in with the shared certs: a different one refuses
-	// the join (checkJoinCilium).
+	// spec.network.cilium; a value differing from the cluster's refuses the join.
 	Cilium addons.CiliumSettings
-	// NodeLabels, NodeTaints and RuntimeHandlers are this control plane's
-	// spec.node, saved with its state so the join run itself renders its
-	// runtime handlers and registers its Node with them.
+	// spec.node, saved with the node state and rendered into the node's registration.
 	NodeLabels      map[string]string
 	NodeTaints      []string
 	RuntimeHandlers map[string]string
 }
 
-// checkJoinCilium refuses a join whose spec.network.cilium differs from the
-// cluster's. The operator applies whichever control plane leads its render, so
-// two different blocks would swap the cluster's Cilium configuration on every
-// leader change. The cluster's settings are the bundle entry the shared certs
-// just wrote, absent when they are the shipped ones.
+// Refuses a differing spec.network.cilium: two blocks would swap the config on every leader change.
 func checkJoinCilium(configured addons.CiliumSettings) error {
 	b, err := os.ReadFile(version.CiliumSettingsPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -110,12 +95,7 @@ func describeCilium(s addons.CiliumSettings) string {
 	return string(s.Encode())
 }
 
-// checkJoinDomain refuses a join whose config sets a cluster domain other than
-// the one the cluster uses. The cluster's domain is the netconfig the shared
-// certs just delivered, so this is the first point it is known, and it runs
-// before this node mints certificates or touches etcd. Unset or matching is
-// fine. Without it the join would succeed on the cluster's domain and the
-// node's first restart would refuse the same config (PrepareController).
+// Runs before certificates or etcd: the node's first restart would refuse a domain let through.
 func checkJoinDomain(configured string) error {
 	if _, err := netcfg.ResolveDomain(configured); err != nil {
 		return fmt.Errorf("HA join: %w (no certificates were issued and etcd is untouched)", err)
@@ -123,13 +103,7 @@ func checkJoinDomain(configured string) error {
 	return nil
 }
 
-// checkJoinNetwork refuses a join whose config sets a pod or service CIDR
-// other than the cluster's, each checked on its own. The cluster's ranges are
-// the netconfig the shared certs just delivered, which is what the join runs
-// on, and every control plane must run the same ones. Unset or matching is
-// fine. Without it a lone range would be dropped for the cluster's, a pair
-// would replace them on this node alone, and the node's first restart would
-// be the first notice.
+// A differing lone range would be dropped for the cluster's, a pair would replace them here.
 func checkJoinNetwork(podCIDR, serviceCIDR string) error {
 	if podCIDR == "" && serviceCIDR == "" {
 		return nil
@@ -152,8 +126,7 @@ func checkJoinNetwork(podCIDR, serviceCIDR string) error {
 	return nil
 }
 
-// refuseRetainedMember runs before any join-side writes. Even non-member
-// residue must be inspected before shared certificates are overwritten.
+// Even non-member residue must be inspected before shared certificates are overwritten.
 func refuseRetainedMember(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -171,10 +144,7 @@ func refuseRetainedMember(dir string) error {
 		"control plane, then run `stratum uninstall --yes` locally to clear its data", dir)
 }
 
-// prepareEmptyEtcdDataDir replaces only an empty directory. os.Remove is
-// atomic with respect to a concurrent create: if member/ (or any other entry)
-// appears after the earlier inspection, removal fails and preserves it. Never
-// recursively delete a directory whose contents may have changed under us.
+// os.Remove is atomic against a concurrent create, so a member appearing after the check survives.
 func prepareEmptyEtcdDataDir(dir string) error {
 	if err := os.Remove(dir); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("HA join: %s is not empty or cannot be removed (%w); refusing to delete its data", dir, err)
@@ -185,27 +155,7 @@ func prepareEmptyEtcdDataDir(dir string) error {
 	return nil
 }
 
-// requireSharedSecrets refuses a control-plane join whose downloaded bundle
-// does not match the profile this control plane runs: one uploaded by a
-// control plane of another profile, or one whose shared secrets are not the
-// ones the profile declares. The bundle is a snapshot taken when `stratum
-// token create --control-plane` uploaded it, so one uploaded before the
-// profile was turned on, or one taken while a controller was minting its
-// secrets, lacks them: joining with it would give this apiserver none, or
-// different ones. It asks what the bundle carried, not what is on disk: a
-// secret left by an earlier failed join survives a bundle without it, and is
-// not one the cluster handed out. It runs before the etcd member-add, so a
-// refusal leaves the cluster untouched.
-//
-// The reverse is refused too: a bundle that carries a profile's secrets comes
-// from a cluster that runs it, and a control plane joining it without the
-// profile would start without them. For the cis profile, whose secret is the
-// at-rest encryption config, that is an apiserver unable to read the
-// cluster's encrypted Secrets, and writing new ones in plaintext.
-//
-// A bundle without the secrets has two causes, and the remedy names both: the
-// cluster does not run the profile, so join it without; or it is meant to,
-// and the profile has to be on there before a bundle can carry its secrets.
+// Refuses a bundle whose profile or shared secrets differ from this node's, either direction.
 func requireSharedSecrets(prof profile.Profile, b bundleProfile) error {
 	if b.ProfileKnown && b.Profile != prof.Name {
 		return fmt.Errorf("the control plane that published this join's shared certificates runs %s, and this "+
@@ -251,7 +201,6 @@ func requireSharedSecrets(prof profile.Profile, b bundleProfile) error {
 		prof.Name, carried, strings.Join(want, ", "))
 }
 
-// profileNoun names a profile in a refusal, or its absence.
 func profileNoun(name string) string {
 	if name == "" {
 		return "no node profile"
@@ -259,7 +208,6 @@ func profileNoun(name string) string {
 	return fmt.Sprintf("the %s profile", name)
 }
 
-// profileFlag is how a join selects the profile a refusal names.
 func profileFlag(name string) string {
 	if name == "" {
 		return "no --profile or --cis (and no spec.profile or spec.cis: true)"
@@ -267,32 +215,7 @@ func profileFlag(name string) string {
 	return "--profile " + name
 }
 
-// settleJoinSecrets leaves this joining node with exactly the profile shared
-// secrets its bundle carried, or refuses. applied says whether the bundle was
-// written: a join refused before it wrote the bundle downloaded none of the
-// secrets on disk, so each one there is an earlier attempt's.
-//
-// A bundle does not remove the optional entries it leaves out, so one without
-// a secret accepted over a copy from an earlier attempt would keep that copy:
-// the next `token create --control-plane` here uploads every shared secret it
-// finds, and joiners would then take a stale one for the cluster's. And a join
-// refused for a profile mismatch must not keep the secrets it just downloaded.
-// Either way the files are removed, and each removal is said out loud: on
-// stdout as the join's other steps are, and in the refusal when there is one.
-// Each removal is synced to the directory before it is reported: a power loss
-// could otherwise bring a secret back, and the next `token create` would
-// upload it.
-//
-// Removing them unconditionally relies on the caller's preconditions, which
-// make any secret file here this node's own leftover rather than a member's
-// live secret: `stratum up --join` hands a node with saved state to the
-// restart path instead of joining it (alreadyJoinedDecision), and
-// prepareControlPlaneJoin refuses any etcd data under the etcd data lock
-// before it downloads. A new caller must keep both preconditions.
-//
-// Only the join calls this. DownloadCertsAdmin (CA rotation on a joined
-// control plane) applies a bundle without it, so a rotation bundle never
-// removes a member's secrets.
+// Leaves exactly the bundle's shared secrets on this node, removing and reporting the rest.
 func settleJoinSecrets(prof profile.Profile, b bundleProfile, applied bool, dir string, out io.Writer) error {
 	mismatch := requireSharedSecrets(prof, b)
 	keep := map[string]bool{}
@@ -346,8 +269,6 @@ func settleJoinSecrets(prof profile.Profile, b bundleProfile, applied bool, dir 
 	return err
 }
 
-// secretNoun names a shared secret in the join's messages: the cis profile's
-// by what it holds.
 func secretNoun(name string) string {
 	if name == encryptionConfigEntry {
 		return "key"
@@ -355,46 +276,28 @@ func secretNoun(name string) string {
 	return "shared secret " + name
 }
 
-// syncJoinKeyDir is host.SyncDir behind a seam, so a test can fail it.
+// A var so a test can fail the sync.
 var syncJoinKeyDir = host.SyncDir
 
-// syncJoinIntentDir is host.SyncDir behind a seam, so a test can fail it: the
-// intent journal's directory must be synced after the journal's rename, or a
-// power loss can lose the directory entry and the recovery record with it.
+// A var so a test can fail it; the intent directory must be synced after the rename.
 var syncJoinIntentDir = host.SyncDir
 
-// joinOut is where the join reports the decisions an operator must see — which
-// intent it recorded, adopted, or replaced. A writer, the way settleJoinSecrets
-// takes one, so a test can assert what the join said.
+// Where the join reports operator-visible decisions; a var so tests can assert the output.
 var joinOut io.Writer = os.Stdout
 
-// intentFileName is the intent journal's file name inside the state directory
-// (version.K8sConfDir), where node.yaml lives too.
+// Inside version.K8sConfDir, beside node.yaml, so uninstall's sweep clears it.
 const intentFileName = "join-intent.json"
 
-// joinIntentPath is the durable pre-add intent journal a control-plane join
-// writes before its etcd member-add and clears once its node state is
-// persisted: the member name, peer URL, and — once the cluster's member list
-// has answered — the member ID and resumable phase. It lives beside node.yaml
-// (under version.K8sConfDir) so the state directory's existing cleanup and
-// uninstall already sweep it. A var, like the version paths, only so tests
-// can redirect it to a temp file.
+// The durable pre-add intent journal; a var so tests can redirect it to a temp file.
 var joinIntentPath = filepath.Join(version.K8sConfDir, intentFileName)
 
-// intentPhasePrepared is the journal's phase while only the member name and
-// peer URL are known — before the member-add and until the cluster's member
-// list has answered for this node's peer URL. intentPhaseAdded is the phase
-// once that list has given the member ID.
+// The journal's phase before and after the cluster's member list has answered.
 const (
 	intentPhasePrepared = "prepared"
 	intentPhaseAdded    = "added"
 )
 
-// joinIntent is the intent file's on-disk JSON: the member identity a re-run
-// needs to reconcile or remove this join's member, and the resumable phase it
-// resumes from. Pinned as plain JSON because the file outlives the process
-// that wrote it — a re-run of `stratum up --join` reads it, and so does an
-// operator.
+// Read by a re-run of `stratum up --join` and by an operator, so it stays plain JSON.
 type joinIntent struct {
 	MemberName string        `json:"memberName"`
 	PeerURL    string        `json:"peerURL"`
@@ -403,21 +306,16 @@ type joinIntent struct {
 	Recovery   *joinRecovery `json:"recovery,omitempty"`
 }
 
-// The prepared state and endpoints let a committed member start even when
-// adding it cost the cluster quorum and the API can no longer serve Secrets.
-// Credentials stay out of the journal; the local CA must match the saved pin.
+// Lets a committed member start when the cluster has no quorum; no credentials, only a CA pin.
 type joinRecovery struct {
 	State   nodestate.NodeState `json:"state"`
 	EtcdIPs []string            `json:"etcdIPs"`
 	CAHash  string              `json:"caHash"`
-	// CarriedKey is what a journal from an earlier binary recorded: whether
-	// the bundle carried the cis profile's at-rest key. It is still written,
-	// beside CarriedSecrets, so that binary can resume this journal.
+	// Still written beside CarriedSecrets so an older binary can resume this journal.
 	CarriedKey     bool     `json:"carriedKey"`
 	CarriedSecrets []string `json:"carriedSecrets,omitempty"`
 }
 
-// carried is the profile shared secrets the journaled bundle carried.
 func (r joinRecovery) carried() []string {
 	if r.CarriedSecrets == nil && r.CarriedKey {
 		return []string{encryptionConfigEntry}
@@ -425,12 +323,7 @@ func (r joinRecovery) carried() []string {
 	return r.CarriedSecrets
 }
 
-// readJoinIntent returns nil when no join intent is recorded. An intent that
-// cannot be read, or that can be read but names no member, is an error, never
-// "none": treating it as absent would run a second member-add over the very
-// membership the file exists to reconcile. The rule, and the shape of the
-// refusal, are the in-progress upgrade marker's
-// (internal/upgrade/resume.go:50-78).
+// Unreadable or memberless intents are errors, never nil: absence would run a second member-add.
 func readJoinIntent() (*joinIntent, error) {
 	data, err := os.ReadFile(joinIntentPath)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -455,14 +348,7 @@ func readJoinIntent() (*joinIntent, error) {
 	return &j, nil
 }
 
-// writeJoinIntent records j durably, in the marker shape of
-// writeUpgradeMarker (internal/upgrade/resume.go), made durable: JSON written
-// through a hidden, uniquely named staging file at 0600 in the intent's own
-// directory, fsynced, renamed into place, and the directory synced after the
-// rename, so a crash can neither leave a torn intent nor lose the directory
-// entry. The journal is this node's only record of the member between the
-// member-add and the node-state save, and a lost journal reads as "no
-// unfinished join" — settleJoinSecrets' reason for syncing a secret's removal.
+// Durable through a crash: a lost journal reads as "no unfinished join".
 func writeJoinIntent(j joinIntent) error {
 	data, err := json.Marshal(j)
 	if err != nil {
@@ -477,15 +363,13 @@ func writeJoinIntent(j joinIntent) error {
 		return fmt.Errorf("record the join intent in %s: %w", joinIntentPath, err)
 	}
 	tmp := f.Name()
-	// A failed rename must not leave the staging file behind; os.CreateTemp
-	// made it 0600, so the umask cannot widen it.
+	// os.CreateTemp made the staging file 0600; the umask cannot widen it.
 	defer os.Remove(tmp)
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return fmt.Errorf("record the join intent in %s: %w", joinIntentPath, err)
 	}
-	// Sync the staged file before the rename: a rename whose data is still
-	// dirty can land the directory entry while the content is not on disk.
+	// A rename with dirty data can land the directory entry before the content is on disk.
 	if err := f.Sync(); err != nil {
 		f.Close()
 		return fmt.Errorf("record the join intent in %s: %w", joinIntentPath, err)
@@ -502,12 +386,7 @@ func writeJoinIntent(j joinIntent) error {
 	return nil
 }
 
-// clearJoinIntent ends the journal: the recorded member is no longer in the
-// cluster, or a failed join removed it. Best-effort, because a leftover
-// intent is harmless — the next join reconciles it against the cluster's own
-// member list and clears it — but never silent. The node-state save does NOT
-// end the journal: it survives until a later start confirms the node's local
-// etcd data (ClearJoinIntent, called by pkg/cli behind requireLocalEtcdMember).
+// Best-effort and never silent; the node-state save does not end the journal.
 func clearJoinIntent() {
 	if err := os.Remove(joinIntentPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		fmt.Printf("stratum HA join: WARN: clear the join intent file %s: %v — the next join will reconcile it "+
@@ -515,12 +394,7 @@ func clearJoinIntent() {
 	}
 }
 
-// ClearJoinIntent ends a join's intent journal once its work is done: the
-// node's local etcd data is confirmed on a later start, so the state between
-// the join's state save and etcd's first WAL no longer needs a recovery
-// record. Derived from version.K8sConfDir at call time — the same path
-// JoinIntentSurvives reports on. A missing file is fine; any other error is
-// returned to the caller.
+// Ends the intent journal once a later start has confirmed the node's local etcd data.
 func ClearJoinIntent() error {
 	path := JoinIntentPath()
 	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -529,22 +403,12 @@ func ClearJoinIntent() error {
 	return nil
 }
 
-// JoinIntentPath is the durable pre-add intent journal's path in this node's
-// state directory, derived from version.K8sConfDir at call time — the path the
-// caller-facing gate (JoinIntentSurvives) and the refusals that name the file
-// report. The join's own reads, writes, and clear go through the package var
-// joinIntentPath instead, which this package's tests redirect; the two name
-// the same file because version.K8sConfDir is never reassigned outside tests.
+// JoinIntentPath is the intent journal's path in this node's state directory.
 func JoinIntentPath() string {
 	return filepath.Join(version.K8sConfDir, intentFileName)
 }
 
-// JoinIntentSurvives reports whether a join intent file survives in this
-// node's state directory, whatever its contents. A join that added its member
-// but never persisted the node state leaves the file there as the recovery
-// record, so a bare `stratum up` that treated it as absent would bootstrap a
-// separate single-member cluster over the recorded membership. An unreadable
-// file is an error, never "absent" — readJoinIntent's rule.
+// A bare `stratum up` that treated the file as absent would bootstrap over the recorded membership.
 func JoinIntentSurvives() (bool, error) {
 	switch _, err := os.Stat(JoinIntentPath()); {
 	case err == nil:
@@ -558,15 +422,10 @@ func JoinIntentSurvives() (bool, error) {
 	}
 }
 
-// joinMembership is the clusterMembers effect: the cluster's member list, read
-// through the endpoints the join dials. The list, not the intent file, is the
-// truth about this join's member (memberByPeerURL).
 func joinMembership(cpIPs []string) (etcdMembership, error) {
 	return joinMembershipVia(cpIPs, memberList)
 }
 
-// joinMemberRemoveByID is the memberRemoveByID effect: memberRemoveID through
-// the join's endpoints, in turn, until one answers.
 func joinMemberRemoveByID(cpIPs []string, id uint64) error {
 	if len(cpIPs) == 0 {
 		return errors.New("no etcd endpoints to remove the member through")
@@ -582,15 +441,7 @@ func joinMemberRemoveByID(cpIPs []string, id uint64) error {
 	return last
 }
 
-// joinQuorumHeld is the confirmQuorumHeld effect: the post-add member removal
-// may run only when the cluster provably still has quorum. A linearizable
-// member list needs a quorum of the cluster's voting members to answer, so its
-// success is that proof. An endpoint that is down, a peer that does not answer,
-// or a list that answers only serializably says nothing about the cluster's
-// majority, and refuses the removal — fail closed, confirmQuorumLost's
-// semantics (internal/ha/quorum.go:39-69): an unreadable membership must never
-// authorise taking a member away, because removing a member the cluster may
-// still need is worse than leaving one a re-run can reconcile.
+// A linearizable member list needs quorum to answer, so its success is the proof; errors refuse.
 func joinQuorumHeld(cpIPs []string) error {
 	cli, err := clusterClient(cpIPs)
 	if err != nil {
@@ -606,21 +457,10 @@ func joinQuorumHeld(cpIPs []string) error {
 	return nil
 }
 
-// concurrentJoinHint follows the refusals a join started alongside another
-// controller's meets. That controller's member is a learner until it has
-// caught up and its start has promoted it, and etcd accepts one learner at a
-// time; a promote that has just landed takes the cluster to two voters, and
-// until the new one settles the cluster may not answer a linearizable member
-// listing (the probe, and the quorum read that reconciles a recorded intent).
-// Each refusal leaves membership as it was, so a re-run after the first join
-// finishes succeeds.
 const concurrentJoinHint = "if another control plane is joining now, wait until it is Ready and re-run this join; " +
 	"join controllers one at a time"
 
-// addMemberIfEtcdDataDirEmpty checks both sides of the remote member-add. The
-// post-add check catches a local writer that populated the directory while the
-// network request was in flight; in that case remove the just-added member so
-// the failed join does not leave a voting member behind.
+// The post-add check catches a local writer racing the request and rolls the add back.
 func addMemberIfEtcdDataDirEmpty(dir string, add func() (string, error), remove func() error) (string, error) {
 	if err := refuseRetainedMember(dir); err != nil {
 		return "", err
@@ -638,18 +478,7 @@ func addMemberIfEtcdDataDirEmpty(dir string, add func() (string, error), remove 
 	return initial, nil
 }
 
-// reconcileAmbiguousMemberAdd settles a member-add whose answer was lost: an
-// error from the add does not prove the add never committed, because the
-// request may have been served and only the reply dropped. The commit phase
-// hands over only those possibly-lost replies — a refusal etcd answered
-// outright (memberAddRefused) is returned directly instead. The cluster's
-// member list, not the error, decides — the rule the restore path's rejoin
-// already applies to its own lost-reply ambiguity
-// (internal/ha/restore.go:539-541). A member the list already shows at this
-// node's peer URL is adopted and the join finishes on it without a second
-// add; a member it does not show was never added, and the add is retried
-// once; a list that cannot answer refuses the join, fail closed, never
-// guessed, and the intent file stays as the re-run's recovery record.
+// An add error does not prove the add never committed: the member list decides, never a guess.
 func reconcileAmbiguousMemberAdd(fx joinEffects, etcdIPs []string, hostname, peer string, addErr error) (string, error) {
 	members, err := fx.clusterMembers(etcdIPs)
 	if err != nil {
@@ -681,17 +510,7 @@ func reconcileAmbiguousMemberAdd(fx joinEffects, etcdIPs []string, hostname, pee
 	return added, nil
 }
 
-// joinEtcdEndpoints picks the etcd addresses a join dials for MemberAdd and for
-// the MemberRemove that rolls it back.
-//
-// The --join host is a VIP in the documented HA shape, and etcd listens only on
-// loopback and the node's own address (staticpod args), so dialling the join host
-// was a MemberAdd against a port nothing binds. The cluster now
-// publishes its members' client addresses beside the shared certs; those win.
-// Without them — a control plane that predates published etcd addresses — the
-// join host is the only candidate, which works exactly when it is a control
-// plane's node IP and is refused up front when it is the VIP, rather than
-// timing out inside MemberAdd.
+// The join host is often the VIP, where etcd does not listen; the published endpoints win.
 func joinEtcdEndpoints(published []string, joinHost, vip string) ([]string, error) {
 	if len(published) > 0 {
 		return published, nil
@@ -704,129 +523,45 @@ func joinEtcdEndpoints(published []string, joinHost, vip string) ([]string, erro
 	return []string{joinHost}, nil
 }
 
-// joinEffects are the host and cluster effects a control-plane join runs, as
-// one struct parameter in the style of tokenSteps (internal/token/token.go):
-// the join's safety order — every step that can refuse returns before the
-// etcd member-add — is otherwise held only by statement order, which no test
-// can observe without touching the host. A struct rather than package
-// variables keeps the tests that use a recording set safe to run in parallel.
-// PrepareControlPlaneJoin passes the production set; the join guards in
-// join_test.go pass one that records each call.
+// The join's host and cluster effects, as one struct so guarded test sets record calls in parallel.
 type joinEffects struct {
-	// stage unpacks the embedded payload into root (assets.Stage).
-	stage func(root string) ([]string, error)
-	// hostDirs creates the directory layout (host.Dirs).
-	hostDirs func() error
-	// prereqs checks the host prerequisites for the profile in use
-	// (host.Prereqs).
-	prereqs func(host.PrereqOptions) error
-	// discover fetches the cluster CA from the server being joined
-	// (bootstrap.DiscoverCA).
-	discover func(server, token, caHash string) ([]byte, error)
-	// writeBootstrapKubeconfig writes the kubeconfig the download
-	// authenticates with (bootstrap.WriteBootstrapKubeconfig).
+	stage                    func(root string) ([]string, error)
+	hostDirs                 func() error
+	prereqs                  func(host.PrereqOptions) error
+	discover                 func(server, token, caHash string) ([]byte, error)
 	writeBootstrapKubeconfig func(server, token string, ca []byte) error
-	// clearCiliumSettings removes settings left by a previous join before the
-	// new bundle supplies this cluster's settings (os.Remove).
-	clearCiliumSettings func(path string) error
-	// downloadGrant fetches and applies the shared certs as one grant,
-	// reporting the facts the bundle's authenticated metadata carries: the etcd
-	// endpoints a joiner dials, whether the bundle carried the at-rest key, the
-	// cluster VIP the publishing control plane recorded, the publication's
-	// generation, and the profile secrets and publishing profile the bundle
-	// names, which check sees before any file is written (DownloadCerts). It is
-	// the join's one download effect, so the recorders and recovery sentinels
-	// that override it pin the path production runs.
-	downloadGrant func(bootstrapKubeconfig, certKey string, check func(bundleProfile) error) (bundleGrant, error)
-	// Resume uses retained shared trust rather than a quorum-backed API read.
-	verifyResumeTrust func(caHash string) error
-	// Make retained trust/configuration durable before committing membership.
+	clearCiliumSettings      func(path string) error
+	// The join's one download effect, so the recorders that override it pin the production path.
+	downloadGrant      func(bootstrapKubeconfig, certKey string, check func(bundleProfile) error) (bundleGrant, error)
+	verifyResumeTrust  func(caHash string) error
 	persistPreparation func() error
-	// trustPodCIDRs opens the host firewall for the pod interfaces
-	// (host.TrustPodCIDRs).
-	trustPodCIDRs func(podCIDR string)
-	// resolveNodeIP picks this node's address, falling back to detection
-	// (host.ResolveNodeIP, host.DetectNodeIPs).
-	resolveNodeIP func(flag, config, state string, detect func() (string, error)) (host.NodeIPChoice, error)
-	detectNodeIPs func(dualStack bool) (string, error)
-	// issueCerts mints this node's leaves from the shared CAs (pki.GenerateAll).
-	issueCerts func(host, nodeIP string, sans *pki.APISANs) error
-	// writeKubeconfigs writes the node's kubeconfigs (kubeconfig.GenerateAll).
-	writeKubeconfigs func(host, server string, vip bool) error
-	// writeProfileConfigs writes the config files the join's profile declares
-	// and its apiserver flags reference (profilefiles.Write).
-	// Runs before the member-add: it can refuse, and nothing after the add
-	// removes the member again on failure.
+	trustPodCIDRs      func(podCIDR string)
+	resolveNodeIP      func(flag, config, state string, detect func() (string, error)) (host.NodeIPChoice, error)
+	detectNodeIPs      func(dualStack bool) (string, error)
+	issueCerts         func(host, nodeIP string, sans *pki.APISANs) error
+	writeKubeconfigs   func(host, server string, vip bool) error
+	// Runs before the member-add: it can refuse, and nothing after the add removes the member.
 	writeProfileConfigs func(profile.Profile) error
-	// probeEtcd is the read-only member listing through the endpoints the join
-	// will add itself through, returning the live controller primary addresses
-	// (MemberClientIPsVia). The shared certificate bundle may predate a join.
-	probeEtcd func(cpIPs []string) ([]string, error)
-	// controllerNodeIPs reads all controller node addresses through the join
-	// server, including secondary addresses that etcd does not advertise.
-	controllerNodeIPs func(context.Context, string, []string) ([]string, error)
-	// vipServes checks that the join's VIP answers as this cluster's apiserver
-	// (VIPServes): a join with a VIP writes its kubeconfigs against it, so one
-	// that does not serve the cluster refuses the join before the member-add.
-	vipServes func(vip string) error
-	// memberAdd adds this node to the cluster; memberRemove removes it again.
+	probeEtcd           func(cpIPs []string) ([]string, error)
+	controllerNodeIPs   func(context.Context, string, []string) ([]string, error)
+	// Refuses before the member-add: the kubeconfigs were written against this VIP.
+	vipServes    func(vip string) error
 	memberAdd    func(cpIPs []string, name, peerURL string) (string, error)
 	memberRemove func(cpIPs []string, peerURL string) error
-	// clusterMembers reads the cluster's member list through the endpoints the
-	// join dials. The cluster's list, not the intent file, is the truth about
-	// this join's member: the join records in its intent file the ID it finds
-	// there for this node's peer URL (memberByPeerURL), and compensates
-	// against that list after a post-add failure.
-	clusterMembers func(cpIPs []string) (etcdMembership, error)
-	// memberRemoveByID removes one member by ID (memberRemoveID, etcd.go):
-	// the post-add compensation for a join that failed after the member-add.
+	// The cluster's list, not the intent file, is the truth about this join's member.
+	clusterMembers   func(cpIPs []string) (etcdMembership, error)
 	memberRemoveByID func(cpIPs []string, id uint64) error
-	// confirmQuorumHeld reports whether the cluster provably still has
-	// quorum. Any error refuses the post-add member removal, fail closed
-	// (confirmQuorumLost's semantics, internal/ha/quorum.go:39-69): an etcd
-	// that is down, a peer that does not answer, or a member list that cannot
-	// be read says nothing about the cluster's quorum, and removing a member
-	// the cluster may still need is worse than leaving one a re-run can
-	// reconcile, so the removal is refused and the intent file kept.
+	// Any error refuses the post-add member removal, fail closed.
 	confirmQuorumHeld func() error
-	// saveState persists the node state the supervisor renders etcd's flags
-	// from. The production set leaves it unset: prepareJoinNodeWithRecovery
-	// fills it with the mutation owner's under-lock variant carrying the
-	// capability of the data lock the join took (saveJoinStateUnderLock). The
-	// join guards pass their recording set and keep it.
-	saveState func(st *nodestate.NodeState) error
-	// writeRuntimeConfigs writes the kubelet and containerd configs
-	// (runtime.PrepareNodeConfigs).
+	// Unset in production; prepareJoinNodeWithRecovery fills it with the under-lock variant.
+	saveState           func(st *nodestate.NodeState) error
 	writeRuntimeConfigs func(st *nodestate.NodeState) error
-	// assemble routes the join's common node steps through the shared node
-	// assembly (AssembleNode), which cluster.PrepareController runs too: one
-	// assembly for both paths, so a change to one path's node rendering reaches
-	// the other. The join builds the NodeAssembly from the effects above and
-	// hands the request its options resolve to. A field rather than a direct
-	// call so the join guards can observe the join actually taking the shared
-	// path; an effect set without one falls back to AssembleNode itself.
+	// A field, not a direct call, so the join guards can observe the shared assembly.
 	assemble func(context.Context, NodeAssembly, AssembleRequest) (host.NodeIPChoice, error)
-	// takeMaintenanceFence takes the cluster-wide maintenance fence
-	// (takeJoinMaintenanceFence in production: both maintenance leases via
-	// maintlease.AcquireCompatible, riding this joiner's bootstrap-token
-	// credential) for the member-add window, from just before the live
-	// member-add to the persisted node state. Member admission races the very
-	// bundle and staged-key writes `stratum upgrade --cluster`, `rotate-ca
-	// --cluster` and `migrate-etcd-ca` own, so a join landing mid-run refuses
-	// fast, naming the live holder and its renewal age — that fast refusal
-	// is the point. The take sits in this join's own commit phase, at the
-	// command-level seam: the shared helpers (UploadCerts, NewCertKey, the
-	// downloads) stay fence-free, because the orchestrators call them mid-run
-	// and must keep working without refusing against their own fence. The
-	// fence can be held and renewed only because the mint that published this
-	// joiner's grant gave the control-plane bootstrap group the Lease access
-	// the stratum:certs-reader Role carries. Nil (an effect set without one,
-	// as the guards' recorders are) takes no fence.
+	// Nil takes no fence; the shared helpers stay fence-free or orchestrators would self-refuse.
 	takeMaintenanceFence func() (*k8sutil.MaintenanceLease, error)
 }
 
-// productionJoinEffects is the real effect set: every field is the function
-// the join called directly before the seam existed.
 func productionJoinEffects() joinEffects {
 	return joinEffects{
 		stage:                    assets.Stage,
@@ -857,18 +592,11 @@ func productionJoinEffects() joinEffects {
 	}
 }
 
-// saveJoinStateUnderLock is the join's state save: the write goes through
-// nodestate's mutation owner under the data lock the join holds for its whole
-// run, and the save keeps the published-state contract of saveJoinState
-// (join_recovery.go): a failed save with node.yaml already on disk is
-// reported as published but unconfirmed, so the join does not compensate a
-// membership its record may survive, and a landed save is synced again
-// before the join returns.
+// A failed save with node.yaml published must not compensate membership its record may survive.
 func saveJoinStateUnderLock(release func(), st *nodestate.NodeState) error {
 	err := nodestate.MutateHeld(release, func(cur *nodestate.NodeState) error { *cur = *st; return nil })
 	if err != nil {
-		// A previous failed save may already have published node.yaml. Do
-		// not compensate membership while that record can still survive.
+		// node.yaml may already be published; do not compensate while its record can survive.
 		if _, statErr := os.Stat(nodestate.StatePath()); !errors.Is(statErr, fs.ErrNotExist) {
 			return fmt.Errorf("%w: save state: %w", errJoinStatePublished, err)
 		}
@@ -882,126 +610,44 @@ func saveJoinStateUnderLock(release func(), st *nodestate.NodeState) error {
 	return nil
 }
 
-// --- the shared node assembly ---
-//
-// Controller bootstrap (cluster.PrepareController) and the HA join run the same
-// node steps — host directories, prerequisites, pod-CIDR trust, node-IP
-// resolution, leaf certificates, kubeconfigs, the profile step, and the
-// kubelet/containerd configs — through ONE assembly function, not two parallel
-// bodies. The assembly lives here (the join's own package) because internal/
-// cluster already imports internal/ha; the reverse would be an import cycle.
-// The caller-specific steps hang off it at the three points the two paths'
-// pinned orders fix: ResolveNet between the prerequisites and the pod-CIDR
-// trust (the join's shared-cert download and cluster gates; the controller's
-// netconfig resolution), BeforeCerts between the resolved node IP and the
-// certificates (the controller's IP-move refusal and node state; the join's
-// node-IP capture), and BeforeRuntimeConfigs between the profile step and the
-// runtime configs (the join's retained-data re-check, etcd probe, and intent
-// reconciliation; the controller has none). The join's effects struct routes
-// its steps through it via fx.assemble; the controller holds it behind the
-// assembleNode seam.
+// Lives here because internal/cluster already imports internal/ha; the reverse would be a cycle.
 
-// AssembleRequest is what a caller hands the shared node assembly: the inputs
-// the common steps consume, and the node state the runtime configs render
-// from. State may be handed in partially built — the caller's hooks fill the
-// fields only it knows (the netconfig's CIDRs, the resolved node IP, the
-// carried membership) as the assembly resolves them — so the runtime configs
-// still render the completed state.
+// What a caller hands the shared assembly; State may arrive partially built, hooks fill the rest.
 type AssembleRequest struct {
-	// Hostname is this node's name: the host the certificate and kubeconfig
-	// effects run for, and the join's etcd member name.
 	Hostname string
-	// NodeIPFlag is --node-ip from the command line ("" when not given);
-	// ConfigNodeIP is spec.network.nodeIP; SavedIP is the address a node with
-	// saved state was brought up with ("" on a fresh bring-up or join). The IP
-	// precedence is host.ResolveNodeIP's: flag, saved, config, $NODE_IP, then
-	// detection.
+	// NodeIPFlag is --node-ip ("" when not given); SavedIP is "" on a fresh bring-up or join.
 	NodeIPFlag, ConfigNodeIP, SavedIP string
-	// VIPAddress is the cluster VIP ("" when none): the extra apiserver SAN,
-	// the kubeconfigs' VIP marker, and a controller's client-facing endpoint.
-	VIPAddress string
-	// APIServer is the endpoint every kubeconfig on this node targets: the
-	// node state's recorded endpoint (bring-up's rule — the VIP when
-	// configured, the local apiserver otherwise — which the join records
-	// too), not the join URL.
-	APIServer string
-	// PrereqOptions are the host-preparation settings the prerequisites check
-	// runs with (host.PrereqOptions): the node's profile, whose config files
-	// the assembly writes, the SELinux opt-out, and whether this node was
-	// brought up before.
+	VIPAddress                        string
+	// The endpoint every kubeconfig on this node targets, not the join URL.
+	APIServer     string
 	PrereqOptions host.PrereqOptions
-	// State is the node state the runtime configs render from.
-	State *nodestate.NodeState
+	State         *nodestate.NodeState
 }
 
-// NodeAssembly is the shared node assembly's effects, as one struct parameter
-// in the style of joinEffects and tokenSteps (internal/token/token.go): the
-// safety order — every step that can refuse returns before the steps that
-// follow — is otherwise held only by statement order, which no test can
-// observe without touching the host. A struct rather than package variables
-// keeps the tests that use a recording set safe to run in parallel.
-//
-// ResolveNet hands the assembly the cluster's network for this node; its
-// CIDRs and domain feed the pod-CIDR trust, the address detection, and the
-// apiserver SANs. BeforeCerts receives the resolved node IP choice before any
-// certificate is issued, so a caller can refuse a move or pin the address into
-// its node state first.
+// The shared assembly's effects, as one struct so guarded test sets record calls in parallel.
 type NodeAssembly struct {
-	// HostDirs creates the directory layout (host.Dirs).
-	HostDirs func() error
-	// Prereqs checks the host prerequisites for the settings in use
-	// (host.Prereqs).
-	Prereqs func(host.PrereqOptions) error
-	// ResolveNet resolves the cluster's network for this node: the
-	// controller's netconfig resolution, the join's shared-cert download and
-	// cluster gates. Every one of them can refuse.
-	ResolveNet func() (netcfg.Config, error)
-	// TrustPodCIDRs opens the host firewall for the pod interfaces
-	// (host.TrustPodCIDRs).
+	HostDirs      func() error
+	Prereqs       func(host.PrereqOptions) error
+	ResolveNet    func() (netcfg.Config, error)
 	TrustPodCIDRs func(podCIDR string)
-	// ResolveNodeIP picks this node's address, falling back to detection
-	// (host.ResolveNodeIP, host.DetectNodeIPs).
 	ResolveNodeIP func(flag, config, state string, detect func() (string, error)) (host.NodeIPChoice, error)
 	DetectNodeIPs func(dualStack bool) (string, error)
-	// BeforeCerts runs between the resolved node IP and the certificates: the
-	// controller's IP-move refusal and node-state completion, the join's
-	// node-IP capture.
-	BeforeCerts func(choice host.NodeIPChoice) error
-	// IssueCerts mints this node's leaves from the shared CAs (pki.GenerateAll).
-	IssueCerts func(host, nodeIP string, sans *pki.APISANs) error
-	// WriteKubeconfigs writes the node's kubeconfigs (kubeconfig.GenerateAll).
-	WriteKubeconfigs func(host, server string, vip bool) error
-	// WriteProfileConfigs writes the config files the node's profile declares
-	// and its apiserver flags reference (profilefiles.Write).
-	// Runs only for a node with a profile, and before everything that
-	// follows: it can refuse.
+	// Runs between the resolved node IP and the certificates, so a caller can refuse a move.
+	BeforeCerts         func(choice host.NodeIPChoice) error
+	IssueCerts          func(host, nodeIP string, sans *pki.APISANs) error
+	WriteKubeconfigs    func(host, server string, vip bool) error
 	WriteProfileConfigs func() error
-	// BeforeRuntimeConfigs runs between the profile step and the runtime configs.
-	// Nil runs nothing there; the join puts its retained-data re-check, etcd
-	// probe, and intent reconciliation in it, so they still refuse before
-	// anything that follows.
+	// Nil runs nothing; the join puts its last refusals here, before anything that follows.
 	BeforeRuntimeConfigs func() error
-	// WriteRuntimeConfigs writes the kubelet and containerd configs
-	// (runtime.PrepareNodeConfigs) on the request's node state.
-	WriteRuntimeConfigs func(st *nodestate.NodeState) error
+	WriteRuntimeConfigs  func(st *nodestate.NodeState) error
 }
 
-// AssembleNode runs the common node steps of controller bootstrap and
-// control-plane join, in the order both paths' guards pin: host directories,
-// prerequisites, the caller's network resolution, pod-CIDR trust, node-IP
-// resolution, the caller's before-certificates hook, certificates, kubeconfigs,
-// the profile step (a node with a profile only), the caller's before-runtime-configs hook, and
-// the runtime configs on the caller's node state. Every fallible step returns
-// before the steps that follow, and a hook's error is the error reported, so a
-// caller's refusal text survives the shared assembly. The resolved node
-// IP choice is returned for the caller's own use.
+// Runs the common node steps of bootstrap and join; every fallible step returns before the next.
 func AssembleNode(a NodeAssembly, req AssembleRequest) (host.NodeIPChoice, error) {
 	return AssembleNodeContext(context.Background(), a, req)
 }
 
-// AssembleNodeContext stops between preparation steps when ctx ends. A step
-// already in flight finishes and retains its own error; cancellation prevents
-// the next step from starting, including mutations of local files or firewall.
+// Stops between steps when ctx ends; a step already in flight finishes and keeps its own error.
 func AssembleNodeContext(ctx context.Context, a NodeAssembly, req AssembleRequest) (host.NodeIPChoice, error) {
 	if err := ctx.Err(); err != nil {
 		return host.NodeIPChoice{}, err
@@ -1049,10 +695,6 @@ func AssembleNodeContext(ctx context.Context, a NodeAssembly, req AssembleReques
 	if err := ctx.Err(); err != nil {
 		return host.NodeIPChoice{}, err
 	}
-	// The certificate inputs are the one constructor's (internal/certinputs):
-	// the node address the assembly just resolved with the netconfig's
-	// APIServerSANs and domain, the same named purposes bring-up, the join,
-	// renewal and the upgrade issue under.
 	in := certinputs.New(req.Hostname, choice.IP, netc, req.VIPAddress)
 	if err := a.IssueCerts(in.Host, in.NodeIP, in.SANs); err != nil {
 		return host.NodeIPChoice{}, err
@@ -1091,11 +733,6 @@ func AssembleNodeContext(ctx context.Context, a NodeAssembly, req AssembleReques
 	return choice, nil
 }
 
-// vipNodeAddress names what vip is when it is a node's own address rather than
-// a VIP: one of the existing controllers' node addresses, including secondary
-// addresses that etcd does not advertise, or one
-// of this node's own, given as its "v4[,v6]" node IP. It is "" for an address
-// that is neither.
 func vipNodeAddress(vip string, controllerIPs []string, nodeIP string) string {
 	for _, ip := range controllerIPs {
 		if sameIP(vip, ip) {
@@ -1110,9 +747,7 @@ func vipNodeAddress(vip string, controllerIPs []string, nodeIP string) string {
 	return ""
 }
 
-// sameIP reports whether a and b are the same address, by value rather than by
-// spelling, so an IPv6 VIP written in another form still matches. An empty or
-// unparsable side never matches.
+// Compares by value, so an IPv6 VIP written in another spelling still matches.
 func sameIP(a, b string) bool {
 	pa, pb := net.ParseIP(a), net.ParseIP(b)
 	return pa != nil && pb != nil && pa.Equal(pb)
@@ -1126,11 +761,7 @@ func hostFromURL(server string) (string, error) {
 	return u.Hostname(), nil
 }
 
-// joinHalted refuses to start the next join step (what) once the run's
-// context is done — a signal received during preflight, staging or an earlier
-// step stops the join at that boundary instead of performing it. Every step
-// before the live member-add is reversible, so a stop here leaves the cluster
-// untouched.
+// Every step before the live member-add is reversible, so a stop here leaves the cluster untouched.
 func joinHalted(ctx context.Context, what string) error {
 	err := ctx.Err()
 	if err == nil {
@@ -1139,28 +770,12 @@ func joinHalted(ctx context.Context, what string) error {
 	return fmt.Errorf("HA join: %w before %s (nothing was added to etcd)", err, what)
 }
 
-// PrepareControlPlaneJoin readies this node as an additional control plane:
-// payload, prereqs, shared certs, local leaves, live etcd member-add, and the
-// persisted node state the supervisor renders etcd's flags from. The CALLER
-// (stratum up --join) then starts the supervisor.
-//
-// ctx is the run's interrupt context (internal/interrupt), created by runUp
-// before preflight and threaded through preparation: a signal received before
-// the live member-add stops the join at a step boundary, never performing the
-// add. From the member-add to the persisted node state the first signal is
-// deliberately deferred — the policy is documented at that window.
+// Readies this node as an additional control plane; the caller then starts the supervisor.
 func PrepareControlPlaneJoin(ctx context.Context, o JoinOptions) (*nodestate.NodeState, error) {
 	return prepareControlPlaneJoin(ctx, o, version.EtcdDataDir, productionJoinEffects())
 }
 
-// prepareControlPlaneJoin runs the join's two phases in order: preparation,
-// which runs every fallible effect that needs no member-add result and touches
-// nothing membership-related, then the membership commit that consumes the
-// value preparation returned.
-//
-// A join entered with the run already stopped — the signal arrived during
-// preflight, staging or flag resolution — refuses at its first boundary,
-// before the lock, staging, certificates or anything else is touched.
+// Runs the join's two phases in order: preparation, then the membership commit.
 func prepareControlPlaneJoin(ctx context.Context, o JoinOptions, etcdDataDir string, fx joinEffects) (*nodestate.NodeState, error) {
 	if err := joinHalted(ctx, "the join began"); err != nil {
 		return nil, err
@@ -1175,65 +790,33 @@ func prepareControlPlaneJoin(ctx context.Context, o JoinOptions, etcdDataDir str
 	return commitJoinMembership(ctx, prepared)
 }
 
-// preparedJoin is everything the membership-commit phase needs, returned by the
-// preparation phase. Its fields are unexported, so no code outside internal/ha
-// can build a populated one — the pattern of clusterinfo.Authenticated's
-// unexported field (internal/bootstrap/clusterinfo/clusterinfo.go:118-122) —
-// and the only constructor is prepareJoinNode. The zero value is inert:
-// commitJoinMembership refuses it instead of acting on a guess, the way
-// TrustBundle rejects an unauthenticated Authenticated.
-//
-// release is the etcd data-dir lock prepareJoinNode took: the commit phase
-// releases it, because the critical section the join runs in spans both phases.
-// A prepared value that is never committed holds the lock until the process
-// exits, so a caller that prepared must always run the commit.
+// Only prepareJoinNode builds a populated one; the zero value is inert and the commit refuses it.
 type preparedJoin struct {
 	fx          joinEffects
-	etcdIPs     []string // the endpoints the member-add and its compensation dial
+	etcdIPs     []string
 	etcdDataDir string
-	// peer is the peer URL this join's member lives at: the one the member-add
-	// runs for, or — once adopted — the one the intent journal recorded.
-	peer    string
-	adopted bool // an intent-journal member was adopted; the commit adds nothing
-	// offlineAdoption proves that preparation verified retained trust and
-	// matched the recorded member's identity against etcd. Recovery publishes
-	// only local state; requiring a new API lease could deadlock the very
-	// member whose first start is needed to restore quorum.
+	peer        string
+	adopted     bool
+	// A new API lease could deadlock the very member whose first start restores quorum.
 	offlineAdoption bool
-	// confirmGrant verifies the prepared trust is still published once fenced.
-	confirmGrant func(context.Context) error
-	// journal is the intent journal's in-memory image: what joinPostAddFailure
-	// reports if the commit fails after the add.
-	journal *joinIntent
-	// st is the node state built before membership. The commit fills its
-	// EtcdInitialCluster from the member-add's return before saving it.
+	confirmGrant    func(context.Context) error
+	journal         *joinIntent
+	// The commit fills its EtcdInitialCluster from the member-add's return before saving.
 	st *nodestate.NodeState
-	// release ends the data-dir critical section preparation opened.
+	// Ends the data-dir critical section preparation opened.
 	release func()
 }
 
-// prepareJoinNode is the join's preparation phase: every fallible effect that
-// needs no member-add result, in the safety order the guards pin — payload,
-// then the shared node assembly (the ONE assembly cluster.PrepareController
-// runs: the join's shared-cert download and cluster gates as its ResolveNet
-// hook, the node-IP capture as its BeforeCerts hook, and the retained-data
-// re-check, etcd probe, and intent reconciliation as its BeforeRuntimeConfigs
-// hook). It never touches membership: no member is added, removed, or saved.
-// The node state it hands the runtime-config write is built before the assembly
-// and completed by its hooks, so the configs render from fields that are all
-// known pre-add.
+// Every fallible effect that needs no member-add result, in the safety order the guards pin.
 func prepareJoinNode(ctx context.Context, o JoinOptions, etcdDataDir string, fx joinEffects) (p preparedJoin, err error) {
 	return prepareJoinNodeWithRecovery(ctx, o, etcdDataDir, fx, true)
 }
 
-// prepareJoinNodeWithRecovery threads the run's interrupt context so a signal
-// received before the live member-add stops the join at a step boundary.
 func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir string, fx joinEffects, useRecovery bool) (p preparedJoin, err error) {
 	if o.Server == "" || o.Token == "" || o.CAHash == "" || o.CertKey == "" {
 		return preparedJoin{}, fmt.Errorf("HA join needs --join, --token, --discovery-token-ca-cert-hash and --certificate-key")
 	}
-	// The joining control plane's profile, for the host preparation and its
-	// config files, before anything on the host changes.
+	// The joining control plane's profile, before anything on the host changes.
 	prof, err := profile.ForNode(o.Profile)
 	if err != nil {
 		return preparedJoin{}, fmt.Errorf("HA join: %w", err)
@@ -1242,31 +825,20 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 	if err != nil {
 		return preparedJoin{}, err
 	}
-	// An error here ends the join before the member-add, so nothing needs the
-	// lock held for a later phase; on success the membership-commit phase
-	// releases it (the prepared value carries it).
+	// On success the commit phase releases the lock; the prepared value carries it.
 	defer func() {
 		if err != nil {
 			release()
 		}
 	}()
-	// The state save the commit phase runs goes through the mutation owner's
-	// under-lock variant with this lock's capability: the join holds the data
-	// lock for its whole run, and the owner writes without reacquiring —
-	// which would refuse against the join's own descriptor. A caller that
-	// brought its own saveState (the join guards' recording set) keeps it.
+	// An under-lock save: a reacquire would refuse against the join's own descriptor.
 	if fx.saveState == nil {
 		fx.saveState = func(st *nodestate.NodeState) error { return saveJoinStateUnderLock(release, st) }
 	}
-	// Refuse before staging, prerequisites, certificate download, or config
-	// generation can alter the trust material needed to recover this member.
+	// Refuse before staging can alter trust material this member's recovery needs.
 	if err := refuseRetainedMember(etcdDataDir); err != nil {
 		return preparedJoin{}, err
 	}
-	// An intent file a previous join left behind is read before anything on
-	// this node is written. One that cannot be used is an error, never absent:
-	// treating it as absent would run a second member-add over the very
-	// membership it exists to reconcile.
 	preIntent, err := readJoinIntent()
 	if err != nil {
 		return preparedJoin{}, err
@@ -1285,27 +857,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		return preparedJoin{}, fmt.Errorf("staging payload: %w", err)
 	}
 
-	// The node state is built before the assembly runs, so the assembly's
-	// runtime-config write renders from it; its not-yet-known fields — the
-	// netconfig's CIDRs, the resolved node IP, and the adopted membership —
-	// are filled in by the caller-owned hooks as the assembly resolves them.
-	// The kubeconfig endpoint is recorded here by bring-up's rule
-	// (kubeconfig.NodeServerURL, the derivation serverURL pins): the VIP when
-	// one is configured, the local apiserver otherwise — NOT the join URL,
-	// which is only the bootstrap and discovery endpoint. Recording and
-	// writing the same endpoint keeps a joined control plane's kubeconfigs
-	// stable across its first restart (TestControlPlaneJoinRecordsTheBringUpEndpoint).
-	// EtcdInitialCluster rides along where the join already knows it: the
-	// adopted membership's string, derived from the member-list read the
-	// adoption needed. A fresh join cannot know it before the add — the join
-	// reads the cluster's member list only where reconciliation demands it —
-	// so the commit phase fills it from the member-add's return before saving;
-	// the runtime configs render no field from it.
-	//
-	// The server is the one every controller start writes (nodestate.ServerURL),
-	// not the --join URL: the join's kubeconfigs and recorded server must be
-	// what this node's first restart writes again, or that restart rewrites
-	// them.
+	// The endpoint is bring-up's rule over the VIP, so the first restart writes the same one.
 	st := &nodestate.NodeState{
 		Role: "controller", Hostname: hostname,
 		Server:             kubeconfig.NodeServerURL("", o.VIP.Address),
@@ -1321,9 +873,6 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		RuntimeHandlers: o.RuntimeHandlers,
 	}
 
-	// The facts the hooks resolve, captured for the prepared value the
-	// membership-commit phase consumes: the endpoints the member-add and its
-	// compensation dial, this node's address, and the adopted membership.
 	var (
 		etcdIPs        []string
 		primary        string
@@ -1334,22 +883,11 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		carried        []string
 	)
 
-	// The authenticated grant download runs BEFORE the shared node assembly:
-	// its metadata is an input the assembly request consumes — the cluster
-	// VIP this join inherits or refuses — and the request must carry it from
-	// the start. The whole download group (the host directories and
-	// prerequisites, discovery, the bootstrap kubeconfig, the stale
-	// Cilium-settings clear, the download itself) runs here, in the order the
-	// assembly would run it, and the assembly's already-run hooks become
-	// no-ops below. A resume from retained preparation downloads nothing: its
-	// ResolveNet answers from the journal.
+	// The download runs before the assembly: its authenticated metadata feeds the request.
 	var grant *bundleGrant
 	resumeRecovery := useRecovery && preIntent != nil && preIntent.Recovery != nil
 	if resumeRecovery {
-		// The original command may have omitted the address the authenticated
-		// grant supplied. Resolve that omission from retained preparation before
-		// the assembly request snapshots the VIP and endpoint. Explicit options
-		// are still checked against the retained state in ResolveNet below.
+		// The original command may have omitted the address the grant supplied.
 		if st.VIP.Address == "" {
 			st.VIP.Address = preIntent.Recovery.State.VIP.Address
 		}
@@ -1388,14 +926,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		}
 		grant = &g
 		carried = g.Secrets
-		// The cluster VIP is a fact the cluster publishes about itself,
-		// authenticated by the same ciphertext that carries the certificates,
-		// rather than one a joining control plane takes from its own config
-		// unchecked: a configured VIP that conflicts with it refuses the join
-		// before any certificate is issued or etcd is touched, an unspecified
-		// one inherits it into the node state and the kubeconfig endpoint rule
-		// alike, and no metadata keeps the configured VIP and the no-VIP
-		// shapes.
+		// The VIP is published, authenticated metadata, not an unchecked config value.
 		vip := o.VIP.Address
 		if grant.VIP != "" {
 			if o.VIP.Address != "" && !sameIP(o.VIP.Address, grant.VIP) {
@@ -1413,8 +944,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 			return preparedJoin{}, err
 		}
 		etcdIPs = ips
-		// The production quorum gate needs the endpoints the join dials, which
-		// exist from here on.
+		// The quorum gate needs the endpoints, which exist from here on.
 		if fx.confirmQuorumHeld == nil {
 			fx.confirmQuorumHeld = func() error { return joinQuorumHeld(etcdIPs) }
 		}
@@ -1424,10 +954,6 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 	a := NodeAssembly{
 		HostDirs: fx.hostDirs,
 		Prereqs:  fx.prereqs,
-		// The join's shared-cert download and cluster gates are its ResolveNet
-		// hook: they stand where the controller's netconfig resolution stands,
-		// between the prerequisites and the pod-CIDR trust, and every one of
-		// them can refuse, so they run before any certificate is issued.
 		ResolveNet: func() (netcfg.Config, error) {
 			if useRecovery && preIntent != nil && preIntent.Recovery != nil {
 				r := preIntent.Recovery
@@ -1471,14 +997,9 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 					return netcfg.Config{}, err
 				}
 				*st = r.State
-				// The node facts are this run's spec.node, as on a fresh join: a
-				// journal an older build wrote has none, and the operator may have
-				// corrected them before retrying.
+				// A journal an older build wrote has no node facts; the operator may have corrected them.
 				st.NodeLabels, st.NodeTaints, st.RuntimeHandlers = o.NodeLabels, o.NodeTaints, o.RuntimeHandlers
-				// A journal an older build wrote records the --join URL as the
-				// server. The current endpoint rule decides it instead, so the resumed
-				// join saves, and journals again, the endpoint its kubeconfigs
-				// target.
+				// An older journal records the --join URL; the current endpoint rule wins.
 				st.Server = kubeconfig.NodeServerURL("", st.VIP.Address)
 				etcdIPs, carried = r.EtcdIPs, r.carried()
 				if len(etcdIPs) == 0 {
@@ -1489,12 +1010,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 				}
 				return netc, nil
 			}
-			// The cluster gates run after the download, which ran in
-			// preparation: the domain, network ranges and Cilium settings the
-			// bundle delivered are what a configured override is checked
-			// against, and the key gate asks what the download carried. Every
-			// one of them can refuse, so all still stand before any
-			// certificate is issued.
+			// The gates check against what the download delivered, so they run after it.
 			if err := checkJoinDomain(o.ClusterDomain); err != nil {
 				return netcfg.Config{}, err
 			}
@@ -1508,10 +1024,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 				return netcfg.Config{}, err
 			}
 
-			// Cluster CIDRs rode in with the shared certs (netconfig); inherit them (a
-			// configured range was checked to match them above) so this CP matches the
-			// cluster's single/dual-stack shape. Then resolve node IPs: dual → "v4,v6" for
-			// kubelet, v4 primary for etcd/single-IP uses.
+			// The cluster's CIDRs rode in with the shared certs; inherit the cluster's CIDR shape.
 			netc, err := netcfg.Load()
 			if err != nil {
 				return netcfg.Config{}, err
@@ -1523,8 +1036,6 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		TrustPodCIDRs: fx.trustPodCIDRs,
 		ResolveNodeIP: fx.resolveNodeIP,
 		DetectNodeIPs: fx.detectNodeIPs,
-		// A fresh join has no saved state, so the choice is flag, config, $NODE_IP,
-		// then detection.
 		BeforeCerts: func(choice host.NodeIPChoice) error {
 			fmt.Printf("stratum HA join: node IP %s (%s)\n", choice.IP, choice.Source)
 			primary = host.Primary(choice.IP)
@@ -1532,9 +1043,6 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 			return nil
 		},
 		IssueCerts: func(host, nodeIP string, sans *pki.APISANs) error {
-			// A signal received during the prerequisites or the shared-cert
-			// download stops the join here, before this node mints its
-			// certificates.
 			if err := joinHalted(ctx, "generating node-local certificates"); err != nil {
 				return err
 			}
@@ -1542,30 +1050,16 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 			return fx.issueCerts(host, nodeIP, sans) // loads shared ca/sa/front-proxy, mints local leaves
 		},
 		WriteKubeconfigs: fx.writeKubeconfigs,
-		// The encryption key rode in on the shared-cert download in ResolveNet;
-		// write the audit + admission configs the apiserver flags reference
-		// before starting. Before the member-add, not after: this can refuse
-		// (an unstamped binary cannot pin Pod Security), and nothing after the
-		// add removes the member again on failure.
+		// Runs before the member-add: it can refuse, and nothing after the add removes the member.
 		WriteProfileConfigs: func() error {
 			if err := fx.writeProfileConfigs(prof); err != nil {
 				return fmt.Errorf("profile configs: %w (nothing was added to etcd)", err)
 			}
 			return nil
 		},
-		// The join's last refusals run where the assembly puts its
-		// before-runtime-configs hook: the retained-data re-check, the etcd
-		// probe, the intent reconciliation, and a fresh add's VIP check. The
-		// intent journal, at the one place the member-add can follow it: a
-		// previous join's intent is reconciled against the cluster's own member
-		// list — the cluster, not the file, is the truth about membership — and
-		// a fresh join records its intent before the add, so a failure or a
-		// kill between the add and the state save leaves the member's identity
-		// on disk.
+		// The join's last refusals and the pre-add intent write run here, before the member-add.
 		BeforeRuntimeConfigs: func() error {
-			// Refuse retained member data again after preparation. Removal below is
-			// atomic only for an empty directory: if anything appears after this check,
-			// os.Remove fails with ENOTEMPTY instead of recursively deleting it.
+			// If anything appears after this check, os.Remove fails ENOTEMPTY, not a recursive delete.
 			if err := refuseRetainedMember(etcdDataDir); err != nil {
 				return err
 			}
@@ -1592,17 +1086,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 						preIntent.Phase, err, joinIntentPath)
 				}
 				if m := members.memberByPeerURL(preIntent.PeerURL); m != nil {
-					// The recorded member is still in the cluster: adopt it rather than
-					// run a second member-add over the same peer URL (which etcd
-					// refuses, leaving the stale member in place). Adoption is only
-					// sound for the member this run would itself have added: a journal
-					// for another host, or one at an address this run no longer
-					// resolves, would finish the join into a node state whose initial
-					// cluster names the recorded address while the node advertises the
-					// resolved one — etcd refuses to start a member on an address its
-					// cluster does not know. A joiner has no saved state to pin its
-					// address between runs, so the refusal, not adoption, is what
-					// keeps the record recoverable.
+					// Adoption is only sound for the member this run would itself have added.
 					if preIntent.MemberName != hostname || preIntent.PeerURL != newPeer {
 						removal := fmt.Sprintf("find this node's member in `stratum etcdctl member list` by its peer URL %s "+
 							"and remove it by ID on a healthy control plane", preIntent.PeerURL)
@@ -1633,22 +1117,15 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 						return fmt.Errorf("HA join: a member list read without quorum cannot prove the recorded member is gone; refusing a fresh add and retaining %s (%s)", joinIntentPath, concurrentJoinHint)
 					}
 					if useRecovery && preIntent.Recovery != nil {
-						// Refresh cluster trust/configuration through the API before
-						// a new add. Keep the old journal until that succeeds, so a
-						// failed refresh still routes published state into recovery.
+						// Keep the old journal until the refresh succeeds, so a failure still recovers.
 						return errJoinIntentStale
 					}
-					// The cluster no longer lists the recorded member: the intent is
-					// stale, and the join proceeds as a fresh one. Say so before the
-					// record is replaced — the journal is the failed join's only
-					// diagnostics until the new intent is durable.
+					// Say so before the record is replaced: the journal is the failed join's diagnostics.
 					fmt.Fprintf(joinOut, "stratum HA join: the intent file %s records member %q at %s (ID %d, phase %s), but "+
 						"the cluster's member list does not show it; treating the intent as stale, replacing it, and joining "+
 						"as a fresh member\n", joinIntentPath, preIntent.MemberName, preIntent.PeerURL, preIntent.MemberID,
 						preIntent.Phase)
-					// Keep the recovery marker until the new prepared intent
-					// atomically replaces it. A failed probe must not strand a
-					// previously published node.yaml on the member-restart path.
+					// A failed probe must not strand a published node.yaml on the member-restart path.
 				}
 			}
 			if !adopted {
@@ -1657,32 +1134,11 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 						return fmt.Errorf("HA join: cannot reach etcd before a fresh member-add: %w (%s)", err, concurrentJoinHint)
 					}
 				}
-				// A join with a VIP wrote its kubeconfigs against the VIP, so a VIP
-				// that does not answer as this cluster's apiserver — a mistyped
-				// address, or one another service answers on — would leave the new
-				// member's clients dialing an address that does not serve the
-				// cluster. The check reads the cluster CA from those kubeconfigs,
-				// and runs before the intent write and the data directory's
-				// replacement, so its refusal leaves membership as it was. An
-				// adopted member is already in the cluster, so only a fresh add
-				// checks. A check that never reached the VIP, because no cluster
-				// CA could be read from those kubeconfigs, says so and no more:
-				// the address may be right, and changing it would not fix a
-				// local problem. A node's own address is refused before the
-				// check. An existing controller's address would pass it, because
-				// every controller's apiserver certificate names its node
-				// addresses, yet as the VIP it would point every kubeconfig here
-				// at that one controller, and this node's kube-vip would announce
-				// that controller's address. This node's own address would fail
-				// it with bring-up steps that do not apply.
+				// Runs before the intent write and data-dir replacement, so a refusal leaves membership.
 				if vip := st.VIP.Address; vip != "" {
 					kind := vipNodeAddress(vip, controllerIPs, st.KubeletNodeIP)
 					if kind == "" {
-						// The live etcd probe identifies every current controller;
-						// the bundle may predate a controller added later.
-						// Etcd advertises only the primary address. The node
-						// objects also carry secondary addresses covered by the
-						// apiserver certificates, which would pass the TLS check.
+						// The bundle may predate a controller; Node records add TLS-passing secondary addresses.
 						ips, err := fx.controllerNodeIPs(ctx, o.Server, controllerIPs)
 						if err != nil {
 							return fmt.Errorf("HA join: cannot check whether VIP %s is a controller's node address: %w (nothing was added to etcd)", vip, err)
@@ -1719,17 +1175,8 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 			st.EtcdInitialCluster = adoptedInitial
 			return nil
 		},
-		// Joined control planes run kubelet+containerd like every node (the control
-		// plane itself is static pods under this kubelet). This can refuse, and it
-		// needs no member-add result. Its writes are made durable with the
-		// retained trust before the intent snapshot and membership commit.
 		WriteRuntimeConfigs: fx.writeRuntimeConfigs,
 	}
-	// The node state carries the endpoint and VIP the request records: the
-	// join derives both by bring-up's rule over the effective VIP — the
-	// configured one, or the metadata's when the grant download inherited it
-	// (the VIP gate above) — so the request hands the assembly what the state
-	// records, and the two cannot drift.
 	req := AssembleRequest{
 		Hostname:      hostname,
 		NodeIPFlag:    o.NodeIP,
@@ -1746,11 +1193,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		}
 	}
 	if preRan {
-		// The pre-download group ran in preparation, ahead of the assembly
-		// request that consumes its metadata: the assembly's host-directory
-		// and prerequisite hooks must not run the work twice. Every hook that
-		// remains does its own job, so the common steps still run through
-		// the shared assembly.
+		// The pre-download group already ran; the assembly's host-dir and prereq hooks must not rerun it.
 		a.HostDirs = func() error { return nil }
 		a.Prereqs = func(host.PrereqOptions) error { return nil }
 	}
@@ -1761,9 +1204,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 	if _, err := assemble(ctx, a, req); err != nil {
 		return preparedJoin{}, err
 	}
-	// What the journal will record: the member's identity and resumable phase,
-	// for the compensation below and for a re-run of the join. An adopted
-	// member already has its ID, so its journal is at phase added.
+	// An adopted member already has its ID, so its journal is at phase added.
 	journal := &joinIntent{MemberName: hostname, PeerURL: peer, MemberID: memberID, Phase: intentPhasePrepared}
 	if memberID != 0 {
 		journal.Phase = intentPhaseAdded
@@ -1788,57 +1229,25 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 	}, nil
 }
 
-// commitJoinMembership is the join's membership-commit phase: it consumes the
-// opaque value prepareJoinNode returned, runs the etcd member-add, and then
-// the node-state save, whose EtcdInitialCluster is the string the member-add
-// returned (or the adopted membership gave) — the one write that genuinely
-// needs the add's result. This phase runs exactly the membership effects —
-// the member-add, then the save: everything fallible that needs no add result
-// already ran in preparation, so a failure here either compensates by
-// removing the member (joinPostAddFailure) or leaves the journal as the
-// re-run's recovery record. The journal survives a completed save and ends
-// only when a later start has confirmed the node's local etcd data, so the
-// state between the save and etcd's first WAL is itself recoverable.
+// Runs exactly the membership effects: the member-add, then the node-state save.
 func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeState, error) {
-	// The zero preparedJoin is inert: no preparation ran, so there is no
-	// member to add and no state to save. Refuse it rather than reconcile,
-	// add, or save on a guess, the way TrustBundle rejects an unauthenticated
-	// Authenticated.
+	// No preparation ran: refuse rather than reconcile, add, or save on a guess.
 	if p.fx.memberAdd == nil || p.st == nil {
 		return nil, fmt.Errorf("HA join: the membership-commit phase ran on an unprepared value; " +
 			"run the join's preparation phase (prepareJoinNode) first")
 	}
 	defer p.release()
 
-	// The maintenance fence goes up here — after every refusing step of the
-	// preparation, before the live member-add, the latest point that still
-	// prevents it — and comes down when this phase returns, once the node
-	// state is saved and the member-add window is over. Proven recovery of an
-	// already-admitted member only publishes local state and skips admission
-	// fencing: the API may lack quorum until that retained member starts.
-	// A held fence refuses before anything is added, saved, or compensated,
-	// and the refusal itself (holder and renewal age) is the error; the intent
-	// journal written during preparation stays as the recovery record. The
-	// release runs on every exit, success included: a fence left held would
-	// refuse the next maintenance run until the lease self-expires.
+	// Goes up after every refusing step; proven recovery of an admitted member skips it.
 	var lease *k8sutil.MaintenanceLease
 	if !p.offlineAdoption && p.fx.takeMaintenanceFence != nil {
 		var ferr error
 		lease, ferr = p.fx.takeMaintenanceFence()
 		if k8sutil.JoinFenceDenied(ferr) {
-			// The admission policy refused the take, and the take's error
-			// names the lease another run left and the way to clear it. The
-			// token's Role grants the leases, so this is never the refusal
-			// below for a Role that predates the grant, whatever the
-			// denial's status.
 			return nil, ferr
 		}
 		if apierrors.IsForbidden(ferr) {
-			// The bootstrap token may not touch the leases: the mint that
-			// printed this join command left the stratum:certs-reader Role
-			// without the lease rules, and only a mint by a stratum that
-			// publishes them repairs it. The journal stays, and the re-run
-			// with a new command reconciles it against the member list.
+			// A token minted before the lease grant has no Lease access; only a new mint repairs it.
 			return nil, fmt.Errorf("HA join: this join's bootstrap token may not take the cluster's maintenance fence (%w): "+
 				"the join command was minted by a stratum release that predates the member-add fence grant. Mint a new one "+
 				"with `stratum token create --control-plane` on a control plane running this release — that mint grants the "+
@@ -1861,17 +1270,10 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 	k8sutil.Step(os.Stdout, "Join etcd (live member-add)")
 	fmt.Printf("stratum HA join: etcd via %s\n", strings.Join(p.etcdIPs, ","))
 	if !p.adopted {
-		// The last boundary before the commit window opens: past this point
-		// the join does not consult the context again until the node state is
-		// saved (see the deferral policy there), so this is the latest point
-		// a received signal still prevents the live member-add.
 		if err := joinHalted(ctx, "the live etcd member-add"); err != nil {
 			return nil, err
 		}
-		// The member-add and its answer are this phase's work: the initial
-		// cluster this node must boot with is the string the add returns, or —
-		// when the add's reply was lost — the one the cluster's member list
-		// gives for the member it shows at this node's peer URL.
+		// The add's return, or the adopted membership, is the initial cluster this node boots with.
 		initial, err := addMemberIfEtcdDataDirEmpty(p.etcdDataDir,
 			func() (string, error) {
 				if err := lease.ConfirmWithin(context.Background(), joinFenceConfirmWait); err != nil {
@@ -1881,19 +1283,14 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 				if addErr == nil {
 					return added, nil
 				}
-				// A refusal etcd answered outright cannot have committed: the
-				// request was rejected before any proposal, so there is no lost
-				// reply to reconcile — reading the member list or retrying would
-				// guess around etcd's own answer. Fail with it; the journal stays
-				// as the recovery record, and a re-run reconciles it.
+				// A refusal etcd answered outright cannot have committed; do not reconcile it.
 				if memberAddRefused(addErr) {
 					if isNotEnoughStarted(addErr) || isTooManyLearners(addErr) {
 						return "", fmt.Errorf("%w (%s)", addErr, concurrentJoinHint)
 					}
 					return "", addErr
 				}
-				// The reply may have been lost after the request committed:
-				// settle it against the cluster's member list, never a guess.
+				// The reply may have been lost after the request committed; settle against the list.
 				return reconcileAmbiguousMemberAdd(p.fx, p.etcdIPs, p.journal.MemberName, p.peer, addErr)
 			},
 			func() error { return p.fx.memberRemove(p.etcdIPs, p.peer) })
@@ -1901,12 +1298,7 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 			return nil, err
 		}
 		p.st.EtcdInitialCluster = initial
-		// The add's answer is in; the cluster's member list is the truth about
-		// the new member, so record the ID it gives for this node's peer URL.
-		// This read needs the add's result — before it, the list cannot show
-		// the member. A list that cannot be read — or that does not yet show
-		// the member — leaves the journal at phase prepared: the compensation
-		// below reads it again, fail closed, and a re-run reconciles by peer URL.
+		// A list that cannot be read leaves the journal at phase prepared; the compensation re-reads it.
 		members, err := p.fx.clusterMembers(p.etcdIPs)
 		if err != nil {
 			fmt.Printf("stratum HA join: WARN: cannot read the cluster's member list to record the new member's "+
@@ -1924,38 +1316,14 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 	}
 
 	k8sutil.Step(os.Stdout, "Persist node state (etcd member: existing)")
-	// saveState stays after the member-add: the persisted state asserts the
-	// membership the add established and carries the initial-cluster string
-	// the add returned (or the adopted membership's), which does not exist
-	// before the add. A failure here leaves a voting member behind, so the
-	// compensation removes it when the cluster's quorum permits.
+	// The saved state asserts the add's membership; a failure leaves a member to compensate.
 	if err := p.fx.saveState(p.st); err != nil {
 		if errors.Is(err, errJoinStatePublished) {
 			return nil, fmt.Errorf("HA join: %w; node state was published but its durability is unconfirmed; keeping %s and leaving membership unchanged. Re-run `stratum up --join` to reconcile and finish the save", err, joinIntentPath)
 		}
 		return nil, joinPostAddFailure(p.fx, p.etcdIPs, p.journal, err)
 	}
-	// The journal deliberately outlives the state save: etcd only starts later,
-	// on the supervisor's first run, and a crash before etcd writes its WAL
-	// would leave a published node.yaml with no WAL and no recovery record —
-	// bare `stratum up` refuses such a node (requireLocalEtcdMember), and a
-	// re-run of `stratum up --join` routes it to the member restart rather
-	// than the join. With the journal in place that state resumes offline
-	// instead. The journal ends when a later start has confirmed the node's
-	// local etcd data: pkg/cli's member-restart path clears it once the WAL
-	// gate passes, or a failed join that removed its member clears it here.
-	// Deferral policy — the member-add-to-state-save commit window. From the
-	// live MemberAdd to the SaveState above, nothing consults the context: a
-	// stop inside that span would leave a voting member already added to
-	// etcd with no node state recording it — an orphan. The journal changes
-	// what an orphan costs — a re-run resumes from it — but the first signal
-	// is still deferred: the window runs to completion and is observed here,
-	// once the state is saved and stopping the join is safe again, so the
-	// run reports the stop instead of pretending the join is still live. The
-	// second signal needs no handling of its own: the interrupt handler
-	// restores the signals' default action before its cancellation becomes
-	// visible, so a second signal inside the window kills the process
-	// exactly as it does everywhere else.
+	// The journal outlives the save: a crash before etcd's first WAL leaves a node.yaml `up` refuses.
 	if err := ctx.Err(); err != nil {
 		fmt.Printf("stratum HA join: a signal was received while the etcd member was being added; "+
 			"the member-add and the node-state save were completed before stopping — "+
@@ -1965,27 +1333,11 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 	return p.st, nil
 }
 
-// joinPostAddFailure compensates a join that failed after its member-add: the
-// state save is the one fallible write left after the add (every effect that
-// needs no add result runs in preparation), and its failure leaves a voting
-// etcd member for a node that never starts, so the member is removed again by
-// ID. The cluster's
-// member list, not the intent file, is the truth about the member: an ID the
-// journal never learned is read from the list, and a member the list does not
-// show is not removed on a guess. The removal runs only once the quorum gate
-// has authorised it — any error there refuses it, fail closed
-// (confirmQuorumLost's semantics, internal/ha/quorum.go:39-69), because
-// removing a member the cluster may still need is worse than leaving one a
-// re-run can reconcile. When the member is not removed, the intent file
-// survives as the recovery record, and the error says how recovery proceeds.
+// Removes the member by ID only when the member list names it and the quorum gate authorises.
 func joinPostAddFailure(fx joinEffects, etcdIPs []string, j *joinIntent, cause error) error {
 	recorded := fmt.Sprintf("the intent file %s keeps the member's identity and resumable phase (name %q, peer %s, ID %d, phase %s)",
 		joinIntentPath, j.MemberName, j.PeerURL, j.MemberID, j.Phase)
-	// The hand-removal remedy names the member ID only once it is known: the
-	// journal may never have learned one (phase prepared), and
-	// `etcdctl member remove 0` would send the operator after a member that
-	// does not exist. Until the cluster's own member list gives the ID, the
-	// remedy is to find this node's member there by its peer URL.
+	// member remove 0 names no member; until the list answers, the remedy is the peer-URL lookup.
 	recoveryFor := func(id uint64) string {
 		if id == 0 {
 			return fmt.Sprintf("re-run `stratum up --join` on this node: it reconciles the intent against the cluster's "+
@@ -2025,27 +1377,10 @@ func joinPostAddFailure(fx joinEffects, etcdIPs []string, j *joinIntent, cause e
 		"for this node; re-run the join to retry", cause)
 }
 
-// joinFenceConfirmWait bounds how long the join's fence confirms wait out an
-// unreachable control plane. The join reaches the cluster through the VIP,
-// which can refuse connections for a moment while the previous control plane
-// settles; discovery and the shared-certs read already wait as long. A var so
-// a test need not.
+// The VIP can refuse connections while the previous control plane settles; discovery waits as long.
 var joinFenceConfirmWait = 2 * time.Minute
 
-// takeJoinMaintenanceFence is the production maintenance fence: both
-// maintenance leases (k8sutil.MaintenanceFenceAs, maintlease.AcquireCompatible)
-// taken with this joiner's bootstrap-token credential, under the holder
-// k8sutil.JoinMaintenanceHolder names that token by. The kubeconfig is read
-// at take time, not at wiring time: the fence goes up in the membership-commit
-// phase, after preparation has written it, and in that window it is this
-// node's only working cluster credential — its kubeconfigs target the local
-// apiserver the join is about to start, which does not exist yet. The take
-// holds and renews only because the mint that published this joiner's grant
-// gave the control-plane bootstrap group the leases access the
-// stratum:certs-reader Role carries, and the join fence admission policy that
-// mint put in place admits it only under that holder and never over a lease
-// another run holds — a refusal leftMaintenanceLeases explains. The token is
-// read from the kubeconfig's own auth info, as DownloadCerts reads it.
+// Read at take time: the fence goes up after preparation wrote it, this node's only credential.
 func takeJoinMaintenanceFence() (*k8sutil.MaintenanceLease, error) {
 	apiCfg, err := clientcmd.LoadFromFile(version.BootstrapKubeconfig)
 	if err != nil {
@@ -2070,15 +1405,7 @@ func takeJoinMaintenanceFence() (*k8sutil.MaintenanceLease, error) {
 	return lease, nil
 }
 
-// leftMaintenanceLeases is the refusal for a fence take the join fence
-// admission policy denied. maintlease writes over an existing lease only once
-// its holder has stopped renewing it, and the policy lets a join token write
-// over only a lease that is empty or already names that token, so the lease
-// named another holder and had expired: a run that did not finish left it.
-// The leases are read again to name each such lease and its holder. The way
-// out is any control-plane mint, whose admin-credential fence takes an
-// expired lease over and releases it, or deleting the lease by hand; the
-// member-add had not started. denied, the apiserver's answer, is wrapped.
+// The lease named another holder and had expired: a run that did not finish left it.
 func leftMaintenanceLeases(cs kubernetes.Interface, tokenID string, denied error) error {
 	own := "system:bootstrap:" + tokenID + "/"
 	var held, names []string
@@ -2095,8 +1422,7 @@ func leftMaintenanceLeases(cs kubernetes.Interface, tokenID string, denied error
 		names = append(names, name)
 	}
 	if len(names) == 0 {
-		// Gone or taken again since the denial: name the lease the apiserver
-		// refused, which its answer carries.
+		// Gone or taken again since the denial: name the lease the apiserver refused.
 		name := "stratum-cluster-maintenance"
 		var st apierrors.APIStatus
 		if errors.As(denied, &st) && st.Status().Details != nil && st.Status().Details.Name != "" {
@@ -2115,9 +1441,7 @@ func leftMaintenanceLeases(cs kubernetes.Interface, tokenID string, denied error
 		what, denied, it, strings.Join(names, " "))
 }
 
-// joinFenceClientset builds the clientset the join's maintenance fence rides
-// from the bootstrap kubeconfig at path. A var so tests can stand a fake
-// apiserver in for the cluster's.
+// A var so tests can stand a fake apiserver in for the cluster's.
 var joinFenceClientset = func(path string) (kubernetes.Interface, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", path)
 	if err != nil {

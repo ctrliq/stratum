@@ -27,8 +27,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// engineReadTools is every read-tier tool the engine registers: version_get
-// plus the generic Kubernetes toolset.
+// Every read-tier tool the engine registers: version_get plus the generic set.
 var engineReadTools = []string{
 	"backup_evidence",
 	"certs_check",
@@ -52,8 +51,7 @@ var engineReadTools = []string{
 	"version_get",
 }
 
-// engineWriteTools is every write-tier tool the engine registers.
-// Absent entirely without --allow-write.
+// Every write-tier tool; absent entirely without --allow-write.
 var engineWriteTools = []string{
 	"registry_apply",
 	"runtime_apply",
@@ -66,8 +64,7 @@ var engineWriteTools = []string{
 	"token_create",
 }
 
-// engineDestructiveTools is every destructive-tier tool the engine
-// registers. Absent entirely without --allow-destructive.
+// Every destructive-tier tool; absent entirely without --allow-destructive.
 var engineDestructiveTools = []string{
 	"certs_migrate_etcd_ca",
 	"certs_migrate_kubelet_client_ca",
@@ -82,20 +79,16 @@ var engineDestructiveTools = []string{
 	"upgrade_apply",
 }
 
-// withProbes returns the engine's read tools plus the named extras, sorted,
-// which is the order tools/list assertions compare against.
+// The engine's read tools plus the named extras, sorted — the order tools/list assertions compare.
 func withProbes(extra ...string) []string {
 	out := append(append([]string{}, engineReadTools...), extra...)
 	slices.Sort(out)
 	return out
 }
 
-// testConnector is an unconnected Connector.
 func testConnector() *kube.Connector { return kube.NewConnector(kube.Options{}) }
 
-// probeSet is a contributed tool set carrying one tool at each tier, which
-// is how these tests exercise the gate: the engine itself ships only a read
-// tool today, so without this there would be nothing to gate.
+// One tool at each tier, the only thing there is to gate.
 type probeSet struct{}
 
 func (probeSet) Name() string { return "probe" }
@@ -113,8 +106,7 @@ func (probeSet) Register(r *Registrar) {
 	AddTool(r, TierDestructive, DestructiveTool("probe_destroy", "destroy"), ok)
 }
 
-// connect builds a server at the given tiers and returns a live client
-// session over in-memory transports — the real protocol, not a handler call.
+// Builds a server at the given tiers and a live client session over in-memory transports.
 func connect(t *testing.T, allowWrite, allowDestructive bool) *sdk.ClientSession {
 	t.Helper()
 	ctx := t.Context()
@@ -151,7 +143,6 @@ func toolNames(t *testing.T, cs *sdk.ClientSession) []string {
 	return names
 }
 
-// TestAdvertisedSurfacePerTier pins the exact tool list at each tier.
 func TestAdvertisedSurfacePerTier(t *testing.T) {
 	for _, tc := range []struct {
 		name                         string
@@ -190,7 +181,6 @@ func TestAdvertisedSurfacePerTier(t *testing.T) {
 	}
 }
 
-// TestMutatingToolsAreAbsentNotRefused is the security assertion.
 func TestMutatingToolsAreAbsentNotRefused(t *testing.T) {
 	cs := connect(t, false, false)
 
@@ -204,9 +194,7 @@ func TestMutatingToolsAreAbsentNotRefused(t *testing.T) {
 	}
 }
 
-// TestVersionGetRoundTrips runs one tool end to end over the protocol, so
-// the transport, the registry and the SDK's schema inference are all
-// exercised rather than assumed.
+// One end-to-end round trip over the protocol, transport included.
 func TestVersionGetRoundTrips(t *testing.T) {
 	cs := connect(t, false, false)
 
@@ -234,8 +222,7 @@ func TestVersionGetRoundTrips(t *testing.T) {
 	}
 }
 
-// TestReadToolsAreAnnotated pins the annotation over the wire, at the read
-// tier the operator gets by default.
+// Pins the annotation over the wire, at the default read tier.
 func TestReadToolsAreAnnotated(t *testing.T) {
 	res, err := connect(t, false, false).ListTools(t.Context(), nil)
 	if err != nil {
@@ -252,8 +239,7 @@ func TestReadToolsAreAnnotated(t *testing.T) {
 	}
 }
 
-// TestRegistrarRecordsWhatItAdmitted keeps Registered() honest, since the
-// tier tests above and any future audit rely on it.
+// Keeps Registered() honest.
 func TestRegistrarRecordsWhatItAdmitted(t *testing.T) {
 	cfg := rootConfig{displayVersion: "v0", toolSets: []ToolSet{probeSet{}}}
 
@@ -271,8 +257,7 @@ func TestRegistrarRecordsWhatItAdmitted(t *testing.T) {
 	}
 }
 
-// TestNilToolSetIsIgnored: WithToolSets is public API, so a nil entry is a
-// caller mistake we should survive rather than panic on at startup.
+// WithToolSets is public API; a nil entry is a caller mistake to survive.
 func TestNilToolSetIsIgnored(t *testing.T) {
 	cfg := rootConfig{displayVersion: "v0", toolSets: []ToolSet{nil}}
 	r := newRegistrar(mcpsrv.NewServer(mcpsrv.Options{}), false, false)
@@ -282,9 +267,7 @@ func TestNilToolSetIsIgnored(t *testing.T) {
 	}
 }
 
-// mislabelSet files a destructive tool at the read tier — the mistake this
-// seam has to catch, because a read-tier registration is also what tells an
-// MCP client the call is safe to auto-approve.
+// Files a destructive tool at the read tier, the mistake this seam catches.
 type mislabelSet struct {
 	tier Tier
 	tool *sdk.Tool
@@ -301,10 +284,7 @@ func (m mislabelSet) Register(r *Registrar) {
 		})
 }
 
-// TestTierMustMatchAnnotations: the tier and the annotations are two claims
-// made by the same code, and until they were checked against each other a
-// contributed set could file anything at all under TierRead — which both
-// skipped the operator's flags and put the client's auto-approve hint on it.
+// The tier and the annotations are two claims; a set could file anything under TierRead.
 func TestTierMustMatchAnnotations(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -320,8 +300,7 @@ func TestTierMustMatchAnnotations(t *testing.T) {
 			Description: "both",
 			Annotations: &sdk.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: ptr(true)},
 		}, "both read-only and destructive"},
-		// The inverse mislabel: the operator's heaviest gate, and a hint
-		// telling the client the call is safe.
+		// The inverse mislabel: the heaviest gate, and a hint the call is safe.
 		{"write hint at destructive", TierDestructive, WriteTool("looks_recoverable", "looks recoverable"),
 			"DestructiveHint does not say so"},
 		{"no hint at destructive", TierDestructive, &sdk.Tool{
@@ -332,9 +311,7 @@ func TestTierMustMatchAnnotations(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := rootConfig{displayVersion: "v0", toolSets: []ToolSet{mislabelSet{tc.tier, tc.tool}}}
-			// Open every tier: the check has to reject a mislabelled tool
-			// because it is mislabelled, not because a flag happened to
-			// gate it out first.
+			// Reject it because it is mislabelled, not because a flag gates it out first.
 			r := newRegistrar(mcpsrv.NewServer(mcpsrv.Options{}), true, true)
 
 			err := registerAll(r, cfg, testConnector(), testConnector())
@@ -351,8 +328,7 @@ func TestTierMustMatchAnnotations(t *testing.T) {
 	}
 }
 
-// TestWriteTierMayCarryADestructiveHint: the cautious direction is allowed
-// on purpose.
+// The cautious direction is allowed on purpose.
 func TestWriteTierMayCarryADestructiveHint(t *testing.T) {
 	cfg := rootConfig{displayVersion: "v0", toolSets: []ToolSet{
 		// A name no engine tool uses.
@@ -367,9 +343,7 @@ func TestWriteTierMayCarryADestructiveHint(t *testing.T) {
 	}
 }
 
-// TestReadOnlyHintCannotBeGatedAboveRead is the other half of the rule: a
-// tool advertised read-only must be one the operator's flags did not gate,
-// or the hint is describing a capability they withheld.
+// A tool advertised read-only must be one the operator's flags did not gate.
 func TestReadOnlyHintCannotBeGatedAboveRead(t *testing.T) {
 	type in struct{}
 	type out struct{}
@@ -386,9 +360,7 @@ func TestReadOnlyHintCannotBeGatedAboveRead(t *testing.T) {
 	}
 }
 
-// TestEngineToolsAreConsistentlyLabelled runs the real registration, tier
-// sets included, so a future tool that files itself wrong fails here rather
-// than at a customer's startup.
+// Real registration, tier sets included, so a mislabelled tool fails here.
 func TestEngineToolsAreConsistentlyLabelled(t *testing.T) {
 	for _, tiers := range [][2]bool{{false, false}, {true, false}, {false, true}, {true, true}} {
 		cfg := rootConfig{displayVersion: "v0", toolSets: []ToolSet{probeSet{}}}
@@ -399,7 +371,7 @@ func TestEngineToolsAreConsistentlyLabelled(t *testing.T) {
 	}
 }
 
-// shadowSet claims a name the engine already used.
+// Claims a name the engine already used.
 type shadowSet struct{}
 
 func (shadowSet) Name() string { return "shadow" }
@@ -413,7 +385,6 @@ func (shadowSet) Register(r *Registrar) {
 		})
 }
 
-// TestAToolSetCannotShadowAnEngineTool.
 func TestAToolSetCannotShadowAnEngineTool(t *testing.T) {
 	cfg := rootConfig{displayVersion: "v0", toolSets: []ToolSet{shadowSet{}}}
 	r := newRegistrar(mcpsrv.NewServer(mcpsrv.Options{}), true, true)
@@ -425,9 +396,7 @@ func TestAToolSetCannotShadowAnEngineTool(t *testing.T) {
 	if !strings.Contains(err.Error(), "registered twice") {
 		t.Errorf("error %q does not say the name was taken", err)
 	}
-	// The assertion is that the name appears once, not that the surface is
-	// any particular size — the engine's tool list grows, and a count here
-	// would go stale as it grows for no reason.
+	// The name appears once; a count would go stale as the tool list grows.
 	var seen int
 	for _, name := range r.Registered() {
 		if name == "version_get" {
@@ -441,10 +410,6 @@ func TestAToolSetCannotShadowAnEngineTool(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// mcpChild runs the real `stratum mcp` command in-process with the given
-// flags added beside a dead-apiserver kubeconfig, maps the result the way
-// cmd/stratum/main.go would, and exits with that code.
-// writeMCPToken writes a private bearer-token file for --token-file.
 func writeMCPToken(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "mcp-token")
@@ -464,14 +429,7 @@ func mcpChild(t *testing.T, args ...string) {
 	os.Exit(code)
 }
 
-// TestMCPSignalStopExitsZero pins the shared interrupt set at the mcp
-// command: a single SIGINT, SIGTERM or SIGHUP must stop `stratum mcp` with
-// exit 0, never killing the process. A SIGHUP outside the shared set takes
-// its default action and kills the process. SIGINT and SIGTERM are the
-// guards: the stdio transport's context.Canceled filter
-// (internal/mcp/server.go:59) and the HTTP transport's shutdown
-// (internal/mcp/server.go:129-135) are clean stops, and they must not
-// regress.
+// A single SIGINT, SIGTERM or SIGHUP stops `stratum mcp` with exit 0.
 func TestMCPSignalStopExitsZero(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -487,10 +445,7 @@ func TestMCPSignalStopExitsZero(t *testing.T) {
 				return
 			}
 			p := startCLIChild(t, "STRATUM_MCP_HTTP_CHILD", "TestMCPSignalStopExitsZero")
-			// Barrier: this line prints inside Serve
-			// (internal/mcp/server.go:92), after the command's signal context
-			// is installed (pkg/cli/mcp.go:100), so the signal cannot race
-			// ahead of the handler and kill the child by the default action.
+			// Prints inside Serve, after the signal context is installed, so the signal cannot race.
 			p.waitForErrLog(t, "serving MCP over streamable HTTP")
 			if err := p.cmd.Process.Signal(tc.sig); err != nil {
 				t.Fatal(err)
@@ -503,14 +458,7 @@ func TestMCPSignalStopExitsZero(t *testing.T) {
 	}
 }
 
-// TestMCPSecondSignalKillsDuringShutdown pins the shared set's second-signal
-// rule for `stratum mcp`: once the first signal has asked the server to
-// stop, the next one must kill the process instead of being swallowed. The
-// parent holds the stop open by leaving a connection mid-request-headers,
-// which http.Server.Shutdown waits for through its 5s grace
-// (internal/mcp/server.go:121-135) — the window a stalled stop exists for.
-// Fails if the second signal is swallowed: the child must die to the
-// signal, not shut down on its own.
+// Once the first signal has asked the server to stop, the next must kill it.
 func TestMCPSecondSignalKillsDuringShutdown(t *testing.T) {
 	if os.Getenv("STRATUM_MCP_HTTP_CHILD") == "1" {
 		mcpChild(t, "--transport=http", "--addr=127.0.0.1:0", "--token-file="+writeMCPToken(t))
@@ -518,10 +466,7 @@ func TestMCPSecondSignalKillsDuringShutdown(t *testing.T) {
 	}
 	p := startCLIChild(t, "STRATUM_MCP_HTTP_CHILD", "TestMCPSecondSignalKillsDuringShutdown")
 	addr := waitForMCPServingAddr(t, p)
-	// A connection stuck mid-headers is active, not idle, so the shutdown
-	// waits for it: net/http treats a StateNew connection as idle only after
-	// a 5s grace (Go issue 22682), which holds the stop open through the
-	// server's own 5s shutdown grace (internal/mcp/server.go:121-135).
+	// A StateNew connection counts as idle only after a 5s grace, which holds the stop open.
 	stalled, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial the mcp child at %s: %v", addr, err)
@@ -530,8 +475,7 @@ func TestMCPSecondSignalKillsDuringShutdown(t *testing.T) {
 	if _, err := stalled.Write([]byte("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n")); err != nil {
 		t.Fatalf("write a partial request head: %v", err)
 	}
-	// A response over a later connection proves the serial accept loop
-	// already accepted the stalled connection.
+	// Proves the accept loop already took the stalled connection.
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 	resp, err := client.Get("http://" + addr + "/")
 	if err != nil {
@@ -542,8 +486,7 @@ func TestMCPSecondSignalKillsDuringShutdown(t *testing.T) {
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	// Shutdown closes the listener after signal handling has exposed
-	// cancellation. Wait for that observable condition before signal two.
+	// Wait for the observable listener closure before signal two.
 	waitForListenerClosed(t, addr)
 	select {
 	case err := <-p.waited:
@@ -569,9 +512,7 @@ func TestMCPSecondSignalKillsDuringShutdown(t *testing.T) {
 	}
 }
 
-// waitForMCPServingAddr blocks until the child logs that it is serving over
-// HTTP and returns the address it bound, parsed out of the log line
-// (internal/mcp/server.go:92).
+// Waits for the child's serving log and returns the address it bound.
 func waitForMCPServingAddr(t *testing.T, p *cliProc) string {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -597,23 +538,14 @@ func waitForMCPServingAddr(t *testing.T, p *cliProc) string {
 	}
 }
 
-// TestMCPStdioStopExitsZero pins the stdio transport's clean-stop filter
-// (internal/mcp/server.go:59) that must agree with the shared
-// clean-stop helper or keeps consistent with it: a server stopped by a
-// signal must return nil from Serve so `stratum mcp` exits 0, sessions in
-// flight or not. It is green today — Serve filters context.Canceled — and
-// must stay green when the shared context records a signal cause while
-// keeping Err exactly context.Canceled. The parent holds the child's
-// stdin open, so the stdio server blocks reading it and only the signal
-// decides when Serve returns.
+// A signal-stopped stdio server returns nil from Serve, so `stratum mcp` exits 0.
 func TestMCPStdioStopExitsZero(t *testing.T) {
 	if os.Getenv("STRATUM_MCP_STDIO_CHILD") == "1" {
 		mcpChild(t) // stdio is the default transport
 		return
 	}
 	p := startCLIChild(t, "STRATUM_MCP_STDIO_CHILD", "TestMCPStdioStopExitsZero")
-	// Barrier: this line prints inside Serve (internal/mcp/server.go:57),
-	// after the command's signal context is installed (pkg/cli/mcp.go:98).
+	// Prints inside Serve, after the command's signal context is installed.
 	p.waitForErrLog(t, "serving MCP over stdio")
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -624,13 +556,7 @@ func TestMCPStdioStopExitsZero(t *testing.T) {
 	p.waitExitedCode(t, 0)
 }
 
-// TestMCPStopsWhenTheParentContextIsCancelled pins the derivation the
-// shared handler must keep: mcp's signal context descends from the command's
-// parent context (pkg/cli/mcp.go:98 uses cmd.Context()), so a host that
-// cancels the context it passed to ExecuteContext stops the server instead
-// of leaving it serving forever. It is green today and guards the move onto
-// internal/interrupt, which must not detach mcp from its parent. The parent
-// asks for the cancellation over SIGUSR1, a signal outside the shared set.
+// The signal context descends from the command's parent, so a host cancel stops the server.
 func TestMCPStopsWhenTheParentContextIsCancelled(t *testing.T) {
 	if os.Getenv("STRATUM_MCP_PARENT_CHILD") == "1" {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -654,17 +580,14 @@ func TestMCPStopsWhenTheParentContextIsCancelled(t *testing.T) {
 	if err := p.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
 		t.Fatal(err)
 	}
-	// Serve's HTTP path returns nil after its shutdown for any ended
-	// context (internal/mcp/server.go:129-135), so a host's cancellation
-	// is also exit 0.
+	// Serve's HTTP path returns nil for any ended context, so this is also exit 0.
 	if code := p.waitForExitCode(t); code != 0 {
 		t.Fatalf("a parent-context cancellation maps to exit %d, want 0: Serve returns nil after its shutdown", code)
 	}
 	p.waitExitedCode(t, 0)
 }
 
-// waitForListenerClosed observes shutdown rather than guessing how long the
-// child needs to receive its first signal. The deadline only bounds failure.
+// Observes shutdown rather than guessing how long the first signal takes.
 func waitForListenerClosed(t *testing.T, addr string) {
 	t.Helper()
 	if err := observeListenerClosed(addr, net.DialTimeout); err != nil {
@@ -681,9 +604,7 @@ func observeListenerClosed(addr string, dial func(string, string, time.Duration)
 			if errors.As(err, &op) && errors.Is(op.Err, syscall.ECONNREFUSED) {
 				return nil
 			}
-			// A connect racing listener closure can be reset, or time out on a
-			// loaded runner, before subsequent probes are refused. Only refusal
-			// confirms the listener is closed.
+			// Only refusal confirms the listener is closed.
 			var ne net.Error
 			if !errors.Is(err, syscall.ECONNRESET) && !(errors.As(err, &ne) && ne.Timeout()) {
 				return fmt.Errorf("observe listener shutdown: %w", err)
@@ -744,18 +665,9 @@ func TestObserveListenerClosedRejectsOtherDialErrors(t *testing.T) {
 	}
 }
 
-// TestNodeConnector_CarriesTheServersRequestTimeout pins the node connector's
-// request timeout. Beside the configurable connector the operator scopes with
-// --kubeconfig, --context and --request-timeout, the server builds a second,
-// explicit node connector on version.AdminConf carrying the same
-// --request-timeout, and token_list is registered with it: a private
-// admin.conf connector of its own would default to 30 seconds, so the
-// server's request timeout would never reach it
-// (internal/mcp/stratumread.go:470-472).
+// Pins the node connector's request timeout; without it the default would be 30s.
 func TestNodeConnector_CarriesTheServersRequestTimeout(t *testing.T) {
-	// Two distinguishable kubeconfigs: A stands for the node's admin.conf, B
-	// for the operator's --kubeconfig. Building a connector contacts nothing,
-	// so the API servers are names rather than listeners.
+	// A is the node's admin.conf, B the operator's --kubeconfig.
 	adminConf := kubetest.Kubeconfig(t, &rest.Config{Host: "https://admin.example:6443"})
 	operatorConf := kubetest.Kubeconfig(t, &rest.Config{Host: "https://operator.example:6443"})
 	t.Setenv("KUBECONFIG", operatorConf)
@@ -770,9 +682,7 @@ func TestNodeConnector_CarriesTheServersRequestTimeout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Explicit, not the fallback precedence: $KUBECONFIG points at the
-		// operator's config here, and the node credential must not move with
-		// the operator's environment.
+		// Explicit, not the fallback: the node credential must not move with the operator's env.
 		if cl.Source != kube.SourceExplicit || cl.ConfigPath != version.AdminConf {
 			t.Errorf("node connector resolved %s from %q, want admin.conf taken explicitly", cl.Source, cl.ConfigPath)
 		}
@@ -798,11 +708,7 @@ func TestNodeConnector_CarriesTheServersRequestTimeout(t *testing.T) {
 	})
 
 	t.Run("token_list is registered with the node connector", func(t *testing.T) {
-		// registerAll threads both connectors into the catalog. Whether the
-		// token_list row really builds its handler on the node connector is
-		// pinned behaviourally in internal/mcp
-		// (TestTokenList_RidesTheNodeConnectorsTimeout): pkg/cli cannot make
-		// that call, because token_list's Stratum host check fails off a node.
+		// Whether token_list really rides the node connector is pinned in internal/mcp.
 		r := newRegistrar(mcpsrv.NewServer(mcpsrv.Options{Version: "v0"}), false, false)
 		if err := registerAll(r, rootConfig{displayVersion: "v0"}, conn, nodeConn); err != nil {
 			t.Fatalf("registerAll refused the server's two connectors: %v", err)
@@ -813,12 +719,7 @@ func TestNodeConnector_CarriesTheServersRequestTimeout(t *testing.T) {
 	})
 }
 
-// TestTokenListDescriptionStopsClaimingItIgnoresKubeconfig pins the
-// registration's contract: token_list rides the server's explicit node
-// connector, so the description the client sees in tools/list must not say it
-// "uses the node's own admin credential rather than --kubeconfig" — read as a
-// promise that the operator's configuration does not govern the tool at
-// all — the claim the least-privilege guide repeats.
+// token_list rides the node connector, so its description must not disclaim --kubeconfig.
 func TestTokenListDescriptionStopsClaimingItIgnoresKubeconfig(t *testing.T) {
 	res, err := connect(t, false, false).ListTools(t.Context(), nil)
 	if err != nil {
@@ -836,19 +737,7 @@ func TestTokenListDescriptionStopsClaimingItIgnoresKubeconfig(t *testing.T) {
 	t.Fatal("token_list is not registered")
 }
 
-// TestUpgradePlanAndApply_DescribeTheSameCluster is the client-visible half
-// of the same-cluster guard. Both tools ride the node connector on admin.conf
-// — the plan previews the cluster the apply rolls — and the surface a client
-// sees in tools/list must say so: upgrade_plan advertises no per-call context
-// argument, both descriptions name the credential they read the way
-// token_list's does, and the plan's description names the tool whose cluster
-// it previews. pkg/cli cannot drive upgrade_plan against an API server (its
-// Stratum host check fails off a node), so the behavioural half of the guard
-// lives in internal/mcp (TestUpgradePlanAndApply_AddressTheSameCluster).
-// Fails when upgrade_plan's schema advertises "context", its description
-// names neither credential nor tool, or upgrade_apply's description
-// claims scope=cluster runs on the server's configurable credential and
-// default context.
+// upgrade_plan previews the cluster upgrade_apply rolls; the tools/list surface must say so.
 func TestUpgradePlanAndApply_DescribeTheSameCluster(t *testing.T) {
 	tools := advertised(t, tierSession(t, true, true))
 
@@ -885,14 +774,7 @@ func TestUpgradePlanAndApply_DescribeTheSameCluster(t *testing.T) {
 	})
 }
 
-// The credential-source pin, grouped the way the least-privilege guide
-// presents it. "configurable connector" is the operator-scoped connector
-// (--kubeconfig, --context, --request-timeout); "node connector" is this
-// node's admin.conf, captured by the catalog's handler dependencies; "none"
-// is a handler the registration hands no Kubernetes client at all — the host-local tools,
-// whose deeper operations may still touch admin.conf on their own, as a
-// node upgrade's cordon does. The groups follow the guide's least-privilege
-// order, and a row moves only when the credential its tools use changes.
+// Credential groups, in the least-privilege guide's order; a row moves only on a wiring change.
 var (
 	toolsOnTheConfigurableConnector = []string{
 		"context_list",
@@ -944,8 +826,7 @@ var (
 	}
 )
 
-// pinnedCredentialSources composes the pinned per-tool table from the three
-// groups above.
+// Composes the pinned per-tool table from the three groups above.
 func pinnedCredentialSources() map[string]string {
 	pin := make(map[string]string,
 		len(toolsOnTheConfigurableConnector)+len(toolsOnTheNodeConnector)+len(toolsOnNoKubernetesCredential))
@@ -964,8 +845,7 @@ func pinnedCredentialSources() map[string]string {
 	return pin
 }
 
-// credentialTable renders a name-to-source map as one sorted "name: source"
-// line per tool, so a pin failure names the rows that moved.
+// Renders a name-to-source map as one sorted line per tool, so failures name the rows.
 func credentialTable(m map[string]string) string {
 	names := make([]string, 0, len(m))
 	for name := range m {
@@ -979,29 +859,9 @@ func credentialTable(m map[string]string) string {
 	return b.String()
 }
 
-// TestEveryToolDeclaresItsCredentialSource pins each tool's credential.
-// Registration records, beside every tool it admits, which Kubernetes
-// credential that tool reaches the API with, and the full record equals the
-// pinned table above: the table the MCP page and its least-privilege section
-// are corrected against, so the guide grants rights to the credential each
-// tool really uses and never claims a credential a registration does not.
-//
-// The pinned rows follow the wiring. token_list, upgrade_plan and
-// upgrade_apply ride the node connector — the plan rides it so it previews
-// the same cluster the apply rolls, pinned behaviourally by
-// TestUpgradePlanAndApply_AddressTheSameCluster — as do token_create,
-// certs_rotate_ca and certs_migrate_etcd_ca, whose handlers capture the node
-// connector through the catalog. The generic Kubernetes tools and ha_repoint
-// keep the configurable connector.
-//
-// Fails when a new tool reaches the API without declaring which credential
-// it uses, or when an existing tool's source changes without this table
-// changing.
+// Pins each tool's declared credential source against the recorded one.
 func TestEveryToolDeclaresItsCredentialSource(t *testing.T) {
-	// The highest tier, so every row the engine ships is admitted: a source
-	// recorded for a tool that never registered would be about nothing. Two
-	// distinct connectors, as the real server builds them, so the declaration
-	// is read off a registration shaped like the real one.
+	// Every row admitted, on two connectors shaped like the real server's.
 	srv := mcpsrv.NewServer(mcpsrv.Options{Version: "v0"})
 	r := newRegistrar(srv, true, true)
 	if err := registerAll(r, rootConfig{displayVersion: "v0"}, testConnector(), testConnector()); err != nil {
@@ -1033,8 +893,7 @@ func TestEveryToolDeclaresItsCredentialSource(t *testing.T) {
 	}
 }
 
-// Each root can build its server independently. In particular, registration
-// must not replace a client builder used by a different server.
+// Registration must not replace a client builder used by a different server.
 func TestRegisterAllConcurrentServers(t *testing.T) {
 	for i := range 8 {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {

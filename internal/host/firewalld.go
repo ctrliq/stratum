@@ -14,33 +14,18 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// With firewalld running, pod traffic to the node itself is rejected: Cilium's
-// per-pod lxc interfaces belong to no zone, so firewalld files them under the
-// default zone (public), whose target rejects everything not listed. Kube-proxy
-// replacement turns a pod's call to the kubernetes Service (10.96.0.1:443) into
-// <node IP>:6443 arriving on an lxc interface, so CoreDNS and local-path never
-// reach the API server. RLC and RHEL ship firewalld on, so this is the
-// stock host there, not an exotic one; Rocky's cloud images ship without it.
-//
-// Bind Cilium's host-side lxc+ pod interfaces to the trusted zone. An earlier
-// source-based rule trusted spoofed pod addresses on external interfaces even
-// with reverse-path filtering; startup removes any such rule Stratum recorded.
-
-// firewalldZone is the zone Cilium pod interfaces are bound to. A built-in.
+// Pods reach the node on Cilium lxc interfaces, which firewalld's default zone rejects.
 const firewalldZone = "trusted"
 
-// firewall-cmd exit codes this code branches on. 0 is success or "yes".
 const (
 	exitNo           = 1   // --query-source or --query-interface: not bound
 	exitNoZone       = 2   // --get-zone-of-source or --get-zone-of-interface: not bound
 	exitNotRunning   = 252 // --state: daemon is stopped
-	exitNotInstalled = -2  // the binary is not on this host (runFirewall)
-	exitNotRun       = -1  // it could not be run at all; the output is the error
+	exitNotInstalled = -2
+	exitNotRun       = -1 // it could not be run at all; the output is the error
 )
 
-// firewalldRecordPath lists bindings Stratum added, per zone and scope, so
-// uninstall removes those rather than bindings the operator made. It lives
-// under DataDir and is read before uninstall removes node state.
+// Read before uninstall removes node state.
 var firewalldRecordPath = filepath.Join(version.DataDir, "firewalld.json")
 
 var errFirewalldNotInstalled = errors.New("firewall-cmd is not installed")
@@ -50,9 +35,7 @@ type firewalldRecord struct {
 	TrustedInterfaces []trustedInterface `json:"trustedInterfaces,omitempty"`
 }
 
-// trustedSource is one source stratum bound, and in which configurations. An
-// operator who had already bound it in one of them keeps that half at
-// uninstall: it is not recorded as stratum's.
+// Only stratum's own bindings are recorded; an operator's keep their scope at uninstall.
 type trustedSource struct {
 	Source    string `json:"source"`
 	Zone      string `json:"zone"`
@@ -67,8 +50,7 @@ type trustedInterface struct {
 	Permanent bool   `json:"permanent,omitempty"`
 }
 
-// scope is one of firewalld's two configurations: the running one, and the
-// permanent one it loads at start.
+// One of firewalld's two configurations; the permanent one loads at daemon start.
 type scope struct {
 	name  string
 	flags []string
@@ -92,9 +74,7 @@ func (t trustedInterface) owns(s scope) bool {
 	return t.Runtime
 }
 
-// runFirewall runs firewall-cmd or firewall-offline-cmd and returns its trimmed
-// output and exit code. When the command could not be run, the output is the
-// reason, so no warning built from it ends in an empty colon. A seam for tests.
+// When the command could not be run at all, the output is the error text.
 var runFirewall = func(bin string, args ...string) (string, int) {
 	out, err := hostCmd(bin, args...).CombinedOutput()
 	s := strings.TrimSpace(string(out))
@@ -113,9 +93,7 @@ var runFirewall = func(bin string, args ...string) (string, int) {
 
 func firewallCmd(args ...string) (string, int) { return runFirewall("firewall-cmd", args...) }
 
-// firewalldState distinguishes an explicitly stopped daemon from a failed
-// status check. A failed check must not discard runtime ownership: the rules
-// may still be active even when D-Bus or permissions prevent querying them.
+// A failed check must not discard ownership: the rules may still be active.
 func firewalldState() (bool, error) {
 	out, code := firewallCmd("--state")
 	switch {
@@ -130,23 +108,14 @@ func firewalldState() (bool, error) {
 	}
 }
 
-// TrustPodCIDRs trusts Cilium's host-side pod interfaces, not the pod source
-// range. A source binding also accepts spoofed pod addresses arriving on an
-// external NIC. The argument is retained for existing callers; migration uses
-// the ownership record. It never reloads firewalld: under the iptables backend a
-// reload flushes Cilium's rules with it.
-//
-// Idempotent, and called on every start of every role. It warns rather than
-// fails: a host whose firewall cannot be changed still gets a cluster, and the
-// warning carries the exact command, where failing would take down a node that
-// may be working.
+// Never reloads firewalld: under the iptables backend a reload flushes Cilium's rules.
 func TrustPodCIDRs(_ string) {
 	running, err := firewalldState()
 	if err != nil {
 		if errors.Is(err, errFirewalldNotInstalled) {
 			r, recordErr := readFirewalldRecord()
 			if recordErr == nil && len(r.TrustedSources) == 0 && len(r.TrustedInterfaces) == 0 {
-				return // ordinary host without firewalld
+				return
 			}
 		}
 		fmt.Printf("  WARN: firewalld: cannot check daemon state: %v; left pod trust unchanged\n", err)
@@ -162,8 +131,7 @@ func TrustPodCIDRs(_ string) {
 		fmt.Printf("  WARN: firewalld: cannot read source ownership record %s: %v; left pod trust unchanged\n", firewalldRecordPath, err)
 		return
 	}
-	// Revoke the old broad source bindings before adding the scoped interface
-	// binding. Keep failed removals recorded so uninstall can retry them.
+	// Keep failed removals recorded so uninstall can retry them.
 	for _, t := range r.TrustedSources {
 		if t.Runtime || t.Permanent {
 			removeUnsafeOwnedSource(t.Source, r)
@@ -172,9 +140,7 @@ func TrustPodCIDRs(_ string) {
 	trustCiliumInterface()
 }
 
-// A stopped daemon has no runtime rules, but its permanent configuration can
-// still contain a legacy source binding. Remove that binding before the next
-// daemon start; keep ownership when the offline edit cannot be confirmed.
+// A stopped daemon can still hold a legacy source binding in its permanent configuration.
 func removeUnsafeOwnedSourcesOffline() {
 	r, err := readFirewalldRecord()
 	if err != nil {
@@ -202,9 +168,7 @@ func removeUnsafeOwnedSourcesOffline() {
 	}
 }
 
-// removeUnsafeOwnedSource revokes only Stratum's legacy CIDR source bindings.
-// Forget each half after it is gone, so an operator's later binding in that
-// scope cannot be mistaken for Stratum's.
+// Forget each scope after removal, so an operator's later binding is not mistaken for stratum's.
 func removeUnsafeOwnedSource(cidr string, r firewalldRecord) {
 	for _, t := range r.TrustedSources {
 		if t.Source != cidr || t.Zone != firewalldZone {
@@ -283,13 +247,11 @@ var writeFirewalldRecord = func(r firewalldRecord) error {
 	if err := os.MkdirAll(filepath.Dir(firewalldRecordPath), 0o755); err != nil {
 		return err
 	}
-	// Atomic: a torn record would stop uninstall removing anything at all.
+	// A torn record would stop uninstall removing anything at all.
 	return WriteFileAtomically(firewalldRecordPath, b, 0o644)
 }
 
-// TrustedPodCIDRs returns the sources stratum added to firewalld, for
-// uninstall's dry-run disclosure. An unreadable record is an error, not an
-// empty list: the real run would fail on it, and the preview must say so.
+// An unreadable record is an error, not an empty list: the preview must match the run.
 func TrustedPodCIDRs() ([]string, error) {
 	r, err := readFirewalldRecord()
 	var cidrs []string
@@ -299,21 +261,13 @@ func TrustedPodCIDRs() ([]string, error) {
 	return cidrs, err
 }
 
-// UntrustPodCIDRs removes source and interface bindings Stratum added, from
-// the configurations it added them to and no others. With firewalld stopped,
-// runtime configuration is already gone and permanent configuration is edited
-// offline, so the binding does
-// not come back at the next firewalld start. Self-logging; returns an error
-// carrying the exact commands for whatever it could not remove.
+// With firewalld stopped it edits the permanent configuration offline.
 func UntrustPodCIDRs() error { return UntrustPodCIDRsWithWriter(os.Stdout) }
 
-// UntrustPodCIDRsWithWriter removes owned firewall bindings and reports progress to w.
 func UntrustPodCIDRsWithWriter(w io.Writer) error {
 	r, err := readFirewalldRecord()
 	if err != nil {
-		// Name the interface binding as well as sources: it is what this
-		// change normally owns, and without the record nothing says lxc+ may
-		// still be trusted permanently.
+		// Without the record nothing says lxc+ may still be trusted permanently.
 		return fmt.Errorf("firewalld: read what stratum added: %w; list what is trusted with: "+
 			"firewall-cmd --permanent --zone=%[2]s --list-interfaces; firewall-cmd --permanent --zone=%[2]s --list-sources "+
 			"(and the same without --permanent for the running config); remove Stratum's binding with: "+
@@ -350,7 +304,7 @@ func UntrustPodCIDRsWithWriter(w io.Writer) error {
 				case 0:
 				case exitNo:
 					forget(t, s)
-					continue // already gone
+					continue
 				default:
 					fmt.Fprintf(w, "  WARN: firewalld: could not check trusted source %s (%s): %s\n", t.Source, s.name, out)
 					fail(fix)
@@ -373,7 +327,7 @@ func UntrustPodCIDRsWithWriter(w io.Writer) error {
 				out, code := runFirewall("firewall-offline-cmd", "--zone="+t.Zone, "--remove-source="+t.Source)
 				switch {
 				case strings.Contains(out, "NOT_ENABLED"):
-					forget(t, scopes[1]) // already absent
+					forget(t, scopes[1])
 				case code != 0:
 					fmt.Fprintf(w, "  WARN: firewalld: stopped, and could not remove trusted source %s offline: %s\n", t.Source, out)
 					fail("firewall-offline-cmd --zone=" + t.Zone + " --remove-source=" + t.Source)

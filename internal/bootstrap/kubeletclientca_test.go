@@ -87,8 +87,6 @@ func TestFetchKubeletClientCA(t *testing.T) {
 	}
 }
 
-// The fetch is verified against the cluster CA the caller already trusts: a
-// server that CA did not sign is refused, not read.
 func TestFetchKubeletClientCARefusesAnUntrustedServer(t *testing.T) {
 	url, _ := serveKubeletClientCA(t, http.StatusOK, selfSigned(t, true))
 	if _, found, err := FetchKubeletClientCA(url, selfSigned(t, true)); err == nil || found {

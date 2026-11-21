@@ -13,14 +13,7 @@ import (
 	"time"
 )
 
-// TestSnapshotLoopSavesOnceRightWhenItStarts pins when the loop's first
-// scheduled snapshot happens: a control plane restarted more often than
-// spec.snapshots.intervalHours would otherwise never take a scheduled
-// snapshot, because every restart resets the ticker and the first save
-// waited out a whole interval. The loop runs here on a 24h interval and the
-// save is observed with no time advanced at all — with the ticker as the
-// only save trigger, no tick could have fired, so a save must have happened
-// when the loop started.
+// the first save happens at loop start, before any tick could fire on a 24h interval.
 func TestSnapshotLoopSavesOnceRightWhenItStarts(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cfg := loadClusterConfig(t, "spec:\n  snapshots:\n    intervalHours: 24\n")
@@ -33,8 +26,7 @@ func TestSnapshotLoopSavesOnceRightWhenItStarts(t *testing.T) {
 		defer cancel()
 		go snapshotLoop(ctx, cfg)
 
-		// No fake time has passed here: with a 24h interval a tick is
-		// impossible, so any save can only be the start-of-loop save.
+		// No fake time has passed: any save can only be the start-of-loop save.
 		synctest.Wait()
 		if got := saves.Load(); got != 1 {
 			t.Fatalf("snapshotLoop took %d saves with no time advanced, want 1: the first scheduled snapshot must happen when the loop starts, before the first tick", got)
@@ -42,12 +34,7 @@ func TestSnapshotLoopSavesOnceRightWhenItStarts(t *testing.T) {
 	})
 }
 
-// TestSnapshotLoopRetriesTheFirstSaveUntilItSucceeds pins the start phase's
-// retry: the loop starts before the supervisor has etcd up, so the first
-// save is expected to fail and is retried every snapshotStartRetry until
-// one succeeds. Two failures then a success — all inside the retry window —
-// must take exactly three saves before any tick and stay silent: etcd
-// coming up is not a warning worth the daemon's log.
+// the first save is retried every snapshotStartRetry until it succeeds, and stays silent.
 func TestSnapshotLoopRetriesTheFirstSaveUntilItSucceeds(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -78,9 +65,7 @@ func TestSnapshotLoopRetriesTheFirstSaveUntilItSucceeds(t *testing.T) {
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// Two failed retries at one-minute spacing, then the third save
-		// succeeds — three minutes of fake time, far short of any tick on
-		// a 24h interval and far short of the one-interval window.
+		// Two failed retries, then a success: far short of any tick or the window.
 		time.Sleep(3 * time.Minute)
 		synctest.Wait()
 		if got := attempts.Load(); got != 3 {
@@ -96,11 +81,7 @@ func TestSnapshotLoopRetriesTheFirstSaveUntilItSucceeds(t *testing.T) {
 	}
 }
 
-// TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds pins the end of
-// the retry window: start attempts that keep failing for a full snapshot
-// interval are not etcd coming up any more, so the window's last error is
-// reported exactly once with the line a failed tick uses — and the loop
-// still goes on to save on its regular ticks.
+// a start phase that fails for a full interval reports its last error once, then ticks on.
 func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -131,10 +112,7 @@ func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// Attempts at 0 and 30m fail. The retry due at 1h falls on the
-		// window's end, so no attempt is made under the expired deadline:
-		// the window closes with no success. The ticker then arms at 1h and
-		// its tick at 2h saves, so after two fake hours there are three.
+		// The 1h retry falls on the window's end; the ticker arms at 1h and saves at 2h.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
 		if got := attempts.Load(); got != 3 {
@@ -153,9 +131,7 @@ func TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds(t *testing.T) {
 	}
 }
 
-// TestSnapshotLoopStopsRetryingWhenTheContextIsCancelled pins that the start
-// phase watches the context while it waits between retries: a controller
-// shut down during the wait returns promptly, without any further saves.
+// the start phase watches the context between retries, so shutdown is prompt and saves no more.
 func TestSnapshotLoopStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldInterval, oldSnap, oldRetry := snapshotInterval, snapshotSave, snapshotStartRetry
@@ -191,9 +167,7 @@ func TestSnapshotLoopStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
 	})
 }
 
-// TestSnapshotLoopSavesAgainOnItsTicks pins that the start-of-loop save did
-// not replace the interval: after the first save the loop keeps the ticker,
-// and a later tick saves again.
+// the start-of-loop save does not replace the interval; later ticks still save.
 func TestSnapshotLoopSavesAgainOnItsTicks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldInterval, oldSnap := snapshotInterval, snapshotSave
@@ -210,8 +184,7 @@ func TestSnapshotLoopSavesAgainOnItsTicks(t *testing.T) {
 		if got := saves.Load(); got != 1 {
 			t.Fatalf("saves after start = %d, want 1", got)
 		}
-		// Two fake hours pass two ticks: with the start save, the second
-		// save must have come from the ticker, not the loop start.
+		// With the start save counted, the second save must come from the ticker.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
 		if got := saves.Load(); got < 2 {
@@ -220,12 +193,7 @@ func TestSnapshotLoopSavesAgainOnItsTicks(t *testing.T) {
 	})
 }
 
-// TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave pins the
-// loop's liveness after a failed first save: the failed attempt is retried
-// inside the start window without a word (the loop starts before etcd is
-// up), the retry succeeds, and the loop goes on to its next regular tick.
-// The reporting half — what is logged when the whole window fails — is
-// pinned by TestSnapshotLoopLogsTheLastErrorOnceWhenTheStartWindowEnds.
+// a failed first save that recovers inside the window is retried silently, then the loop ticks on.
 func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -256,9 +224,7 @@ func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// Failed saves at 0, 15m and 30m, the retry succeeds at 45m, and
-		// the ticker armed at 45m saves again on its 1h45m tick: the loop
-		// kept running past the failed first save to its next tick.
+		// Three failed saves, a success at 45m, then the ticker's 1h45m tick.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
 		if got := saves.Load(); got != 5 {
@@ -274,9 +240,7 @@ func TestSnapshotLoopKeepsRunningToItsNextTickAfterAFailedFirstSave(t *testing.T
 	}
 }
 
-// TestSnapshotLoopWithCancelledContextSavesNothing pins the start gate: when
-// the loop's context is already cancelled when the loop starts, it returns
-// without saving — a shutting-down controller takes no snapshot.
+// an already-cancelled context returns before the first save.
 func TestSnapshotLoopWithCancelledContextSavesNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldSnap := snapshotSave
@@ -295,11 +259,7 @@ func TestSnapshotLoopWithCancelledContextSavesNothing(t *testing.T) {
 	})
 }
 
-// TestSnapshotLoopEndsTheStartPhaseWhenOnlyTheUploadFailed pins that a save
-// which wrote the local snapshot but failed its S3 upload is not retried:
-// each retry would save and prune again, rotating the pre-restart snapshots
-// out of local retention within minutes. The upload error is logged at once
-// and the loop goes to its ticker.
+// a save that wrote locally but failed its upload ends the start phase: retrying would prune.
 func TestSnapshotLoopEndsTheStartPhaseWhenOnlyTheUploadFailed(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -343,9 +303,7 @@ func TestSnapshotLoopEndsTheStartPhaseWhenOnlyTheUploadFailed(t *testing.T) {
 	}
 }
 
-// TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing pins the early
-// warning: a start phase still failing after bindingWarnAfter says so once,
-// long before the window's end, and keeps retrying.
+// a start phase still failing after bindingWarnAfter warns once and keeps retrying.
 func TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -399,11 +357,7 @@ func TestSnapshotLoopWarnsOnceWhenTheStartPhaseKeepsFailing(t *testing.T) {
 	}
 }
 
-// TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow pins the window's
-// deadline on the start saves: etcdctl has no timeout of its own, so a save
-// that hangs while etcd comes up would otherwise hold the loop past the
-// window with no log line and no tick. The hung save is stopped when the
-// window ends, its error is logged once, and the loop goes on to its ticks.
+// a hung start save is cut off at the window's deadline, logged once, and the loop ticks on.
 func TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -434,8 +388,7 @@ func TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow(t *testing.T) {
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// The first save hangs until the window ends at 1h, the ticker arms
-		// then, and its tick at 2h saves.
+		// The first save hangs to the window's end at 1h; the ticker's tick saves at 2h.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
 		if got := saves.Load(); got != 2 {
@@ -451,10 +404,7 @@ func TestSnapshotLoopStopsAStartSaveThatOutlastsTheWindow(t *testing.T) {
 	}
 }
 
-// TestSnapshotLoopEndsTheWindowDuringARetryWait pins a window that ends
-// between two retries: the wait ends with the window, no save is made under
-// the expired deadline, the line reports the last real failure, and the
-// ticker arms at the window's end rather than after the wait.
+// a window ending between retries ends the wait with it; the ticker arms at the window's end.
 func TestSnapshotLoopEndsTheWindowDuringARetryWait(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -489,9 +439,7 @@ func TestSnapshotLoopEndsTheWindowDuringARetryWait(t *testing.T) {
 		defer cancel()
 		go snapshotLoop(ctx, cfgForLoop(t))
 
-		// Attempts at 0, 25m and 50m fail. The next retry is due at 75m,
-		// past the window's end at 1h, so the wait ends at 1h with no save.
-		// The ticker arms at 1h and its tick at 2h saves: four saves.
+		// The 75m retry falls past the window's 1h end; the ticker arms at 1h, saves at 2h.
 		time.Sleep(2 * time.Hour)
 		synctest.Wait()
 		if got := saves.Load(); got != 4 {
@@ -513,9 +461,7 @@ func TestSnapshotLoopEndsTheWindowDuringARetryWait(t *testing.T) {
 	}
 }
 
-// TestSnapshotLoopTicksKeepTheControllerContext pins that the window's
-// deadline is for the start phase only: a tick's save runs under the
-// controller's context, with no deadline.
+// the window's deadline bounds the start phase only; a tick keeps the controller's context.
 func TestSnapshotLoopTicksKeepTheControllerContext(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldInterval, oldSnap := snapshotInterval, snapshotSave
@@ -546,8 +492,7 @@ func TestSnapshotLoopTicksKeepTheControllerContext(t *testing.T) {
 	})
 }
 
-// cfgForLoop returns a minimal config for snapshotLoop: the loop reads only
-// the snapshot settings, which the faked interval seam covers.
+// cfgForLoop returns a minimal config; the faked interval seam covers the snapshot settings.
 func cfgForLoop(t *testing.T) *ClusterConfig {
 	return loadClusterConfig(t, "spec:\n  snapshots:\n    intervalHours: 24\n")
 }

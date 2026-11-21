@@ -27,9 +27,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// containerd renders this setting differently across versions and the node has
-// to end up pointed at the payload's pause image either way. Every spelling is
-// verbatim from `containerd config default`.
+// Every spelling is verbatim from `containerd config default`.
 func TestSandboxImageRewrite(t *testing.T) {
 	const want = "ghcr.io/ctrliq/stratum/pause:3.10.2"
 	old := SandboxImage
@@ -47,9 +45,7 @@ func TestSandboxImageRewrite(t *testing.T) {
 		"already ours": {"  sandbox_image = '" + want + "'\n", "  sandbox_image"},
 	} {
 		got := sandboxImageLine.ReplaceAllString(tc.cfg, "${1}'"+SandboxImage+"'")
-		// The key and its indentation both survive: indentation is part of the
-		// TOML block structure, and losing it moves the key out of its table
-		// where containerd silently ignores it.
+		// Indentation is part of the TOML block structure; losing it moves the key out of its table.
 		if !strings.Contains(got, "\n"+tc.key+" = '"+want+"'") && !strings.HasPrefix(got, tc.key+" = '"+want+"'") {
 			t.Errorf("%s: %s not rewritten in place:\n%s", name, strings.TrimSpace(tc.key), got)
 		}
@@ -58,23 +54,14 @@ func TestSandboxImageRewrite(t *testing.T) {
 		}
 	}
 
-	// The sandboxer is a different key that shares the prefix. Rewriting it
-	// would hand containerd an image reference as a sandboxer name.
+	// Rewriting the sandboxer would hand containerd an image reference as a sandboxer name.
 	const sandboxer = "          sandboxer = 'podsandbox'\n"
 	if got := sandboxImageLine.ReplaceAllString(sandboxer, "${1}'"+SandboxImage+"'"); got != sandboxer {
 		t.Errorf("sandboxer was rewritten:\n%s", got)
 	}
 }
 
-// containerdDefault is `containerd config default` from the containerd the
-// payload ships (2.3.6+stratum, config version 4), captured verbatim. The
-// earlier sandbox-image regex slipped past the hand-written spellings above: they
-// tested the regex against what the author expected containerd to print, not
-// what it printed. Regenerate it on a containerd bump:
-//
-//	docker run --rm --platform linux/arm64 -v "$PWD/staging/linux-arm64/bin:/b:ro" \
-//	  rockylinux/rockylinux:10 /b/containerd config default \
-//	  > internal/runtime/testdata/containerd-2.3-default.toml
+// Captured verbatim from the payload's containerd; regenerate on a containerd bump.
 func containerdDefault(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "containerd-2.3-default.toml"))
@@ -84,9 +71,7 @@ func containerdDefault(t *testing.T) string {
 	return string(b)
 }
 
-// The effective setting, read the way containerd reads it: parse the TOML and
-// follow the table path, so a rewrite that lands on the wrong key or drops the
-// line out of its table fails here rather than on an airgapped node.
+// Read the way containerd reads it, so a rewrite landing on the wrong key fails here.
 func pinnedSandbox(t *testing.T, cfg string) string {
 	t.Helper()
 	var c struct {
@@ -127,10 +112,6 @@ func TestRewriteRealContainerdDefault(t *testing.T) {
 	}
 }
 
-// ensureConfig end to end against the real default: it writes a config pinned
-// to the payload's pause image, and a second start leaves it alone. Before the
-// fix the written file never contained SandboxImage, so every start re-ran
-// `containerd config default` and rewrote the same wrong config.
 func TestEnsureConfigPinsThePayloadPauseImage(t *testing.T) {
 	const want = "ghcr.io/ctrliq/stratum/pause:3.10.2"
 	dir := t.TempDir()
@@ -171,9 +152,7 @@ func TestEnsureConfigPinsThePayloadPauseImage(t *testing.T) {
 	}
 }
 
-// A node upgraded from the broken build already has a config with the right
-// cgroup driver but the upstream pause image. Its next start must replace that
-// config, not accept the cgroup setting as proof that it is current.
+// The right cgroup driver alone is not proof a config is current.
 func TestEnsureConfigHealsAnExistingUpstreamSandbox(t *testing.T) {
 	const want = "ghcr.io/ctrliq/stratum/pause:3.10.2"
 	dir := t.TempDir()
@@ -221,9 +200,6 @@ func TestEnsureConfigHealsAnExistingUpstreamSandbox(t *testing.T) {
 	}
 }
 
-// A default with no sandbox setting stratum knows means containerd renamed the
-// key again. Writing that config would leave containerd pulling pause from the
-// internet instead of the payload, so ensureConfig refuses and writes nothing.
 func TestEnsureConfigRefusesAnUnrecognisedSandboxSetting(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig := version.BinDir, version.ContainerdConfig
@@ -248,9 +224,7 @@ func TestEnsureConfigRefusesAnUnrecognisedSandboxSetting(t *testing.T) {
 	}
 }
 
-// isStratumConfig must recognise a config stratum wrote (it points containerd's
-// root/state at the stratum data dirs) and must NOT match a host's own config —
-// that distinction is the whole safety of removing the legacy file.
+// Not matching a host's own config is the whole safety of removing the legacy file.
 func TestIsStratumConfig(t *testing.T) {
 	if !isStratumConfig([]byte(stratumConfigBody())) {
 		t.Error("a stratum-written config was not recognised as ours")
@@ -259,22 +233,16 @@ func TestIsStratumConfig(t *testing.T) {
 	if isStratumConfig([]byte(host)) {
 		t.Error("a host's own containerd config was misidentified as stratum's — removing it would destroy host config")
 	}
-	// A host config that merely MENTIONS a stratum path (a comment, an unrelated
-	// option) must not be mistaken for ours — both assignments are required.
 	mentionsOnly := "version = 2\n# migrated away from " + filepath.Join(version.DataDir, "containerd") + "\n" +
 		"root = '/var/lib/containerd'\nstate = '/run/containerd'\n"
 	if isStratumConfig([]byte(mentionsOnly)) {
 		t.Error("a host config that only mentions a stratum path in passing was misidentified as stratum's")
 	}
-	// The root assignment alone is not enough either — the state assignment must
-	// also match, so a partial coincidence cannot trigger a deletion.
 	rootOnly := "version = 2\nroot = '" + filepath.Join(version.DataDir, "containerd") + "'\nstate = '/run/containerd'\n"
 	if isStratumConfig([]byte(rootOnly)) {
 		t.Error("a config with only the root assignment matching was misidentified as stratum's")
 	}
-	// Both stratum paths present, but only inside COMMENTS — the live top-level
-	// root/state are host-owned. A substring match would delete this host config;
-	// the TOML parse must not (regression for the legacy-config heal).
+	// A substring match would delete this host config; the TOML parse must not.
 	inComments := "version = 2\n" +
 		"# migrated from " + rootAssign() + "\n" +
 		"# and " + stateAssign() + "\n" +
@@ -288,16 +256,11 @@ func TestIsStratumConfig(t *testing.T) {
 	}
 }
 
-// stratumConfigBody renders the two assignments via the same rootAssign/
-// stateAssign helpers the production matcher and producer use, so the fixture
-// cannot drift from them independently.
+// stratumConfigBody uses the production helpers, so the fixture cannot drift from them.
 func stratumConfigBody() string {
 	return "version = 2\n" + rootAssign() + "\n" + stateAssign() + "\n"
 }
 
-// removeLegacyHostConfig deletes /etc/containerd/config.toml only when stratum
-// wrote it: heals a host an older build broke without ever touching a
-// host's genuine config, and is a no-op when the file is absent.
 func TestRemoveLegacyHostConfig(t *testing.T) {
 	t.Run("removes a stratum-written legacy file", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "config.toml")
@@ -349,8 +312,7 @@ func TestRemoveLegacyHostConfig(t *testing.T) {
 	})
 
 	t.Run("never removes stratum's own current config path", func(t *testing.T) {
-		// If the legacy path and the current stratum path were ever the same
-		// (a redirected test env), the reap must not delete the live config.
+		// The reap must not delete the live config if the two paths ever coincide.
 		old := version.ContainerdConfig
 		p := filepath.Join(t.TempDir(), "config.toml")
 		version.ContainerdConfig = p
@@ -371,10 +333,7 @@ func TestRemoveLegacyHostConfig(t *testing.T) {
 	})
 }
 
-// captureProcessStdout runs fn with the process's stdout captured, and returns
-// whatever fn printed there. The heal's outcome must reach the writer it is
-// given and never this stream: on the MCP stdio transport os.Stdout is the
-// JSON-RPC stream, so a line printed there corrupts the response mid-message.
+// captureProcessStdout: on the MCP stdio transport os.Stdout is the JSON-RPC stream.
 func captureProcessStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -394,12 +353,7 @@ func captureProcessStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestRemoveLegacyHostConfigLogsToTheWriterItIsGiven pins where the heal's
-// outcome goes. The exported entry is the function the uninstall run wires as
-// its removeLegacyHostConfig effect, so the writer it is handed is the run's
-// progress writer — the CLI's os.Stdout, the MCP handler's response buffer —
-// and both of the heal's outcomes (the removal report and the failure WARN)
-// must land in that writer, never on the process's stdout.
+// The writer the heal is handed is the run's progress writer, never the process's stdout.
 func TestRemoveLegacyHostConfigLogsToTheWriterItIsGiven(t *testing.T) {
 	legacy := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(legacy, []byte(stratumConfigBody()), 0o644); err != nil {
@@ -422,9 +376,7 @@ func TestRemoveLegacyHostConfigLogsToTheWriterItIsGiven(t *testing.T) {
 	})
 
 	t.Run("a failure is warned through the writer", func(t *testing.T) {
-		// A directory at the legacy path cannot be read as a config, so the
-		// reap fails before it deletes anything — the WARN outcome, with no
-		// dependency on host state or permissions.
+		// A directory at the legacy path fails before it deletes anything — the WARN outcome.
 		dirPath := filepath.Join(t.TempDir(), "config.toml")
 		if err := os.Mkdir(dirPath, 0o755); err != nil {
 			t.Fatal(err)
@@ -442,14 +394,7 @@ func TestRemoveLegacyHostConfigLogsToTheWriterItIsGiven(t *testing.T) {
 	})
 }
 
-// TestRewriteRoundTrip closes the producer↔matcher gap: it feeds captured
-// `containerd config default` output — in BOTH the double-quoted (1.x) and
-// single-quoted (2.x) styles — through the real rewriteContainerdConfig and
-// asserts isStratumConfig accepts the result. If a future rendering change
-// (spacing, quoting, a retargeted state dir) made the producer and matcher
-// disagree, the legacy-config heal would silently stop reaping stratum's own legacy
-// file; this test fails loudly instead of the fixture-mirrors-matcher tautology
-// passing green.
+// Feeds both quoting styles through the real rewrite, so producer and matcher cannot drift.
 func TestRewriteRoundTrip(t *testing.T) {
 	samples := map[string]string{
 		"containerd 1.x (double-quoted)": `version = 2
@@ -478,8 +423,7 @@ state = '/run/containerd'
 	}
 }
 
-// LegacyHostConfig backs uninstall's dry-run disclosure: it must report present
-// only when a stratum-written file is actually at the legacy path.
+// present only when a stratum-written file is actually at the legacy path.
 func TestLegacyHostConfigDetection(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.toml")
@@ -504,9 +448,7 @@ func TestLegacyHostConfigDetection(t *testing.T) {
 	}
 }
 
-// The legacy cleanup heals the host's containerd/Docker independently of
-// rendering stratum's new config. In particular, a broken payload binary must
-// not leave the version-4 file an older stratum wrote at the host path.
+// A broken payload binary must not leave the version-4 file at the host path.
 func TestEnsureConfigHealsLegacyConfigWhenRenderingFails(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldLegacy := version.BinDir, version.ContainerdConfig, legacyHostConfig
@@ -533,10 +475,7 @@ func TestEnsureConfigHealsLegacyConfigWhenRenderingFails(t *testing.T) {
 	}
 }
 
-// WriteConfig is the upgrade's writer and must never reap the legacy file
-// itself: a supervisor that predates reload still starts containerd with
-// --config at that path, and deleting it there left containerd unable to start
-// again. The upgrade heals only after containerd's reload lands.
+// A supervisor predating reload still starts containerd with --config at the legacy path.
 func TestWriteConfigKeepsTheLegacyConfig(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldLegacy := version.BinDir, version.ContainerdConfig, legacyHostConfig
@@ -560,14 +499,7 @@ func TestWriteConfigKeepsTheLegacyConfig(t *testing.T) {
 	}
 }
 
-// TestWriteKubeletConfigServingCert pins the three serving-cert branches, and in
-// particular the worker one. A token-joined worker holds no local PKI,
-// so it must bootstrap its serving cert via CSR (serverTLSBootstrap: true) — and
-// must NOT be pointed at a kubelet.crt/kubelet.key it does not have (which
-// would name nonexistent files and stop kubelet starting). Bootstrapping is what
-// lets the operator's approver issue a CA-signed serving cert carrying the node's
-// IP SAN; a self-signed fallback carries only a DNS SAN, so an IP-scraping,
-// TLS-verifying client (metrics-server) could not reach the worker.
+// Bootstrapping lets the approver issue a CA-signed cert carrying the node's IP SAN.
 func TestWriteKubeletConfigServingCert(t *testing.T) {
 	profiletest.Register(t)
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
@@ -593,9 +525,7 @@ func TestWriteKubeletConfigServingCert(t *testing.T) {
 		return string(b)
 	}
 
-	// CIS 4.1.1 wants kubelet.conf 0600, and a node that wrote it
-	// 0644 before keeps that mode unless it is changed, since WriteFile sets
-	// the mode only on a file it creates.
+	// WriteFile sets the mode only on a file it creates.
 	t.Run("kubelet.conf is 0600, even over an existing 0644 one", func(t *testing.T) {
 		render(t, &nodestate.NodeState{Role: "worker", Hostname: "w1"}, false)
 		p := filepath.Join(version.K8sConfDir, "kubelet.conf")
@@ -614,8 +544,6 @@ func TestWriteKubeletConfigServingCert(t *testing.T) {
 		}
 	})
 
-	// A worker with no recorded range uses the address it learned
-	// from the kube-dns Service; a recorded range still wins.
 	t.Run("cluster DNS: range, then the learned address, then the default", func(t *testing.T) {
 		for _, tc := range []struct {
 			st   *nodestate.NodeState
@@ -631,8 +559,7 @@ func TestWriteKubeletConfigServingCert(t *testing.T) {
 		}
 	})
 
-	// A worker renews its own client certificate; a controller's is
-	// a Stratum PKI leaf, renewed by the certificate loop, and is left alone.
+	// A controller's client cert is a PKI leaf the renewal loop rotates, and is left alone.
 	t.Run("only a worker rotates its client certificate", func(t *testing.T) {
 		for _, tc := range []struct {
 			st   *nodestate.NodeState
@@ -659,8 +586,7 @@ func TestWriteKubeletConfigServingCert(t *testing.T) {
 		if strings.Contains(got, "tlsCertFile") {
 			t.Errorf("a worker holds no local PKI — pinning tlsCertFile/tlsPrivateKeyFile would name files that do not exist and stop kubelet starting; got:\n%s", got)
 		}
-		// Off outside CIS: RuntimeDefault breaks some workloads that never
-		// asked for it.
+		// RuntimeDefault breaks some workloads that never asked for it.
 		if strings.Contains(got, "seccompDefault") {
 			t.Errorf("a non-CIS node must not set seccompDefault; got:\n%s", got)
 		}
@@ -691,7 +617,6 @@ func TestWriteKubeletConfigServingCert(t *testing.T) {
 	})
 }
 
-// The effective enable_selinux, read the way containerd reads it.
 func enableSELinux(t *testing.T, cfg string) bool {
 	t.Helper()
 	var c struct {
@@ -709,7 +634,6 @@ func enableSELinux(t *testing.T, cfg string) bool {
 	return *v
 }
 
-// A labelled node confines its containers; any other node does not.
 func TestRewriteSetsEnableSELinux(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		got := rewriteContainerdConfig(containerdDefault(t), "SystemdCgroup = true", on)
@@ -719,8 +643,6 @@ func TestRewriteSetsEnableSELinux(t *testing.T) {
 	}
 }
 
-// A node that becomes labelled, or stops being labelled, gets its containerd
-// config rewritten on the next start; a start that changes nothing keeps it.
 func TestEnsureConfigFollowsTheNodesLabelling(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket, oldLabelled := version.BinDir, version.ContainerdConfig, version.ControlSocket, selinuxLabelled
@@ -763,9 +685,7 @@ func TestEnsureConfigFollowsTheNodesLabelling(t *testing.T) {
 	}
 }
 
-// The confinement record follows the config: written when containerd starts
-// confining, kept by later starts, backfilled from the config's age on a node
-// confined before the record existed, and removed when confinement stops.
+// Backfilled from the config's age on a node confined before the record existed.
 func TestEnsureConfigRecordsWhenConfinementBegan(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket, oldLabelled := version.BinDir, version.ContainerdConfig, version.ControlSocket, selinuxLabelled
@@ -833,8 +753,6 @@ func TestEnsureConfigRecordsWhenConfinementBegan(t *testing.T) {
 	}
 }
 
-// DisableSELinux turns enable_selinux off in a config that has it on, and
-// leaves any other config alone.
 func TestDisableSELinux(t *testing.T) {
 	old := version.ContainerdConfig
 	version.ContainerdConfig = filepath.Join(t.TempDir(), "containerd.toml")
@@ -862,8 +780,6 @@ func TestDisableSELinux(t *testing.T) {
 	}
 }
 
-// ConfinesContainers reads enable_selinux from the CRI runtime table of the
-// config Stratum writes from containerd's own default.
 func TestConfinesContainers(t *testing.T) {
 	old := version.ContainerdConfig
 	version.ContainerdConfig = filepath.Join(t.TempDir(), "containerd.toml")
@@ -887,9 +803,7 @@ func TestConfinesContainers(t *testing.T) {
 	}
 }
 
-// A DisableSELinux that finds confinement already off still clears the
-// record, so a retry after one stopped between the rename and the clear
-// leaves config and record in step.
+// A retry after one stopped between the rename and the clear keeps config and record in step.
 func TestDisableSELinuxClearsAStaleRecordWhenAlreadyOff(t *testing.T) {
 	old := version.ContainerdConfig
 	version.ContainerdConfig = filepath.Join(t.TempDir(), "containerd.toml")
@@ -909,15 +823,7 @@ func TestDisableSELinuxClearsAStaleRecordWhenAlreadyOff(t *testing.T) {
 	}
 }
 
-// TestKubeletConfCISLinesAreExactlyTheProfile pins the CIS half of kubelet.conf
-// the way the apiserver's argv is pinned: renders are compared with each other,
-// byte for byte, not by substring. The renders differ only in the CIS flag —
-// and, for the serving-certificate branch, only in whether the PKI leaf exists
-// — so a CIS line that moves, changes value or disappears, or a
-// serving-certificate branch that changes, fails, while an unrelated template
-// change applied to every node kind passes. Both directories are redirected
-// once for the whole test because both appear in the rendered lines, and
-// between renders only the kubelet leaf changes.
+// Renders are compared byte for byte, so a CIS line that moves or changes fails.
 func TestKubeletConfCISLinesAreExactlyTheProfile(t *testing.T) {
 	profiletest.Register(t)
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
@@ -938,9 +844,6 @@ func TestKubeletConfCISLinesAreExactlyTheProfile(t *testing.T) {
 			}
 		}
 	}
-	// render renders kubelet.conf for node states that differ only in the CIS
-	// flag (and the leaf the serving-cert branch reads), keeping the role
-	// fixed — only a worker carries rotateCertificates.
 	render := func(role string, cis, hasLeaf bool) string {
 		t.Helper()
 		leaf(hasLeaf)
@@ -956,16 +859,11 @@ func TestKubeletConfCISLinesAreExactlyTheProfile(t *testing.T) {
 		}
 		return string(b)
 	}
-	// The CIS delta is exactly this run of lines, byte for byte: removing it
-	// from a CIS render must produce the non-CIS one for the same node, so a
-	// line that moves, is re-ordered or re-worded fails as loudly as one that
-	// disappears.
+	// Removing the CIS lines from a CIS render must produce the non-CIS render byte for byte.
 	minusCIS := func(s string) string {
 		return strings.Replace(s, "protectKernelDefaults: true\nseccompDefault: true\n", "", 1)
 	}
 
-	// A controller: four renders over node states that differ only in CIS, with
-	// and without the kubelet serving-cert leaf a control plane carries.
 	cisLeaf := render("controller", true, true)
 	cisNoLeaf := render("controller", true, false)
 	plainNoLeaf := render("controller", false, false)
@@ -983,21 +881,13 @@ func TestKubeletConfCISLinesAreExactlyTheProfile(t *testing.T) {
 		t.Errorf("outside CIS, the leaf must pin exactly the static serving pair instead of bootstrapping:\ngot:\n%s\nwant:\n%s", plainLeaf, wantLeaf)
 	}
 
-	// A worker holds no leaf; only CIS differs. rotateCertificates and the
-	// intentional serving-cert bootstrap are shared by both renders, so the
-	// delta is the same two lines.
 	plainWorker := render("worker", false, false)
 	if got, want := plainWorker, minusCIS(render("worker", true, false)); got != want {
 		t.Errorf("outside CIS, a worker's kubelet.conf is not the CIS render minus protectKernelDefaults and seccompDefault:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 }
 
-// nodeConfigsFixture redirects every path the node-config writers touch to a
-// temp dir and stages a containerd stub that prints the captured real default,
-// so PrepareNodeConfigs and WriteNodeConfigs run their full write path —
-// containerd config, registry no-op, runtime-handler drop-in, kubelet.conf. It seeds a stratum-written
-// file at the legacy host-config path and returns that path, so a test can pin
-// whether the entry point reaps it.
+// nodeConfigsFixture stages a containerd stub, so the full write path runs.
 func nodeConfigsFixture(t *testing.T) string {
 	t.Helper()
 	const want = "ghcr.io/ctrliq/stratum/pause:3.10.2"
@@ -1013,8 +903,7 @@ func nodeConfigsFixture(t *testing.T) string {
 	version.BinDir = dir
 	version.ContainerdConfig = filepath.Join(dir, "config", "containerd.toml")
 	version.ControlSocket = filepath.Join(dir, "supervisor.sock")
-	// Absent, so registry.Apply is a deterministic no-op and these tests'
-	// verdicts are about the two node configs, not about mirrors.
+	// Absent, so registry.Apply is a deterministic no-op.
 	version.RegistriesConfig = filepath.Join(dir, "registries.yaml")
 	version.CertsDir = filepath.Join(dir, "certs.d")
 	version.ContainerdConfD = filepath.Join(dir, "conf.d", "stratum-registry.toml")
@@ -1037,10 +926,7 @@ func nodeConfigsFixture(t *testing.T) string {
 	return legacy
 }
 
-// kubeletConfParses asserts the written kubelet.conf is real YAML carrying the
-// settings its readers parse it for: kubelet reads the file, and the hardening
-// audit unmarshals the same keys, so a written file that does not parse fails
-// here rather than on a node.
+// kubeletConfParses: kubelet reads the file and the hardening audit unmarshals the same keys.
 func kubeletConfParses(t *testing.T) {
 	t.Helper()
 	p := filepath.Join(version.K8sConfDir, "kubelet.conf")
@@ -1057,15 +943,7 @@ func kubeletConfParses(t *testing.T) {
 	}
 }
 
-// TestPrepareNodeConfigsHealsTheLegacyConfigAndWritesBothConfigs owns the join
-// path's entry point (internal/cluster and internal/ha call it): it is
-// EnsureConfig plus kubelet.conf, so the legacy-config heal belongs there — a
-// joining node with a legacy host config would still crash-loop the distro
-// containerd after a reboot. Both configs it exists to write must land: a
-// containerd config isStratumConfig recognises with the payload's pause image
-// pinned, and a kubelet.conf that parses. The heal's failure path is pinned by
-// TestEnsureConfigHealsLegacyConfigWhenRenderingFails; this pins the success
-// path the join actually runs.
+// The join path's entry point; the heal belongs there or a legacy config crash-loops.
 func TestPrepareNodeConfigsHealsTheLegacyConfigAndWritesBothConfigs(t *testing.T) {
 	legacy := nodeConfigsFixture(t)
 	if err := PrepareNodeConfigs(&nodestate.NodeState{Role: "worker", Hostname: "w1", ServiceCIDR: "10.96.0.0/12"}); err != nil {
@@ -1087,13 +965,7 @@ func TestPrepareNodeConfigsHealsTheLegacyConfigAndWritesBothConfigs(t *testing.T
 	kubeletConfParses(t)
 }
 
-// TestWriteNodeConfigsKeepsTheLegacyConfigAndWritesBoth owns the upgrade's
-// entry point (internal/upgrade wires it as writeNodeConfigs): on the success
-// path — the one an in-place upgrade actually runs — both node configs must
-// land while the legacy host config survives untouched, because a supervisor
-// predating reload still launches containerd with --config at that path.
-// TestWriteConfigKeepsTheLegacyConfig pins the failing-render side only; the
-// success side, where both configs land, was unpinned.
+// On the upgrade's success path the legacy host config survives untouched.
 func TestWriteNodeConfigsKeepsTheLegacyConfigAndWritesBoth(t *testing.T) {
 	legacy := nodeConfigsFixture(t)
 	before, err := os.ReadFile(legacy)
@@ -1123,11 +995,7 @@ func TestWriteNodeConfigsKeepsTheLegacyConfigAndWritesBoth(t *testing.T) {
 	kubeletConfParses(t)
 }
 
-// ---------------------------------------------------------------------------- ApplyRegistry
-
-// registryFixture redirects the registry paths to a temp tree and writes a
-// one-mirror registries.yaml, so ApplyRegistry performs a real first apply:
-// a certs.d hosts.toml written and the conf.d drop-in created (Changed).
+// registryFixture writes a one-mirror registries.yaml for a real first apply.
 func registryFixture(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
@@ -1144,12 +1012,7 @@ func registryFixture(t *testing.T) {
 	}
 }
 
-// fakeSupervisor serves the supervisor control protocol on a temp unix socket
-// and points version.ControlSocket at it, so comps sees containerd running:
-// status reports pid 100 until a restart op is served, then pid 101 — the new
-// pid comps.Restart's replacement check waits for. With refuseRestart the
-// restart op is refused, for the error path. Returns a func counting the
-// restart ops served.
+// fakeSupervisor: status reports pid 100, then 101 — the pid comps.Restart waits for.
 func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "control.sock")
@@ -1202,12 +1065,7 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 	return func() int { mu.Lock(); defer mu.Unlock(); return served }
 }
 
-// TestApplyRegistry_ReportsWhetherItRestarted pins ApplyRegistry's contract: it
-// returns a runtime-level result — the registry result plus Restarted — and
-// Restarted is true only when containerd was actually restarted: the conf.d
-// drop-in changed AND containerd was running. Changed alone only means the
-// drop-in changed, so a caller that derives the restart report from it reports
-// restarts that did not happen.
+// Restarted is true only on an actual restart; Changed alone means the drop-in changed.
 func TestApplyRegistry_ReportsWhetherItRestarted(t *testing.T) {
 	t.Run("drop-in changed and containerd active: restarts and reports Restarted", func(t *testing.T) {
 		restarts := fakeSupervisor(t, false)
@@ -1304,11 +1162,7 @@ func TestApplyRegistry_ReportsWhetherItRestarted(t *testing.T) {
 	})
 }
 
-// TestWaitActiveNamesTheSupervisorLog pins the hint on containerd's start-up
-// timeout: containerd runs under the stratum supervisor, which logs it to
-// LogDir/containerd.log, and there is no containerd systemd unit for journalctl
-// to read. LogDir is moved to a temp dir so the hint must follow the variable,
-// not a hard-coded path.
+// LogDir is moved to a temp dir so the hint must follow the variable.
 func TestWaitActiveNamesTheSupervisorLog(t *testing.T) {
 	oldSock, oldLog := version.ControlSocket, version.LogDir
 	version.ControlSocket = filepath.Join(t.TempDir(), "absent.sock")
@@ -1327,19 +1181,9 @@ func TestWaitActiveNamesTheSupervisorLog(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------ config render reports its change
-
-// TestWriteConfig_LeavesTheRestartToTheCaller pins that the config render
-// reports whether it changed the file and restarts nothing — the caller owns
-// the restart. With a fake supervisor reporting containerd as running, a first
-// render reports changed and the supervisor serves no restart request, and an
-// identical re-render reports unchanged and still restarts nothing. The render
-// must restart nothing itself: the upgrade reaches this render through
-// WriteConfig/WriteNodeConfigs and restarts containerd again itself, and
-// `stratum up` reaches it through EnsureConfig.
+// The render restarts nothing; the upgrade and `stratum up` own the restart.
 func TestWriteConfig_LeavesTheRestartToTheCaller(t *testing.T) {
-	// The fixture order matters: nodeConfigsFixture points ControlSocket at a
-	// dead path; fakeSupervisor re-points it at a serving fake.
+	// nodeConfigsFixture points ControlSocket at a dead path; fakeSupervisor re-points it.
 	nodeConfigsFixture(t)
 	restarts := fakeSupervisor(t, false)
 	if !Active() {
@@ -1383,13 +1227,7 @@ func TestWriteConfig_LeavesTheRestartToTheCaller(t *testing.T) {
 	}
 }
 
-// EnsureConfig (`stratum up`'s prepare call, internal/cluster/run.go) and
-// WriteNodeConfigs (the in-place upgrade's writer, internal/upgrade/node.go)
-// sit on the same ensureConfig path and carry the same contract as WriteConfig:
-// they report whether the render changed the containerd config and restart
-// nothing. `stratum up` restarts containerd only when the result reports a
-// change, and the upgrade folds the change into its own single host reload —
-// so neither entry point may restart containerd here.
+// Neither entry point may restart containerd here; the caller owns the restart.
 func TestEnsureConfigAndWriteNodeConfigs_LeaveTheRestartToTheCaller(t *testing.T) {
 	for _, e := range []struct {
 		name   string
@@ -1431,27 +1269,16 @@ func TestEnsureConfigAndWriteNodeConfigs_LeaveTheRestartToTheCaller(t *testing.T
 	}
 }
 
-// failDirSync points this package's write seams at a directory sync that
-// never completes — the window a power loss leaves behind: the real atomic
-// writer renames the new file into place and then reports ErrNotDurable. The
-// override lasts for one test; the tests that use it are not parallel.
+// failDirSync: the real writer renames the file into place and then reports ErrNotDurable.
 func failDirSync(t *testing.T) {
 	t.Helper()
 	syncDir = func(string) error { return syscall.EIO }
 	t.Cleanup(func() { syncDir = atomicfile.SyncDir })
 }
 
-// TestEnsureConfigReportsTheChangeWhenTheSyncFails pins the change flag's
-// contract past a post-rename failure: the config the render wrote is already
-// in place when the directory sync fails, so reporting "unchanged" would tell
-// the caller that folds this into its own host reload that the config did not
-// move. The report is changed-with-error, the file on disk is the rendered
-// one, and the retry takes the unchanged fast path without writing or syncing.
+// The config is already in place when the sync fails, so the report is changed-with-error.
 func TestEnsureConfigReportsTheChangeWhenTheSyncFails(t *testing.T) {
-	// The render's confinement choice is the host's to make; the assertion
-	// below reads the file, so the choice is pinned unlabelled — on a
-	// stratum-labelled host the render would carry enable_selinux = true and
-	// the test would fire as a false alarm.
+	// Pinned unlabelled so a stratum-labelled host does not fire a false alarm.
 	oldLabelled := selinuxLabelled
 	selinuxLabelled = func() bool { return false }
 	t.Cleanup(func() { selinuxLabelled = oldLabelled })
@@ -1493,16 +1320,10 @@ func TestEnsureConfigReportsTheChangeWhenTheSyncFails(t *testing.T) {
 	if changed {
 		t.Error("the retry reported a change to the config it had just written")
 	}
-	// The sync seam is still failing here: the fast path passes because it
-	// never writes, so it never syncs — a retry that rewrote would hit the
-	// still-failing sync and fail loudly.
+	// The fast path passes because it never writes, so it never syncs.
 }
 
-// TestDisableSELinuxReportsTheChangeWhenTheSyncFails pins the same contract on
-// DisableSELinux: its config write renames enable_selinux = false in place and
-// then fails the directory sync, so the report is changed-with-error — the
-// rollback caller must not be told the config was left untouched when it was
-// replaced.
+// The rollback caller must not be told the config was untouched when it was replaced.
 func TestDisableSELinuxReportsTheChangeWhenTheSyncFails(t *testing.T) {
 	oldConfig := version.ContainerdConfig
 	t.Cleanup(func() { version.ContainerdConfig = oldConfig })

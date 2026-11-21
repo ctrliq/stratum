@@ -1,16 +1,6 @@
 package operator
 
-// defaulting_envtest_test.go — the schema-default migration guard, run against
-// a real apiserver (envtest) with the bundled HelmChart CRD.
-//
-// A requester stamp binds the spec exactly as admission saw it (requesterBinding).
-// The apiserver re-applies structural schema defaulting on every decode of a
-// custom resource — including reads from etcd — so once the HelmChart CRD gains
-// a new defaulted field, an object signed under the old schema is served with a
-// spec the stamp never covered. This guard runs the whole pipeline for real:
-// admission through a registered webhook, verification of the stored object,
-// the schema change, the old object read under it, and refusal of tampered
-// identity and spec.
+// Schema defaulting re-runs on every decode, so a new CRD default can invalidate an old stamp.
 
 import (
 	"bytes"
@@ -50,13 +40,7 @@ import (
 	envtest "sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
-// writeHelmChartCRDForEnvtest renders the bundled HelmChart CRD into a temp
-// file for envtest: the first document of addons.RenderHelmCRDs(), written at
-// test time rather than kept as a testdata copy that could drift from the
-// bundled source — the schema-default guard stamps objects under these
-// defaults and then grows the schema in memory, so a drifted copy would guard
-// a CRD the release does not ship. The bundled file also carries the
-// HelmChartConfig CRD, which this guard does not exercise.
+// Rendered at test time, not testdata: a drifted copy would guard a CRD the release does not ship.
 func writeHelmChartCRDForEnvtest(t *testing.T) string {
 	t.Helper()
 	docs := bytes.Split(addons.RenderHelmCRDs(), []byte("\n---\n"))
@@ -70,19 +54,6 @@ func writeHelmChartCRDForEnvtest(t *testing.T) string {
 	return path
 }
 
-// TestRequesterStampAcrossSchemaDefaultChange: a requester stamp written under
-// one CRD schema must keep verifying after the schema gains a new default
-// field, and it must keep refusing anything the webhook did not sign.
-//
-// Through a real apiserver:
-//  1. create a HelmChart through the registered stamping webhook and verify the
-//     stored object (the stamp binds the spec with the current defaults in it);
-//  2. grow the CRD schema with a new default and read the old object back —
-//     the served spec now carries the new default the stamp never covered, and
-//     the versioned binding must still verify with the identity still bound;
-//  3. ordinary creation under the new current defaults keeps verifying;
-//  4. with the webhook deregistered, a direct spec or identity mutation — the
-//     write the webhook never saw — is refused by verification.
 func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS is unset; run `make test-envtest`")
@@ -109,9 +80,7 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: k8sutil.HelmChartGroup, Version: k8sutil.HelmChartVersion, Resource: "helmcharts"}
 	crdGVR := schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}
 
-	// The stamping webhook: the production admission handler over TLS,
-	// registered the way the operator deploys it (buildWebhookConfig's rules,
-	// fail closed), pointed at this test's listener instead of the Service.
+	// The stamping webhook: the production handler, pointed at this test's listener.
 	signer := testSigner()
 	signers := newRequesterSignerHolder()
 	signers.publish(signer)
@@ -124,25 +93,14 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	}
 	alice := stampImpersonated(t, cfg, requesterInfo{Username: "alice", UID: "alice-uid", Groups: []string{"team-a", "system:authenticated"}})
 
-	// The v2 binding's schema source, wired exactly as the operator does when
-	// it loads its signer (requestersig.go ensureRequesterSigner): the webhook
-	// signs bindingV2, whose projection comes from the process-global
-	// schemaDefaultStripper, so until it is wired the v2 signature covers the
-	// full spec and the migration phase below has nothing canonical to verify.
+	// Until the stripper is wired, the v2 signature covers the full spec, leaving nothing canonical.
 	strip, err := fetchSchemaDefaultStripper(t.Context(), admin)
 	if err != nil {
 		t.Fatalf("wire schema-default stripper: %v", err)
 	}
 	setSchemaDefaultStripper(t, strip)
 
-	// RBAC before the canary loop: envtest's apiserver authorizes with RBAC
-	// (controller-runtime starts it --authorization-mode=RBAC) and the
-	// impersonated writer alice holds no grants. A Role in team-a bound to
-	// alice is the faithful grant, not an AlwaysAllow authorization override:
-	// production tenants create HelmCharts under real namespace grants — grants
-	// the reconciler then re-evaluates on every impersonated install
-	// (requester.go impersonationConfig) — so admission must be exercised
-	// through authorization, not around it.
+	// envtest authorizes with RBAC, so admission runs through real grants, not an override.
 	if _, err := admin.RbacV1().Roles(ns).Create(t.Context(), &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: "helmcharts-writer", Namespace: ns},
 		Rules: []rbacv1.PolicyRule{{
@@ -160,31 +118,22 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("bind alice to the helmcharts-writer Role: %v", err)
 	}
-	// The RBAC authorizer reads an informer cache, so the grant is not
-	// necessarily visible the instant Create returns; poll the authorizer
-	// itself until alice's create is allowed before any canary runs.
 	stampAwaitRBAC(t, admin, ns)
 
 	spec := func() map[string]any {
 		return map[string]any{"chart": "app", "repo": "https://charts.example.com", "valuesContent": "replicas: 1"}
 	}
 
-	// The mutating webhook plugin's informer syncs the configuration
-	// asynchronously, so canary creates until one comes back stamped: an
-	// unstamped create means the plugin is not calling the webhook yet.
+	// The webhook plugin's informer sync is async, so canary until one create is stamped.
 	stampWaitWebhookStamping(t, alice, gvr, ns, spec)
 
-	// Current defaults: a create through the real admission pipeline is
-	// stamped, and the stored object — spec already carrying the schema's
-	// defaults — verifies.
 	stampVerifyStored(t, stampCreateChart(t, alice, gvr, ns, "app", spec()), signer,
 		"alice", "alice-uid", "create under the bundled schema")
 	for _, name := range []string{"persisted-migrated", "persisted-unmigrated"} {
 		stampVerifyStored(t, stampCreateChart(t, alice, gvr, ns, name, spec()), signer,
 			"alice", "alice-uid", "create before the later default")
 	}
-	// A stamp actually written in the legacy-only rollout phase also survives
-	// an additive default under the new verifier.
+	// A stamp actually written in the legacy-only rollout phase must also survive the default.
 	legacySigner := *signer
 	legacySigner.bindingVersion = ""
 	signers.publish(&legacySigner)
@@ -197,23 +146,14 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	// Grow the schema: a new defaulted field lands after the object exists.
 	stampApplySchemaDefault(t, dyn, crdGVR, "helmcharts.stratum.ciq.com", "priority", int64(3))
 
-	// The signer owner re-points the schema source at the CRD as the cluster
-	// now serves it on every owner tick (requestersig.go
-	// maintainRequesterSigner), so the versioned binding picks a schema change
-	// up without a restart. The test refreshes it here, standing in for that
-	// tick: without it the v2 projection still carries the new default and the
-	// migrated read below would refuse for the wrong reason.
+	// The signer owner refreshes its schema source on every tick; the test refreshes it here.
 	strip, err = fetchSchemaDefaultStripper(t.Context(), admin)
 	if err != nil {
 		t.Fatalf("refresh schema-default stripper: %v", err)
 	}
 	setSchemaDefaultStripper(t, strip)
 
-	// The guard: read the old object under the later schema. Reading
-	// re-applies structural defaulting, so the served spec gains "priority",
-	// which the stamp never covered. The versioned binding must be invariant
-	// to that: the stamp still verifies, and it still returns the identity
-	// recorded under the old defaults.
+	// Reading re-applies defaulting, so the served spec gains "priority" the stamp never covered.
 	stored := stampAwaitServedDefault(t, dyn, gvr, ns, "app", "priority")
 	info, authentic, reason := verifiedRequester(stored, signer)
 	if !authentic {
@@ -227,9 +167,6 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 		t.Fatalf("legacy stamp after additive default: %s", reason)
 	}
 
-	// A status write stores the defaulted spec without adding the new field to
-	// its authenticated policy. Before changing that default again, the intended
-	// requester must make a real spec change under the still-compatible schema.
 	// Keep an unmigrated control to pin the fail-closed rollout boundary.
 	for _, name := range []string{"persisted-migrated", "persisted-unmigrated"} {
 		persisted := stampAwaitServedDefault(t, dyn, gvr, ns, name, "priority")
@@ -259,15 +196,12 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 		}
 	}
 
-	// Ordinary current-default creation keeps verifying: a create under the
-	// new schema is stamped with the new default already in its spec.
+	// Ordinary creation under the new schema keeps verifying.
 	stampVerifyStored(t, stampCreateChart(t, alice, gvr, ns, "second", spec()), signer,
 		"alice", "alice-uid", "create under the schema with the new default")
 	stampVerifyStored(t, stampCreateChart(t, alice, gvr, ns, "third", spec()), signer,
 		"alice", "alice-uid", "second create under the new schema")
-	// The object created under priority=3 must bind that actual value even when
-	// priority's schema default changes and a second new default invalidates its
-	// legacy full-spec MAC. Its authenticated v2 field set preserves coverage.
+	// The v2 field set keeps the bound priority when a second default invalidates the legacy MAC.
 	stampApplySchemaDefault(t, dyn, crdGVR, "helmcharts.stratum.ciq.com", "priority", int64(4))
 	stampApplySchemaDefault(t, dyn, crdGVR, "helmcharts.stratum.ciq.com", "weight", int64(1))
 	strip, err = fetchSchemaDefaultStripper(t.Context(), admin)
@@ -297,27 +231,20 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	stampVerifyStored(t, stampCreateChart(t, alice, gvr, ns, "fourth", spec()), signer,
 		"alice", "alice-uid", "create after sequential schema changes")
 
-	// Post-webhook mutation attempts: delete the MutatingWebhookConfiguration
-	// HERE — the delete in stampWebhookRegister's t.Cleanup is teardown only,
-	// it never fires mid-test — so the following writes reach etcd exactly as
-	// the reconciler would read them, mutations the webhook never saw.
-	// stampWaitWebhookGone then probes that deregistration is observable
-	// before any tamper runs. The tamper refusals are the reconciler's
-	// backstop (verifiedRequester), not admission.
+	// Deregister mid-test; the t.Cleanup delete is teardown only. Refusals below are the backstop.
 	if err := admin.AdmissionregistrationV1().MutatingWebhookConfigurations().Delete(t.Context(), webhookConfigName, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("deregister stamping webhook: %v", err)
 	}
 	stampWaitWebhookGone(t, dyn, gvr, ns, spec)
 
-	// Tampered spec: the stored stamp no longer matches the desired state.
+	// Tampered spec: the stamp no longer matches the desired state.
 	if _, err := dyn.Resource(gvr).Namespace(ns).Patch(t.Context(), "fourth", types.MergePatchType,
 		[]byte(`{"spec":{"chart":"other"}}`), metav1.PatchOptions{}); err != nil {
 		t.Fatalf("tamper spec patch: %v", err)
 	}
 	stampRefuseTampered(t, dyn, gvr, ns, "fourth", signer, "tampered spec")
 
-	// A value equal to the new current default cannot replace a value that
-	// admission already bound. The legacy MAC is stale because weight was added.
+	// A value equal to the new default cannot replace one admission already bound.
 	if _, err := dyn.Resource(gvr).Namespace(ns).Patch(t.Context(), "second", types.MergePatchType,
 		[]byte(`{"spec":{"priority":4}}`), metav1.PatchOptions{}); err != nil {
 		t.Fatal(err)
@@ -329,7 +256,7 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	}
 	stampRefuseTampered(t, dyn, gvr, ns, "persisted-migrated", signer, "tampered materialized default after authenticated migration")
 
-	// Tampered identity: the requester annotation changed under the signature.
+	// Tampered identity: the annotation changed under the signature.
 	if _, err := dyn.Resource(gvr).Namespace(ns).Patch(t.Context(), "third", types.MergePatchType,
 		fmt.Appendf(nil, `{"metadata":{"annotations":{%q:"mallory"}}}`, annRequester), metav1.PatchOptions{}); err != nil {
 		t.Fatalf("tamper identity patch: %v", err)
@@ -337,8 +264,6 @@ func TestRequesterStampAcrossSchemaDefaultChange(t *testing.T) {
 	stampRefuseTampered(t, dyn, gvr, ns, "third", signer, "tampered identity")
 }
 
-// stampCreateChart creates one HelmChart through dyn (the impersonated writer
-// in the stamped cases) and returns the stored object.
 func stampCreateChart(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, spec map[string]any) *unstructured.Unstructured {
 	t.Helper()
 	hc := &unstructured.Unstructured{Object: map[string]any{
@@ -354,9 +279,6 @@ func stampCreateChart(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersi
 	return created
 }
 
-// stampVerifyStored asserts a stored object's stamp verifies and carries the
-// migration stamp set (both signatures plus the key id), returning the identity
-// verification attributed.
 func stampVerifyStored(t *testing.T, obj *unstructured.Unstructured, signer *requesterSigner, wantUser, wantUID, what string) {
 	t.Helper()
 	info, authentic, reason := verifiedRequester(obj, signer)
@@ -373,9 +295,7 @@ func stampVerifyStored(t *testing.T, obj *unstructured.Unstructured, signer *req
 	}
 }
 
-// stampRefuseTampered asserts verification refuses a stored object with a
-// signature-verification failure — the stamp is still present but no longer
-// matches, which is the tamper being caught (not a dropped stamp).
+// Distinguishes a caught tamper from a dropped stamp: the refusal must name signature verification.
 func stampRefuseTampered(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name string, signer *requesterSigner, what string) {
 	t.Helper()
 	stored, err := dyn.Resource(gvr).Namespace(ns).Get(t.Context(), name, metav1.GetOptions{})
@@ -392,16 +312,13 @@ func stampRefuseTampered(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVe
 	}
 }
 
-// stampApplySchemaDefault updates the CRD so spec gains `field` with a default,
-// the schema change the old object's stamp must survive.
 func stampApplySchemaDefault(t *testing.T, dyn dynamic.Interface, crdGVR schema.GroupVersionResource, crdName, field string, def any) {
 	t.Helper()
 	crd, err := dyn.Resource(crdGVR).Get(t.Context(), crdName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get %s: %v", crdName, err)
 	}
-	// Navigate with NestedFieldNoCopy: NestedMap and NestedSlice deep-copy, and
-	// the mutation must land on the CRD object that is written back.
+	// NestedMap and NestedSlice deep-copy; the mutation must land on the object written back.
 	val, found, err := unstructured.NestedFieldNoCopy(crd.Object, "spec", "versions")
 	if err != nil || !found {
 		t.Fatalf("CRD %s has no versions: found=%v err=%v", crdName, found, err)
@@ -428,9 +345,6 @@ func stampApplySchemaDefault(t *testing.T, dyn dynamic.Interface, crdGVR schema.
 	}
 }
 
-// stampAwaitServedDefault re-reads the old object until the apiserver serves it
-// with the new default (read-path structural defaulting of the updated schema)
-// — the precondition the guard exists for.
 func stampAwaitServedDefault(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns, name, field string) *unstructured.Unstructured {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -449,11 +363,7 @@ func stampAwaitServedDefault(t *testing.T, dyn dynamic.Interface, gvr schema.Gro
 	}
 }
 
-// stampAwaitRBAC polls a SubjectAccessReview until the RBAC authorizer reports
-// alice's helmcharts create in ns as allowed: the authorizer reads an informer
-// cache, so the RoleBinding's grant is not necessarily visible the instant its
-// Create returns, and a canary create racing that lag would fail the guard for
-// the wrong reason.
+// The RBAC authorizer reads an informer cache, so a fresh grant is not visible immediately.
 func stampAwaitRBAC(t *testing.T, admin kubernetes.Interface, ns string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -481,13 +391,7 @@ func stampAwaitRBAC(t *testing.T, admin kubernetes.Interface, ns string) {
 	}
 }
 
-// stampWaitWebhookStamping canary-creates until the mutating webhook plugin is
-// actually calling the webhook: the first creates can race the plugin's
-// informer sync, and an unstamped create would fail the guard for the wrong
-// reason. Unstamped canaries are deleted; the stamped one stays. A Forbidden
-// create is retriable like the unstamped one: the RBAC authorizer's informer
-// cache may still not show a just-created grant, the same lag
-// stampAwaitRBAC's SubjectAccessReview poll already rode out.
+// A Forbidden create is retriable: the authorizer's cache may lag the fresh grant.
 func stampWaitWebhookStamping(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns string, spec func() map[string]any) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -501,7 +405,6 @@ func stampWaitWebhookStamping(t *testing.T, dyn dynamic.Interface, gvr schema.Gr
 		}}
 		_, err := dyn.Resource(gvr).Namespace(ns).Create(t.Context(), hc, metav1.CreateOptions{})
 		if apierrors.IsForbidden(err) {
-			// The grant is not visible to the authorizer yet; retry.
 			if time.Now().After(deadline) {
 				t.Fatalf("alice still forbidden to create helmcharts in %s within 30s of the RoleBinding: %v", ns, err)
 			}
@@ -528,10 +431,7 @@ func stampWaitWebhookStamping(t *testing.T, dyn dynamic.Interface, gvr schema.Gr
 	}
 }
 
-// stampWaitWebhookGone waits until deregistering the webhook is observable: a
-// spec-changing write must no longer be re-stamped. The probe is the stored
-// signature — a re-stamp signs the new binding, so it differs; an unstamped
-// write leaves it untouched.
+// A re-stamp signs a new binding, so a changed signature proves the webhook is gone.
 func stampWaitWebhookGone(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns string, spec func() map[string]any) {
 	t.Helper()
 	name := "deregister-canary"
@@ -561,8 +461,6 @@ func stampWaitWebhookGone(t *testing.T, dyn dynamic.Interface, gvr schema.GroupV
 	}
 }
 
-// stampWebhookServe serves the production admission handler over TLS on
-// 127.0.0.1 and returns the registerable URL and CA bundle.
 func stampWebhookServe(t *testing.T, signer signerSnapshot) (url string, caBundle []byte) {
 	t.Helper()
 	cert, caPEM := stampServingCert(t, "127.0.0.1")
@@ -580,10 +478,7 @@ func stampWebhookServe(t *testing.T, signer signerSnapshot) (url string, caBundl
 	return "https://" + listener.Addr().String() + webhookPath, caPEM
 }
 
-// stampWebhookRegister registers the production webhook configuration against
-// the real apiserver, pointed at the test's serving URL. nil privileged
-// namespaces means the webhook matches every namespace, as production does for
-// a tenant-only exemption set.
+// nil privileged namespaces matches every namespace, as production does for a tenant-only set.
 func stampWebhookRegister(t *testing.T, cs kubernetes.Interface, url string, caBundle []byte) {
 	t.Helper()
 	cfg := buildWebhookConfig(caBundle, nil)
@@ -596,8 +491,6 @@ func stampWebhookRegister(t *testing.T, cs kubernetes.Interface, url string, caB
 	})
 }
 
-// stampImpersonated returns a dynamic client writing as exactly one identity,
-// so the webhook stamps a deterministic requester.
 func stampImpersonated(t *testing.T, cfg *rest.Config, info requesterInfo) dynamic.Interface {
 	t.Helper()
 	icfg := rest.CopyConfig(cfg)
@@ -609,8 +502,7 @@ func stampImpersonated(t *testing.T, cfg *rest.Config, info requesterInfo) dynam
 	return dyn
 }
 
-// stampServingCert issues a self-signed CA and a serving leaf for the webhook
-// URL's host; the CA is the bundle the webhook configuration registers.
+// The CA is the bundle the webhook configuration registers.
 func stampServingCert(t *testing.T, host string) (tls.Certificate, []byte) {
 	t.Helper()
 	pub, key, err := ed25519.GenerateKey(rand.Reader)

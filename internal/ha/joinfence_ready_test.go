@@ -24,8 +24,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// API servers see admission policy updates independently. A successful write
-// to storage must not allow the Role before even the slowest server enforces it.
+// API servers see policy updates independently; the Role must wait for the slowest to enforce
 func TestCertsReaderWaitsForAdmissionOnEveryAPIServer(t *testing.T) {
 	var mu sync.Mutex
 	probes := [2]map[string]int{{}, {}}

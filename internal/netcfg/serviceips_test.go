@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// TestServiceIPsFollowTheServiceCIDR pins that the kubernetes Service IP
-// and the cluster DNS IP are the first and tenth addresses of the cluster's
-// actual service range. At the default they are the old constants, exactly.
+// The Service and DNS IPs are the first and tenth addresses of the actual range.
 func TestServiceIPsFollowTheServiceCIDR(t *testing.T) {
 	for _, tc := range []struct {
 		name, pod, svc   string
@@ -39,8 +37,7 @@ func TestServiceIPsFollowTheServiceCIDR(t *testing.T) {
 	}
 }
 
-// A range that cannot hold the tenth address is refused at parse time, with a
-// message that says why — not accepted and then broken at DNS.
+// Refused at parse time, not accepted and then broken at DNS.
 func TestServiceCIDRTooSmallIsRefused(t *testing.T) {
 	for _, svc := range []string{"10.43.0.0/29", "10.43.0.0/32"} {
 		if _, err := Parse("10.42.0.0/16", svc); err == nil || !strings.Contains(err.Error(), "too small") {
@@ -52,10 +49,7 @@ func TestServiceCIDRTooSmallIsRefused(t *testing.T) {
 	}
 }
 
-// TestDNSIPKeepsTheLegacyAddressWhereItWorked: earlier releases always
-// created the kube-dns Service at 10.96.0.10. A custom range containing it ran
-// fine, and its Service holds that immutable ClusterIP, so it must not move.
-// Only a range that never contained it, the broken case, gets the tenth address.
+// A range that contained the legacy address keeps it: a ClusterIP is immutable.
 func TestDNSIPKeepsTheLegacyAddressWhereItWorked(t *testing.T) {
 	for _, tc := range []struct{ cidr, want string }{
 		{"10.96.0.0/12", "10.96.0.10"}, // the default: both rules agree

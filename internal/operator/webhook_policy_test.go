@@ -20,21 +20,10 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestWebhookNamespaceSelectorDerivesFromPrivilegedNamespaces pins the
-// privileged-set contract: the MutatingWebhookConfiguration's NamespaceSelector
-// exempts exactly the normalized privileged set — the same
-// Options.PrivilegedNamespaces whose HelmCharts may install cross-namespace —
-// so one option governs install authorization and admission exemption.
-// failurePolicy stays Fail for every set shape, so tenant writes keep failing
-// closed.
 func TestWebhookNamespaceSelectorDerivesFromPrivilegedNamespaces(t *testing.T) {
 	cases := []struct {
-		name string
-		// privileged is the configured set, as the operator option carries it.
+		name       string
 		privileged []string
-		// wantValues is the expected NotIn values on
-		// kubernetes.io/metadata.name; nil means the namespaceSelector is
-		// omitted entirely.
 		wantValues []string
 	}{
 		{"default set exempts kube-system", []string{"kube-system"}, []string{"kube-system"}},
@@ -56,10 +45,6 @@ func TestWebhookNamespaceSelectorDerivesFromPrivilegedNamespaces(t *testing.T) {
 				t.Errorf("failurePolicy = %v, want Fail", wh.FailurePolicy)
 			}
 			if tc.wantValues == nil {
-				// The selector must be OMITTED, not rendered as a valueless
-				// NotIn (which fails apiserver validation): the webhook then
-				// matches every namespace, so unstamped writes are denied
-				// everywhere — the reconciler's empty-set deny-all reading.
 				if wh.NamespaceSelector != nil {
 					t.Errorf("namespaceSelector = %+v, want omitted", wh.NamespaceSelector)
 				}
@@ -79,17 +64,9 @@ func TestWebhookNamespaceSelectorDerivesFromPrivilegedNamespaces(t *testing.T) {
 	}
 }
 
-// TestMaintainWebhookThreadsWithThePrivilegedSet pins the last hop of the
-// privileged-set threading that the pure-builder tables cannot see: the
-// privileged set handed to maintainWebhook (as runWebhook passes it) reaches
-// the live MutatingWebhookConfiguration through ensureWebhookObjects and
-// ensureWebhookConfig. The parameter is a required slice, so a refactor that
-// stops forwarding it no longer compiles; this test additionally pins the hops
-// the compiler cannot see — that the value maintainWebhook receives reaches
-// buildWebhookConfig through ensureWebhookObjects and ensureWebhookConfig.
+// Pins the hops the compiler cannot see: the set reaches buildWebhookConfig.
 func TestMaintainWebhookThreadsWithThePrivilegedSet(t *testing.T) {
-	// ensureWebhookObjects reads the CA bundle from the PKI dir; redirect it so
-	// the ensure step renders the config instead of logging a read failure.
+	// Redirect the PKI dir so the ensure step renders the config, not a read failure.
 	old := version.PKIDir
 	version.PKIDir = t.TempDir()
 	t.Cleanup(func() { version.PKIDir = old })
@@ -143,17 +120,12 @@ func TestMaintainWebhookThreadsWithThePrivilegedSet(t *testing.T) {
 	}
 }
 
-// TestEnsureWebhookConfigSelfHealsSelector pins that a changed privileged set
-// reaches an existing cluster through ensureWebhookConfig's wholesale webhook
-// update, so a changed selector self-heals without migration code; the create
-// path renders the same selector.
 func TestEnsureWebhookConfigSelfHealsSelector(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	ctx := context.Background()
 	if err := ensureWebhookConfig(ctx, cs, []byte("CABUNDLE"), []string{"kube-system"}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// The operator restarts configured with a replaced privileged set.
 	if err := ensureWebhookConfig(ctx, cs, []byte("CABUNDLE"), []string{"platform"}); err != nil {
 		t.Fatalf("re-assert with replaced set: %v", err)
 	}
@@ -165,7 +137,6 @@ func TestEnsureWebhookConfigSelfHealsSelector(t *testing.T) {
 	if sel == nil || len(sel.MatchExpressions) != 1 || !slices.Equal(sel.MatchExpressions[0].Values, []string{"platform"}) {
 		t.Errorf("selector not healed to the replaced set: %+v", sel)
 	}
-	// A later empty set drops the selector from the live object too.
 	if err := ensureWebhookConfig(ctx, cs, []byte("CABUNDLE"), nil); err != nil {
 		t.Fatalf("re-assert with empty set: %v", err)
 	}

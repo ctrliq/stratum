@@ -11,8 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// restoreCopiesHost is a Stratum node whose data dir has two restore copies
-// beside it. The data lock lives beside DataDir, so both are redirected.
 func restoreCopiesHost(t *testing.T) (pre, failed string) {
 	t.Helper()
 	fakeStratumHost(t)
@@ -42,9 +40,6 @@ func listRestoreCopies(t *testing.T) SnapshotRestoreCopiesOut {
 	return out
 }
 
-// TestSnapshotRestoreCopiesListsWithoutRemoving: the read tool
-// reports each copy with a modified time that can be passed straight back,
-// and removes nothing.
 func TestSnapshotRestoreCopiesListsWithoutRemoving(t *testing.T) {
 	pre, failed := restoreCopiesHost(t)
 	out := listRestoreCopies(t)
@@ -70,9 +65,6 @@ func TestSnapshotRestoreCopiesListsWithoutRemoving(t *testing.T) {
 	}
 }
 
-// TestSnapshotPruneRestoresRemovesOnlyWhatItIsNamed: the
-// destructive tool removes only the copies it is passed, and only while they
-// are unchanged since the listing; the rest are reported as left.
 func TestSnapshotPruneRestoresRemovesOnlyWhatItIsNamed(t *testing.T) {
 	pre, failed := restoreCopiesHost(t)
 	listed := listRestoreCopies(t)
@@ -80,8 +72,7 @@ func TestSnapshotPruneRestoresRemovesOnlyWhatItIsNamed(t *testing.T) {
 	for _, c := range listed.Copies {
 		refs = append(refs, RestoreCopyRef{Path: c.Path, Modified: c.Modified})
 	}
-	// The failed-restore copy changes after the listing; the pre-restore
-	// copy does not.
+	// The failed-restore copy changes after the listing; the pre-restore copy does not.
 	later := time.Now().Add(time.Hour)
 	if err := os.Chtimes(failed, later, later); err != nil {
 		t.Fatal(err)
@@ -104,9 +95,6 @@ func TestSnapshotPruneRestoresRemovesOnlyWhatItIsNamed(t *testing.T) {
 	}
 }
 
-// TestSnapshotPruneRestoresRefusesWhatItCannotTrust: no copies means no
-// default, a modified time that is not the listing's is refused before
-// anything is removed, and so is a machine that is not a Stratum node.
 func TestSnapshotPruneRestoresRefusesWhatItCannotTrust(t *testing.T) {
 	pre, _ := restoreCopiesHost(t)
 	for _, tc := range []struct {
@@ -152,10 +140,6 @@ func TestSnapshotPruneRestoresRefusesWhatItCannotTrust(t *testing.T) {
 	})
 }
 
-// TestSnapshotRestoreCopiesPages: the listing is bounded like
-// every MCP list. A page says it is truncated and carries a token; the next
-// page picks up where it left off; a token from before the copies changed is
-// refused rather than silently skipping or repeating one.
 func TestSnapshotRestoreCopiesPages(t *testing.T) {
 	pre, failed := restoreCopiesHost(t)
 	call := func(in SnapshotRestoreCopiesIn) (SnapshotRestoreCopiesOut, error) {

@@ -22,9 +22,6 @@ func kubeSystem(uid string) *corev1.Namespace {
 	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: types.UID(uid)}}
 }
 
-// A cluster-wide operation runs on the server's credential only when that
-// credential addresses this node's own cluster, proven by the kube-system
-// namespace's UID and not only by a Node of this node's name.
 func TestRequireThisNodeInProvesTheCluster(t *testing.T) {
 	setThisNodeName(t, "cp1")
 	local := fake.NewSimpleClientset(kubeSystem("uid-prod"))
@@ -49,8 +46,6 @@ func TestRequireThisNodeInProvesTheCluster(t *testing.T) {
 	}
 }
 
-// The server URL in a refusal never carries the credentials a kubeconfig can
-// embed in it.
 func TestRedactHostDropsUserInfo(t *testing.T) {
 	if got := redactHost("https://admin:s3cret@10.0.0.1:6443"); strings.Contains(got, "s3cret") || got != "https://10.0.0.1:6443" {
 		t.Errorf("redactHost = %q", got)

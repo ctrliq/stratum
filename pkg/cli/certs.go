@@ -59,10 +59,7 @@ func newCertsCheckCommand() *cobra.Command {
 				}
 				fmt.Printf("%-26s %-12s %-20s %d%s\n", s.Name, kind, s.NotAfter.UTC().Format("2006-01-02"), s.DaysLeft, flag)
 			}
-			// The scheduled renewal loop's last attempt: the loop is
-			// invisible otherwise — a dead loop looks the same as a
-			// healthy one until the leaves expire. A local file read, so
-			// a failure is reported, not fatal, like the table above.
+			// A dead renewal loop looks healthy until the leaves expire; the record makes it visible.
 			if rec, err := certs.LoadRenewalRecord(); err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					fmt.Printf("\nlast renewal attempt: no renewal attempt recorded\n")
@@ -77,18 +74,14 @@ func newCertsCheckCommand() *cobra.Command {
 			if incomplete, _ := certs.IncompleteRotation(); incomplete {
 				fmt.Printf("leaf rotation: INCOMPLETE: leaves were reissued but not every component restarted onto them; the scheduled renewal rotates again, or run `sudo /usr/local/bin/stratum certs rotate --yes`\n")
 			}
-			// The HA shared certificate-key's age: it only re-keys as a
-			// side effect of `token create --control-plane` or `certs rotate-ca`, so a
-			// key that has not moved since install is worth surfacing. Cluster-facing,
-			// so a read failure must not break the local, file-based table above.
+			// The shared key re-keys only as a side effect; a frozen key is worth surfacing.
 			fmt.Print(clusterCertsReport(isWorkerNode(), sharedCertsKeySetAt, rotationPhase, carotateKeyStaged))
 			return nil
 		},
 	}
 }
 
-// clusterCertsReport is the cluster-facing tail of `certs check`. A worker has
-// no admin kubeconfig to read the cluster with, so it gets one line instead.
+// A worker has no admin kubeconfig, so it gets one line instead of the cluster report.
 func clusterCertsReport(worker bool, keySetAt func() (time.Time, bool, error), phase func() string, staged func() (bool, error)) string {
 	if worker {
 		return "\nshared certs and CA-rotation key: checked on control planes only; run `stratum certs check` on one\n"
@@ -107,18 +100,13 @@ func clusterCertsReport(worker bool, keySetAt func() (time.Time, bool, error), p
 	return b.String()
 }
 
-// isWorkerNode is true only when the apiserver manifest is verifiably absent:
-// an unreadable one is a broken controller, which keeps the cluster checks.
+// True only when the manifest is verifiably absent: an unreadable one keeps the cluster checks.
 func isWorkerNode() bool {
 	_, err := os.Stat(staticpod.Path("kube-apiserver"))
 	return errors.Is(err, fs.ErrNotExist)
 }
 
-// leftoverCarotateWarning flags a stratum-carotate Secret that outlived its
-// rotation: while this node reports idle nothing should be staging
-// shared material, yet the Secret holds the key that decrypts ca.key, sa.key and
-// front-proxy-ca.key. An etcd-CA migration in flight also stages it, so the
-// message says to check first. A failed lookup is reported, not hidden.
+// An in-flight etcd-CA migration also stages this Secret, so the message says to check first.
 func leftoverCarotateWarning(phase string, staged func() (bool, error)) string {
 	if phase != "idle" {
 		return ""
@@ -136,11 +124,7 @@ func leftoverCarotateWarning(phase string, staged func() (bool, error)) string {
 		"        kubectl -n kube-system delete secret stratum-carotate\n"
 }
 
-// rotationPhase (node-local) and carotateKeyStaged (cluster-wide) back
-// `certs check`'s leftover-rotation warning; package vars so both are testable
-// without a cluster or on-disk rotation state. The --rekey-shared guard sits
-// next to the write it protects: rekeyGuard is the one re-key entry
-// point, certs.GuardRekey, which the token paths consult too.
+// Package vars so tests can stub the phase and Secret reads without a cluster.
 var (
 	rotationPhase         = certs.RotationPhase
 	carotateKeyStaged     = certs.CARotateKeyStaged
@@ -163,9 +147,6 @@ func newCertsRotateCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if rekeyShared {
-				// A distinct operation from leaf rotation: it mints a new certificate-key
-				// and re-encrypts stratum-certs, invalidating the old key. It does not
-				// touch leaves, so --if-expiring (leaf-only) does not apply.
 				if cmd.Flags().Changed("if-expiring") {
 					return fmt.Errorf("stratum certs rotate --rekey-shared re-keys the shared cert material; it is not a leaf rotation, so --if-expiring does not apply")
 				}
@@ -175,22 +156,13 @@ func newCertsRotateCommand() *cobra.Command {
 				if err := requireNodeProfile("rotate --rekey-shared"); err != nil {
 					return err
 				}
-				// Hold the same fence as the rotation from before the staged-key
-				// check through publication and key handover: a check alone leaves
-				// a window for a rotation to stage a different decryption key.
+				// Held from before the staged-key check through handover; a check alone leaves a staging window.
 				release, err := rekeyMaintenanceFence()
 				if err != nil {
 					return fmt.Errorf("stratum certs rotate --rekey-shared: %w", err)
 				}
 				defer release.Release()
-				// One re-key entry point: the guard lives in internal/certs,
-				// next to the staged key it reads, and `token create
-				// --control-plane` and the MCP token_create tool refuse by it
-				// too. Its two legs — the node-local mid-rotation phase read
-				// (cheap, catches a rotation staged on THIS node) and the
-				// cluster-wide stratum-carotate Secret (which a follower the
-				// initiator has not reached yet needs) — are pinned in
-				// internal/certs/rekey_test.go.
+				// The one re-key guard; the token paths refuse by it too.
 				if err := rekeyGuard(); err != nil {
 					return fmt.Errorf("stratum certs rotate --rekey-shared: %w", err)
 				}
@@ -198,10 +170,7 @@ func newCertsRotateCommand() *cobra.Command {
 					if err := release.Confirm(cmd.Context()); err != nil {
 						return err
 					}
-					// The rekey makes several API calls between the take and
-					// the Secret write; the fence's recheck rides with it, so
-					// a lease lost while one of them stalled refuses the
-					// publication instead of replacing the successor's bundle.
+					// The fence recheck rides each call, so a lost lease refuses instead of clobbering.
 					if err := rekeySharedCerts(key, release.Confirm); err != nil {
 						return err
 					}
@@ -211,20 +180,10 @@ func newCertsRotateCommand() *cobra.Command {
 			if ifExp == 0 && !yes {
 				return fmt.Errorf("stratum certs rotate restarts the control-plane units; re-run with --yes (or --if-expiring=N for the conditional/timer path)")
 			}
-			// The rotation owns the shared interrupt context: cmd.Context() is
-			// Background for every stratum invocation (main calls Execute, not
-			// ExecuteContext), so the step boundaries below it could never fire
-			// on the raw command context and a first Ctrl-C kills the rotation
-			// mid-step by the default action. On this context the first signal
-			// stops the run at its next step boundary and a second kills, the
-			// same contract the cluster cert commands, the renewal loop and the
-			// MCP tools run under — and a signal-asked stop exits 0, with the
-			// boundary it halted on named.
+			// cmd.Context() is Background for every stratum run; without this Ctrl-C kills mid-step.
 			ctx, stop := interrupt.DerivedContext(cmd.Context())
 			defer stop()
-			// The rotation prints its own outcome ("nothing to rotate" /
-			// "certs: rotated"), so the whether-it-rotated verdict needs no
-			// CLI-side text of its own.
+			// The rotation prints its own outcome, so no verdict text of its own.
 			_, err := certs.RotateContext(ctx, os.Stdout, certs.Options{IfExpiringDays: ifExp})
 			if interrupt.ExpectedStop(ctx, err) {
 				fmt.Fprintf(cmd.OutOrStdout(), "stratum: %v\nrotation stopped (signal received); re-run `stratum certs rotate` to finish it\n", err)
@@ -240,10 +199,6 @@ func newCertsRotateCommand() *cobra.Command {
 	return cmd
 }
 
-// runRekeyShared mints a fresh certificate-key, re-encrypts the shared cert
-// material under it (so the previous key no longer decrypts stratum-certs),
-// and hands the new key to the operator via a
-// 0600 file, never printing it.
 // The effects are injected so the handover ordering is testable without a cluster.
 func runRekeyShared(out io.Writer,
 	newCertKey func() (string, error),
@@ -257,9 +212,7 @@ func runRekeyShared(out io.Writer,
 	if err := reUpload(key); err != nil {
 		return fmt.Errorf("re-encrypt the shared cert material: %w", err)
 	}
-	// The re-key has landed; the Secret now decrypts only under the new key. Hand
-	// it over by path, never stdout — if the file write fails, say so rather than
-	// print the key, and the operator re-runs to mint a fresh one.
+	// Hand the key over by path, never stdout; a failed write says so without printing it.
 	path, err := writeKeyFile(key)
 	if err != nil {
 		return fmt.Errorf("the shared cert material was re-keyed, but writing the new certificate-key to a file failed: %w — "+
@@ -274,23 +227,16 @@ func runRekeyShared(out io.Writer,
 	return nil
 }
 
-// The restart warnings are internal/certs': the CLI prints them before a
-// rotating (not rollback) rotate-ca run and the MCP tool returns them in its
-// result, so the two front ends cannot drift. The local names keep the call
-// sites short.
+// The operations own the warning text, so both front ends stay identical.
 const (
 	caRotateClusterWarning = certs.CARotateClusterWarning
 	caRotatePhaseWarning   = certs.CARotatePhaseWarning
 )
 
-// adminK8sClientset builds the internal admin API client (super-admin.conf
-// when the node carries one, admin.conf otherwise), as the client builder the
-// --cluster orchestrators take.
+// super-admin.conf when the node carries one, admin.conf otherwise.
 func adminK8sClientset() (kubernetes.Interface, error) { return k8sutil.AdminClientset() }
 
-// Seams for the cluster calls, so the warning can be tested without a cluster.
-// The cluster orchestrators acquire their API client through a client builder;
-// these commands hand them the internal admin builder.
+// Seams so the cluster calls are testable without a cluster.
 var (
 	rotateCACluster = func(ctx context.Context, o certs.CARotateOptions) error {
 		return certs.RotateCAClusterContext(ctx, os.Stdout, o, adminK8sClientset)
@@ -323,7 +269,6 @@ func newCertsRotateCACommand() *cobra.Command {
 		restartWorkloads, skipWorkloadCheck bool
 		skipTokenCheck, tokensChecked       bool
 
-		// The node scan Job's own mode: see certs.ScanTokens.
 		scanTokens, restartKubelet bool
 		oldKid                     string
 	)
@@ -336,9 +281,7 @@ func newCertsRotateCACommand() *cobra.Command {
 				return fmt.Errorf("stratum certs rotate-ca: --rotation-run goes with a single --phase")
 			}
 			if check {
-				// Read-only, so it needs no --yes. The answer is the exit
-				// status, as for --scan-tokens: the cluster-wide check reads
-				// it from each node's Job.
+				// Read-only, so no --yes; the refusal is the exit status.
 				f := certs.CARotateFlags{Cluster: clusterWide, Phase: phase, Rollback: rollback, Check: true}
 				if err := f.Validate(); err != nil {
 					return err
@@ -358,13 +301,11 @@ func newCertsRotateCACommand() *cobra.Command {
 			if !yes {
 				return fmt.Errorf("stratum certs rotate-ca restarts control-plane units; re-run with --yes")
 			}
-			// Only --cluster's node Jobs pass it, and they run one phase: on its own
-			// or with --cluster it would skip the token gate without --force.
+			// Only --cluster's node Jobs pass it: alone it would skip the token gate without --force.
 			if tokensChecked && (phase == "" || clusterWide) {
 				return fmt.Errorf("stratum certs rotate-ca: --tokens-checked is set by --cluster on its node Jobs and goes with --phase, not --cluster")
 			}
 			if scanTokens {
-				// --scan-tokens is the node scan Job's own mode: it stands alone.
 				if rollback || clusterWide || phase != "" {
 					return fmt.Errorf("stratum certs rotate-ca: --scan-tokens stands alone")
 				}
@@ -381,8 +322,6 @@ func newCertsRotateCACommand() *cobra.Command {
 				RestartWorkloads: restartWorkloads, SkipWorkloadCheck: skipWorkloadCheck,
 				SkipTokenCheck: skipTokenCheck, Check: check,
 			}
-			// The shared argument rules: --cluster with --phase, a missing phase,
-			// an unknown phase. The MCP tool runs the same validator.
 			if err := f.Validate(); err != nil {
 				return err
 			}
@@ -435,16 +374,7 @@ func newCertsRotateCACommand() *cobra.Command {
 	return cmd
 }
 
-// newCertsMigrateEtcdCACommand exposes the etcd-CA migration: the
-// command that moves an ALREADY-RUNNING cluster from the shared cluster root
-// onto the dedicated etcd CA. Clusters built with the etcd trust hole already
-// closed (a dedicated etcd CA from the start) never need it.
-//
-// --cluster is the supported form. The bare --phase form exists because the
-// cluster orchestration itself drives it on each node, and because an operator
-// recovering a halted run needs the same lever by hand; it is not the way to
-// migrate a cluster, and running it on one node alone will cost that node
-// quorum at issue-new.
+// --cluster is the supported form; --phase is the per-node lever the orchestration drives.
 func newCertsMigrateEtcdCACommand() *cobra.Command {
 	var (
 		clusterWide bool
@@ -500,8 +430,7 @@ func newCertsMigrateEtcdCACommand() *cobra.Command {
 	return cmd
 }
 
-// newCertsMigrateKubeletClientCACommand moves a cluster installed before the
-// kubelet-client CA onto it, or back to the cluster root.
+// Moves a cluster installed before the kubelet-client CA onto it, or back.
 func newCertsMigrateKubeletClientCACommand() *cobra.Command {
 	var (
 		clusterWide bool

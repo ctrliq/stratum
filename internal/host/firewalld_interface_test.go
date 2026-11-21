@@ -308,8 +308,7 @@ func TestMissingFirewallCmdRetainsExistingOwnership(t *testing.T) {
 	}
 }
 
-// fakeIface adds an interface to the faked /sys/class/net: a veth has no
-// marker, a bridge a bridge/ directory, a physical NIC a device link.
+// A veth has no marker, a bridge a bridge/ directory, a physical NIC a device link.
 func fakeIface(t *testing.T, name, marker string) {
 	t.Helper()
 	dir := filepath.Join(sysClassNet, name)
@@ -328,7 +327,6 @@ func fakeIface(t *testing.T, name, marker string) {
 	}
 }
 
-// Cilium's own veths, lxc_health included, are what lxc+ is for.
 func TestTrustPodCIDRsBindsWhenOnlyCiliumVethsMatch(t *testing.T) {
 	f := newFakeFirewalld(t)
 	fakeIface(t, "lxc_health", "")
@@ -340,8 +338,6 @@ func TestTrustPodCIDRsBindsWhenOnlyCiliumVethsMatch(t *testing.T) {
 	}
 }
 
-// The standard LXC bridge is kept outside trusted, even if created after
-// pod trust, while Cilium's veths remain trusted.
 func TestTrustPodCIDRsKeepsLxcBridgeInDefaultZone(t *testing.T) {
 	f := newFakeFirewalld(t)
 	fakeIface(t, "lxc1a2b3c4d5e6f", "")
@@ -353,8 +349,6 @@ func TestTrustPodCIDRsKeepsLxcBridgeInDefaultZone(t *testing.T) {
 	}
 }
 
-// An unusual lxc-prefixed physical NIC has no reserved exclusion pattern.
-// The next start revokes an older owned wildcard and warns.
 func TestTrustPodCIDRsRevokesWildcardForOtherLxcLookalike(t *testing.T) {
 	f := newFakeFirewalld(t)
 	fakeIface(t, "lxc1a2b3c4d5e6f", "")

@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// workerConfig returns spec.network.nodeIP as the file gives it, or empty when
-// the file gives none. --node-ip outranks it in cluster.PrepareWorker, which
-// is handed both and names the one it took.
 func TestWorkerConfigReadsTheNodeIP(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(cfg, []byte("spec:\n  network:\n    nodeIP: 10.50.0.4\n"), 0o600); err != nil {
@@ -30,9 +27,6 @@ func TestWorkerConfigReadsTheNodeIP(t *testing.T) {
 	}
 }
 
-// A field a worker cannot honour is refused, so the file never looks applied
-// when it was not. runUp reads the file even when --node-ip is given
-// (TestRunUpWorkerJoinReadsTheConfig).
 func TestWorkerNodeIPRefusesInapplicableFields(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(cfg, []byte("spec:\n  network:\n    nodeIP: 10.50.0.4\n  vip:\n    address: 10.50.0.100\n"), 0o600); err != nil {

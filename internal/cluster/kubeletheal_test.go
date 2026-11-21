@@ -44,10 +44,6 @@ func healTestCert(t *testing.T, parent *x509.Certificate, parentKey *ecdsa.Priva
 	return cert, key, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-// TestKubeletStartHealsAnUntrustedServingCert runs the kubelet's own WaitFor,
-// with the runtime wait stubbed, on the argv kubeletProcess launches a worker
-// with: a serving pair no CA in ca-bundle.crt signed is moved out of the
-// kubelet's cert dir before the start, and one the bundle's CA signed stays.
 func TestKubeletStartHealsAnUntrustedServingCert(t *testing.T) {
 	savedPKI, savedReady := version.PKIDir, kubeletRuntimeReady
 	t.Cleanup(func() { version.PKIDir, kubeletRuntimeReady = savedPKI, savedReady })

@@ -19,10 +19,8 @@ import (
 // KubeVipUser is the CN of the kube-vip leaf.
 const KubeVipUser = "system:kube-vip"
 
-// KubeVipLease is the Lease kube-vip's control-plane election holds, kube-vip's default.
 const KubeVipLease = "plndr-cp-lock"
 
-// KubeVipRBAC names the Role and RoleBinding in kube-system that let KubeVipUser hold KubeVipLease.
 const KubeVipRBAC = "stratum:kube-vip"
 
 const kubeVipNamespace = "kube-system"
@@ -49,9 +47,7 @@ func retryable(err error) bool {
 	return apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err) || apierrors.IsNotFound(err)
 }
 
-// EnsureKubeVipRBAC makes the kube-vip Role and RoleBinding exactly what
-// KubeVipUser needs to hold KubeVipLease, recreating the binding when its
-// immutable roleRef differs.
+// Recreates the binding when its immutable roleRef differs.
 func EnsureKubeVipRBAC(ctx context.Context, cs kubernetes.Interface) error {
 	roles := cs.RbacV1().Roles(kubeVipNamespace)
 	role := wantKubeVipRole()
@@ -103,8 +99,7 @@ func EnsureKubeVipRBAC(ctx context.Context, cs kubernetes.Interface) error {
 	return nil
 }
 
-// LocalAdminClientset is AdminClientset against this node's own apiserver
-// rather than the server admin.conf names, which may be a VIP.
+// Targets this node's own apiserver; admin.conf may name a VIP.
 func LocalAdminClientset() (*kubernetes.Clientset, error) {
 	cfg, err := AdminRESTConfig()
 	if err != nil {

@@ -15,8 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// kubeletCAPKI points version.PKIDir at a control plane installed before the
-// kubelet-client CA, built by rolling a fresh install back to the root.
 func kubeletCAPKI(t *testing.T) {
 	t.Helper()
 	saved := version.PKIDir
@@ -37,8 +35,6 @@ func kubeletCAPKI(t *testing.T) {
 	wantKubeletState(t, pki.KubeletStateNotMigrated)
 }
 
-// kubeletCAWorkerPKI points version.PKIDir at a worker whose kubelet follows
-// the root in ca-bundle.crt.
 func kubeletCAWorkerPKI(t *testing.T, root *testCA) {
 	t.Helper()
 	saved := version.PKIDir
@@ -85,8 +81,6 @@ func (l *kubeletOpsLog) ops(cp bool, published *x509.Certificate) kubeletNodeOps
 	}
 }
 
-// Every forward phase on a control plane restarts what it changed, and the
-// trust moves republish the bundle the workers fetch.
 func TestKubeletCAPhasesOnAControlPlane(t *testing.T) {
 	kubeletCAPKI(t)
 	var log kubeletOpsLog
@@ -113,7 +107,6 @@ func TestKubeletCAPhasesOnAControlPlane(t *testing.T) {
 	}
 }
 
-// A resumed run skips a phase a node is already past, without a restart.
 func TestKubeletCASkipsAPhaseANodeIsPast(t *testing.T) {
 	kubeletCAPKI(t)
 	for _, step := range []func() error{
@@ -137,8 +130,6 @@ func TestKubeletCASkipsAPhaseANodeIsPast(t *testing.T) {
 	wantKubeletState(t, pki.KubeletStateMigrated)
 }
 
-// re-add-root on a migrated node lets root-signed client certificates reach
-// its kubelet again, so it needs --force.
 func TestKubeletCAReAddRootNeedsForceOnAMigratedNode(t *testing.T) {
 	kubeletCAPKI(t)
 	for _, step := range []func() error{
@@ -161,8 +152,6 @@ func TestKubeletCAReAddRootNeedsForceOnAMigratedNode(t *testing.T) {
 	wantKubeletState(t, pki.KubeletStateMigrated)
 }
 
-// A follower control plane takes the initiator's CA rather than minting its
-// own, which would sign a client certificate no other kubelet trusts.
 func TestKubeletCAFollowerFetchesTheSharedCA(t *testing.T) {
 	kubeletCAPKI(t)
 	var log kubeletOpsLog
@@ -176,8 +165,6 @@ func TestKubeletCAFollowerFetchesTheSharedCA(t *testing.T) {
 	wantKubeletState(t, pki.KubeletStateNotMigrated)
 }
 
-// A worker takes the one kubelet-client CA the cluster publishes at
-// trust-both, and drops the root and later the CA from its own files.
 func TestKubeletCAPhasesOnAWorker(t *testing.T) {
 	root, kca := newTestCA(t, "stratum-ca"), newTestCA(t, "stratum-kubelet-client-ca")
 	kubeletCAWorkerPKI(t, root)
@@ -211,8 +198,6 @@ func TestKubeletCAPhasesOnAWorker(t *testing.T) {
 	}
 }
 
-// A refresh on a worker part way through the migration would replace its
-// kubelet bundle with the root's and drop the kubelet-client CA.
 func TestRefreshRefusesAMigratingWorker(t *testing.T) {
 	oldCA, newCA := newTestCA(t, "stratum-ca-old"), newTestCA(t, "stratum-ca-new")
 	kca := newTestCA(t, "stratum-kubelet-client-ca")
@@ -253,8 +238,6 @@ func TestKubeletCAFlagsValidate(t *testing.T) {
 	}
 }
 
-// Every argv the cluster run hands a node passes the flag rules the node's
-// command applies.
 func TestKubeletCANodeArgvPassesValidation(t *testing.T) {
 	for _, phase := range append(slices.Clone(KubeletCAPhases), KubeletCARollbackPhases...) {
 		for _, fetch := range []bool{false, phase == pki.KubeletPhaseTrustBoth} {

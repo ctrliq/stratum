@@ -30,9 +30,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The cluster-wide check asks every node, control planes first, and refuses
-// when one cannot roll back, naming it; it never asks a node to change
-// anything, so the seam below is the only thing it runs per node.
 func TestCheckRollbackClusterRefusesWhenOneNodeCannotRollBack(t *testing.T) {
 	prep(t)
 	objs := append(thisCPNode(t), certNodeFixture("w1", false), certNodeFixture("w2", false))
@@ -95,8 +92,6 @@ func TestCheckRollbackClusterRefusesWhenOneNodeCannotRollBack(t *testing.T) {
 	}
 }
 
-// stubRollbackStates answers each node's check with the state given for it,
-// refusing where refuse names the node.
 func stubRollbackStates(t *testing.T, states map[string]rollbackState, refuse ...string) {
 	t.Helper()
 	old := runRollbackCheckJob
@@ -119,9 +114,7 @@ func rollbackCheckClusterNodes(t *testing.T) (string, func() (kubernetes.Interfa
 	return me, func() (kubernetes.Interface, error) { return cs, nil }
 }
 
-// A control plane that finalized holds no backups, so its own check passes
-// against the new signers while one still at sign-new passes against the old:
-// the cluster check must see that they would not return to the same root.
+// a finalized CP checks against the new signers, one still at sign-new against the old.
 func TestCheckRollbackClusterRefusesAfterAPartialFinalize(t *testing.T) {
 	me, build := rollbackCheckClusterNodes(t)
 	stubRollbackStates(t, map[string]rollbackState{
@@ -139,10 +132,7 @@ func TestCheckRollbackClusterRefusesAfterAPartialFinalize(t *testing.T) {
 	}
 }
 
-// A lost key while a node has not completed trust-new: promoting sign-new would
-// sign with a CA that node does not trust. A worker can refresh its trust from
-// the control planes by hand; a control plane cannot fetch the staged CA once
-// the run has ended, so the way out is the lost key back from a backup.
+// a control plane cannot fetch the staged CA once its run has ended; the lost key must come back.
 func TestCheckRollbackClusterSendsANodeWithoutTheNewCAToTrustNewFirst(t *testing.T) {
 	me, build := rollbackCheckClusterNodes(t)
 	stubRollbackStates(t, map[string]rollbackState{
@@ -178,8 +168,7 @@ func TestCheckRollbackClusterSendsANodeWithoutTheNewCAToTrustNewFirst(t *testing
 	}
 }
 
-// A succeeded node Job is deleted as soon as it is seen, so the node's state
-// line must come back with its exit status, read before the deletion.
+// a succeeded Job is deleted as soon as it is seen; the log must come back with the exit status.
 func TestRunRollbackCheckJobReturnsTheLogOfASucceededJob(t *testing.T) {
 	old := runExitCodeLogs
 	t.Cleanup(func() { runExitCodeLogs = old })
@@ -196,8 +185,6 @@ func TestRunRollbackCheckJobReturnsTheLogOfASucceededJob(t *testing.T) {
 	}
 }
 
-// A forced rotation keeps its resume path: a halt before sign-new resumes with
-// --cluster --force, and no node is sent to sign-new while one lacks the new CA.
 func TestCheckRollbackClusterKeepsTheForcedResumePath(t *testing.T) {
 	me, build := rollbackCheckClusterNodes(t)
 	stubRollbackStates(t, map[string]rollbackState{
@@ -211,7 +198,6 @@ func TestCheckRollbackClusterKeepsTheForcedResumePath(t *testing.T) {
 	}
 }
 
-// A node whose check printed no state, an older stratum, gives no verdict.
 func TestCheckRollbackClusterNeedsEveryNodesState(t *testing.T) {
 	_, build := rollbackCheckClusterNodes(t)
 	old := runRollbackCheckJob
@@ -251,8 +237,7 @@ func TestCheckRollbackClusterRefusesACancelledContextBeforeAnyJob(t *testing.T) 
 	}
 }
 
-// This machine renders no static pods, so CheckRollback answers as a worker
-// does, and the node check's argv is the shell-free form every node Job uses.
+// this machine renders no static pods, so CheckRollback answers as a worker does.
 func TestCheckRollbackOnAWorkerAndTheNodeArgv(t *testing.T) {
 	prep(t)
 	workerKubeconfigs(t)
@@ -269,8 +254,6 @@ func TestCheckRollbackOnAWorkerAndTheNodeArgv(t *testing.T) {
 	}
 }
 
-// `certs check` names the active signer of each pair and whether this node can
-// roll back, alongside the forced line, so the damaged node is obvious.
 func TestRotationDetailNamesTheRollbackVerdict(t *testing.T) {
 	prep(t)
 	workerKubeconfigs(t)
@@ -283,10 +266,7 @@ func TestRotationDetailNamesTheRollbackVerdict(t *testing.T) {
 
 var _ runtime.Object = certNodeFixture("x", false)
 
-// rotateCAMaterialAfterPrep stages a rotation's new CAs a second after prep's.
-// The rollback check tells the new CA from the old by NotBefore, which has
-// one-second resolution, so a rotation staged in prep's second leaves two CAs
-// it cannot tell apart and the check refuses.
+// the rollback check tells CAs apart by NotBefore, which has one-second resolution.
 func rotateCAMaterialAfterPrep(t *testing.T) {
 	t.Helper()
 	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(1100 * time.Millisecond)))
@@ -295,8 +275,6 @@ func rotateCAMaterialAfterPrep(t *testing.T) {
 	}
 }
 
-// workerKubeconfigs gives this test a kubelet kubeconfig and a
-// bootstrap-kubeconfig a worker's trust refresh can read.
 func workerKubeconfigs(t *testing.T) {
 	t.Helper()
 	redirectVar(t, &version.KubeconfigDir, t.TempDir())
@@ -310,8 +288,6 @@ func workerKubeconfigs(t *testing.T) {
 	}
 }
 
-// workerAfterSignNew lays out a worker whose trust holds old‖new and whose
-// kubelet client certificate was renewed by signer.
 func workerAfterSignNew(t *testing.T, signer func(old, newer *testCA) *testCA) {
 	t.Helper()
 	prep(t)
@@ -334,10 +310,7 @@ func workerAfterSignNew(t *testing.T, signer func(old, newer *testCA) *testCA) {
 	}
 }
 
-// A worker sign-new renewed under the new CA cannot roll back: the rollback
-// refreshes its trust only, and the kubelet's certificate would not be trusted
-// by control planes back on the old CA. The check, `certs check` and the
-// rollback itself all refuse, and the rollback changes nothing.
+// a rollback refreshes trust only; a kubelet cert the new CA signed would not be trusted after.
 func TestWorkerRollbackRefusesAClientCertSignedByTheNewCA(t *testing.T) {
 	workerAfterSignNew(t, func(_, newer *testCA) *testCA { return newer })
 	var out bytes.Buffer
@@ -362,8 +335,6 @@ func TestWorkerRollbackRefusesAClientCertSignedByTheNewCA(t *testing.T) {
 	}
 }
 
-// Before sign-new the kubelet's certificate is the old CA's, which the
-// rollback keeps, so the worker can roll back.
 func TestWorkerRollbackAllowsAClientCertSignedByTheOldCA(t *testing.T) {
 	workerAfterSignNew(t, func(old, _ *testCA) *testCA { return old })
 	var out bytes.Buffer
@@ -372,8 +343,6 @@ func TestWorkerRollbackAllowsAClientCertSignedByTheOldCA(t *testing.T) {
 	}
 }
 
-// `certs check` reports the verdict RollbackCheck gives: with every pair
-// matching, a kubelet client-CA bundle RollbackCA cannot read still refuses.
 func TestRotationDetailReportsWhatRollbackCheckRefuses(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.K8sConfDir, t.TempDir())
@@ -393,8 +362,6 @@ func TestRotationDetailReportsWhatRollbackCheckRefuses(t *testing.T) {
 	}
 }
 
-// Only a control plane that refused is sent to restore a lost key: a worker
-// that refused has no key to restore.
 func TestCheckRollbackClusterSendsOnlyARefusingControlPlaneToABackup(t *testing.T) {
 	me, build := rollbackCheckClusterNodes(t)
 	stubRollbackStates(t, map[string]rollbackState{
@@ -410,9 +377,6 @@ func TestCheckRollbackClusterSendsOnlyARefusingControlPlaneToABackup(t *testing.
 	}
 }
 
-// A worker whose trust refresh would refuse cannot roll back: the check names
-// what the refresh reads before it fetches anything, so the cluster check
-// does not clear a worker whose rollback would then fail.
 func TestWorkerRollbackRefusesWhatItsTrustRefreshWouldRefuse(t *testing.T) {
 	for name, damage := range map[string]func(t *testing.T){
 		"a corrupt trust bundle": func(t *testing.T) {
@@ -447,9 +411,7 @@ func TestWorkerRollbackRefusesWhatItsTrustRefreshWouldRefuse(t *testing.T) {
 	}
 }
 
-// Two CAs that start in the same second cannot be told apart, so the worker
-// cannot tell whether its kubelet client certificate survives the rollback,
-// and refuses rather than clear it.
+// two CAs from the same second are indistinguishable by NotBefore, so the check refuses.
 func TestWorkerRollbackRefusesWhenTheNewCACannotBeTold(t *testing.T) {
 	workerAfterSignNew(t, func(old, _ *testCA) *testCA { return old })
 	start := time.Now().Add(-time.Hour).Truncate(time.Second)
@@ -470,8 +432,7 @@ func TestWorkerRollbackRefusesWhenTheNewCACannotBeTold(t *testing.T) {
 	}
 }
 
-// A split kubelet client-CA bundle is parsed as strictly as the refresh
-// parses it, so a non-certificate block refuses the check, not the rollback.
+// a split bundle is parsed as strictly as the refresh parses it.
 func TestWorkerRollbackRefusesASplitBundleTheRefreshWouldRefuse(t *testing.T) {
 	workerAfterSignNew(t, func(old, _ *testCA) *testCA { return old })
 	split := newTestCA(t, "kubelet-client")
@@ -489,8 +450,6 @@ func TestWorkerRollbackRefusesASplitBundleTheRefreshWouldRefuse(t *testing.T) {
 	}
 }
 
-// A control plane's rollback reads its certificate inputs before it restores
-// anything, so node state with no recorded address refuses the check too.
 func TestCheckRollbackRefusesAControlPlaneWithoutItsCertificateInputs(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.K8sConfDir, t.TempDir())

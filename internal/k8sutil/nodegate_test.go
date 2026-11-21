@@ -86,9 +86,6 @@ func TestReleaseNodeRefusesANodeThatIsNotHeld(t *testing.T) {
 	}
 }
 
-// A writer that changes the Node between the read and the update makes the
-// update conflict; the gate reads again and applies to the newer Node, so the
-// other writer's change survives.
 func TestNodeGateRetriesAConflict(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil))
 	updates := 0
@@ -120,10 +117,6 @@ func TestNodeGateRetriesAConflict(t *testing.T) {
 	}
 }
 
-// A Node deleted and registered again under the same name between a
-// conflicting update and its retry is a different machine, or a reinstall;
-// the gate refuses it rather than releasing or holding the node the operator
-// did not check.
 func TestNodeGateRefusesANodeReplacedDuringARetry(t *testing.T) {
 	for name, gate := range map[string]func(*fake.Clientset) error{
 		"release": func(cs *fake.Clientset) error {
@@ -163,8 +156,6 @@ func TestNodeGateRefusesANodeReplacedDuringARetry(t *testing.T) {
 	}
 }
 
-// releaseAcrossAWrite runs a release whose first update conflicts after
-// between has changed the stored node.
 func releaseAcrossAWrite(t *testing.T, start *corev1.Node, between func(*corev1.Node)) (*fake.Clientset, error) {
 	t.Helper()
 	cs := fake.NewClientset(start)
@@ -190,9 +181,6 @@ func releaseAcrossAWrite(t *testing.T, start *corev1.Node, between func(*corev1.
 	return cs, err
 }
 
-// A hold that lands between a release's read and its conflicting update is a
-// newer decision than the release; the retry refuses rather than undo it, even
-// when the new hold's stamp equals the old one and only its reason differs.
 func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
 	taint := []corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}
 	for name, start := range map[string]map[string]string{
@@ -218,9 +206,6 @@ func TestReleaseNodeRefusesToUndoAHoldPlacedDuringARetry(t *testing.T) {
 	}
 }
 
-// A release that lands between another release's read and its conflicting
-// update cleared the hold; the retry reports the node as no longer held, not
-// as held meanwhile.
 func TestReleaseNodeAcrossAnotherRelease(t *testing.T) {
 	taint := []corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}
 	start := map[string]string{HeldAnnotation: "bob@2026-10-31T16:00:00Z", HeldReasonAnnotation: "fan failure"}
@@ -280,8 +265,6 @@ func TestNodeGateRefusals(t *testing.T) {
 	}
 }
 
-// A PreferNoSchedule startup taint only discourages scheduling, so a hold
-// adds the NoSchedule one beside it, and a release removes both.
 func TestHoldNodeAddsNoScheduleBesideASofterStartupTaint(t *testing.T) {
 	soft := corev1.Taint{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectPreferNoSchedule}
 	cs := fake.NewClientset(gateNode([]corev1.Taint{soft}, nil))
@@ -300,9 +283,6 @@ func TestHoldNodeAddsNoScheduleBesideASofterStartupTaint(t *testing.T) {
 	}
 }
 
-// A NoSchedule startup taint with another value still holds pods off, but a
-// burn-in job tolerates the value the startup gate gives, so a hold sets it to
-// true rather than leaving it.
 func TestHoldNodeSetsTheStartupTaintsValue(t *testing.T) {
 	cs := fake.NewClientset(gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "false", Effect: corev1.TaintEffectNoSchedule}}, nil))
 	if err := HoldNode(context.Background(), cs, "gpu1", "bob", "burn-in", gateTime); err != nil {
@@ -316,8 +296,6 @@ func TestHoldNodeSetsTheStartupTaintsValue(t *testing.T) {
 
 func releaseErr(_ ReleaseResult, err error) error { return err }
 
-// A released node that a drain cordoned is reported as still cordoned, and
-// the cordon is left for the operator.
 func TestReleaseNodeReportsACordon(t *testing.T) {
 	n := gateNode([]corev1.Taint{{Key: UnverifiedTaint, Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil)
 	n.Spec.Unschedulable = true

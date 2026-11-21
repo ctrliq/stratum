@@ -12,22 +12,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// runUpWorkerJoinReal drives the real runUp worker-join path the way
-// runUpWorker (up_worker_runup_test.go) does, with one difference: runUp's
-// pre-stage check is the real cluster.ResolveJoinNodeIP, not a stub. The
-// prepareWorkerFn stub accepts every address, so only that pre-stage check
-// can refuse a bad --node-ip. Every case passes --node-ip, so the check
-// never reads $NODE_IP or detects. The paths a start writes are redirected
-// into a temp dir, the staging extraction is a counting stub, and the steps
-// past the join (the reboot unit, the worker run) are stubbed: a refused join
-// never reaches them, a valid one does.
+// the pre-stage check is the real cluster.ResolveJoinNodeIP; only it can refuse a bad --node-ip
 func runUpWorkerJoinReal(t *testing.T, o runUpOptions) (stages func() int32, err error) {
 	t.Helper()
 	return runUpWorkerJoinRealWithConfig(t, o, "spec: {}\n")
 }
 
-// runUpWorkerJoinRealWithConfig is runUpWorkerJoinReal with the given
-// config file, for the cases that take the address from it.
 func runUpWorkerJoinRealWithConfig(t *testing.T, o runUpOptions, config string) (stages func() int32, err error) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -66,14 +56,6 @@ func runUpWorkerJoinRealWithConfig(t *testing.T, o runUpOptions, config string) 
 	return stageN.Load, err
 }
 
-// A worker join refuses every node IP the kubelet could not register — the
-// refusals host.CheckNodeIP makes — before it changes anything on the host,
-// as the install guide says a worker join checks the address before it
-// prepares the host. Staging the payload (several hundred MB of binaries and
-// images) is the first big change a join makes, so every refusal must come
-// back with the
-// staging seam never called. Each case expects a substring of the real
-// refusal, in the words CheckNodeIP or its callers use.
 func TestRunUpWorkerJoinRefusesABadNodeIPBeforeItStages(t *testing.T) {
 	for _, tc := range []struct {
 		name, nodeIP, wantErr string
@@ -106,9 +88,6 @@ func TestRunUpWorkerJoinRefusesABadNodeIPBeforeItStages(t *testing.T) {
 	}
 }
 
-// The guard for the refusal above: a valid --node-ip still reaches staging
-// and the join goes on to run, so the pre-stage check refuses only what
-// CheckNodeIP refuses, and nothing else about the join moved.
 func TestRunUpWorkerJoinWithAValidNodeIPStillStages(t *testing.T) {
 	o := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa", nodeIP: "10.80.0.4"}
 	stages, err := runUpWorkerJoinReal(t, o)
@@ -120,9 +99,6 @@ func TestRunUpWorkerJoinWithAValidNodeIPStillStages(t *testing.T) {
 	}
 }
 
-// A join with no --node-ip takes its address from spec.network.nodeIP, then
-// $NODE_IP. A bad address from either is refused before staging too, so the
-// pre-stage check must be handed the config's address and read $NODE_IP.
 func TestRunUpWorkerJoinRefusesABadConfigOrEnvNodeIPBeforeItStages(t *testing.T) {
 	for _, tc := range []struct {
 		name, config, env, wantSource string
@@ -147,9 +123,6 @@ func TestRunUpWorkerJoinRefusesABadConfigOrEnvNodeIPBeforeItStages(t *testing.T)
 	}
 }
 
-// A valid --node-ip wins over a bad spec.network.nodeIP, as it does in the
-// join itself: the pre-stage check must not refuse an address the join
-// would never use.
 func TestRunUpWorkerJoinWithAValidFlagOverABadConfigNodeIPStillStages(t *testing.T) {
 	t.Setenv("NODE_IP", "")
 	o := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa", nodeIP: "10.80.0.4"}

@@ -16,29 +16,14 @@ import (
 	"time"
 )
 
-// The control protocol: one JSON request per connection, one JSON reply.
-// Deliberately line-oriented and dependency-free — internal/comps is the only
-// intended client, but `nc -U` works in a pinch.
-//
-//	{"op":"status"}                      -> {"ok":true,"procs":[{name,pid,running,wanted}]}
-//	{"op":"restart","name":"etcd"}       -> {"ok":true}
-//	{"op":"stop","name":"etcd"}          -> {"ok":true}   (stays down until start)
-//	{"op":"start","name":"etcd"}         -> {"ok":true}
-//	{"op":"restart","name":"all"}        -> every supervised component
-//	{"op":"reload","name":"containerd","process":{path,args,env}} -> update argv + restart
-//	{"op":"reexec"}                      -> {"ok":true}, then every component stops
-//	                                        and the supervisor execs Options.ReExec
+// One JSON request per connection, one reply; internal/comps is the only intended client.
 type request struct {
 	Op      string    `json:"op"`
 	Name    string    `json:"name,omitempty"`
 	Process *ProcSpec `json:"process,omitempty"`
 }
 
-// ProcSpec is the wire form of a component's exec definition, sent with a
-// "reload" op. It carries only the marshalable fields of Process: an in-place
-// `stratum upgrade` runs as the NEW binary and uses it to hand the running
-// (old-binary) supervisor a component's new argv/config path, so the change
-// applies without a full restart.
+// ProcSpec is the wire form of a component's exec definition for a reload op.
 type ProcSpec struct {
 	Path string   `json:"path"`
 	Args []string `json:"args"`
@@ -50,8 +35,7 @@ type ProcStatus struct {
 	Pid     int    `json:"pid"`
 	Running bool   `json:"running"`
 	Wanted  bool   `json:"wanted"`
-	// Foreign: the component's socket is served by a process the supervisor
-	// does not own, so Running (if set) is not this component.
+	// the socket is served by a process this supervisor does not own
 	Foreign bool `json:"foreign,omitempty"`
 }
 
@@ -65,9 +49,7 @@ func (s *Supervisor) serveControl(ctx context.Context, path string) (func(), err
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	// Keep the coordination inode outside the socket directory: uninstall removes
-	// that directory while a supervisor may still be unwinding. Never unlink this
-	// lock file; closing the descriptor (or exiting) releases the kernel lock.
+	// The lock lives outside the socket dir (uninstall removes it) and is never unlinked.
 	lockPath := filepath.Dir(path) + "." + filepath.Base(path) + ".lock"
 	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -86,8 +68,6 @@ func (s *Supervisor) serveControl(ctx context.Context, path string) (func(), err
 	if err := refuseLegacySupervisor(); err != nil {
 		return nil, err
 	}
-	// Probe legacy supervisors that do not take this lock before recovering a
-	// stale socket. The lock serializes recovery and binding by current callers.
 	if controlSocketLive(path) {
 		return nil, fmt.Errorf("supervisor: control socket %s already has a live listener — another stratum supervisor is running on this node; refusing to start a second", path)
 	}
@@ -97,7 +77,7 @@ func (s *Supervisor) serveControl(ctx context.Context, path string) (func(), err
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil { // root-only control
+	if err := os.Chmod(path, 0o600); err != nil {
 		l.Close()
 		return nil, err
 	}
@@ -106,7 +86,7 @@ func (s *Supervisor) serveControl(ctx context.Context, path string) (func(), err
 		for {
 			conn, err := l.Accept()
 			if err != nil {
-				return // listener closed
+				return
 			}
 			go s.handle(conn)
 		}
@@ -132,9 +112,6 @@ func (s *Supervisor) serveControl(ctx context.Context, path string) (func(), err
 	return stop, nil
 }
 
-// controlSocketLive reports whether the control socket at path has a listener
-// answering right now — a stale socket file left by a crash refuses the
-// connection, so this distinguishes a running supervisor from a leftover file.
 func controlSocketLive(path string) bool {
 	c, err := net.DialTimeout("unix", path, 500*time.Millisecond)
 	if err != nil {
@@ -238,17 +215,11 @@ func (s *Supervisor) apply(op, name string) error {
 	return nil
 }
 
-// restart bounces the component: the supervise loop brings it back up. Killing
-// the child is the whole request; a deliberately-stopped one is started instead.
+// Killing the child is the whole request; a deliberately stopped one is started instead.
 func (st *state) restart() {
 	stMu.Lock()
 	st.wanted = true
-	// Abort an in-flight start so it re-runs with the current st.proc. Without
-	// this, a reload that lands after runOnce snapshotted the OLD proc but before
-	// it published st.cur would see cur==nil, only kick, and let the old argv
-	// start and run until it exits — the exact stale-args window reload closes.
-	// The start section re-checks startCtx.Err() under stMu, so this is atomic
-	// with cmd.Start (the same contract the stop op relies on).
+	// Abort an in-flight start so it re-runs with the current st.proc, not pre-reload args.
 	if st.cancelStart != nil {
 		st.cancelStart()
 	}
@@ -263,8 +234,7 @@ func (st *state) restart() {
 	}
 	pid := cur.Process.Pid
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	// Escalate: a graceful-shutdown drain (the apiserver's can run to
-	// --request-timeout) must not stall a requested restart.
+	// Escalate past a graceful drain that could outlast the requested restart.
 	go func() {
 		time.Sleep(30 * time.Second)
 		stMu.Lock()
@@ -276,7 +246,6 @@ func (st *state) restart() {
 	}()
 }
 
-// knownNames lists the supervised component names, sorted, for error messages.
 func (s *Supervisor) knownNames() []string {
 	known := make([]string, 0, len(s.procs))
 	for n := range s.procs {
@@ -286,11 +255,7 @@ func (s *Supervisor) knownNames() []string {
 	return known
 }
 
-// reload replaces a component's exec definition (path/args/env) with the one the
-// caller computed from the NEW binary, then restarts it — so an in-place upgrade
-// applies changed argv/config paths that the supervisor's stored (old-binary)
-// Process would otherwise keep across a plain restart. Any ArgsFn
-// re-render hook is cleared: the caller supplied explicit args.
+// Reload replaces the exec definition and restarts; ArgsFn is cleared because args are explicit.
 func (s *Supervisor) reload(name string, spec ProcSpec) error {
 	st, ok := s.procs[name]
 	if !ok {
@@ -312,16 +277,12 @@ func writeReply(conn net.Conn, r reply) {
 	_, _ = conn.Write(b)
 }
 
-// Dial sends one request to a control socket and returns the reply. Client
-// side of the protocol; internal/comps wraps it with the systemctl-shaped API.
+// Client side of the protocol; internal/comps wraps it with the systemctl-shaped API.
 func Dial(socket, op, name string) ([]ProcStatus, error) {
 	return DialContext(context.Background(), socket, op, name)
 }
 
-// DialContext is Dial bounded by ctx: the connect, the write and the wait for
-// the reply all end when ctx does (or at Dial's own limits, whichever is
-// sooner), so a caller on a deadline is not held for the 30s a hung supervisor
-// would otherwise take.
+// Dial bounded by ctx: the connect, the write and the reply wait all end when ctx does.
 func DialContext(ctx context.Context, socket, op, name string) ([]ProcStatus, error) {
 	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
 	if err != nil {
@@ -353,9 +314,6 @@ func DialContext(ctx context.Context, socket, op, name string) ([]ProcStatus, er
 	return r.Procs, nil
 }
 
-// DialReload sends a "reload" op: it updates the named component's exec
-// definition in the running supervisor and restarts it. Separate from
-// Dial because it carries a process payload.
 func DialReload(socket, name string, spec ProcSpec) error {
 	conn, err := net.DialTimeout("unix", socket, 5*time.Second)
 	if err != nil {
@@ -385,9 +343,7 @@ func DialReload(socket, name string, spec ProcSpec) error {
 	return nil
 }
 
-// DialReExec asks the supervisor to stop every component and replace itself
-// with its configured re-exec command. A supervisor that predates the request
-// answers with ErrReExecUnsupported, and nothing changes.
+// A supervisor that predates the request answers with ErrReExecUnsupported.
 func DialReExec(socket string) error {
 	_, err := Dial(socket, "reexec", "")
 	if err != nil && err.Error() == `supervisor: unknown op "reexec"` {
@@ -396,13 +352,8 @@ func DialReExec(socket string) error {
 	return err
 }
 
-// ErrReExecUnsupported identifies a supervisor that predates the reexec
-// request, from the exact response such a supervisor gives, so the caller
-// must restart it some other way. Other rejection and transport errors are
-// not a reason to fall back.
+// Identifies a supervisor that predates the reexec request; other errors are not a fallback signal.
 var ErrReExecUnsupported = errors.New("supervisor does not support reexec")
 
-// ErrReloadUnsupported identifies the exact response from supervisors that
-// predate reload. Other rejection, transport and recovery errors are not a
-// compatibility fallback.
+// Identifies supervisors that predate reload; other errors are not a compatibility fallback.
 var ErrReloadUnsupported = errors.New("supervisor does not support reload")

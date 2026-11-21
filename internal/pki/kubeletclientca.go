@@ -9,9 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/host"
 )
 
-// KubeletClientBundleBase names kubelet-client-ca-bundle.crt, the kubelet's
-// clientCAFile: exactly the CAs that sign apiserver-kubelet-client. A split
-// cluster holds KubeletClientCAName there; an earlier one, the cluster root.
+// Names kubelet-client-ca-bundle.crt, the kubelet's clientCAFile.
 const KubeletClientBundleBase = "kubelet-client-ca"
 
 // KubeletClientCAName signs apiserver-kubelet-client on a split cluster.
@@ -20,12 +18,10 @@ const (
 	kubeletClientCACommonName = "stratum-kubelet-client-ca"
 )
 
-// KubeletClientBundlePath is the kubelet's clientCAFile.
+// The kubelet's clientCAFile.
 func KubeletClientBundlePath() string { return bundleCrtPath(KubeletClientBundleBase) }
 
-// KubeletClientSplit reports whether this node's kubelet bundle shares no CA
-// with ca-bundle.crt. Where KubeletClientCAName is on disk a missing bundle is
-// split and an unreadable one an error; elsewhere both read as not split.
+// A missing bundle is split where KubeletClientCAName is on disk; unreadable there is an error.
 func KubeletClientSplit() (bool, error) {
 	if _, err := os.Stat(KubeletClientBundlePath()); errors.Is(err, os.ErrNotExist) {
 		return fileExists(path(KubeletClientCAName, "crt")), nil
@@ -39,8 +35,7 @@ func KubeletClientSplit() (bool, error) {
 
 var errUnreadableKubeletBundle = errors.New("unreadable kubelet client-CA bundle")
 
-// KubeletClientSplitFiles reports whether kubeletBundle shares no CA with
-// rootBundle. A missing kubelet bundle is not split; an unreadable one is an error.
+// A missing kubelet bundle is not split; an unreadable one is an error.
 func KubeletClientSplitFiles(kubeletBundle, rootBundle string) (bool, error) {
 	if _, err := os.Stat(kubeletBundle); errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -52,8 +47,7 @@ func KubeletClientSplitFiles(kubeletBundle, rootBundle string) (bool, error) {
 	return KubeletClientSplitPEM(kubeletBundle, root, rootBundle)
 }
 
-// KubeletClientSplitPEM is KubeletClientSplitFiles against root trust already
-// read from rootSource.
+// KubeletClientSplitFiles against root trust already read from rootSource.
 func KubeletClientSplitPEM(kubeletBundle string, rootPEM []byte, rootSource string) (bool, error) {
 	if _, err := os.Stat(kubeletBundle); errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -77,9 +71,7 @@ func KubeletClientSplitPEM(kubeletBundle string, rootPEM []byte, rootSource stri
 	return true, nil
 }
 
-// ensureKubeletClientTrust writes a missing kubelet bundle: from the root on a
-// node whose apiserver-kubelet-client predates the split, from a new
-// KubeletClientCAName otherwise.
+// From the root when apiserver-kubelet-client predates the split, else the new CA.
 func ensureKubeletClientTrust() error {
 	if bundleExists(KubeletClientBundleBase) {
 		return nil
@@ -93,7 +85,6 @@ func ensureKubeletClientTrust() error {
 	return WriteCABundle(KubeletClientBundleBase, KubeletClientCAName)
 }
 
-// kubeletClientSigner returns KubeletClientCAName on a split node, root otherwise.
 func kubeletClientSigner(root *CA) (*CA, error) {
 	split, err := KubeletClientSplit()
 	if err != nil || !split {
@@ -106,9 +97,7 @@ func kubeletClientSigner(root *CA) (*CA, error) {
 	return ca, nil
 }
 
-// kubeletClientReissuer returns KubeletClientCAName on a split node, else the
-// CA that signed the live apiserver-kubelet-client, or kubeletClientSigner's
-// choice when there is none.
+// Prefers the CA that signed the live apiserver-kubelet-client when not split.
 func kubeletClientReissuer(root *CA) (*CA, error) {
 	if split, err := KubeletClientSplit(); err != nil || split {
 		if err != nil {
@@ -128,10 +117,7 @@ func kubeletClientReissuer(root *CA) (*CA, error) {
 	return root, nil
 }
 
-// SyncKubeletClientBundle rewrites kubelet-client-ca-bundle.crt from
-// ca-bundle.crt by rename, so a failed write leaves the previous bundle or none,
-// never a truncated one that EnsureKubeletClientBundle would keep. It does
-// nothing on a split or migrating node.
+// By rename: a failed write leaves the previous bundle or none, never a truncated one.
 func SyncKubeletClientBundle() error {
 	split, err := KubeletClientSplit()
 	if err != nil {
@@ -153,8 +139,7 @@ func SyncKubeletClientBundle() error {
 	return nil
 }
 
-// EnsureKubeletClientBundle writes a missing kubelet-client-ca-bundle.crt from
-// KubeletClientCAName when this node holds it, from ca-bundle.crt otherwise.
+// From KubeletClientCAName when this node holds it, from ca-bundle.crt otherwise.
 func EnsureKubeletClientBundle() error {
 	if bundleExists(KubeletClientBundleBase) {
 		return nil
@@ -165,13 +150,7 @@ func EnsureKubeletClientBundle() error {
 	return SyncKubeletClientBundle()
 }
 
-// EnsureKubeletClientTrusts makes kubelet-client-ca-bundle.crt carry the
-// certificate of every CA in names. ca-bundle.crt is written first and the
-// kubelet's bundle second, so a trust-new that stopped between the two leaves
-// a rotation staged while the kubelet still trusts only the old root; a missing
-// root, or a bundle that cannot be read, is re-synced from ca-bundle.crt, and a
-// root that ca-bundle.crt lacks too is an error, since the kubelet would refuse
-// a client certificate it signs.
+// Root bundle first, kubelet bundle second, so a stopped trust-new never locks kubelets out.
 func EnsureKubeletClientTrusts(names ...string) error {
 	if split, err := KubeletClientSplit(); err == nil && split {
 		return nil
@@ -211,8 +190,7 @@ func kubeletClientMissing(names []string) ([]string, error) {
 	return missing, nil
 }
 
-// writeRootBundle writes ca-bundle.crt from certNames and keeps the kubelet's
-// clientCAFile in step with it.
+// Writes ca-bundle.crt and keeps the kubelet's clientCAFile in step.
 func writeRootBundle(certNames ...string) error {
 	if err := WriteCABundle("ca", certNames...); err != nil {
 		return err
@@ -220,9 +198,7 @@ func writeRootBundle(certNames ...string) error {
 	return SyncKubeletClientBundle()
 }
 
-// ensureKubeletClientStaged rewrites the kubelet bundle as the staged and live
-// kubelet-client CAs when it lacks either, as a trust-new that stopped before
-// writing it leaves it.
+// Add whichever of the staged and live kubelet-client CAs the bundle lacks.
 func ensureKubeletClientStaged() error {
 	have, err := bundleCerts(KubeletClientBundlePath())
 	if err != nil {

@@ -16,11 +16,7 @@ import (
 	"testing"
 )
 
-// TestReleasedPkgCLIConsumerStillCompiles checks source compatibility against
-// a fixed consumer of the exported surface in v1.37.1-stratum.0-rc.4. Updating
-// the documentation golden cannot silently update this independent fixture.
-// It proves compilation, not runtime behavior or compatibility with every
-// possible downstream consumer.
+// An independent fixture: regenerating the golden cannot silently update it.
 func TestReleasedPkgCLIConsumerStillCompiles(t *testing.T) {
 	cmd := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "consumer.a"),
 		filepath.Join("testdata", "released_consumer.go"))
@@ -32,17 +28,9 @@ func TestReleasedPkgCLIConsumerStillCompiles(t *testing.T) {
 var updateGolden = flag.Bool("update", false,
 	"rewrite testdata/pkgcli.api from pkg/cli's current exported API")
 
-// pathQualifier keeps distinct packages distinct even when they declare the
-// same package name. Import aliases do not change a type's identity.
 func pathQualifier(p *types.Package) string { return p.Path() }
 
-// goldenLines renders pkg's exported API: one line per exported package-scope
-// declaration, plus one per exported method of an exported named type (the
-// method set is importable surface too and is invisible in the type's own
-// line). ObjectString of a fully resolved declaration pins the name, the
-// shape and every public type it references, so a rename, a removal or a retype
-// all move a line. Structs hide private field details behind an opaque marker:
-// callers depend on their presence, but not on their implementation.
+// Structs hide private fields behind an opaque marker: presence, not shape.
 func goldenLines(pkg *types.Package) []string {
 	scope := pkg.Scope()
 	var lines []string
@@ -75,11 +63,9 @@ func goldenLines(pkg *types.Package) []string {
 					fields = append(fields, field)
 				}
 				if private {
-					// Private field details are implementation, but their presence
-					// prevents consumers from using unkeyed struct literals.
+					// Their presence prevents unkeyed struct literals.
 					fields = append(fields, "<private>")
 				}
-				// Preserve the declaration header, including any generic constraints.
 				prefix, _, _ := strings.Cut(line, "struct{")
 				line = prefix + "struct{" + strings.Join(fields, "; ") + "}"
 			}
@@ -158,15 +144,6 @@ func TestGoldenIgnoresPrivateFieldsAndPinsPublicFields(t *testing.T) {
 	}
 }
 
-// TestPkgCLIExportedAPIMatchesTheGolden pins pkg/cli's exported declarations —
-// the one package a downstream build is allowed to import —
-// against testdata/pkgcli.api. Nothing else compares the
-// exported identifiers with the last release, so a rename, a removal or a
-// retype passes every other check; here each one fails until the golden is
-// regenerated and the change reviewed as the deliberate surface change it
-// is. Regenerate with:
-//
-//	go test ./tools/apiboundary/ -run TestPkgCLIExportedAPIMatchesTheGolden -update
 func TestPkgCLIExportedAPIMatchesTheGolden(t *testing.T) {
 	pkg, _, _, err := loadExportedTypes(filepath.Join("..", "..", "pkg", "cli"))
 	if err != nil {

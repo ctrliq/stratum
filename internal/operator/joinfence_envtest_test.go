@@ -1,19 +1,6 @@
 package operator
 
-// joinfence_envtest_test.go — the admission policy that holds a control-plane
-// join token to its own maintenance fence, evaluated by a real apiserver.
-//
-// The mint's stratum:certs-reader Role lets the control-plane bootstrap group
-// create, renew and release the two maintenance leases, so a joining control
-// plane can fence its etcd member-add with its bootstrap token. RBAC cannot
-// restrict a create by name, and a join token is printed on stdout, so the
-// Role alone would let anyone holding one squat any Lease in kube-system or
-// overwrite the holder of a running rotation's or upgrade's lease. The policy
-// ha.GrantCertsReader installs is what forbids that; its CEL is a security
-// control, so it is exercised here through real bootstrap-token
-// authentication, the real Role, and real admission rather than a fake. The
-// case lives with this package's envtest cases because those are the ones
-// `make test-envtest` runs.
+// RBAC cannot restrict a create by name, so the fence policy is a security control.
 
 import (
 	"errors"
@@ -51,18 +38,11 @@ const (
 	fenceTokenSecret = "0123456789abcdef"
 )
 
-// TestJoinTokenHoldsOnlyItsOwnMaintenanceFence: a control-plane join token,
-// authenticated as the apiserver authenticates it, may create, renew and
-// release only the two maintenance leases, only for at most stratum's lease
-// duration, and only under a holder that names the token; it may not
-// overwrite or delete a lease another run holds, live or expired. Every other
-// identity writes leases exactly as before.
 func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS is unset; run `make test-envtest`")
 	}
-	// Kubernetes rejects loopback addresses in Service endpoints. Bind envtest
-	// to a local unicast address so production can probe the advertised peer.
+	// Kubernetes rejects loopback addresses in Service endpoints; bind a local unicast one.
 	addresses, err := net.InterfaceAddrs()
 	if err != nil {
 		t.Fatal(err)
@@ -126,8 +106,6 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Earlier releases granted only the shared Secret. The re-upload adds
-		// lease rights before it can narrow the legacy worker binding.
 		role.Rules = role.Rules[:1]
 		if _, err := admin.RbacV1().Roles(fenceNS).Update(ctx, role, metav1.UpdateOptions{}); err != nil {
 			t.Fatal(err)
@@ -161,8 +139,7 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 		}
 		secs := int32(maintlease.Duration / time.Second)
 		fenceSeed(t, admin, fenceLease(fenceCommon, "controller/active/1", &secs, time.Now()))
-		// Wait for the Role cache to grant GET, proving the worker really has
-		// the expanded lease rules rather than relying on an RBAC refusal.
+		// The Role cache may lag, so poll until GET stops returning Forbidden.
 		deadline := time.Now().Add(10 * time.Second)
 		for {
 			_, err = worker.CoordinationV1().Leases(fenceNS).Get(ctx, fenceCommon, metav1.GetOptions{})
@@ -199,9 +176,7 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 	stale := now.Add(-10 * maintlease.Duration)
 
 	t.Run("a second grant leaves the policy and its binding as they are", func(t *testing.T) {
-		// The mint compares the whole stored spec with the shipped one, so a
-		// field the apiserver defaults and the YAML leaves out would turn
-		// every mint into a policy rewrite.
+		// The mint compares the whole stored spec with the shipped one, defaults included.
 		var rewrites []string
 		wcfg := rest.CopyConfig(cfg)
 		wcfg.Wrap(func(rt http.RoundTripper) http.RoundTripper {
@@ -281,7 +256,6 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 					} else {
 						_, err = leases.Update(ctx, l, metav1.UpdateOptions{})
 					}
-					// Clean admitted finalizers even on the red regression run.
 					if stored, getErr := admin.CoordinationV1().Leases(fenceNS).Get(ctx, fenceCommon, metav1.GetOptions{}); getErr == nil {
 						stored.Finalizers = nil
 						if _, clearErr := admin.CoordinationV1().Leases(fenceNS).Update(ctx, stored, metav1.UpdateOptions{}); clearErr != nil {
@@ -303,7 +277,6 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 		if err := lease.Confirm(ctx); err != nil {
 			t.Errorf("the join token could not renew its fence: %v", err)
 		}
-		// Another join token neither overwrites nor deletes it.
 		for _, name := range []string{fenceCommon, fenceLegacy} {
 			cur, err := joinerB.CoordinationV1().Leases(fenceNS).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
@@ -389,7 +362,6 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 				t.Errorf("admin create of %s: %v", name, err)
 			}
 		}
-		// An admin run takes over a lease a join token holds live.
 		fenceSeed(t, admin, fenceLease(fenceLegacy, ownA+"h/1/1", &sixty, now))
 		cur, err := leases.Get(ctx, fenceLegacy, metav1.GetOptions{})
 		if err != nil {
@@ -408,8 +380,6 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 	})
 }
 
-// fenceJoinClient mints a worker or control-plane token the way token.Create
-// does and waits for real bootstrap authentication with the expected groups.
 func fenceJoinClient(t *testing.T, cfg *rest.Config, admin kubernetes.Interface, id string, controlPlane bool) kubernetes.Interface {
 	t.Helper()
 	groups := k8sutil.BootstrapGroup
@@ -453,10 +423,7 @@ func fenceJoinClient(t *testing.T, cfg *rest.Config, admin kubernetes.Interface,
 	}
 }
 
-// fenceWantDenied fails unless err is the join fence policy's denial as
-// k8sutil.JoinFenceDenied, which the join keys its refusal on, recognises it.
-// The denial is never Forbidden: that status is what the join reads as a Role
-// that predates the lease grant.
+// The denial is never Forbidden: that status reads as a Role predating the lease grant.
 func fenceWantDenied(t *testing.T, err error, what string) {
 	t.Helper()
 	switch {
@@ -499,7 +466,6 @@ func fenceSeed(t *testing.T, admin kubernetes.Interface, l *coordinationv1.Lease
 	}
 }
 
-// fenceClear deletes both maintenance leases as the admin.
 func fenceClear(t *testing.T, admin kubernetes.Interface) {
 	t.Helper()
 	for _, name := range []string{fenceCommon, fenceLegacy} {

@@ -18,18 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// From here: the scheduled save records its attempts. The loop's per-tick
-// seam — snapshotSave, the same seam the loop tests drive — must leave the
-// tick's evidence in the durable snapshot evidence record under the config
-// area: the save and upload attempts with their outcomes and last-success
-// stamps, the prune attempt independent of them, and the warnings the tick
-// ran with. A fresh read of the file after the tick is the
-// restart-persistence proof: nothing carries over but through the file.
-
-// redirectEvidenceArea points the snapshot evidence record and the etcd data
-// lock at one temp tree: the scheduled save records its attempts through the
-// lock into the record, so a test that drives the seam must redirect both or
-// they land under the host's /var/lib/stratum.
+// Redirects the version dirs so writes land in a temp tree, not the host's /var/lib/stratum.
 func redirectEvidenceArea(t *testing.T) {
 	t.Helper()
 	oldConf, oldData, oldEtcd := version.K8sConfDir, version.DataDir, version.EtcdDataDir
@@ -42,11 +31,7 @@ func redirectEvidenceArea(t *testing.T) {
 	})
 }
 
-// stubSnapshotConf stands where the operator's snapshot.conf stands: the
-// no-conf node's read, base untouched with the environment's S3 credentials
-// overlaid exactly as the real read overlays them, so the test's cluster
-// config supplies every setting, nothing leaks in from /etc, and the upload
-// reaches the test's own bucket the way a credentialed node's would.
+// Stubs the no-conf read so nothing leaks in from /etc or snapshot.conf.
 func stubSnapshotConf(t *testing.T) {
 	t.Helper()
 	old := snapshotLoadConfig
@@ -62,9 +47,6 @@ func stubSnapshotConf(t *testing.T) {
 	t.Cleanup(func() { snapshotLoadConfig = old })
 }
 
-// breakSnapshotConf stands for a snapshot.conf that exists but cannot be
-// read: the tick still takes the snapshot, keeps every one and uploads
-// nothing, and warns about the conf on its way to the evidence record.
 func breakSnapshotConf(t *testing.T) {
 	t.Helper()
 	old := snapshotLoadConfig
@@ -74,11 +56,7 @@ func breakSnapshotConf(t *testing.T) {
 	t.Cleanup(func() { snapshotLoadConfig = old })
 }
 
-// recordedAttempt and recordedEvidence are the durable snapshot evidence
-// record as these tests read it back from disk, json tags and all. The
-// record's own reader (internal/backupevidence) resolves its policy through
-// this package, so it cannot be imported from here; the etcdsnap-side
-// recording tests pin this file's shape against that reader.
+// A local copy: internal/backupevidence imports this package, so its reader cannot be used here.
 type recordedAttempt struct {
 	AttemptedAt time.Time `json:"attemptedAt"`
 	Result      string    `json:"result"`
@@ -94,7 +72,6 @@ type recordedEvidence struct {
 	Warnings          []string        `json:"warnings"`
 }
 
-// readEvidence reads the durable record fresh from disk.
 func readEvidence(t *testing.T) recordedEvidence {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml"))
@@ -108,8 +85,6 @@ func readEvidence(t *testing.T) recordedEvidence {
 	return rec
 }
 
-// stubFailingUpload answers every request with a 500, so the local snapshot
-// is taken but its S3 copy fails.
 func stubFailingUpload(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,9 +94,6 @@ func stubFailingUpload(t *testing.T) string {
 	return srv.URL
 }
 
-// stubRefusingRemotePrune accepts uploads, lists the host's own two older
-// scheduled objects and refuses every DELETE with a 403: the save and the
-// upload succeed while remote retention is refused.
 func stubRefusingRemotePrune(t *testing.T, host string) string {
 	t.Helper()
 	old := fmt.Sprintf("etcd-snapshot-%s-20260101-000000.db", host)
@@ -148,11 +120,6 @@ func stubRefusingRemotePrune(t *testing.T, host string) string {
 	return srv.URL
 }
 
-// TestEvidenceRecordingPersistsAFailedSave pins the loop's core failure
-// evidence: a tick whose etcdctl run fails leaves a failed save attempt in
-// the durable record — with the failure named and no last-success stamp —
-// while a later successful tick replaces the attempt with the success and
-// sets the stamp to that tick, never leaving the failure's stamp behind.
 func TestEvidenceRecordingPersistsAFailedSave(t *testing.T) {
 	redirectEvidenceArea(t)
 	stubSnapshotConf(t)
@@ -183,8 +150,7 @@ func TestEvidenceRecordingPersistsAFailedSave(t *testing.T) {
 		t.Errorf("SchemaVersion = %d, want 1", rec.SchemaVersion)
 	}
 
-	// The next tick succeeds: the latest attempt is the success, the stamp is
-	// this tick's, and the local prune that ran beside it is recorded clean.
+	// The next tick succeeds.
 	fakeEtcdctl(t, "printf snapshot > \"$3\"")
 	if _, err := snapshotSave(context.Background(), cfg); err != nil {
 		t.Fatal(err)
@@ -207,11 +173,6 @@ func TestEvidenceRecordingPersistsAFailedSave(t *testing.T) {
 	}
 }
 
-// TestEvidenceRecordingKeepsLocalEvidenceWhenTheUploadFails pins the local
-// evidence contract: a tick whose S3 upload fails still records the local
-// save as a success with its last-success stamp — the artifact exists on the
-// node — while the upload attempt records the failure and moves no
-// last-success stamp of its own.
 func TestEvidenceRecordingKeepsLocalEvidenceWhenTheUploadFails(t *testing.T) {
 	redirectEvidenceArea(t)
 	stubSnapshotConf(t)
@@ -254,12 +215,6 @@ func TestEvidenceRecordingKeepsLocalEvidenceWhenTheUploadFails(t *testing.T) {
 	}
 }
 
-// TestEvidenceRecordingRecordsAPruneRefusalAsAWarning pins the independence
-// of retention evidence: a tick whose remote prune is refused (S3 answers
-// 403 to the delete) does not fail the save, records the refusal as the
-// prune attempt and as a warning of its own, and leaves the save and upload
-// success evidence — the attempts and both last-success stamps — untouched
-// beside it.
 func TestEvidenceRecordingRecordsAPruneRefusalAsAWarning(t *testing.T) {
 	redirectEvidenceArea(t)
 	stubSnapshotConf(t)
@@ -299,11 +254,6 @@ func TestEvidenceRecordingRecordsAPruneRefusalAsAWarning(t *testing.T) {
 	}
 }
 
-// TestEvidenceRecordingRecordsTheSchedulingWarningOfAnUnreadableConf pins
-// the warnings half of the record: the WARN an unreadable snapshot.conf
-// earns on its way to the daemon's log is recorded beside the tick's
-// attempts, while the tick itself still saves, keeps every snapshot and
-// uploads nothing — so no prune or upload attempt exists to record.
 func TestEvidenceRecordingRecordsTheSchedulingWarningOfAnUnreadableConf(t *testing.T) {
 	redirectEvidenceArea(t)
 	breakSnapshotConf(t)

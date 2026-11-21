@@ -29,7 +29,6 @@ const (
 	testLedger = "cp1=https://10.0.0.11:2380"
 )
 
-// swap sets *p to v for the rest of the test.
 func swap[T any](t *testing.T, p *T, v T) {
 	t.Helper()
 	old := *p
@@ -43,10 +42,6 @@ type fault struct {
 	err error
 }
 
-// fakeNode stands in for the static pods and etcdutl, and records what Restore
-// did in order, so each failure point's rollback is observable. Its fx is the
-// run's effects value with the fakes wired in: the runner is driven through it,
-// so an effect the harness forgot stops the run on the unset-effect sentinel.
 type fakeNode struct {
 	t       *testing.T
 	fx      *restoreEffects
@@ -55,9 +50,7 @@ type fakeNode struct {
 	calls   map[string]int
 	faults  map[string]fault // "stop:etcd", "run", "wait:etcd", "start:kube-apiserver", "healthz", ...
 	restore func()           // what a successful etcdutl run writes
-	// writesNothing makes a failed etcdutl run leave no data dir, as real
-	// etcdutl does when it fails before creating one (a short or unreadable
-	// snapshot, a bad flag).
+	// writesNothing: a failed etcdutl run can leave no data dir, as real etcdutl does.
 	writesNothing bool
 	cmd           *exec.Cmd
 	snap          string
@@ -73,7 +66,6 @@ func newFakeNode(t *testing.T) *fakeNode {
 	return n
 }
 
-// call records one fake call and returns the fault injected for it, if any.
 func (n *fakeNode) call(key string) error {
 	n.events = append(n.events, key)
 	n.calls[key]++
@@ -93,13 +85,10 @@ func (n *fakeNode) restoreErr() error {
 	if err := os.WriteFile(n.snap, []byte("x"), 0o600); err != nil {
 		n.t.Fatal(err)
 	}
-	// The run's report goes to the caller's writer, captured here so the tests
-	// can read the account the restore gave.
 	n.out.Reset()
 	return runRestore(&n.out, RestoreOptions{Snapshot: n.snap, PeerURL: testPeer, InitialCluster: testLedger, Stamp: testStamp}, n.fx)
 }
 
-// after returns the events following the first occurrence of key.
 func (n *fakeNode) after(key string) []string {
 	n.t.Helper()
 	i := slices.Index(n.events, key)
@@ -123,15 +112,10 @@ func dataDirHolds(t *testing.T, dataDir, marker string) bool {
 func preRestore(n *fakeNode) string    { return n.fx.etcdDataDir + ".pre-restore-" + testStamp }
 func failedRestore(n *fakeNode) string { return n.fx.etcdDataDir + ".failed-restore-" + testStamp }
 
-// rollbackTail is what a rollback runs once etcdutl has touched the data dir:
-// stop etcd, put the original back, restart etcd and then the apiserver, and
-// wait for each.
+// rollbackTail is what a rollback runs once etcdutl has touched the data dir.
 var rollbackTail = []string{"stop:etcd", "start:etcd", "wait:etcd", "start:kube-apiserver", "healthz"}
 
-// TestRestoreRunsEtcdutl: etcd 3.6 moved snapshot restore out of
-// etcdctl, whose `snapshot` now only has `save`, so every restore on the pinned
-// etcd 3.7 exited with etcdctl's usage. Restore runs etcdutl, with the flags
-// etcdutl 3.7 takes and a cluster token of its own.
+// etcdctl snapshot only saves since etcd 3.6, so restore runs etcdutl.
 func TestRestoreRunsEtcdutl(t *testing.T) {
 	n := newFakeNode(t)
 	if err := n.restoreErr(); err != nil {
@@ -156,9 +140,7 @@ func TestRestoreRunsEtcdutl(t *testing.T) {
 	}
 }
 
-// TestSameSecondRestoresGetDistinctTokens: Stamp has second
-// precision, so a retry in the same second must still get its own cluster
-// token, or it recreates the previous attempt's cluster-id.
+// Stamp has second precision, so a same-second retry still needs its own cluster token.
 func TestSameSecondRestoresGetDistinctTokens(t *testing.T) {
 	n := newFakeNode(t)
 	token := func() string {
@@ -181,8 +163,7 @@ func TestSameSecondRestoresGetDistinctTokens(t *testing.T) {
 	}
 }
 
-// TestRestoreRefusesWithoutEtcdutl: a node staged by an older release has no
-// etcdutl, and that is found before the control plane is stopped.
+// a node staged by an older release has no etcdutl; found before anything is stopped.
 func TestRestoreRefusesWithoutEtcdutl(t *testing.T) {
 	n := newFakeNode(t)
 	if err := os.Remove(n.fx.etcdutlPath); err != nil {
@@ -217,9 +198,7 @@ func TestRestoreSucceeds(t *testing.T) {
 	}
 }
 
-// TestCiliumIsRestartedAfterTheControllers: rolling Cilium needs
-// kube-controller-manager and kube-scheduler to act on the new pods, so their
-// stale watches are cleared before the rollout is waited on.
+// rolling Cilium needs the controllers' stale watches cleared before the rollout.
 func TestCiliumIsRestartedAfterTheControllers(t *testing.T) {
 	n := newFakeNode(t)
 	if err := n.restoreErr(); err != nil {
@@ -233,10 +212,7 @@ func TestCiliumIsRestartedAfterTheControllers(t *testing.T) {
 	}
 }
 
-// TestRestoreTriesEveryWatcherAndNamesTheOnesThatFailed: a component
-// that cannot be restarted must not stop the others from being restarted, and
-// the restore is reported as unfinished, not failed: the data is still the
-// snapshot's.
+// a failed restart must not stop the others; reported as unfinished, not failed.
 func TestRestoreTriesEveryWatcherAndNamesTheOnesThatFailed(t *testing.T) {
 	n := newFakeNode(t)
 	n.fail("restart:kubelet", 0)
@@ -254,8 +230,7 @@ func TestRestoreTriesEveryWatcherAndNamesTheOnesThatFailed(t *testing.T) {
 	}
 }
 
-// TestRestoreSkipsWatchersThisNodeDoesNotRun: a component this node or cluster
-// does not have (no kubelet, no Cilium, no kube-controller-manager) is not an error.
+// a component this node or cluster does not have is not an error.
 func TestRestoreSkipsWatchersThisNodeDoesNotRun(t *testing.T) {
 	n := newFakeNode(t)
 	n.fx.restoreKubelet = func() (bool, error) { return false, nil }
@@ -269,8 +244,7 @@ func TestRestoreSkipsWatchersThisNodeDoesNotRun(t *testing.T) {
 	}
 }
 
-// TestNothingIsRestartedWhenTheRestoreFails: the watchers are restarted only
-// once the restored apiserver is healthy.
+// the watchers are restarted only once the restored apiserver is healthy.
 func TestNothingIsRestartedWhenTheRestoreFails(t *testing.T) {
 	for _, failAt := range []string{"run", "wait:etcd", "healthz"} {
 		n := newFakeNode(t)
@@ -284,11 +258,7 @@ func TestNothingIsRestartedWhenTheRestoreFails(t *testing.T) {
 	}
 }
 
-// TestFailedRestoreRollsBack: a failed restore must not leave etcd and
-// the apiserver stopped, with the data dir renamed away. Each failure before
-// etcd is up on the restored data stops etcd (whatever its port says, since
-// an etcd starting or stopping holds the data dir without listening), puts the
-// original data back, and restarts and waits for etcd and then the apiserver.
+// a failure before etcd is up on the restored data rolls the original data back.
 func TestFailedRestoreRollsBack(t *testing.T) {
 	for _, tc := range []struct {
 		name, failAt  string
@@ -336,10 +306,7 @@ func TestFailedRestoreRollsBack(t *testing.T) {
 	}
 }
 
-// TestFailedStopRestartsWhatWasStopped: a Stop that fails after the
-// apiserver was already stopped must not return with it down. Nothing about the
-// data changed, so the rollback is just restarting what was stopped; when the
-// apiserver's own stop fails, etcd was never touched and keeps serving.
+// a failed stop restarts what was already stopped; the data is untouched.
 func TestFailedStopRestartsWhatWasStopped(t *testing.T) {
 	for _, tc := range []struct {
 		failAt, msg string
@@ -367,9 +334,7 @@ func TestFailedStopRestartsWhatWasStopped(t *testing.T) {
 	}
 }
 
-// TestApiserverFailureKeepsASuccessfulRestore: once etcd is up on the restored
-// data the restore has worked; an apiserver that will not start or come back
-// is reported as that, and the restored data is not thrown away.
+// once etcd is up on the restored data, an apiserver failure keeps the restored data.
 func TestApiserverFailureKeepsASuccessfulRestore(t *testing.T) {
 	for _, failAt := range []string{"start:kube-apiserver", "healthz"} {
 		t.Run(failAt, func(t *testing.T) {
@@ -390,9 +355,7 @@ func TestApiserverFailureKeepsASuccessfulRestore(t *testing.T) {
 	}
 }
 
-// TestUnfinishedRollbackSaysSo: when the rollback itself cannot restart etcd,
-// the error says so and where the original data is, and the apiserver is not
-// started with no etcd behind it.
+// when the rollback itself fails, the error says so and no apiserver starts without etcd.
 func TestUnfinishedRollbackSaysSo(t *testing.T) {
 	n := newFakeNode(t)
 	n.fail("run", 0)
@@ -410,9 +373,7 @@ func TestUnfinishedRollbackSaysSo(t *testing.T) {
 	}
 }
 
-// TestRollbackAvoidsAnEarlierAttemptsPaths: a retry within the
-// same second finds the previous attempt's directories. The rollback must not
-// collide with them, or the original data cannot go back.
+// a same-second retry's rollback must not collide with the previous attempt's directories.
 func TestRollbackAvoidsAnEarlierAttemptsPaths(t *testing.T) {
 	n := newFakeNode(t)
 	for _, p := range []string{preRestore(n), failedRestore(n)} {
@@ -439,9 +400,7 @@ func TestRollbackAvoidsAnEarlierAttemptsPaths(t *testing.T) {
 	}
 }
 
-// TestRollbackLeavesDataWhenEtcdWillNotStop: if etcd cannot be stopped, the
-// data dir is not moved under it, no second etcd is started, and neither is an
-// apiserver that could serve the failed restore through it.
+// with etcd unstoppable, the data dir is not moved and neither etcd nor the apiserver restarts.
 func TestRollbackLeavesDataWhenEtcdWillNotStop(t *testing.T) {
 	n := newFakeNode(t)
 	n.fail("run", 0)
@@ -461,17 +420,14 @@ func TestRollbackLeavesDataWhenEtcdWillNotStop(t *testing.T) {
 	}
 }
 
-// TestRollbackDoesNotStartEtcdOffTheOriginalData: when the
-// original data cannot be put back, etcd must not start on whatever the data
-// dir holds instead, and the apiserver must not start without it.
+// when the original cannot go back, etcd must not start on whatever the data dir holds.
 func TestRollbackDoesNotStartEtcdOffTheOriginalData(t *testing.T) {
 	n := newFakeNode(t)
 	n.fail("run", 0)
 	fake := n.fx.restoreRun
 	n.fx.restoreRun = func(cmd *exec.Cmd) error {
 		err := fake(cmd)
-		// Occupy the failed-restore path with a non-empty directory, so moving
-		// the failed restore aside fails and the original cannot go back.
+		// Occupy the failed-restore path, so moving it aside fails and the original cannot go back.
 		if e := os.MkdirAll(filepath.Join(failedRestore(n), "x"), 0o700); e != nil {
 			t.Fatal(e)
 		}
@@ -491,8 +447,7 @@ func TestRollbackDoesNotStartEtcdOffTheOriginalData(t *testing.T) {
 	}
 }
 
-// TestFreePathReturnsErrors: an error other than
-// not-existing is returned, not treated as "taken" forever.
+// an error other than not-existing is returned, not treated as "taken" forever.
 func TestFreePathReturnsErrors(t *testing.T) {
 	dir := t.TempDir()
 	if p, err := freePath(filepath.Join(dir, "a"), pathExists); err != nil || p != filepath.Join(dir, "a") {
@@ -507,10 +462,7 @@ func TestFreePathReturnsErrors(t *testing.T) {
 	}
 }
 
-// TestRestoreOntoAMissingDataDir: a node whose etcd data is
-// gone is what a restore is for. If it fails, the failed restore is moved
-// aside and etcd is not started on it; there is no original to go back to, so
-// that is the whole rollback, and it is not reported as an unfinished one.
+// with no original data, the whole rollback is moving the failed restore aside.
 func TestRestoreOntoAMissingDataDir(t *testing.T) {
 	missing := func(t *testing.T) *fakeNode {
 		n := newFakeNode(t)
@@ -557,8 +509,7 @@ func TestRestoreOntoAMissingDataDir(t *testing.T) {
 	})
 }
 
-// TestUnreadableDataDirAbortsBeforeTouchingIt: an error
-// other than not-existing is not taken to mean the data dir is absent.
+// an error other than not-existing is not taken to mean the data dir is absent.
 func TestUnreadableDataDirAbortsBeforeTouchingIt(t *testing.T) {
 	n := newFakeNode(t)
 	exists := n.fx.restorePathExists
@@ -581,12 +532,7 @@ func TestUnreadableDataDirAbortsBeforeTouchingIt(t *testing.T) {
 	}
 }
 
-// TestRestorePutsBackTheManifestsItStopped: Restore must not
-// re-render etcd and kube-apiserver from this binary's constants when it
-// starts them again. An upgrade rollback runs the newer binary against the
-// older manifests it has just restored, so that would bring back the newer images.
-// Every start, on the restored data or in a rollback, gets the manifest the
-// component had before the restore.
+// re-rendering would put the newer binary's images into an upgrade rollback's older manifests.
 func TestRestorePutsBackTheManifestsItStopped(t *testing.T) {
 	for _, tc := range []struct{ name, failAt string }{
 		{"a restore that succeeds", ""},
@@ -614,8 +560,7 @@ func TestRestorePutsBackTheManifestsItStopped(t *testing.T) {
 	}
 }
 
-// TestRestoreRendersWhenThereWasNoManifest: a component with no manifest
-// before the restore has nothing to put back, so it is rendered as before.
+// a component with no manifest before the restore is rendered as before.
 func TestRestoreRendersWhenThereWasNoManifest(t *testing.T) {
 	n := newFakeNode(t)
 	n.manifests["etcd"] = nil
@@ -627,8 +572,7 @@ func TestRestoreRendersWhenThereWasNoManifest(t *testing.T) {
 	}
 }
 
-// TestUnreadableManifestStopsNothing: a manifest that cannot be read could not
-// be put back, so the restore refuses before stopping anything.
+// a manifest that cannot be read cannot be put back, so the restore refuses first.
 func TestUnreadableManifestStopsNothing(t *testing.T) {
 	n := newFakeNode(t)
 	n.fail("read:etcd", 0)
@@ -643,8 +587,7 @@ func TestUnreadableManifestStopsNothing(t *testing.T) {
 	}
 }
 
-// TestStartManifestWritesTheSavedBytes: startManifest puts a saved manifest
-// back byte for byte, rather than rendering one from this binary.
+// startManifest puts a saved manifest back byte for byte, rather than rendering.
 func TestStartManifestWritesTheSavedBytes(t *testing.T) {
 	swap(t, &version.K8sConfDir, t.TempDir())
 	saved := []byte("apiVersion: v1\nkind: Pod\nspec:\n  containers:\n  - image: registry.example/etcd:3.6.0-old\n")
@@ -669,14 +612,7 @@ func TestRestoreRefusesADirectory(t *testing.T) {
 	}
 }
 
-// --- the effects value: one complete set of host effects, fail-closed ---
-
-// newFakeEffects builds a complete fake restoreEffects over a recording
-// fakeNode, without setting a single package variable: the effects value is the
-// only seam, so a run driven through it is observable event by event and can
-// reach the host through nothing else. It lays out the same temp node
-// newFakeNode does (per-run data and bin dirs, a staged data dir, an
-// etcdutl). Its layout needs no global redirects, so runs can execute together.
+// newFakeEffects builds a complete fake restoreEffects over a recording fakeNode.
 func newFakeEffects(t *testing.T) (*restoreEffects, *fakeNode) {
 	t.Helper()
 	root := t.TempDir()
@@ -762,22 +698,15 @@ func newFakeEffects(t *testing.T) (*restoreEffects, *fakeNode) {
 		},
 		restoreStaticPodExists: func(string) bool { return true },
 		restoreStaticPod:       func(name string) error { return n.call("restart:" + name) },
-		// The data-dir moves perform the real rename on the redirected temp
-		// paths, and record no event: the event sequences below are the
-		// stop/start/run/rollback accounting, unchanged by where the dir moves.
+		// The data-dir moves rename for real on the temp paths and record no event.
 		restoreMoveDir: os.Rename,
 	}
 	n.fx = fx
-	// seedKubectl, baseKubectl, compsStatus and compsRestart stay unset on
-	// purpose: with the health gate, the kubelet and operator restarts and the
-	// workload restarts stubbed, a run must never consult them, and if it does
-	// the unset-effect sentinel says so instead of a kubectl or a supervisor
-	// call reaching the host.
+	// seedKubectl, baseKubectl, compsStatus and compsRestart stay unset on purpose.
 	return fx, n
 }
 
-// runFakeRestore drives the unexported runner the way fakeNode.restoreErr
-// drives Restore: with a written snapshot and the shared test options.
+// runFakeRestore drives runRestore with a written snapshot and the shared test options.
 func runFakeRestore(t *testing.T, fx *restoreEffects, callerHoldsNodeLock bool) error {
 	t.Helper()
 	snap := filepath.Join(t.TempDir(), "snap.db")
@@ -793,14 +722,7 @@ func runFakeRestore(t *testing.T, fx *restoreEffects, callerHoldsNodeLock bool) 
 	}, fx)
 }
 
-// TestUnsetRestoreEffectsFailClosed: a restore run whose harness was built
-// with every effect unset must return the sentinel, naming the effect it
-// stopped at, before any host call — the data lock is the first effect the
-// forced path reaches, and the caller-held node lock keeps even the lock file
-// out of the picture here. No effect may answer an unset field by falling back
-// to its real implementation or by panicking through a nil function: a fake
-// that forgot a stub would then perform the very host effect it exists to keep
-// off the node.
+// a harness that forgot a stub must hit the sentinel, never a real host effect.
 func TestUnsetRestoreEffectsFailClosed(t *testing.T) {
 	t.Parallel()
 	err := runRestore(io.Discard, RestoreOptions{
@@ -817,10 +739,7 @@ func TestUnsetRestoreEffectsFailClosed(t *testing.T) {
 	}
 }
 
-// TestUnsetRefusalProbesFailClosed: the refusal probes are host reads (the
-// supervisor's socket, the node-start lock), so a missing stub must be caught
-// before they are consulted, not passed on to panic inside the probe or to run
-// the probe for real.
+// the refusal probes are host reads; a missing stub must hit the sentinel, not a panic.
 func TestUnsetRefusalProbesFailClosed(t *testing.T) {
 	t.Parallel()
 	o := RestoreOptions{Snapshot: "snap.db", PeerURL: testPeer, InitialCluster: testLedger, NodeLockHeld: true}
@@ -836,11 +755,7 @@ func TestUnsetRefusalProbesFailClosed(t *testing.T) {
 	}
 }
 
-// TestRestoreRunnerRefusesAStartInProgress: the start-in-progress gate runs
-// through the effects value. A supervisor probe that says not running with the
-// start lock held refuses before anything else happens, and the data lock is
-// released on the way out. The snapshot is deliberately absent: reaching it
-// would mean the gate ran late.
+// the start gate refuses before anything else; the data lock is released on the way out.
 func TestRestoreRunnerRefusesAStartInProgress(t *testing.T) {
 	t.Parallel()
 	released := false
@@ -860,10 +775,7 @@ func TestRestoreRunnerRefusesAStartInProgress(t *testing.T) {
 	}
 }
 
-// TestRestoreThroughTheEffectsValueSucceeds pins the whole restore sequence
-// against a run driven only by the effects value: the same order
-// TestRestoreSucceeds pins, reached without a package variable in play, so the
-// move onto the value preserves the ordering the rollback reasoning rests on.
+// pins the same order as TestRestoreSucceeds, driven only by the effects value.
 func TestRestoreThroughTheEffectsValueSucceeds(t *testing.T) {
 	fx, n := newFakeEffects(t)
 	if err := runFakeRestore(t, fx, true); err != nil {
@@ -884,10 +796,7 @@ func TestRestoreThroughTheEffectsValueSucceeds(t *testing.T) {
 	}
 }
 
-// TestRollbackRunsThroughTheEffectsValue: a failed etcdutl run must roll back
-// through the same effects value — stop etcd, put the original data back,
-// restart etcd and then the apiserver, and wait for each — with the original
-// data back in place and the failed restore kept aside.
+// a failed etcdutl run rolls back through the same effects value.
 func TestRollbackRunsThroughTheEffectsValue(t *testing.T) {
 	fx, n := newFakeEffects(t)
 	n.fail("run", 0)
@@ -906,10 +815,7 @@ func TestRollbackRunsThroughTheEffectsValue(t *testing.T) {
 	}
 }
 
-// TestMissingStubStopsTheRunAtItsEffect: the fail-closed contract is per
-// field, not only for a zero value. Whatever field a harness forgets, the run
-// stops exactly there with the sentinel naming it, before the next host
-// effect — including a field the watcher-restart phase consults.
+// whatever field is unset, the run stops there with the sentinel naming it.
 func TestMissingStubStopsTheRunAtItsEffect(t *testing.T) {
 	for _, tc := range []struct {
 		name, field, forbid string
@@ -942,10 +848,7 @@ func TestMissingStubStopsTheRunAtItsEffect(t *testing.T) {
 	}
 }
 
-// TestRestoreRunnerTakesTheNodeLockAroundTheDataLock: the maintenance fence
-// lives in the runner too. The node lock is held when the data lock is taken —
-// the data lock alone would let a restore run beside an upgrade or CA rotation
-// — and released by the time the run returns.
+// the node lock must be held when the data lock is taken, and released after.
 func TestRestoreRunnerTakesTheNodeLockAroundTheDataLock(t *testing.T) {
 	t.Parallel()
 	fx, _ := newFakeEffects(t)
@@ -967,10 +870,7 @@ func TestRestoreRunnerTakesTheNodeLockAroundTheDataLock(t *testing.T) {
 	}
 }
 
-// TestRestoreRunnerSkipsTheNodeLockWhenTheCallerHoldsIt: a restore nested in a
-// rollback that holds the node lock must run because the caller holds it, not
-// refuse against its own holder. The held-lock capability lifts only the
-// maintenance lock; the data lock is still taken.
+// a caller-held node lock lifts only the maintenance lock; the data lock is still taken.
 func TestRestoreRunnerSkipsTheNodeLockWhenTheCallerHoldsIt(t *testing.T) {
 	t.Parallel()
 	fx, _ := newFakeEffects(t)
@@ -988,12 +888,7 @@ func TestRestoreRunnerSkipsTheNodeLockWhenTheCallerHoldsIt(t *testing.T) {
 	}
 }
 
-// TestRestoreEffectsCoverTheInventory pins one complete effects value: every
-// effect the restore and the copies removal inject today is a function field
-// on it, so a run's stubs cannot miss one and no effect stays behind as a
-// package variable. The three timing knobs the kubectl work reads are fields
-// too, so parallel tests can shorten them per run instead of swapping a
-// package variable. Extra fields beyond this inventory are allowed.
+// pins the effects inventory, timing knobs included; extra fields are allowed.
 func TestRestoreEffectsCoverTheInventory(t *testing.T) {
 	t.Parallel()
 	effectFields := []string{
@@ -1033,8 +928,7 @@ func TestRestoreEffectsCoverTheInventory(t *testing.T) {
 	}
 }
 
-// parseProduction reads the package's non-test Go files, for the structure
-// pins that must hold in production code rather than in the tests.
+// parseProduction reads the package's non-test Go files, for structure pins on production code.
 func parseProduction(t *testing.T) (map[string]*ast.File, map[string]*ast.FuncDecl) {
 	t.Helper()
 	entries, err := os.ReadDir(".")
@@ -1063,11 +957,7 @@ func parseProduction(t *testing.T) (map[string]*ast.File, map[string]*ast.FuncDe
 	return files, funcs
 }
 
-// TestRestoreEffectVariablesAreGone is the inventory grep, as
-// a test: no restore effect function variable and no timing knob remains a
-// package-level variable in the production files, so a run cannot reach the
-// host around the effects value and two concurrent runs cannot share mutable
-// state. Red while the variables remain.
+// no restore effect or timing knob may remain a package-level variable in production.
 func TestRestoreEffectVariablesAreGone(t *testing.T) {
 	t.Parallel()
 	gone := []string{
@@ -1101,13 +991,7 @@ func TestRestoreEffectVariablesAreGone(t *testing.T) {
 	}
 }
 
-// TestRestoreOwnsTheProductionRestoreEffects parses the production files and
-// pins the seam's structure: Restore keeps the exported signature its callers
-// use and hands the effects value to the unexported runner; the copies removal
-// keeps the exported signature pkg/cli and the MCP tool call and goes through
-// the effects value too; the effects value is a struct, and a production value
-// is built only in an exported entry point — never a package-level variable a
-// second run could inherit.
+// pins the seam's structure in the production files: the entry points own the effects value.
 func TestRestoreOwnsTheProductionRestoreEffects(t *testing.T) {
 	t.Parallel()
 	files, funcs := parseProduction(t)
@@ -1169,8 +1053,7 @@ func TestRestoreOwnsTheProductionRestoreEffects(t *testing.T) {
 	if run == nil {
 		t.Fatal("no unexported runRestore; the runner is what takes the effects value")
 	}
-	// The writer convention: the writer leads, then the options, then the
-	// effects value.
+	// The writer convention: the writer leads, then the options, then the effects value.
 	if run.Recv != nil || run.Type.Params.NumFields() != 3 ||
 		!isType(run.Type.Params.List[0].Type, "io.Writer") ||
 		!isType(run.Type.Params.List[1].Type, "RestoreOptions") ||
@@ -1190,8 +1073,7 @@ func TestRestoreOwnsTheProductionRestoreEffects(t *testing.T) {
 		t.Error("Restore never mentions runRestore; the runner must be what the entry point calls")
 	}
 
-	// RemoveRestoreCopies keeps its exported signature: pkg/cli/snapshot.go and
-	// internal/mcp/stratumdestructive.go call it with the shown copies only.
+	// RemoveRestoreCopies keeps its exported signature; pkg/cli and the MCP tool call it.
 	removeCopies := funcs["RemoveRestoreCopies"]
 	if removeCopies == nil {
 		t.Fatal("no RemoveRestoreCopies; the copies removal is an exported entry point")
@@ -1213,10 +1095,7 @@ func TestRestoreOwnsTheProductionRestoreEffects(t *testing.T) {
 		t.Error("removeRestoreCopies's signature changed; want func removeRestoreCopies(shown []RestoreCopy, fx *restoreEffects) ([]RestoreCopy, error)")
 	}
 
-	// Production construction only at the entry points: every restoreEffects
-	// composite literal in the production files sits in an exported entry point
-	// (Restore, RemoveRestoreCopies), and no package-level variable has the
-	// type. The value is per-run, never a shared singleton.
+	// a production restoreEffects is built only in an exported entry point, never shared.
 	for name, f := range files {
 		for _, d := range f.Decls {
 			switch d := d.(type) {
@@ -1253,11 +1132,7 @@ func TestRestoreOwnsTheProductionRestoreEffects(t *testing.T) {
 	}
 }
 
-// TestRemoveRestoreCopiesFailsClosedOnUnsetEffects: the copies removal goes
-// through the effects value too. A zero value refuses at the data lock before
-// removing anything, and a missing removal stub refuses there, so a harness
-// that forgot a stub cannot delete a copy off the node. Sequential: it lays
-// out real copies beside a redirected data dir.
+// a zero value or a missing removal stub refuses at the data lock, removing nothing.
 func TestRemoveRestoreCopiesFailsClosedOnUnsetEffects(t *testing.T) {
 	pre, failed := restoreCopiesNode(t)
 	shown, err := RestoreCopies()
@@ -1286,10 +1161,7 @@ func TestRemoveRestoreCopiesFailsClosedOnUnsetEffects(t *testing.T) {
 	}
 }
 
-// TestRemoveRestoreCopiesRunsThroughTheEffectsValue: with the data lock and
-// the removal faked on the effects value, each shown copy is removed under the
-// lock and reported. Sequential: same redirected data-dir layout as the
-// fail-closed test.
+// with lock and removal faked, each shown copy is removed under the lock and reported.
 func TestRemoveRestoreCopiesRunsThroughTheEffectsValue(t *testing.T) {
 	pre, failed := restoreCopiesNode(t)
 	shown, err := RestoreCopies()

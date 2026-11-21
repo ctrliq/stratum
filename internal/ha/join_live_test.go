@@ -21,11 +21,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Run with STRATUM_TEST_ETCD_BIN pointing to the shipped etcd binary. Host
-// assembly is recorded, but membership, TLS, quorum loss and recovery use two
-// real etcd processes. Disabling strict reconfiguration deliberately creates
-// the dangerous committed second-voter add, even on servers that refuse it
-// by default; recovery must handle an already-committed membership.
+// --strict-reconfig-check=false creates the committed second-voter add recovery must handle
 func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 	bin := os.Getenv("STRATUM_TEST_ETCD_BIN")
 	if bin == "" {
@@ -60,17 +56,13 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 	if err := writeJoinIntent(j); err != nil {
 		t.Fatal(err)
 	}
-	// A voter, added directly: the production join adds a learner, which
-	// leaves the seed its quorum, so it cannot build the quorumless two-voter
-	// cluster an older join left behind.
+	// a direct voter add: the production learner add would leave the seed its quorum
 	addCtx, addCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	_, err = cli.MemberAdd(addCtx, []string{joinPeer})
 	addCancel()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The add committed, but the joiner never started and its reply/state
-	// could have been lost. Only one of two voters is running now.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	_, err = cli.MemberList(ctx)
 	cancel()
@@ -106,9 +98,7 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("production membership recovery refused committed member: %v", err)
 	}
-	// The journal outlives the resumed state save: it ends when a later start
-	// confirms this node's local etcd data (runUp behind requireLocalEtcdMember),
-	// not at the save — the same rule the unit resume tests pin.
+	// the journal ends when a later start confirms this node's local etcd data, not at the save
 	if _, err := os.Stat(joinIntentPath); err != nil {
 		t.Fatalf("completed recovery lost the journal: %v", err)
 	}
@@ -124,8 +114,6 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 		_, err = cli.Put(ctx, "join-recovery-gate", "quorum-restored")
 		return err
 	})
-	// With two live voters, a failed third join still has a majority.
-	// Exercise real compensation as well as the quorumless refusal above.
 	thirdPeer := fmt.Sprintf("https://127.77.0.3:%d", version.EtcdPeerPort)
 	third := joinIntent{MemberName: "never-started-third", PeerURL: thirdPeer, Phase: intentPhasePrepared}
 	if err := writeJoinIntent(third); err != nil {
@@ -156,9 +144,6 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 	})
 }
 
-// liveEtcdPKI points the PKI and data dirs at a temporary directory and
-// writes the CAs and certificates the live etcd processes and their clients
-// use, for etcd at ips. It returns the cluster CA's pin.
 func liveEtcdPKI(t *testing.T, ips ...string) string {
 	t.Helper()
 	oldPKI, oldData, oldKube := version.PKIDir, version.DataDir, version.KubeconfigDir
@@ -202,11 +187,7 @@ func liveEtcdPKI(t *testing.T, ips ...string) string {
 	return pin
 }
 
-// TestLiveMemberAddAddsALearnerTheSeedCommitsWithout runs the join's member
-// add against real etcd. Production MemberAdd adds the joiner as a learner,
-// so a single seed keeps committing while the joiner's etcd has not started:
-// a voter add would need both for every write. Once the joiner's etcd starts
-// and catches up, PromoteLearner makes it a voter through the seed.
+// a learner add leaves the seed its quorum while the joiner's etcd has not started
 func TestLiveMemberAddAddsALearnerTheSeedCommitsWithout(t *testing.T) {
 	bin := os.Getenv("STRATUM_TEST_ETCD_BIN")
 	if bin == "" {
@@ -292,8 +273,7 @@ func startLiveJoinEtcd(t *testing.T, bin, name, ip, initial, state string) {
 		"--trusted-ca-file="+ca, "--client-cert-auth=true", "--peer-cert-file="+cert,
 		"--peer-key-file="+key, "--peer-trusted-ca-file="+ca, "--peer-client-cert-auth=true")
 	cmd.Stdout, cmd.Stderr = log, log
-	// Peer discovery uses HTTP and must stay on these loopback addresses
-	// even when the test runner has a corporate proxy configured.
+	// etcd peer discovery is HTTP and must bypass a configured corporate proxy
 	cmd.Env = append(os.Environ(), "NO_PROXY=127.77.0.1,127.77.0.2,127.0.0.1", "no_proxy=127.77.0.1,127.77.0.2,127.0.0.1")
 	if err := cmd.Start(); err != nil {
 		log.Close()

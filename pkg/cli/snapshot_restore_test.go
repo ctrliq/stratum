@@ -13,19 +13,14 @@ import (
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 )
 
-// restoreOutcome runs `snapshot restore` with the restore itself replaced by
-// restoreErr, and returns what it printed and what it returned.
-// restartCommands are the commands the guidance gives for restarting a control
-// plane's watchers by hand once every control plane has rejoined.
+// The restart commands the restore prints for a control plane's watchers.
 var restartCommands = []string{
 	`sudo pkill -x kubelet`,
 	`sudo pkill -TERM -f '^([^[:space:]]*/)?[k]ube-controller-manager([[:space:]]|$)'`,
 	`sudo pkill -TERM -f '^([^[:space:]]*/)?[k]ube-scheduler([[:space:]]|$)'`,
 	"sudo pkill -TERM -f '^[^[:space:]]+ operator( [^[:space:]]+)* --kubeconfig (/var/lib/stratum/kubeconfig/super-admin\\.conf|/var/lib/stratum/kubeconfig/admin\\.conf)",
-	// the in-cluster workloads, one command per namespace
 	"stratum kubectl -n kube-system rollout restart ds/cilium deploy/cilium-operator deploy/coredns",
 	"stratum kubectl -n local-path-storage rollout restart deploy/local-path-provisioner",
-	// the pattern for third-party controllers, which the restore does not restart
 	"stratum kubectl -n <namespace> rollout restart deploy/<name>",
 }
 
@@ -43,8 +38,6 @@ func restoreOutcome(t *testing.T, restoreErr error) (string, error) {
 	return out.String(), err
 }
 
-// TestRestoreOutcomeSuccess: a restore that restarted everything says so and
-// lists what is left.
 func TestRestoreOutcomeSuccess(t *testing.T) {
 	out, err := restoreOutcome(t, nil)
 	if err != nil {
@@ -68,9 +61,6 @@ func TestRestoreOutcomeSuccess(t *testing.T) {
 	}
 }
 
-// TestRestoreOutcomePartial: the data is restored but a watcher was not
-// restarted. The recovery steps are printed, the failure is still returned, and
-// nothing claims every restart worked. The manual commands name the seed.
 func TestRestoreOutcomePartial(t *testing.T) {
 	cause := fmt.Errorf("%w: kubelet", etcdsnap.ErrWatchersNotRestarted)
 	out, err := restoreOutcome(t, cause)
@@ -95,8 +85,6 @@ func TestRestoreOutcomePartial(t *testing.T) {
 	}
 }
 
-// TestRestoreOutcomeOrdinaryFailure: a restore that did not restore says
-// nothing about the snapshot being in place, and prints no next steps.
 func TestRestoreOutcomeOrdinaryFailure(t *testing.T) {
 	out, err := restoreOutcome(t, errors.New("etcdutl exploded"))
 	if err == nil || !strings.Contains(err.Error(), "etcdutl exploded") {
@@ -109,9 +97,6 @@ func TestRestoreOutcomeOrdinaryFailure(t *testing.T) {
 	}
 }
 
-// TestDocsGiveEveryPrintedCommand: snapshot-restore.md carries each command the
-// restore prints for restarting components by hand, so the docs and the output
-// cannot drift. It reads the page from the repository.
 func TestDocsGiveEveryPrintedCommand(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "docs", "docs", "cluster-admin", "snapshot-restore.md"))
 	if err != nil {
@@ -130,8 +115,7 @@ func TestDocsGiveEveryPrintedCommand(t *testing.T) {
 	}
 }
 
-// asRootPrompt is how the docs write a command the restore prints: a sudo
-// command appears as a root prompt, "# cmd", in place of "sudo cmd".
+// asRootPrompt renders a sudo command the way the docs print it: "# cmd".
 func asRootPrompt(c string) string {
 	if rest, ok := strings.CutPrefix(c, "sudo "); ok {
 		return "# " + rest

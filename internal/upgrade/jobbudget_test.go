@@ -17,12 +17,7 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// The per-node Job's deadline holds the upgrade's expected budget plus a window
-// for each best-effort step after it, so an upgrade that stays within that
-// budget does not reach the deadline during the version stamp or the backstop.
-// The budget is an assumption the deadline is sized from, not
-// something enforced at runtime: an upgrade that runs past it can still hit the
-// deadline in that tail.
+// The budget is an assumption the deadline is sized from, not enforced at runtime.
 func TestJobDeadlineHoldsTheExpectedBudgetAndTheBestEffortTail(t *testing.T) {
 	if upgradeWorkBudget != 15*time.Minute {
 		t.Errorf("the upgrade's expected budget changed to %s; the Job's deadline is sized from it", upgradeWorkBudget)
@@ -35,12 +30,11 @@ func TestJobDeadlineHoldsTheExpectedBudgetAndTheBestEffortTail(t *testing.T) {
 	}
 }
 
-// A kubectl the API server never answers cannot hold the Job in front of the
-// backstop: the stamp is killed when its window ends and only warns.
+// The stamp is killed at its window and only warns, so it cannot hold the Job.
 func TestStampUpgradedIsBounded(t *testing.T) {
 	swap(t, &stampWindow, 50*time.Millisecond)
 	swap(t, &stampNode, func(ctx context.Context, _ string) error {
-		<-ctx.Done() // never answers
+		<-ctx.Done()
 		return ctx.Err()
 	})
 	start := time.Now()
@@ -59,8 +53,6 @@ func TestStampUpgradedIsBounded(t *testing.T) {
 	}
 }
 
-// And the backstop itself ends within backstopWindow, however the API server
-// behaves.
 func TestBackstopEndsWithinItsWindow(t *testing.T) {
 	swap(t, &backstopWindow, 300*time.Millisecond)
 	swap(t, &apiCallTimeout, 50*time.Millisecond)

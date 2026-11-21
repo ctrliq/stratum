@@ -59,8 +59,6 @@ func TestDashboardHintWithoutTokenSecrets(t *testing.T) {
 	}
 }
 
-// TestNodeRegisteredTaskPrintsTheHintOnceRegistered pins that the hint is
-// printed once, only after the node registers and is labelled.
 func TestNodeRegisteredTaskPrintsTheHintOnceRegistered(t *testing.T) {
 	for _, registers := range []bool{true, false} {
 		r, w, err := os.Pipe()

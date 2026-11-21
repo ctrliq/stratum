@@ -12,10 +12,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// runtimeWorkerHost redirects a worker's node state, containerd config and
-// runtime-handler drop-in to a temp tree, with the supervisor socket absent so
-// containerd reports not running and `apply` never restarts anything. It
-// returns an executable standing in for a runtime binary.
 func runtimeWorkerHost(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -60,9 +56,6 @@ func runRuntime(t *testing.T, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// TestRuntimeApplyThenCheck walks a worker through declaring a handler,
-// checking it and clearing it. containerd is not running, so apply must say
-// the handlers load at its next start, never that it restarted.
 func TestRuntimeApplyThenCheck(t *testing.T) {
 	bin := runtimeWorkerHost(t)
 

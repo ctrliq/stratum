@@ -13,10 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/supervisor"
 )
 
-// fakeRoster wires a supervisor roster (or its failure) into fx's comps
-// effects and records what was restarted. fx is the run's effects value: the
-// caller's harness one, or a bare one for the restartKubelet/restartOperator
-// pins.
+// fakeRoster wires a supervisor roster (or its failure) into fx and records what was restarted.
 func fakeRoster(t *testing.T, fx *restoreEffects, roster map[string]supervisor.ProcStatus, err error) *[]string {
 	t.Helper()
 	var restarted []string
@@ -25,8 +22,7 @@ func fakeRoster(t *testing.T, fx *restoreEffects, roster map[string]supervisor.P
 	return &restarted
 }
 
-// runningRoster is a supervisor roster with every comps.Units component
-// running, as a control plane's is.
+// runningRoster has every comps.Units component running, as a control plane's is.
 func runningRoster() map[string]supervisor.ProcStatus {
 	roster := map[string]supervisor.ProcStatus{}
 	for _, name := range comps.Units {
@@ -44,7 +40,6 @@ func TestRestartKubeletRestartsItWhenTheRosterHasIt(t *testing.T) {
 	}
 }
 
-// Only a roster that was read, and has no kubelet, skips it.
 func TestRestartKubeletSkipsWhenTheRosterHasNone(t *testing.T) {
 	fx := &restoreEffects{}
 	restarted := fakeRoster(t, fx, map[string]supervisor.ProcStatus{"operator": {Name: "operator"}}, nil)
@@ -54,9 +49,6 @@ func TestRestartKubeletSkipsWhenTheRosterHasNone(t *testing.T) {
 	}
 }
 
-// TestRestartKubeletReportsALookupFailure: a supervisor that cannot be
-// asked is not a node without kubelet. Skipping would report a restore that left
-// kubelet's stale watch as complete.
 func TestRestartKubeletReportsALookupFailure(t *testing.T) {
 	fx := &restoreEffects{}
 	restarted := fakeRoster(t, fx, nil, errors.New("dial unix /run/stratum/stratum.sock: connection refused"))
@@ -66,9 +58,6 @@ func TestRestartKubeletReportsALookupFailure(t *testing.T) {
 	}
 }
 
-// TestRestoreNamesKubeletWhenTheSupervisorCannotBeAsked: through Restore, with
-// kubelet's restart dispatched from the set's howSupervisor entry, the failure
-// is named and the other restarts still run.
 func TestRestoreNamesKubeletWhenTheSupervisorCannotBeAsked(t *testing.T) {
 	n := newFakeNode(t)
 	fakeRoster(t, n.fx, nil, errors.New("connection refused"))
@@ -81,10 +70,6 @@ func TestRestoreNamesKubeletWhenTheSupervisorCannotBeAsked(t *testing.T) {
 	}
 }
 
-// The stratum operator polls rather than watching, but it loads the shared
-// requester-signing key and registers its webhook endpoint at start and works
-// under a leader lease, so it is restarted too, but only where the supervisor
-// runs it (control planes).
 func TestRestartOperatorRestartsItWhenTheRosterHasIt(t *testing.T) {
 	fx := &restoreEffects{}
 	restarted := fakeRoster(t, fx, map[string]supervisor.ProcStatus{"operator": {Name: "operator", Running: true}}, nil)
@@ -112,9 +97,6 @@ func TestRestartOperatorReportsALookupFailure(t *testing.T) {
 	}
 }
 
-// TestRestoreNamesTheOperatorWhenItCannotBeRestarted: through Restore, with
-// the operator's restart dispatched from the set's howSupervisor entry, the
-// failure is named and everything else still runs.
 func TestRestoreNamesTheOperatorWhenItCannotBeRestarted(t *testing.T) {
 	n := newFakeNode(t)
 	fakeRoster(t, n.fx, nil, errors.New("connection refused"))
@@ -127,10 +109,6 @@ func TestRestoreNamesTheOperatorWhenItCannotBeRestarted(t *testing.T) {
 	}
 }
 
-// kube-vip runs as a static pod on a control plane with a VIP, and is skipped
-// when its manifest is absent. A failed restart is named and does not stop the
-// rest — the supervisor's watchers go through the roster restarts, the
-// workloads still roll.
 func TestKubeVipIsRestartedFromItsManifestAndNamedWhenItFails(t *testing.T) {
 	n := newFakeNode(t)
 	restarted := fakeRoster(t, n.fx, runningRoster(), nil)
@@ -157,14 +135,6 @@ func TestKubeVipSkippedWithoutAVIP(t *testing.T) {
 	}
 }
 
-// TestRestoredStaticPodsAreEveryStaticPodButEtcdAndTheAPIServer pins the
-// restore's static-pod restart set as a relation to the roster owner: the
-// full candidate roster staticpod.Names renders, so a static pod added to the
-// roster joins the restore's restart set without a second list to forget, and
-// kube-vip stays a candidate even where this node renders none — the restore
-// skips a component with no manifest and says so, it never drops it from the
-// set the account and the guidance are rendered from. etcd and the apiserver
-// are excluded because the restore itself restarts them.
 func TestRestoredStaticPodsAreEveryStaticPodButEtcdAndTheAPIServer(t *testing.T) {
 	var want []string
 	for _, n := range staticpod.Names {
@@ -177,15 +147,6 @@ func TestRestoredStaticPodsAreEveryStaticPodButEtcdAndTheAPIServer(t *testing.T)
 	}
 }
 
-// TestRestartWatchersExecutesFromTheSet: restartWatchers executes the restore's
-// restart set, dispatching each entry by its How — a supervised watcher through
-// restartSupervised by roster name, a static pod through the manifest gate, the
-// workloads through restoreWorkloads — so what it restarts, and in what order,
-// is the set's, never a hand-kept parallel sequence. A supervised unit added to
-// comps.Units, with its command-table entry, is executed with the rest: it
-// needs no restartWatchers edit of its own. The workloads are rolled once, not
-// once per rollout entry; the run consults nothing hand-named outside the set,
-// so the effects value carries no restoreKubelet/restoreOperator stub here.
 func TestRestartWatchersExecutesFromTheSet(t *testing.T) {
 	swap(t, &comps.Units, append(slices.Clone(comps.Units), "synthetic-agent"))
 	commands := maps.Clone(supervisedWatcherCommands)
@@ -206,9 +167,6 @@ func TestRestartWatchersExecutesFromTheSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The set's order, dispatched by How: kubelet first, since the rest are
-	// pods it has to recreate; then the static pods; then the remaining
-	// supervised watchers in roster order; then the workloads, once.
 	want := []string{"supervisor:kubelet"}
 	for _, pod := range restoredStaticPods() {
 		want = append(want, "manifest:"+pod)
@@ -225,12 +183,6 @@ func TestRestartWatchersExecutesFromTheSet(t *testing.T) {
 	}
 }
 
-// TestRestoreAccountsForKubeVipOnANoVipControlPlane pins the restore's honesty
-// contract on the one roster member a node may legitimately never run: a
-// control plane whose node state carries no VIP renders no kube-vip manifest,
-// so the manifest gate skips it — and the restore's own account must still
-// name that skip ("not on this node, skipped") instead of saying nothing while
-// the printed repeat commands tell the operator to restart it.
 func TestRestoreAccountsForKubeVipOnANoVipControlPlane(t *testing.T) {
 	n := newFakeNode(t)
 	fakeRoster(t, n.fx, runningRoster(), nil)

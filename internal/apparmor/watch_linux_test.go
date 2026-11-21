@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// WatchPolicy sends once the file it watches turns readable again: a FIFO
-// stands in for the kernel's revision file, which does the same when the
-// policy changes.
 func TestWatchPolicySendsOnAChange(t *testing.T) {
 	old := revisionPath
 	t.Cleanup(func() { revisionPath = old })

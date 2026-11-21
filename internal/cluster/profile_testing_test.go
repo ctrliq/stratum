@@ -6,10 +6,7 @@ import (
 	"github.com/ctrliq/stratum/internal/profile"
 )
 
-// registerCISForTest registers a cis profile with the properties the engine's
-// own registration declares, for tests that select it without going through
-// NewRootCommand, and puts back the registry it replaced when the test
-// ends.
+// Registers the engine's cis profile for tests that skip NewRootCommand.
 func registerCISForTest(t *testing.T) {
 	t.Helper()
 	registerProfilesForTest(t, profile.Profile{
@@ -21,8 +18,7 @@ func registerCISForTest(t *testing.T) {
 	})
 }
 
-// registerProfilesForTest makes ps the binary's registered profiles for the
-// test and puts back the registry it replaced when the test ends.
+// Makes ps the binary's registered profiles for the test.
 func registerProfilesForTest(t *testing.T, ps ...profile.Profile) {
 	t.Helper()
 	prev := profile.All()

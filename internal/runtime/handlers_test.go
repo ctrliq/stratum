@@ -13,7 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirectRuntimeConfD points the runtime-handler drop-in into a temp dir.
 func redirectRuntimeConfD(t *testing.T) string {
 	t.Helper()
 	old := version.ContainerdRuntimeConfD
@@ -22,7 +21,6 @@ func redirectRuntimeConfD(t *testing.T) string {
 	return version.ContainerdRuntimeConfD
 }
 
-// fakeBinary writes an executable file standing in for a handler's runtime.
 func fakeBinary(t *testing.T, name string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), name)
@@ -78,9 +76,6 @@ func TestRenderHandlersGolden(t *testing.T) {
 	}
 }
 
-// verifyHandlers is what stops a render that drifts off containerd's table
-// path or cgroup driver from reaching disk. Each mutation of a correct render
-// must fail it.
 func TestVerifyHandlersCatchesADriftedRender(t *testing.T) {
 	handlers := map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
 	good := renderHandlers(handlers, "systemd")
@@ -199,8 +194,6 @@ func TestWriteHandlersIsIdempotentAndPrunesOnlyItsOwnFile(t *testing.T) {
 	}
 }
 
-// A restart must not take the node's other pods down for a handler whose
-// binary is missing: the drop-in is written and the gap is reported.
 func TestWriteHandlersWarnsOnAMissingBinary(t *testing.T) {
 	path := redirectRuntimeConfD(t)
 	var out bytes.Buffer
@@ -233,10 +226,7 @@ func TestTheCapturedDefaultImportsConfD(t *testing.T) {
 	}
 }
 
-// stratum's config imports the shared conf.d, then its own directory: the
-// handler drop-in is a config version 4 file a distro containerd importing
-// conf.d would refuse, and the later import wins over a handler nvidia-ctk
-// declared in conf.d.
+// The later import wins over a handler nvidia-ctk declared in conf.d.
 func TestTheRenderedConfigImportsTheHandlersDirAfterConfD(t *testing.T) {
 	got := rewriteContainerdConfig(containerdDefault(t), "SystemdCgroup = true", false)
 	imports, err := configImports(got)
@@ -252,9 +242,6 @@ func TestTheRenderedConfigImportsTheHandlersDirAfterConfD(t *testing.T) {
 	}
 }
 
-// A containerd default without the conf.d import would silently drop the
-// registry mirrors stratum writes there, so the render refuses and writes
-// nothing.
 func TestEnsureConfigRefusesADefaultWithoutTheConfDImport(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket := version.BinDir, version.ContainerdConfig, version.ControlSocket
@@ -283,8 +270,6 @@ func TestEnsureConfigRefusesADefaultWithoutTheConfDImport(t *testing.T) {
 	}
 }
 
-// A config an earlier stratum wrote, which imports only the shared conf.d, is
-// regenerated rather than accepted, so the node picks up its handler drop-in.
 func TestEnsureConfigRegeneratesAConfigWithoutTheHandlersImport(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket, oldLabelled := version.BinDir, version.ContainerdConfig, version.ControlSocket, selinuxLabelled
@@ -331,9 +316,7 @@ func TestEnsureConfigRegeneratesAConfigWithoutTheHandlersImport(t *testing.T) {
 	}
 }
 
-// Every node-config entry point writes the handler drop-in, and a change to it
-// alone is reported as a change, which is what makes an in-place upgrade
-// reload containerd for it.
+// The change report is what makes an in-place upgrade reload containerd for the drop-in.
 func TestNodeConfigEntryPointsWriteTheHandlerDropIn(t *testing.T) {
 	nodeConfigsFixture(t)
 	bin := fakeBinary(t, "fake-runtime")
@@ -383,8 +366,6 @@ func TestNodeConfigEntryPointsWriteTheHandlerDropIn(t *testing.T) {
 	}
 }
 
-// A default the TOML parser cannot read is reported as unparseable, not as a
-// missing import it may well carry.
 func TestEnsureConfigReportsAnUnparseableDefault(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket := version.BinDir, version.ContainerdConfig, version.ControlSocket

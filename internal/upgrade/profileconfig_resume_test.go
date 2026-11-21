@@ -10,10 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A resume writes only what the kept backup can put back. The upgrade marker
-// checks the target version alone, so a resumed run may be a rebuilt binary
-// whose profile declares a config file the earlier run never backed up;
-// writing it would leave a rollback unable to restore it.
+// The marker checks only the target, so a resumed binary may declare files the backup lacks.
 func TestResumeRefusesAConfigFileTheKeptBackupDoesNotCover(t *testing.T) {
 	withCISConfigs(t)
 	const ts = "20261018-000003"
@@ -43,7 +40,6 @@ func TestResumeRefusesAConfigFileTheKeptBackupDoesNotCover(t *testing.T) {
 		t.Errorf("extra-policy.yaml after the refused resume = %q, want the original", b)
 	}
 
-	// The same profile the backup was taken for resumes as before.
 	wrote = false
 	items, err := refreshProfileConfigs(io.Discard, ts, cisProfile())
 	if err != nil || !wrote || len(items) != 1 || !items[0].profile {

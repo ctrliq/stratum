@@ -12,9 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// TestNeedsUpgradeFinishesAnInterruptedNode: the kubelet version
-// alone cannot tell a finished node from one whose Job died after the kubelet
-// swap; the in-progress record can.
+// The kubelet version alone cannot tell finished from interrupted-after-swap.
 func TestNeedsUpgradeFinishesAnInterruptedNode(t *testing.T) {
 	const target = "v1.37.9"
 	for _, c := range []struct {
@@ -39,9 +37,7 @@ func TestNeedsUpgradeFinishesAnInterruptedNode(t *testing.T) {
 	}
 }
 
-// TestPreflightRefusesAnotherInterruptedUpgrade: that node holds the baseline
-// of the interrupted upgrade and would refuse this one; refusing here does it
-// before anything is drained, and says both ways out.
+// Refusing at preflight does it before anything is drained.
 func TestPreflightRefusesAnotherInterruptedUpgrade(t *testing.T) {
 	nodes := cpNodes("v1.37.1", 3)
 	nodes = append(nodes, Node{Name: "w1", Ready: true, Version: "v1.37.5", InProgress: "v1.37.5"})
@@ -58,9 +54,7 @@ func TestPreflightRefusesAnotherInterruptedUpgrade(t *testing.T) {
 	}
 }
 
-// TestUpgradeRecordLifecycle: the record goes on before the Job and comes off
-// in the same patch that stamps the finished version, so no reader sees a
-// stamped node still marked in progress.
+// The stamp and the record's removal are one write, so no reader sees a stamped node in progress.
 func TestUpgradeRecordLifecycle(t *testing.T) {
 	ctx := context.Background()
 	cs := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "w1"}})
@@ -94,11 +88,7 @@ func TestUpgradeRecordLifecycle(t *testing.T) {
 	}
 }
 
-// TestNodesToUpgradeVisitsEveryNode: the plan the cluster run acts on. An
-// interrupted node is upgraded; a finished one, and one merely
-// carrying a stale record of an older upgrade, is visited too, because it may
-// run another stratum build of the same Kubernetes release and only the node
-// can tell. What each one gets is NeedsBuildCheck's call.
+// A node at target may still run another stratum build of the release; NeedsBuildCheck decides.
 func TestNodesToUpgradeVisitsEveryNode(t *testing.T) {
 	const target = "v1.37.9"
 	ordered := []Node{
@@ -133,11 +123,7 @@ func TestNodesToUpgradeVisitsEveryNode(t *testing.T) {
 	}
 }
 
-// TestNodeFromAPI_ControlPlaneOnlyWhenTheLabelIsTrue: a node joins the serial
-// control-plane batch — with its quorum gates — only when the Stratum label is
-// exactly "true". Any other value, and the kubeadm role label alone, is a
-// worker for planning; counting those would put a mislabeled or unlabeled node
-// into the batch that must keep etcd quorum.
+// Counting a mislabeled node would put it in the batch that must keep etcd quorum.
 func TestNodeFromAPI_ControlPlaneOnlyWhenTheLabelIsTrue(t *testing.T) {
 	const kubeadmCP = "node-role.kubernetes.io/control-plane"
 	for _, c := range []struct {
@@ -158,13 +144,10 @@ func TestNodeFromAPI_ControlPlaneOnlyWhenTheLabelIsTrue(t *testing.T) {
 	}
 }
 
-// TestNodeFromAPIReadsTheRecord: planning sees the in-progress record the
-// previous run left on the Node.
 func TestNodeFromAPIReadsTheRecord(t *testing.T) {
 	n := nodeFromAPI(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "w1", Annotations: map[string]string{k8sutil.UpgradeInProgressAnnotation: "v1.37.9"}},
-		// What an SKE kubelet really reports. Compared raw with a bare target,
-		// no node was ever seen at target, so this record never counted.
+		// What an SKE kubelet really reports; compared raw it never matched a bare target.
 		Status: corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{KubeletVersion: "v1.37.9-stratum"}},
 	})
 	if n.Interrupted() != "v1.37.9" {

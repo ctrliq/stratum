@@ -26,44 +26,22 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// rejoinPKIPreflight is indirected so a test can assert RejoinEtcd actually runs
-// it, and runs it BEFORE anything destructive. Asserting EnsureEtcdTrustBundle's
-// behaviour directly proves nothing about this call site: delete the call and
-// such a test stays green while the failure it documents — etcd started against
-// a --trusted-ca-file that does not exist, after the data dir is already wiped
-// and the member re-added — comes back in full.
+// indirected so tests can pin that it runs before anything destructive
 var rejoinPKIPreflight = pki.EnsureEtcdTrustBundle
 
-// rejoinSupervisorRunning is indirected so the ordering test can run on a
-// machine that is not a control plane. Without it that test skips
-// everywhere, including CI, which is indistinguishable from passing.
+// indirected so ordering tests run on a machine that is not a control plane
 var rejoinSupervisorRunning = comps.SupervisorRunning
 
 var rejoinAcquireDataLock = func() (func(), error) { return etcddata.Lock(version.EtcdDataDir) }
 var rejoinLoadState = nodestate.LoadState
 
-// rejoinSeedMembers is indirected for the same reason, and carries the same
-// ordering obligation: it is the probe that reaches the seed before anything
-// is wiped, so one that runs after the wipe has nothing left to protect. It
-// also returns what rejoin decides on: whether this node is already a member
-// of the restored cluster.
+// indirected so tests can pin that it runs before the wipe
 var rejoinSeedMembers = memberList
 
 var rejoinHostname = host.Hostname
 var rejoinNodeIP = nodestate.NodeIP
 
-// rejoinSeedIsThisNode reports whether the etcd that answers at the seed's address is
-// this node's own etcd member: the seed is this node, however it was named. It is
-// read only, and it asks the seed alone. This node's own etcd is never read: a
-// survivor that restarted without quorum never becomes ready and answers nothing,
-// and that is a case --force has to serve. The answering member is identified by
-// its peer URLs, which are this node's addresses only if it is this node. A
-// different member of the same cluster is not a refusal: that is the documented
-// repair of a diverged member against its healthy majority, and the retry of a
-// rejoin that joined but failed to start the apiserver, and in both the node's
-// data is what --force is there to discard. Only the seed being this node would
-// wipe the data the cluster runs on. A seed whose answering member cannot be
-// identified is an error, and the caller refuses on an error.
+// asks the seed alone: a survivor without quorum answers nothing, so its own etcd is not read
 var rejoinSeedIsThisNode = func(cp1IP string, own []string) (bool, error) {
 	cli, err := etcdClient(cp1IP)
 	if err != nil {
@@ -79,9 +57,6 @@ var rejoinSeedIsThisNode = func(cp1IP string, own []string) (bool, error) {
 	return respondingMemberIsOwn(ml, cp1IP, own)
 }
 
-// respondingMemberIsOwn reports whether the member that produced ml, the one named
-// by its header, has a peer URL on one of this node's own addresses. A member with
-// no peer URL, or one whose host is not an IP address, is an error.
 func respondingMemberIsOwn(ml *clientv3.MemberListResponse, cp1IP string, own []string) (bool, error) {
 	if ml == nil || ml.Header == nil {
 		return false, fmt.Errorf("the etcd at %s sent no member list header", cp1IP)
@@ -90,10 +65,7 @@ func respondingMemberIsOwn(ml *clientv3.MemberListResponse, cp1IP string, own []
 		if m.ID != ml.Header.MemberId {
 			continue
 		}
-		// A member that answers has started, and a started member advertises peer
-		// URLs, each a literal IP as Stratum renders them. One that is missing, or
-		// is not an IP, could be this node under a name ownAddress cannot match, so
-		// it must not fall through as "not own" to the wipe.
+		// a non-IP peer URL must not fall through as not own: it could be this node
 		for _, pu := range m.PeerURLs {
 			u, err := url.Parse(pu)
 			if err != nil || net.ParseIP(u.Hostname()) == nil {
@@ -111,8 +83,7 @@ func respondingMemberIsOwn(ml *clientv3.MemberListResponse, cp1IP string, own []
 	return false, fmt.Errorf("the member that answered at %s (%x) is not in its own member list", cp1IP, ml.Header.MemberId)
 }
 
-// ownAddress reports whether addr is any of this node's recorded addresses. An entry
-// may be a comma-joined v4,v6 pair, as the kubelet node IP is on a dual-stack node.
+// an entry may be a comma-joined v4,v6 pair, as the kubelet node IP is on a dual-stack node
 func ownAddress(addr string, own ...string) bool {
 	for _, o := range own {
 		for _, ip := range strings.Split(o, ",") {
@@ -124,13 +95,6 @@ func ownAddress(addr string, own ...string) bool {
 	return false
 }
 
-// guardRejoinWipe runs before rejoin discards etcd data this node may still be
-// serving from. Without force it needs proof that this node's own cluster has
-// lost quorum: a seed that bootstrapped empty beside survivors that still hold
-// one would otherwise overwrite them with a cluster holding nothing. With force
-// it skips that proof, so the one thing it still refuses is the seed answering
-// as this node's own member, reached by a name its recorded addresses do not
-// match: that wipe would destroy the data the cluster is now running on.
 func guardRejoinWipe(cp1IP string, own []string, force bool) error {
 	if force {
 		self, err := rejoinSeedIsThisNode(cp1IP, own)
@@ -154,11 +118,6 @@ func guardRejoinWipe(cp1IP string, own []string, force bool) error {
 	return nil
 }
 
-// rejoinHoldsMemberData reports whether this node's etcd data dir holds a
-// member's data: a member directory with anything in it. A rejoin that has
-// already wiped the dir and has not started etcd since leaves none, and then a
-// replacement has nothing for guardRejoinWipe to protect. Anything it cannot
-// read counts as data.
 var rejoinHoldsMemberData = func() (bool, error) {
 	entries, err := os.ReadDir(filepath.Join(version.EtcdDataDir, "member"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -170,8 +129,7 @@ var rejoinHoldsMemberData = func() (bool, error) {
 	return len(entries) > 0, nil
 }
 
-// The etcd operations after the preflights, indirected so the re-run paths
-// below can be driven without a cluster.
+// indirected so tests can drive the re-run paths without a cluster
 var (
 	rejoinLocalStatus   = memberStatusAt
 	rejoinMemberHealthy = func(ip string) (localEtcdStatus, bool) {
@@ -184,17 +142,9 @@ var (
 	rejoinAddLearner   = memberAddLearner
 	rejoinRemoveMember = memberRemoveID
 	rejoinPromote      = memberPromote
-	// rejoinHeldLock is the release capability of the data lock the running
-	// rejoin holds (RejoinEtcd): the save writes through the mutation owner's
-	// under-lock variant with it, since reacquiring would refuse against the
-	// rejoin's own descriptor. A rejoin runs alone — it takes the node
-	// maintenance lock and the data lock before touching anything — so one
-	// capability at a time is enough, and a nil one makes the owner refuse
-	// rather than write unlocked.
+	// the data lock's release; reacquiring would refuse against the rejoin's own descriptor
 	rejoinHeldLock func()
-	// rejoinSaveState replaces the whole record with the state the rejoin
-	// patched: it read that record under the same data lock it still holds,
-	// so nothing can have changed it meanwhile.
+	// the record was read under the data lock still held, so nothing can have changed it
 	rejoinSaveState = func(st *nodestate.NodeState) error {
 		return nodestate.MutateHeld(rejoinHeldLock, func(cur *nodestate.NodeState) error { *cur = *st; return nil })
 	}
@@ -206,7 +156,7 @@ var (
 	rejoinSleep       = time.Sleep
 )
 
-// etcdDataMark fingerprints this node's etcd member dir: its only progress before it is ready.
+// the member dir's only observable progress before etcd answers
 type etcdDataMark struct {
 	bytes  int64
 	newest time.Time
@@ -231,15 +181,7 @@ func etcdDataMarkNow() etcdDataMark {
 	return m
 }
 
-// How long rejoin waits for this node's etcd. The wait is
-// on progress rather than a clock: it gives up only when this member has shown
-// no progress for rejoinStallTimeout -- before it answers, no change to its
-// data dir; after, no increase in its applied raft index. A member catching up
-// on a large restored keyspace keeps it waiting for as long as it keeps moving,
-// up to rejoinMaxWait, which only exists so that something that never
-// converges still ends. A flat clock budget gives up on a slow but
-// converging member (a small VM under SELinux), and the premature error
-// sends the operator into the re-run that can brick the cluster.
+// the wait follows progress, not a clock: a flat budget fails a slow converging member
 var (
 	rejoinStallTimeout = 5 * time.Minute
 	rejoinMaxWait      = 30 * time.Minute
@@ -248,10 +190,7 @@ var (
 	rejoinPromoteEvery = 10 * time.Second
 )
 
-// rejoinWipeLocalState is the first destructive step. It exists as a
-// variable so a test can record whether the preflights above ran before
-// it -- the ordering is the property, and neither preflight is worth
-// anything if it can drift below this line.
+// a var so tests can pin that the preflights run before the wipe
 var rejoinWipeLocalState = func(w io.Writer) error {
 	k8sutil.Step(w, "rejoin: stop local apiserver + etcd")
 	for _, name := range []string{"kube-apiserver", "etcd"} {
@@ -270,45 +209,15 @@ var rejoinWipeLocalState = func(w io.Writer) error {
 	return os.MkdirAll(version.EtcdDataDir, 0o700)
 }
 
-// rejoinAction is what a run does with what it finds. Rejoin has to
-// be safe to re-run after a run that stopped anywhere -- a timeout, a Ctrl-C,
-// a reboot -- so it decides from the seed's membership and this node's own
-// etcd rather than assuming it starts from nothing.
+// decides from observed state, so a run stopped anywhere is safe to re-run
 type rejoinAction int
 
 const (
-	// rejoinFresh: this node is not a member. Wipe the stale data, add a learner.
 	rejoinFresh rejoinAction = iota
-	// rejoinReplace: this node has a member record that is not serving and is
-	// safe to remove -- a learner, which never votes, or a voter the rest of
-	// the cluster has a quorum without. Wipe, remove it, add a learner.
 	rejoinReplace
-	// rejoinResume: keep this node's data and member, start etcd, wait (and
-	// promote a learner). Either the member is already serving as itself, or
-	// it is a voter the cluster needs for quorum, which must never be wiped or
-	// removed: wiping a vote the cluster is waiting on is how the restore was
-	// bricked.
 	rejoinResume
 )
 
-// planRejoin decides what to do, from facts and nothing else.
-//
-//   - not a member: fresh.
-//   - this node's etcd answers as that member of that cluster: resume. It is
-//     the first run's member, already ready, or done.
-//   - a learner whose etcd is running but answers nothing yet: resume.
-//   - any other learner that is not serving: replace. A learner has no vote,
-//     so removing it can never cost quorum.
-//   - a voter that is not serving: replace only if the OTHER voters that are
-//     healthy are a quorum of the current voter set, since the removal has to
-//     be committed by them; otherwise resume. The second is the shape a
-//     voting add that timed out leaves -- a two-voter cluster whose second
-//     voter is this node -- and the only way out of it is this member
-//     starting.
-//
-// A membership read without quorum authorises only resume. It may be stale,
-// and every other action removes a member or wipes a data dir on the strength
-// of it -- in a cluster that by definition cannot commit the removal.
 func planRejoin(seed etcdMembership, self *etcdMember, local localEtcdStatus, localErr error, localRunning bool,
 	healthy func(ip string) (localEtcdStatus, bool)) (rejoinAction, string) {
 	if self == nil {
@@ -342,10 +251,7 @@ func planRejoin(seed etcdMembership, self *etcdMember, local localEtcdStatus, lo
 	return rejoinResume, "it is a voter the cluster needs for quorum"
 }
 
-// memberHealthy is "this member is up AND is this member of this cluster".
-// Reachability alone is not enough: during a restore an endpoint can still be
-// serving the pre-restore cluster, and counting it as a healthy voter is the
-// direction that wipes a vote the restored cluster is waiting on.
+// reachability alone lies during a restore: an endpoint can still serve the pre-restore cluster
 func memberHealthy(m etcdMember, clusterID uint64, healthy func(ip string) (localEtcdStatus, bool)) bool {
 	for _, cu := range m.ClientURLs {
 		u, err := url.Parse(cu)
@@ -358,10 +264,7 @@ func memberHealthy(m etcdMember, clusterID uint64, healthy func(ip string) (loca
 	return false
 }
 
-// sameInitialCluster reports whether the recorded initial-cluster already
-// describes members, so a resume does not rewrite the state -- and with it the
-// etcd manifest, which kubelet answers by restarting a member that may be
-// halfway through starting.
+// rewriting the state re-renders the etcd manifest, and kubelet restarts the member for it
 func sameInitialCluster(recorded string, members []etcdMember, selfPeerURL, selfName string) bool {
 	byURL := map[string]string{}
 	for _, kv := range strings.Split(recorded, ",") {
@@ -384,10 +287,7 @@ func sameInitialCluster(recorded string, members []etcdMember, selfPeerURL, self
 	return n == len(byURL)
 }
 
-// rejoinStillLearner re-reads this node's role from the seed so the advice
-// describes the member a re-run will find, not what this node was when the run
-// started. A promote whose answer was lost leaves a voter behind while the
-// caller still holds learner=true. A failed read keeps that value.
+// a promote whose reply was lost can leave a voter behind; re-read rather than trusting learner
 func rejoinStillLearner(cp1IP, selfPeerURL string, learner bool) bool {
 	m, err := rejoinSeedMembers(cp1IP)
 	if err != nil {
@@ -404,10 +304,6 @@ func apiServerURL(ip string) string {
 	return "https://" + net.JoinHostPort(ip, strconv.Itoa(version.APIServerPort))
 }
 
-// rejoinRerun is the re-run advice, worded for the state a failed run leaves.
-// The old text promised the re-run would "clear the stale member
-// and re-add", which against a voter the cluster needed was the step that
-// bricked it. Re-running is now safe in every state, and the text says why.
 func rejoinRerun(cp1IP string, learner bool) string {
 	cmd := fmt.Sprintf("`stratum snapshot rejoin --server %s --yes`", apiServerURL(cp1IP))
 	if learner {
@@ -422,33 +318,7 @@ func rejoinRerun(cp1IP string, learner bool) string {
 		"written since the last restore, then rejoin the other control planes"
 }
 
-// RejoinEtcd re-adds THIS control plane's etcd to a freshly-restored cluster.
-// After `stratum snapshot restore` resets the seed node (cp1) to a NEW single-member
-// cluster holding the restored data, every OTHER control plane runs this: it stops
-// the local CP, wipes the stale (old-cluster) etcd data dir, adds this member to
-// the seed's etcd as a learner, rewrites the etcd manifest as a joining member
-// (state=existing), restarts, and promotes the learner once it has caught up.
-// A promote a join left pending (EtcdPromotePending) stays recorded until the
-// rejoin's own promote has landed, so a rejoin that stops with the member
-// still a learner leaves the controller's start to promote it.
-// The node's PKI + kubeconfigs are already in place — this is a rejoin, not a
-// fresh join. cp1IP is the seed's IP (from --server).
-//
-// A re-run resumes rather than starting over: see planRejoin.
-// force lifts the refusal to wipe an etcd whose cluster still has quorum; a
-// path that does not wipe never needs it. The writer leads, after ctx: the
-// periodic waiting report goes through it, so the CLI passes os.Stdout and
-// the MCP handler the buffer its result is built from.
-//
-// ctx bounds the wait for this node's etcd, which can run to rejoinMaxWait and
-// holds the etcd data lock for all of it -- a non-blocking flock, so every
-// other stratum command that wants it fails outright meanwhile.
-//
-// RejoinEtcd takes the node maintenance lock (internal/nodelock) before the
-// data lock and holds both for the whole run: it stops this node's control
-// plane and wipes its etcd data dir, which no other maintenance operation --
-// an upgrade, a rollback, a CA rotation -- must race. While one holds the
-// lock, the rejoin refuses, naming the holder, before anything is touched.
+// Re-adds this control plane's etcd member to the restored cluster; safe to re-run.
 func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) error {
 	hostname, err := rejoinHostname()
 	if err != nil {
@@ -458,13 +328,9 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 	if err != nil {
 		return err
 	}
-	// Match the same canonical peer URL used by join and etcd membership.
+	// the canonical peer URL join and etcd membership use
 	newPeer := nodestate.EtcdPeerURL(nodeIP)
-	// The node maintenance lock first, then the data lock: the data lock
-	// fences only other writers of the etcd data dir, and an upgrade, rollback
-	// or CA rotation takes none, so a rejoin that took it alone would run
-	// beside them. While another maintenance operation holds the lock, the
-	// rejoin refuses before anything is touched.
+	// the data lock fences only data-dir writers, so the node maintenance lock comes first
 	releaseNode, err := nodelock.Acquire("rejoin")
 	if err != nil {
 		return err
@@ -475,24 +341,14 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 		return err
 	}
 	defer release()
-	// The state save writes under this run's held lock (rejoinHeldLock); it
-	// is cleared again however the rejoin ends.
 	rejoinHeldLock = release
 	defer func() { rejoinHeldLock = nil }()
 
-	// First, with the lock held: is this node a control plane at all? Rejoin
-	// wipes the local etcd data dir, adds a member to the seed, and then
-	// starts etcd from the patched state. On a worker, or on an empty node.yaml
-	// (Role ""), that path would pass every preflight below and leave a voting
-	// etcd member on a node still recorded as a worker. Checked
-	// before the supervisor, PKI and seed preflights, so nothing about a node
-	// that cannot be a rejoin target is looked at, let alone changed.
 	st, err := rejoinLoadState()
 	if err != nil {
 		return fmt.Errorf("rejoin: %w (this node has no stratum state — was it ever a controller?)", err)
 	}
-	// The same for a profile this binary does not register: the renderers
-	// rejoinStartPod reaches would stop on it only after the wipe and the add.
+	// renderers rejoinStartPod reaches would fail on it only after the wipe and the add
 	if err := st.RequireRegisteredProfile("snapshot rejoin"); err != nil {
 		return err
 	}
@@ -501,11 +357,7 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 			"(the node that ran `stratum snapshot restore`): etcd does not listen on the VIP. Re-run with "+
 			"--server https://<seed-node-ip>:6443. Nothing was changed", cp1IP)
 	}
-	// The same for this node's own address. After a restore the seed prints
-	// `rejoin --server https://<this-seed-ip>:6443 --yes --force` for the OTHER
-	// control planes, and pasted on the seed it would pass every check below,
-	// reach its own etcd, skip the quorum check with --force, and wipe the
-	// restored data the cluster is now running on.
+	// pasted on the seed, --server <own address> would wipe the restored data under --force
 	if ownAddress(cp1IP, nodeIP, st.NodeIP, st.KubeletNodeIP) {
 		return fmt.Errorf("rejoin: %s is this node's own address: this node is the seed; run rejoin on the OTHER "+
 			"control planes, with --server pointing at this node. Nothing was changed", cp1IP)
@@ -519,18 +371,11 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 	if !rejoinSupervisorRunning() {
 		return fmt.Errorf("rejoin: no stratum node agent is running on this node — start `stratum up` first (its kubelet applies the rejoined membership)")
 	}
-	// BEFORE anything destructive: etcd's argv points --trusted-ca-file at the
-	// etcd trust bundle, and a node that has never had one would come
-	// back up against a file that does not exist — after its data dir was already
-	// wiped and it was re-added as a member.
+	// etcd's argv points --trusted-ca-file at the bundle; a wiped node must not start without it
 	if err := rejoinPKIPreflight(); err != nil {
 		return fmt.Errorf("rejoin: etcd trust material: %w", err)
 	}
-	// Also before anything destructive: reach the seed. The wipe below
-	// destroys this node's etcd data, so without this a wrong or unreachable
-	// --server destroys it and only then discovers there is nowhere to rejoin.
-	// MemberList is read-only and uses the same client certs as every change
-	// below, so it fails here for every reason those would.
+	// the wipe destroys this node's data, so an unreachable seed must fail before it
 	k8sutil.Step(w, "rejoin: reach the seed before touching local state")
 	seed, err := rejoinSeedMembers(cp1IP)
 	if err != nil {
@@ -570,7 +415,7 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 		}
 		if action == rejoinReplace {
 			k8sutil.Step(w, fmt.Sprintf("rejoin: this node's etcd member %x is not serving and is safe to remove (%s); replacing it", self.ID, why))
-			// Before the wipe: the refusable step runs while the data is intact.
+			// the refusable step runs while the data is intact, before the wipe
 			if err := rejoinRemoveMember(cp1IP, self.ID); err != nil {
 				return fmt.Errorf("rejoin: remove this node's stale etcd member %x via %s: %w — this node's etcd "+
 					"member could not be removed, so its data was left alone; re-running rejoin is safe", self.ID, cp1IP, err)
@@ -596,8 +441,7 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 			id, map[bool]string{true: "learner", false: "voter"}[learner], why))
 	}
 
-	// A serving member reads its membership from its own WAL, so rewriting a
-	// stale recorded list only restarts it.
+	// a serving member reads its membership from its own WAL; rewriting would only restart it
 	rewriteState := st.EtcdName != etcdName || st.EtcdState != "existing"
 	if !servingAsSelf {
 		rewriteState = rewriteState || action != rejoinResume ||
@@ -612,8 +456,7 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 			return err
 		}
 	}
-	// Start re-renders etcd's manifest from the patched state; an unchanged
-	// state renders an unchanged manifest, so a resumed member is not restarted.
+	// start re-renders the manifest from the state; an unchanged state is not a restart
 	if err := rejoinStartPod("etcd"); err != nil {
 		return err
 	}
@@ -634,10 +477,6 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 	return nil
 }
 
-// waitRejoined waits until this node's etcd serves as member id of the
-// restored cluster and knows a leader, promoting it first if it is a learner.
-// See rejoinStallTimeout for why the budget follows progress. A learner that
-// stalls has its etcd stopped.
 func waitRejoined(ctx context.Context, w io.Writer, cp1IP, nodeIP string, clusterID, id uint64, learner bool) error {
 	start := rejoinNow()
 	lastProgress, lastReport := start, start
@@ -717,9 +556,7 @@ func waitRejoined(ctx context.Context, w io.Writer, cp1IP, nodeIP string, cluste
 	}
 }
 
-// notConfirmedLearner is why the seed does not confirm that member id is still
-// a learner, or "" when it does. A promote whose reply was lost may have
-// committed, and stopping the member it made a voter can cost quorum.
+// a promote whose reply was lost may have committed; stopping the voter it made can cost quorum
 func notConfirmedLearner(cp1IP string, id uint64) string {
 	m, err := rejoinSeedMembers(cp1IP)
 	switch {
@@ -739,7 +576,6 @@ func notConfirmedLearner(cp1IP string, id uint64) string {
 	return "the seed does not list it"
 }
 
-// rejoinWaitState is what the wait is still waiting on.
 func rejoinWaitState(serving bool, s localEtcdStatus, err, promoteErr error) string {
 	switch {
 	case !serving:

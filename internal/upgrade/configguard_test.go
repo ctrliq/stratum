@@ -18,17 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestUpgradeRefusesAControlPlaneThatWouldRestartOnAMissingConfig: a control
-// plane whose unit restarts it with a --config that no longer exists is
-// refused before anything is changed, in every mode — with the node state's
-// record empty, as a build from before the record or a start whose best-effort
-// save failed leaves it. An upgrade that went ahead would hand over into
-// `up --config <missing>`, refused by the new build on every restart,
-// leaving the node down with nothing for rollback to stand on.
-//
-// A marker from an upgrade that changed nothing is seeded because a real
-// upgrade removes it before it stages anything: the one write a guard placed
-// too late would make with these fixtures, which carry no payload.
+// The handover would restart onto the missing config, leaving the node down with no rollback.
 func TestUpgradeRefusesAControlPlaneThatWouldRestartOnAMissingConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -73,12 +63,7 @@ func TestUpgradeRefusesAControlPlaneThatWouldRestartOnAMissingConfig(t *testing.
 	}
 }
 
-// TestUpgradeRefusalAfterAnInterruptedUpgradeSaysSo: a run over an
-// interrupted upgrade is refused the same way, but "nothing was changed" would
-// be untrue — the interrupted run already changed the node — and what to do
-// next depends on whether that upgrade was to this target: only then does
-// upgrading again finish it; another target's is finished with its own binary
-// or rolled back (refuseOtherInterruptedUpgrade).
+// The refusal must not say the node is untouched: the interrupted run already changed it.
 func TestUpgradeRefusalAfterAnInterruptedUpgradeSaysSo(t *testing.T) {
 	for _, tc := range []struct {
 		name, target, want, not string
@@ -114,10 +99,7 @@ func TestUpgradeRefusalAfterAnInterruptedUpgradeSaysSo(t *testing.T) {
 	}
 }
 
-// TestRestartConfigMissing: the unit's and the running supervisor's --config
-// both decide, because the handover restarts with one and then the other; the
-// node state's record is used only when neither can be read, and a stale
-// record never outvotes them.
+// The unit and the running supervisor both decide; a stale recorded path never outvotes them.
 func TestRestartConfigMissing(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "config.yaml")
@@ -159,19 +141,14 @@ func TestRestartConfigMissing(t *testing.T) {
 		{"neither readable, recorded file missing", "controller", missing, noUnit, noSup, "the node state"},
 		{"no unit or supervisor, recorded file present", "controller", present, noUnit, noSup, ""},
 		{"neither readable, nothing recorded", "controller", "", noUnit, noSup, ""},
-		// A unit that exists but cannot be read is refused, never skipped: a
-		// supervisor that predates re-exec is restarted through systemd onto
-		// that unchecked command — here a drop-in naming a missing file while
-		// the running supervisor's own file exists.
+		// An unreadable unit is refused, never skipped: systemd would restart onto the unchecked command.
 		{"unreadable unit, supervisor runs a present file", "controller", present, unreadable, sup("/", "--config", present), "cannot tell which --config"},
 		{"unreadable unit, supervisor runs a missing file", "controller", present, unreadable, sup("/", "--config", missing), "cannot tell which --config"},
 		{"unreadable unit, no supervisor", "controller", present, unreadable, noSup, "drop-in overrides the unit's ExecStart="},
-		// host.UnitArgv reports a masked unit as fs.ErrNotExist: systemd never
-		// starts it, so nothing restarts the node through it.
+		// host.UnitArgv reports a masked unit as fs.ErrNotExist: systemd never starts it.
 		{"masked unit, supervisor runs a present file", "controller", missing, masked, sup("/", "--config", present), ""},
 		{"worker", "worker", missing, unit("--config", missing), sup("/", "--config", missing), ""},
-		// A file that is there but that the upgraded build refuses to load is
-		// refused like a missing one, from whichever source names it.
+		// A present file the upgraded build refuses to load counts as missing.
 		{"unit names a file the upgraded build refuses", "controller", "", unit("--config", refused), noSup, "the unit's ExecStart"},
 		{"supervisor runs a file the upgraded build refuses", "controller", "", unit("--config", present), sup("/", "--config", refused), "the running supervisor"},
 		{"neither readable, recorded file refused", "controller", refused, noUnit, noSup, "the node state"},
@@ -192,12 +169,7 @@ func TestRestartConfigMissing(t *testing.T) {
 	}
 }
 
-// TestRestartConfigMissingLoadsTheDefaultConfig: the default path is exempt
-// only from the missing-file refusal. A control plane restarted with no
-// --config, an empty one, or the default spelled out runs on the default
-// file, so the upgraded build's load of it is checked too, and a refusal
-// names the path. TestMain keeps the real load off this host's own default
-// config, so this swaps in one that refuses it.
+// TestMain keeps the real load off this host's default config, so this swaps in one that refuses.
 func TestRestartConfigMissingLoadsTheDefaultConfig(t *testing.T) {
 	unit := func(args ...string) func() ([]string, error) {
 		return func() ([]string, error) { return append([]string{stratumInstallPath, "up"}, args...), nil }
@@ -236,13 +208,7 @@ func TestRestartConfigMissingLoadsTheDefaultConfig(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefusesAControlPlaneWhoseConfigTheUpgradedBuildRefuses: a
-// control plane whose config the earlier build ran on but this build refuses
-// at load — here a negative spec.snapshots.retain, which earlier builds
-// accepted — is refused before anything is changed, as a missing config is.
-// Without the check the handover restarted `stratum up` on a file the new
-// build refuses on every restart, leaving the node down with nothing for
-// rollback to stand on.
+// The handover would restart onto a config the new build refuses at load, as a missing one.
 func TestUpgradeRefusesAControlPlaneWhoseConfigTheUpgradedBuildRefuses(t *testing.T) {
 	resumeFixture(t)
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
@@ -273,9 +239,7 @@ func TestUpgradeRefusesAControlPlaneWhoseConfigTheUpgradedBuildRefuses(t *testin
 	}
 }
 
-// TestRestartConfigMissingResolvesARelativeUnitPathFromRoot: systemd starts
-// the service in /, so a relative --config an older build wrote names a file
-// under /, not under the upgrade's own working directory.
+// systemd starts the service in /, so a relative --config names a file under /.
 func TestRestartConfigMissingResolvesARelativeUnitPathFromRoot(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "config.yaml"), "", 0o600)
@@ -289,8 +253,7 @@ func TestRestartConfigMissingResolvesARelativeUnitPathFromRoot(t *testing.T) {
 	}
 }
 
-// TestRunningSupervisorArgvReadsProc points the supervisor lookup at this test
-// process, whose argv and working directory are known.
+// Points the supervisor lookup at this test process, whose argv and working directory are known.
 func TestRunningSupervisorArgvReadsProc(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("reads /proc")

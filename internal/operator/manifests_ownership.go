@@ -9,10 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/addons"
 )
 
-// recordBundledOwnership persists trusted intent before applying configurable
-// bundles. A crash or a later failed document must not orphan their resources.
-// Client-writable labels carry no ownership authority: only staged manifests
-// and the administrator-protected inventory can grant deletion permission.
+// persist trusted intent before applying: a crash must not orphan the bundle's resources.
 func (d *manifestDeployer) recordBundledOwnership(ctx context.Context, stack string, ref objRef) error {
 	if stack != addons.DashboardStack && stack != "local-path" && stack != addons.RuntimeClassStack {
 		return nil
@@ -27,8 +24,7 @@ func (d *manifestDeployer) recordBundledOwnership(ctx context.Context, stack str
 	}
 	current := map[string][]objRef{stack: {ref}}
 	if err := writeInventory(ctx, d.cs, func(inv pruneInventory) pruneInventory {
-		// Contributing this node can close migration. Preserve its complete
-		// legacy history before doing so, including failed-delete retries.
+		// preserve the legacy history before contributing, or migration closes on incomplete evidence.
 		inv.addNode(d.node, legacy)
 		inv.addNode(d.node, current)
 		d.updateLooseOwnership(&inv, current, nil)

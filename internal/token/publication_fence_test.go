@@ -13,9 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/maintlease"
 )
 
-// A stalled read can complete after a successor takes the lease and publishes
-// new trust. Returning its current resourceVersion makes the following stale
-// update valid, so the lease must be checked after the read as well.
+// A stalled read can return the successor's version, making a stale update valid.
 type leaseLostDuringConfigMapRead struct {
 	*fakeConfigMaps
 	loseAt    int

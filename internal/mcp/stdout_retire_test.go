@@ -16,30 +16,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Pins on the stdout rules. On the stdio transport os.Stdout is the
-// JSON-RPC stream, so no path in this package may redirect it, and every
-// operation a tool calls reports its progress through the io.Writer it is
-// handed instead of printing to stdout. The handlers and the default wiring
-// pass run()'s buffer straight through, because every operation takes its
-// io.Writer.
+// On the stdio transport os.Stdout is the JSON-RPC stream: nothing here may redirect it.
 
-// TestNoMCPPathRedirectsStdout pins the rule that nothing
-// under internal/mcp redirects os.Stdout or calls the guard and its
-// capture bridges. Once the operations take a writer there is nothing left
-// to wrap, so no handler may add a redirect or a capture.
-//
-// This is a pin on the source, not on behaviour, because for one of the
-// wrapped paths — registry_apply — there is nothing a behavioural test can
-// observe: registry.Apply prints nothing, so a redirect around it changes no
-// output, no stream and no result.
+// A source pin: registry_apply has no behavior a redirect could change for a test to observe.
 func TestNoMCPPathRedirectsStdout(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read this package's directory: %v", err)
 	}
-	// The banned surface: the swap itself and the guard's three bridges.
-	// Comment lines are skipped, so prose that still names the guard
-	// does not trip the pin; only code does.
+	// Comment lines are skipped, so only code trips the pin.
 	banned := []string{"os.Stdout =", "guardStdout(", "discardStdout(", "captureRun(", "captureWarns("}
 
 	var hits []string
@@ -72,26 +57,9 @@ func TestNoMCPPathRedirectsStdout(t *testing.T) {
 	}
 }
 
-// The three pins below share one reading of captureRealStdout, spelled out
-// once here. The helper installs a pipe as os.Stdout for the length of the
-// call, so the operation's own os.Stdout observation must equal the file the
-// capture installed — comparing against os.Stdout read after the call can
-// never hold, because the capture has restored the real stream by then. What
-// the identity distinguishes is who owned a swap: with no redirect the
-// operation observes the capture's pipe, while a redirect underneath it (the
-// guardStdout shape) leaves the operation observing the redirector's
-// own pipe, and the canary fmt.Println is captured and forwarded to stderr
-// instead of reaching the captured stream.
+// The operation must observe the pipe captureRealStdout installed, not os.Stdout read after it.
 
-// TestDestructiveOperation_RunsOnTheWriterRunHandsIt pins the CA
-// rotation's convention: the handler's operation receives the buffer writer
-// run() hands it (io.Writer FIRST, the convention every destructiveDeps
-// field follows), writes its progress through it, and runs with nothing
-// redirecting os.Stdout under it — a canary fmt.Println from inside the
-// operation reaches the stdout stream, because no guard captures and
-// forwards it.
-//
-// Fails if anything reintroduces a redirect around the operations.
+// TestDestructiveOperation_RunsOnTheWriterRunHandsIt pins the io.Writer-first convention.
 func TestDestructiveOperation_RunsOnTheWriterRunHandsIt(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -108,9 +76,7 @@ func TestDestructiveOperation_RunsOnTheWriterRunHandsIt(t *testing.T) {
 				return nil
 			}
 			fmt.Fprint(w, progressOut)
-			// A canary that bypasses the writer: a stdout redirect around
-			// the operation would capture it and forward it to stderr, and
-			// the captured stream would never see it.
+			// A canary: a redirect around the operation would forward it to stderr instead.
 			fmt.Println("CANARY: the CA rotation prints on the process's real stdout")
 			return nil
 		}
@@ -140,13 +106,7 @@ func TestDestructiveOperation_RunsOnTheWriterRunHandsIt(t *testing.T) {
 	}
 }
 
-// TestSnapshotSave_RunsOnTheWriterItIsHanded pins the write-tier save's half
-// of the convention: snapshot_save passes its save effect a writer and files
-// what the effect wrote through it into the result's Progress, instead of
-// wrapping the effect in a stdout redirect and searching the captured text.
-//
-// Fails if anything reintroduces a redirect around the save; the
-// identity and canary assertions read exactly as the CA rotation pin's do.
+// TestSnapshotSave_RunsOnTheWriterItIsHanded pins the save's io.Writer-first convention.
 func TestSnapshotSave_RunsOnTheWriterItIsHanded(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -169,9 +129,7 @@ func TestSnapshotSave_RunsOnTheWriterItIsHanded(t *testing.T) {
 			return "", nil
 		}
 		fmt.Fprint(w, progressOut)
-		// The canary bypasses the writer on purpose: a stdout redirect
-		// around the save would capture it and forward it to stderr, and
-		// the captured stream would never see it.
+		// A canary: a redirect around the save would forward it to stderr instead.
 		fmt.Println("CANARY: the snapshot save prints on the process's real stdout")
 		return filepath.Join(o.Dir, "manual.db"), nil
 	}
@@ -203,15 +161,7 @@ func TestSnapshotSave_RunsOnTheWriterItIsHanded(t *testing.T) {
 	}
 }
 
-// TestTokenCreate_RunsOnTheRealStdout pins token_create's half of the
-// convention: the handler hands the mint a writer (io.Writer FIRST, like
-// every destructiveDeps field) instead of wrapping the whole token.Issue
-// call in a stdout redirect, and a canary fmt.Println from inside the mint
-// reaches the captured stdout stream, because nothing redirects os.Stdout
-// around the mint any more.
-//
-// Fails if anything reintroduces a redirect around the mint; the
-// identity and canary assertions read exactly as the CA rotation pin's do.
+// TestTokenCreate_RunsOnTheRealStdout pins the mint's io.Writer-first convention.
 func TestTokenCreate_RunsOnTheRealStdout(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -226,9 +176,7 @@ func TestTokenCreate_RunsOnTheRealStdout(t *testing.T) {
 				return "abcdef.0123456789abcdef", "sha256:" + strings.Repeat("a", 64), nil, nil
 			}
 			fmt.Fprint(w, "mint progress")
-			// The canary bypasses the writer on purpose: a stdout redirect
-			// around the mint would capture it and forward it to stderr,
-			// and the captured stream would never see it.
+			// A canary: a redirect around the mint would forward it to stderr instead.
 			fmt.Println("CANARY: the mint prints on the process's real stdout")
 			return "abcdef.0123456789abcdef", "sha256:" + strings.Repeat("a", 64), nil, nil
 		},

@@ -6,8 +6,7 @@ import (
 	"net/http"
 )
 
-// contextTransport bounds requests by both their own context and the lifetime
-// of the Helm action that created the client, even when Helm uses Background.
+// Bounds requests by the owning Helm action's lifetime even when Helm uses Background.
 type contextTransport struct {
 	ctx  context.Context
 	next http.RoundTripper
@@ -28,8 +27,7 @@ func (t *contextTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		cleanup()
 		return resp, err
 	}
-	// Keep cancellation active until the body is closed; cancelling as soon
-	// as headers arrive would break reads and Kubernetes watch streams.
+	// Cancellation stays active until the body is closed; early cancel breaks watch streams.
 	if resp.Body == nil {
 		cleanup()
 	} else {

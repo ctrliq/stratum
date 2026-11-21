@@ -13,10 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube/kubetest"
 )
 
-// upgrade_plan judges a cluster as `upgrade --cluster` does. An SKE kubelet
-// reports "v1.37.9-stratum"; compared raw, it never equalled the bare
-// in-progress record, so a node interrupted after its kubelet swap looked
-// finished and the plan allowed an upgrade the CLI refuses.
+// An SKE kubelet reports "v1.37.9-stratum", compared against the bare in-progress record.
 func TestUpgradePlanComparesBareVersions(t *testing.T) {
 	fakeStratumHost(t)
 	srv := servePlanNodes(t, []corev1.Node{

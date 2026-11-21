@@ -23,30 +23,18 @@ import (
 )
 
 const (
-	// The Makefile stamps versions into the binaries with -X linker flags. The
-	// Go linker does not report an -X flag whose variable is missing, so a
-	// renamed or moved variable would silently keep its "unknown" default in
-	// every release artifact — this test pins that every -X binding names a
-	// real variable.
+	// The Go linker does not report an -X flag whose variable is missing.
 	makefile   = "../../Makefile"
 	modulePath = "github.com/ctrliq/stratum/"
 	moduleRoot = "../.."
 )
 
-// xFlag matches one -X binding: the package path (or "main"), the variable
-// name, and the value, exactly as GO_LDFLAGS writes them.
 var xFlag = regexp.MustCompile(`-X[ \t]+([A-Za-z0-9_./-]+)\.([A-Za-z_][A-Za-z0-9_]*)=`)
 
-// packageVars parses every package-level var declaration in dir (the Go files
-// `go list` would build for a non-test package) and reports, per name, whether
-// the Go linker's -X flag can stamp it: a string variable whose initializer,
-// if any, is a constant string expression. -X only applies to string symbols,
-// and it only overrides a constant (or absent) initializer — a var initialized
-// from a call would keep its runtime value no matter what the Makefile passes.
+// -X applies only to string vars with a constant or absent initializer.
 func packageVars(t *testing.T, dir string) map[string]bool {
 	t.Helper()
-	// Match the bare binary linked below, including GOOS/GOARCH, CGO and
-	// GOFLAGS. Compiler exports give the type checker module-aware imports.
+	// Match the bare binary linked below, GOOS/GOARCH, CGO and GOFLAGS included.
 	cmd := exec.Command("go", "list", "-tags", "noui", "-deps", "-export", "-json", ".")
 	cmd.Dir = dir
 	var stderr bytes.Buffer
@@ -116,16 +104,11 @@ func packageVars(t *testing.T, dir string) map[string]bool {
 					continue
 				}
 				for i, name := range vs.Names {
-					// No IsExported filter: the linker addresses a variable by
-					// its package path and name regardless of case, and the
-					// Makefile has stamped unexported vars before
-					// (main.containerdVersion, before the component stamps
-					// moved into internal/version).
+					// No IsExported filter: the linker addresses vars by name.
 					obj, ok := info.Defs[name].(*types.Var)
 					stampable := ok && types.Identical(obj.Type(), types.Typ[types.String])
 					if len(vs.Values) > 0 {
-						// One tuple-valued expression initializes every name; a
-						// later name is not an uninitialized string variable.
+						// One tuple expression initializes every name.
 						stampable = stampable && i < len(vs.Values)
 						if stampable {
 							value := info.Types[vs.Values[i]].Value
@@ -140,9 +123,7 @@ func packageVars(t *testing.T, dir string) map[string]bool {
 	return vars
 }
 
-// Source declarations alone cannot prove that the assembled -X flags reach
-// the artifact or that main passes its stamps to the public CLI. Ask make to
-// expand its real flags, link a bare binary, and read the reported values.
+// Source declarations cannot prove the assembled -X flags reach the artifact.
 func TestLinkStampsReachTheRunningBinary(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -181,11 +162,7 @@ func TestLinkStampsReachTheRunningBinary(t *testing.T) {
 			components[fields[0]] = fields[1]
 		}
 	}
-	// kube-vip, cilium and coredns read no versions.mk pin any more: their
-	// stamps are derived from build/images.txt, the same surface the airgap
-	// payload carries, so an override on the make command line reaches
-	// everything but these three. Their expectation is the image list's own
-	// version — which is the point: stamp and payload cannot disagree.
+	// Their expectation is the image list's own version, the payload's surface.
 	for name, want := range map[string]string{
 		"kubernetes": "1.91.1", "etcd": "3.91.2", "containerd": "2.91.3", "runc": "1.91.4",
 		"kube-vip": imageListVersion(t, "kube-vip"), "cilium": imageListVersion(t, "cilium"),
@@ -202,9 +179,7 @@ func TestLinkStampsReachTheRunningBinary(t *testing.T) {
 	}
 }
 
-// An importer links the published engine-ldflags asset in place of
-// GO_LDFLAGS, so the asset must be every stamp GO_LDFLAGS links, and must not
-// carry the BuildID that names the release binary itself.
+// An importer links the published asset in place of GO_LDFLAGS, less BuildID.
 func TestEngineLdflagsAssetIsGoLdflagsLessBuildID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -241,9 +216,6 @@ func TestEngineLdflagsAssetIsGoLdflagsLessBuildID(t *testing.T) {
 	}
 }
 
-// imageListVersion extracts one image's version the way the Makefile's
-// derivations do: the tag of the image's build/images.txt ref, with the
-// digest and the stamped tags' "v" prefix stripped.
 func imageListVersion(t *testing.T, image string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(moduleRoot, "build", "images.txt"))
@@ -325,12 +297,6 @@ func pair() (string, string) { return "first", "second" }
 	}
 }
 
-// TestLinkStampsNameRealVariables parses the Makefile's -X link flags and
-// fails for any flag naming a variable that does not exist as a
-// linker-stampable string variable in the package the flag addresses — the
-// version/addons/runtime packages the Makefile stamps at build/versions.mk
-// pins. No flag addresses main either: the five component versions are
-// internal/version vars, so a main.* stamp is a regression.
 func TestLinkStampsNameRealVariables(t *testing.T) {
 	raw, err := os.ReadFile(makefile)
 	if err != nil {
@@ -341,9 +307,7 @@ func TestLinkStampsNameRealVariables(t *testing.T) {
 		t.Fatalf("parsed no -X flags from %s — the flag grammar no longer matches the Makefile", makefile)
 	}
 
-	// Cache per package, and remember which packages the Makefile addresses so
-	// a parsing regression that silently drops a package fails loudly rather
-	// than passing an empty check.
+	// Remember which packages the Makefile addresses, so a parsing regression
 	checked := make(map[string]map[string]bool)
 	touched := make(map[string]bool)
 	for _, m := range matches {

@@ -47,8 +47,7 @@ func TestInstalledStratumVersion(t *testing.T) {
 		// The installed binary wins over this process's own (older) build.
 		{"installed", script(t, `echo "v1.37.1-stratum.0 linux/amd64"`), "v1.37.1-stratum.0", false},
 		{"installed with components", script(t, `echo "v9.9.9 linux/arm64"; echo "  kubernetes 1.37.1"`), "v9.9.9", false},
-		// First `up`, before stratum is installed: the running executable
-		// answers, so a version override is honoured.
+		// First `up`: the running executable answers, so a version override is honoured.
 		{"not installed", absent, "v2.0.0-embed.1", false},
 		// Installed but unable to report: never the running (stale) build.
 		{"fails", script(t, `exit 1`), "", true},
@@ -67,9 +66,7 @@ func TestInstalledStratumVersion(t *testing.T) {
 	}
 }
 
-// A probe that exits cleanly answers, even when a child it left behind still
-// holds its stdout: a WaitDelay meant to cut short a killed probe also failed
-// a clean one whose output had not drained in time, which a loaded node hits.
+// A probe that exits cleanly must still answer when a child it left behind holds its stdout.
 func TestBinaryVersionWaitsOutAnInheritedPipe(t *testing.T) {
 	p := script(t, `echo 'v1.37.1 linux/amd64'; (sleep 0.2) &`)
 	got, err := BinaryVersion(p)
@@ -86,7 +83,6 @@ func TestStampArgsOmitsAnUnknownStratumVersion(t *testing.T) {
 	}
 }
 
-// A worker patches its own Node; the patch carries what stampArgs does.
 func TestStampPatch(t *testing.T) {
 	for _, tc := range []struct{ stratum, want string }{
 		{"v1.37.1-stratum.0", `{"metadata":{"annotations":{"stratum.ciq.com/k8s-version":"v1.37.1","stratum.ciq.com/version":"v1.37.1-stratum.0"}}}`},
@@ -98,10 +94,7 @@ func TestStampPatch(t *testing.T) {
 	}
 }
 
-// One deadline bounds the whole wait, not each attempt. The fake clock
-// makes the elapsed time exact, so a deadline reset per attempt (or a request
-// that outlives it) cannot pass. The calls > 100 guard makes such a regression
-// fail instead of poll forever.
+// Fake clock makes elapsed exact; the calls > 100 guard turns a reset deadline into a failure.
 func TestPollUntilDeadline(t *testing.T) {
 	const timeout, interval = 200 * time.Millisecond, 30 * time.Millisecond
 
@@ -173,7 +166,6 @@ func TestPollUntilDeadline(t *testing.T) {
 	})
 }
 
-// fakeKubectl installs a kubectl that runs script, and points BinDir at it.
 func fakeKubectl(t *testing.T, body string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -185,9 +177,6 @@ func fakeKubectl(t *testing.T, body string) {
 	t.Cleanup(func() { version.BinDir = old })
 }
 
-// TestWaitHealthzContextEndsWithItsContext: a kubectl that
-// fails at once must not be followed by the full retry sleep once ctx is done,
-// and a kubectl that hangs is killed with ctx — neither outlasts the window.
 func TestWaitHealthzContextEndsWithItsContext(t *testing.T) {
 	for name, script := range map[string]string{
 		"fails at once": "exit 1",
@@ -209,9 +198,6 @@ func TestWaitHealthzContextEndsWithItsContext(t *testing.T) {
 	}
 }
 
-// An apiserver that accepts the request and never answers must not hold
-// WaitHealthz past its attempts window: the cert restart gate and the CA
-// preflight size their deadlines from that window.
 func TestWaitHealthzEndsWithItsAttemptsWindow(t *testing.T) {
 	fakeKubectl(t, "exec sleep 30")
 	begin := time.Now()
@@ -248,14 +234,11 @@ func TestWaitHealthzContextNoTimeLeft(t *testing.T) {
 	}
 }
 
-// countKubectl installs a kubectl that records one attempt per run and fails,
-// so a wait's poll count is readable after the fact.
 func countKubectl(t *testing.T, count string) {
 	t.Helper()
 	fakeKubectl(t, "printf x >> "+count+"\nexit 1")
 }
 
-// kubectlAttempts reads the attempt count countKubectl's kubectl recorded.
 func kubectlAttempts(count string) int {
 	b, err := os.ReadFile(count)
 	if err != nil {
@@ -264,14 +247,6 @@ func kubectlAttempts(count string) int {
 	return bytes.Count(b, []byte("x"))
 }
 
-// TestWaitNodeRegisteredStopsAtAPollBoundary checks cancellation for the
-// registration wait: a run group that owns it joins it at shutdown, so the
-// wait must end when its context does — at a poll boundary, the same shape
-// WaitHealthzContext already has. The in-flight kubectl may finish; the sleep
-// between polls is cut short; no further poll starts. The fake clock makes
-// the elapsed time exact, the way TestPollUntilDeadline's does: a wait that
-// sleeps the retry out to the next poll (or polls again after the cancel)
-// cannot pass.
 func TestWaitNodeRegisteredStopsAtAPollBoundary(t *testing.T) {
 	t.Run("cancelled while waiting out the retry sleep", func(t *testing.T) {
 		count := filepath.Join(t.TempDir(), "attempts")
@@ -318,9 +293,6 @@ func TestWaitNodeRegisteredStopsAtAPollBoundary(t *testing.T) {
 		}
 	})
 
-	// Same shape as TestWaitHealthzContextEndsWithItsContext's "hangs" case: a
-	// kubectl the apiserver never answers must be killed with the context, not
-	// waited out for the whole attempt budget.
 	t.Run("a hung kubectl is killed with the context", func(t *testing.T) {
 		fakeKubectl(t, "exec sleep 30")
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -355,8 +327,7 @@ func TestWaitNodeRegisteredPreservesCancellationDuringFinalPoll(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- WaitNodeRegistered(ctx, "cp1", 1) }()
-	// The child writes only after it starts; cancel its one and final poll
-	// while it is in flight, rather than guessing a scheduler delay.
+	// Cancel while the final poll is in flight rather than guessing a scheduler delay.
 	if _, err := io.ReadFull(f, make([]byte, 1)); err != nil {
 		t.Fatalf("wait for the final poll to start: %v", err)
 	}
@@ -371,10 +342,7 @@ func TestWaitNodeRegisteredPreservesCancellationDuringFinalPoll(t *testing.T) {
 	}
 }
 
-// captureRealStdout runs fn with the process's stdout captured, so a test
-// can prove a write stayed off it. os.Stdout is restored even when fn panics,
-// so a failed assertion cannot leave the test binary with a pipe as its
-// stdout.
+// Stdout is restored even when fn panics, so a failed assertion cannot leave a pipe as stdout.
 func captureRealStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -398,13 +366,7 @@ func captureRealStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestStepWritesTheProgressHeaderThroughTheWriter pins that Step reports
-// progress through an io.Writer the caller passes — os.Stdout for a CLI
-// caller, a buffer for an MCP handler — instead of always writing to the
-// process's stdout, which on the MCP stdio transport is the JSON-RPC stream.
-//
-// The header bytes are pinned exactly, because the CLI's green progress
-// header must not change shape whichever writer it goes to.
+// Step reports progress through the writer given; on MCP stdio, stdout is the JSON-RPC stream.
 func TestStepWritesTheProgressHeaderThroughTheWriter(t *testing.T) {
 	t.Run("the header bytes reach the writer unchanged", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -428,10 +390,6 @@ func TestStepWritesTheProgressHeaderThroughTheWriter(t *testing.T) {
 	})
 }
 
-// TestWaitNodeRegisteredStillRegistersAndStillGivesUp pins the wait's own
-// behavior through the context change: a node that appears ends the wait on
-// the poll that sees it, and a node that never does ends it at the attempt
-// budget with an error that names it.
 func TestWaitNodeRegisteredStillRegistersAndStillGivesUp(t *testing.T) {
 	t.Run("registers", func(t *testing.T) {
 		fakeKubectl(t, "exit 0")

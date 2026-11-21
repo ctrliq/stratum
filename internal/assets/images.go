@@ -10,8 +10,7 @@ import (
 	"strings"
 )
 
-// ImageNames returns every image name the archives carry, as containerd names
-// them on import.
+// As containerd names them on import.
 func ImageNames(archives []string) (map[string]bool, error) {
 	names := map[string]bool{}
 	for _, archive := range archives {
@@ -26,10 +25,7 @@ func ImageNames(archives []string) (map[string]bool, error) {
 	return names, nil
 }
 
-// ArchiveImageNames returns the image names an OCI image archive's index.json
-// carries, or, for a Docker-format archive (which ctr also imports), its
-// manifest.json RepoTags as containerd names them. It reads only tar headers
-// and those two members.
+// Reads only index.json, or a Docker archive's manifest.json RepoTags.
 func ArchiveImageNames(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -79,7 +75,7 @@ func ArchiveImageNames(path string) ([]string, error) {
 	}
 }
 
-// dockerImageName qualifies a Docker RepoTag the way containerd names it on import.
+// Qualifies a Docker RepoTag the way containerd names it on import.
 func dockerImageName(tag string) string {
 	first, rest, ok := strings.Cut(tag, "/")
 	switch {
@@ -93,8 +89,7 @@ func dockerImageName(tag string) string {
 	return "docker.io/" + tag
 }
 
-// Repository is an image name without its tag or digest, the form kubelet's
-// preloadedImagesVerificationAllowlist matches.
+// The form kubelet's preloadedImagesVerificationAllowlist matches.
 func Repository(name string) string {
 	if i := strings.IndexByte(name, '@'); i >= 0 {
 		name = name[:i]

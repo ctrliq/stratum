@@ -14,8 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// registerCIS registers the cis test profile for the test, so a cis node's
-// state resolves, and puts back the registry it replaced.
+// Registers the cis test profile and puts back the registry it replaced.
 func registerCIS(t *testing.T) {
 	t.Helper()
 	prev := profile.All()
@@ -25,38 +24,18 @@ func registerCIS(t *testing.T) {
 	t.Cleanup(func() { _ = profile.SetRegistered(prev) })
 }
 
-// redirectJoinFlagState points the join-flag inputs at the test's own
-// directories: the persisted network config (version.NetConfigPath) and the
-// node state (version.K8sConfDir), with PKIDir redirected too because a lost
-// netconfig falls back to the published CA there. This mirrors what
-// pkg/cli/token_cis_test.go and pkg/cli/token_servicecidr_test.go do for the
-// pkg/cli copies of the derivation.
+// Mirrors what the pkg/cli join-flag tests do for their copies of the derivation.
 func redirectJoinFlagState(t *testing.T) {
 	t.Helper()
 	oldConf, oldNet, oldPKI := version.K8sConfDir, version.NetConfigPath, version.PKIDir
 	t.Cleanup(func() { version.K8sConfDir, version.NetConfigPath, version.PKIDir = oldConf, oldNet, oldPKI })
 	version.K8sConfDir = t.TempDir()
-	// A separate directory, so saving node state cannot create the netconfig
-	// file a "lost netconfig" case must not see.
+	// Separate dir: saving node state must not create the netconfig file.
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")
 	version.PKIDir = t.TempDir()
 }
 
-// TestJoinFlags_CarryNetworkAndCIS pins that the join flags a joining node
-// needs are derived in one place, here, and returned as data. The pod and
-// service ranges and the cluster domain cannot be discovered by a node after
-// it joins — a worker learns them only from its join line — and --cis is the
-// only way a worker learns the cluster runs the CIS profile (with it, the
-// kubelet's seccompDefault and the rest of the profile). pkg/cli's
-// workerJoinExtra and cisJoinFlag held these rules and rendered them into
-// pre-quoted strings, and the MCP token_create tool derived none of them, so a
-// worker joined through it ran the default ranges and the non-CIS profile with
-// nothing saying why.
-//
-// The function returns data, not a rendered line: a field is empty when the
-// cluster sits at the default for it, so each front end renders --pod-cidr,
-// --service-cidr and --cluster-domain only on a non-default cluster and --cis
-// only on a CIS one, and no front end re-derives the rule to drift from it.
+// The ranges and domain cannot be discovered after a join; the join line is the source.
 func TestJoinFlags_CarryNetworkAndCIS(t *testing.T) {
 	registerCIS(t)
 	for _, tc := range []struct {
@@ -106,8 +85,7 @@ func TestJoinFlags_CarryNetworkAndCIS(t *testing.T) {
 		},
 		{
 			name: "a lost netconfig is recovered from node state",
-			// netconfig absent; the ranges and domain come from the state the
-			// control plane recorded, never from the built-in defaults.
+			// Ranges come from recorded node state, never the built-in defaults.
 			state: nodestate.NodeState{Role: "controller",
 				PodCIDR: "10.42.0.0/16", ServiceCIDR: "10.43.0.0/16", ClusterDomain: "fuzz.internal"},
 			want: JoinFlags{
@@ -138,11 +116,7 @@ func TestJoinFlags_CarryNetworkAndCIS(t *testing.T) {
 		})
 	}
 
-	// A netconfig that exists but cannot be parsed is not a default cluster.
-	// Treating it as one printed a worker join line without --service-cidr:
-	// the join would succeed and the worker's kubelet would point pods at the
-	// default DNS address on a cluster whose DNS is elsewhere, with nothing
-	// saying why. Fail instead.
+	// Treating a malformed netconfig as a default cluster omits the real ranges silently.
 	t.Run("a malformed netconfig fails instead of joining a wrong-range worker", func(t *testing.T) {
 		redirectJoinFlagState(t)
 		if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller"}); err != nil {
@@ -157,11 +131,7 @@ func TestJoinFlags_CarryNetworkAndCIS(t *testing.T) {
 	})
 }
 
-// TestJoinFlags_RefuseAProfileThisBinaryDoesNotRegister: on a cis control
-// plane run by an engine binary the derived join line said --profile cis
-// while the bundle the node publishes carried no at-rest encryption key, a
-// grant no joiner could use. The derivation refuses instead, with the
-// cis note, and both front ends derive before they mint.
+// A --profile line naming an unregistered profile is a grant no joiner could use.
 func TestJoinFlags_RefuseAProfileThisBinaryDoesNotRegister(t *testing.T) {
 	prev := profile.All()
 	if err := profile.SetRegistered(nil); err != nil {

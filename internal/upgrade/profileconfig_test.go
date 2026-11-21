@@ -19,8 +19,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// withCISConfigs points the CIS config paths and DataDir at a temp dir, and
-// writeProfileConfigs at a stub that writes "new" to both.
+// withCISConfigs redirects the CIS config paths and DataDir at a temp dir.
 func withCISConfigs(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
@@ -28,10 +27,7 @@ func withCISConfigs(t *testing.T) {
 	t.Cleanup(func() {
 		version.AdmissionConfigPath, version.AuditPolicyPath, version.DataDir, version.K8sConfDir, writeProfileConfigs = oldAdm, oldAudit, oldData, oldConf, oldWrite
 	})
-	// The derived admission file has no path var of its own: it follows the
-	// config directory through AdmissionWebhookConfig, which is why redirecting
-	// K8sConfDir here is enough — and enough for production too, since the
-	// backup list, the render and the argv all resolve that one call.
+	// The derived webhook file has no path var of its own; it follows K8sConfDir.
 	version.K8sConfDir = filepath.Join(dir, "config")
 	version.AdmissionConfigPath = filepath.Join(dir, "config", "admission-config.yaml")
 	version.AuditPolicyPath = filepath.Join(dir, "config", "audit-policy.yaml")
@@ -39,9 +35,7 @@ func withCISConfigs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// This release's configs, and the derived file the apiserver re-render
-	// writes from them: named here, not taken from cisConfigPaths, so a file
-	// dropped from the backup set is still changed and its loss is seen.
+	// Named here, not from cisConfigPaths, so a file dropped from the backup set is still changed.
 	writeProfileConfigs = func(profile.Profile) error {
 		for _, p := range []string{version.AdmissionConfigPath, version.AuditPolicyPath, filepath.Join(version.K8sConfDir, "admission-webhook.yaml")} {
 			if err := os.WriteFile(p, []byte("new"), 0o644); err != nil {
@@ -52,25 +46,15 @@ func withCISConfigs(t *testing.T) {
 	}
 }
 
-// TestRefreshProfileConfigsBacksUpAndRollsBack: an
-// upgrade re-renders the apiserver with its new image, and the pod that
-// recreates reads the admission config on disk, so the upgrade writes this
-// release's first. What it replaced is backed up where `stratum rollback`
-// finds it, and restoring puts exactly that back: the old content as a config
-// file, and a config that did not exist before removed again.
 func TestRefreshProfileConfigsBacksUpAndRollsBack(t *testing.T) {
 	withCISConfigs(t)
 	if err := os.WriteFile(version.AdmissionConfigPath, []byte("old admission"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// What the apiserver actually reads, derived from the admission config when
-	// its manifest is rendered, and written 0600.
 	webhook := filepath.Join(version.K8sConfDir, "admission-webhook.yaml")
 	if err := os.WriteFile(webhook, []byte("old webhook"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// No audit policy yet: the upgrade creates it.
-
 	const ts = "20260927-000000"
 	items, err := refreshProfileConfigs(io.Discard, ts, cisProfile())
 	if err != nil {
@@ -80,7 +64,6 @@ func TestRefreshProfileConfigsBacksUpAndRollsBack(t *testing.T) {
 		t.Errorf("admission config after the refresh = %q, want this release's", b)
 	}
 
-	// `stratum rollback` finds the same set the in-process rollback holds.
 	stamp, set := mustNewestSet(t)
 	var found bool
 	for _, it := range set {
@@ -101,37 +84,24 @@ func TestRefreshProfileConfigsBacksUpAndRollsBack(t *testing.T) {
 	if _, err := os.Stat(version.AuditPolicyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the audit policy the upgrade created survived the rollback: %v", err)
 	}
-	// A rollback's restored manifests are not re-rendered, so the derived file
-	// is restored itself, with its own mode.
+	// Restored manifests are never re-rendered, so the derived file is restored itself.
 	b, _ = os.ReadFile(webhook)
 	fi, _ = os.Stat(webhook)
 	if string(b) != "old webhook" || fi.Mode().Perm() != 0o600 {
 		t.Errorf("admission-webhook.yaml after rollback = %q, %o; want the original, 0600", b, fi.Mode().Perm())
 	}
 
-	// A write that fails still returns the backup, so the caller's rollback
-	// puts it back.
 	writeProfileConfigs = func(profile.Profile) error { return errors.New("not stamped") }
 	if items, err := refreshProfileConfigs(io.Discard, "20260927-000001", cisProfile()); err == nil || len(items) != 1 {
 		t.Errorf("refreshProfileConfigs = %d backups, %v; want the backup and the error", len(items), err)
 	}
 }
 
-// TestRestoreProfileConfigsKeepsTheKubeconfigAPreChangeBackupNeverHeld: a backup
-// written before webhook-client.kubeconfig joined the profile's list holds
-// only the three files that predate the kubeconfig — no record, never the kubeconfig,
-// though the node had one: the render writes it on every apiserver write, CIS
-// or not. Restoring such a set must not read that absence as "did not exist
-// before the upgrade": the restored admission-webhook.yaml still names the
-// kubeconfig, and deleting it leaves the rolled-back apiserver an admission
-// chain it cannot load.
 func TestRestoreProfileConfigsKeepsTheKubeconfigAPreChangeBackupNeverHeld(t *testing.T) {
 	withCISConfigs(t)
 	kubeconfig := version.WebhookClientKubeconfig()
 	webhookFile := version.AdmissionWebhookConfig()
 
-	// The backup a pre-change binary wrote: the three paths its list held,
-	// and no record of any fourth.
 	bak := profileConfigBakDir("20260927-000003")
 	if err := os.MkdirAll(bak, 0o700); err != nil {
 		t.Fatal(err)
@@ -144,8 +114,6 @@ func TestRestoreProfileConfigsKeepsTheKubeconfigAPreChangeBackupNeverHeld(t *tes
 			t.Fatal(err)
 		}
 	}
-	// The admission file the old release's render derived, its webhook
-	// plugin naming the kubeconfig as every release's does.
 	oldWebhook := "apiVersion: apiserver.config.k8s.io/v1\n" +
 		"kind: AdmissionConfiguration\n" +
 		"plugins:\n" +
@@ -158,8 +126,6 @@ func TestRestoreProfileConfigsKeepsTheKubeconfigAPreChangeBackupNeverHeld(t *tes
 		t.Fatal(err)
 	}
 
-	// The node as the upgrade left it: this release's configs, and the
-	// kubeconfig the pre-change backup never copied.
 	for p, body := range map[string]string{
 		version.AdmissionConfigPath: "new admission",
 		version.AuditPolicyPath:     "new audit",
@@ -183,7 +149,6 @@ func TestRestoreProfileConfigsKeepsTheKubeconfigAPreChangeBackupNeverHeld(t *tes
 		}
 	}
 
-	// The restored admission file must still name a kubeconfig that exists.
 	raw, err := os.ReadFile(webhookFile)
 	if err != nil {
 		t.Fatal(err)
@@ -216,9 +181,6 @@ func TestRestoreProfileConfigsKeepsTheKubeconfigAPreChangeBackupNeverHeld(t *tes
 	}
 }
 
-// A pre-record backup covered the legacy three files. An omitted file means
-// it did not exist before the upgrade and must be removed during rollback;
-// the webhook client kubeconfig was never covered by that backup format.
 func TestRestoreProfileConfigsPreservesLegacyAbsence(t *testing.T) {
 	for _, missing := range []string{"admission-config.yaml", "audit-policy.yaml", "admission-webhook.yaml"} {
 		t.Run(missing, func(t *testing.T) {
@@ -301,9 +263,6 @@ func TestRestoreProfileConfigsHonorsAnExplicitEmptyCoverageRecord(t *testing.T) 
 	}
 }
 
-// TestPruneKeepsOnlyRecentProfileConfigBackups: every upgrade
-// writes a CIS config backup set, and the success path prunes old ones with
-// the manifest sets, so they cannot accumulate.
 func TestPruneKeepsOnlyRecentProfileConfigBackups(t *testing.T) {
 	withCISConfigs(t)
 	upgradeDir := filepath.Join(version.DataDir, "upgrade")
@@ -325,18 +284,12 @@ func TestPruneKeepsOnlyRecentProfileConfigBackups(t *testing.T) {
 	}
 }
 
-// TestRefreshProfileConfigsLeavesNoPartialBackup: a backup that
-// fails part-way is not handed to rollback, and none is left for `stratum
-// rollback` to find, since every file missing from it would read as one that
-// did not exist and be deleted. The live configs are left as they were, and
-// nothing is written.
 func TestRefreshProfileConfigsLeavesNoPartialBackup(t *testing.T) {
 	withCISConfigs(t)
 	if err := os.WriteFile(version.AdmissionConfigPath, []byte("old admission"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A directory where the audit policy should be: stat succeeds, and the
-	// copy of it fails, after the admission config's copy succeeded.
+	// A directory where the audit policy goes: the copy fails mid-set.
 	if err := os.MkdirAll(version.AuditPolicyPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -355,9 +308,6 @@ func TestRefreshProfileConfigsLeavesNoPartialBackup(t *testing.T) {
 	}
 }
 
-// TestRollbackRestoresProfileConfigsBeforeManifests: kubelet acts
-// on restored manifests at once, so an older apiserver started from them must
-// already find its own admission configs rather than the newer pin.
 func TestRollbackRestoresProfileConfigsBeforeManifests(t *testing.T) {
 	items := []backupItem{{name: "stratum"}, {name: "manifests", dir: true}, {name: "kubelet"}, {name: "profile configs", profile: true}}
 	var got []string
@@ -372,8 +322,6 @@ func TestRollbackRestoresProfileConfigsBeforeManifests(t *testing.T) {
 	}
 }
 
-// TestRestoreAllRestoresInThatOrder: restoreAll itself follows restoreOrder,
-// seen in the order its failures are reported when every restore fails.
 func TestRestoreAllRestoresInThatOrder(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "gone")
 	failed := restoreAll(io.Discard, []backupItem{
@@ -385,20 +333,9 @@ func TestRestoreAllRestoresInThatOrder(t *testing.T) {
 	}
 }
 
-// TestProfileConfigPathsCoverEveryFileTheCISAPIServerReads closes the gap a
-// hand-maintained backup list leaves: it renders a CIS control plane, reads the
-// apiserver's argv back off the manifest kubelet runs, and requires that every
-// flag value naming a file under the config directory — plus the admission
-// config admission-webhook.yaml is derived from — is in profileConfigPaths(cisProfile()). A
-// file a CIS apiserver reads that the upgrade does not back up and restore is
-// one a rolled-back apiserver keeps reading from the new release, which is how
-// a rollback once kept the new Pod Security pin.
 func TestProfileConfigPathsCoverEveryFileTheCISAPIServerReads(t *testing.T) {
 	withCISConfigs(t)
-	// writeWebhookAuth under CIS reads the admission config the profile is
-	// seeded from; without it the render fails before the argv exists. The
-	// render also stamps the audit policy's sum into the manifest, so the
-	// policy file must exist too.
+	// The render reads the admission config and stamps the audit policy's sum; both must exist.
 	if err := os.WriteFile(version.AdmissionConfigPath, []byte("apiVersion: apiserver.config.k8s.io/v1\nkind: AdmissionConfiguration\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -417,22 +354,17 @@ func TestProfileConfigPathsCoverEveryFileTheCISAPIServerReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The admission config is read through the derived file; the upgrade backs
-	// it up in its own right. Everything else the apiserver reads comes off its
-	// argv: each flag value naming a file under the config directory.
+	// The admission config rides in through the derived file; the rest is walked off the argv.
 	reads := []string{version.AdmissionConfigPath}
 	for _, a := range spec.Argv {
 		_, value, ok := strings.Cut(a, "=")
 		if !ok {
-			continue // a flag with no value carries no file path
+			continue
 		}
 		if strings.HasPrefix(value, version.K8sConfDir+string(filepath.Separator)) {
 			reads = append(reads, value)
 		}
 	}
-	// The fixture must actually exercise the collection: the derived admission
-	// file is the one this pin exists for, so an argv that stops naming it is
-	// a broken pin, not a green one.
 	admission := filepath.Join(version.K8sConfDir, "admission-webhook.yaml")
 	if !slices.Contains(reads, admission) {
 		t.Fatalf("the rendered apiserver argv names no %s, so the pin cannot see what the apiserver reads", admission)
@@ -445,17 +377,9 @@ func TestProfileConfigPathsCoverEveryFileTheCISAPIServerReads(t *testing.T) {
 	}
 }
 
-// TestProfileConfigPathsComeFromTheProfile: the backup set follows the
-// profile's ConfigFiles, each where the renderers read it, and a profile with
-// an AdmissionConfiguration adds the two files the render derives from it,
-// resolved through the same version calls the render writes them with:
-// writer, argv and backup list resolve one location once. A profile without
-// an admission config backs up its own files alone.
 func TestProfileConfigPathsComeFromTheProfile(t *testing.T) {
 	withCISConfigs(t)
-	// Move the config directory out from under the fixture's first layout:
-	// a list that rebuilt a path against the old directory, instead of
-	// resolving it at call time, drops or misnames it right here.
+	// Pins call-time path resolution: a list built against the old directory misnames its paths.
 	version.K8sConfDir = t.TempDir()
 
 	prof := cisProfile()
@@ -477,22 +401,9 @@ func TestProfileConfigPathsComeFromTheProfile(t *testing.T) {
 	}
 }
 
-// TestProfileConfigPathsCoverTheWebhookClientKubeconfig: the admission file a
-// CIS apiserver reads points its MutatingAdmissionWebhook plugin at a
-// second file, webhook-client.kubeconfig, and the render that writes the
-// admission file writes that kubeconfig beside it. The apiserver reads the
-// kubeconfig on every webhook call, so the upgrade must back it up and
-// restore it with the rest: a rollback that puts the admission file back
-// but not the kubeconfig it names leaves the new release's client config
-// under the old admission chain. No argv flag names the kubeconfig, so the
-// argv-walking pin above cannot see it; this test reads it the way the
-// apiserver does, out of the admission file.
 func TestProfileConfigPathsCoverTheWebhookClientKubeconfig(t *testing.T) {
 	withCISConfigs(t)
-	// writeWebhookAuth under CIS reads the admission config the render
-	// derives the webhook file from; without it the render fails before
-	// the kubeconfig exists. The render also stamps the audit policy's
-	// sum into the manifest, so the policy file must exist too.
+	// Same constraint as above: the render needs both files to exist.
 	if err := os.WriteFile(version.AdmissionConfigPath, []byte("apiVersion: apiserver.config.k8s.io/v1\nkind: AdmissionConfiguration\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -544,8 +455,7 @@ func TestProfileConfigPathsCoverTheWebhookClientKubeconfig(t *testing.T) {
 	if kubeconfig == "" {
 		t.Fatalf("the admission file the apiserver reads (%s) names no webhook kubeconfig, so the pin cannot see it", admission)
 	}
-	// The same render that writes the admission file writes the kubeconfig
-	// it names; one without the other is a broken render, not a green pin.
+	// The render writes the admission file and the kubeconfig it names together.
 	if _, err := os.Stat(kubeconfig); err != nil {
 		t.Fatalf("the render wrote no %s: %v", kubeconfig, err)
 	}
@@ -555,9 +465,6 @@ func TestProfileConfigPathsCoverTheWebhookClientKubeconfig(t *testing.T) {
 	}
 }
 
-// A profile other than cis gets the same backup and rollback over its own
-// ConfigFiles: written by this release's render, backed up first, and put
-// back exactly, with no admission pair when it declares no admission config.
 func TestRefreshProfileConfigsCoversAnyProfile(t *testing.T) {
 	withCISConfigs(t)
 	prof := profile.Profile{Name: "plain", ConfigFiles: []profile.File{
@@ -595,9 +502,6 @@ func TestRefreshProfileConfigsCoversAnyProfile(t *testing.T) {
 	}
 }
 
-// The restore reads what to put back from the backup itself, so a rollback
-// restores the configs the upgrade backed up whatever profile is registered
-// or selected now: no profile is resolved on the way back.
 func TestRestoreProfileConfigsNeedsNoProfile(t *testing.T) {
 	withCISConfigs(t)
 	const ts = "20261017-000001"

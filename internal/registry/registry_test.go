@@ -100,13 +100,6 @@ func TestHostsToml(t *testing.T) {
 	}
 }
 
-// TestHostsTomlLoopbackRootServer pins the loopback guard: containerd 2.x
-// forces skip_verify on an implicit localhost host when hosts.toml carries no
-// root `server`, so a loopback registry configured with TLS and credentials
-// would silently drop verification. An explicit root `server = "https://<reg>"`
-// makes that host explicit, so containerd keeps the configured TLS; a
-// non-loopback registry (containerd already defaults it to https) and one with
-// skip_verify set anyway need no server line.
 func TestHostsTomlLoopbackRootServer(t *testing.T) {
 	out, _, _ := hostsToml("localhost:5000", RegConfig{TLS: TLS{CAFile: "/etc/stratum/local-ca.crt"}}, nil, Mirror{})
 	if !strings.Contains(out, "server = \"https://localhost:5000\"") {
@@ -118,9 +111,7 @@ func TestHostsTomlLoopbackRootServer(t *testing.T) {
 			t.Errorf("loopback %s must get an explicit root server line:\n%s", reg, out)
 		}
 	}
-	// A bare IPv6 key must be bracketed in the URL: net/url rejects an
-	// unbracketed IPv6 literal, which would make containerd discard the whole
-	// hosts.toml. IPv4-mapped IPv6 loopback keys need it too.
+	// net/url rejects an unbracketed IPv6 literal; containerd would drop the hosts.toml.
 	for _, reg := range []string{"::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:0:0:1"} {
 		out, _, _ := hostsToml(reg, RegConfig{TLS: TLS{CAFile: "/ca"}}, nil, Mirror{})
 		if !strings.Contains(out, "server = \"https://["+reg+"]\"") {
@@ -149,8 +140,6 @@ func TestHostsTomlRewriteWarns(t *testing.T) {
 }
 
 func TestHostsTomlDedupEndpoints(t *testing.T) {
-	// Two identical [host] tables would be invalid TOML → containerd drops the whole
-	// hosts.toml. The dup must be emitted once and warned about.
 	out, _, warns := hostsToml("", RegConfig{}, nil, Mirror{Endpoint: []string{"https://m:5000", "https://m:5000"}})
 	if n := strings.Count(out, `[host."https://m:5000"]`); n != 1 {
 		t.Errorf("duplicate endpoint emitted %d times, want 1:\n%s", n, out)
@@ -165,8 +154,7 @@ func TestHostsTomlSkipVerifyWarns(t *testing.T) {
 		"m:5000", RegConfig{}, map[string]RegConfig{"m:5000": {TLS: TLS{InsecureSkipVerify: true}}},
 		Mirror{Endpoint: []string{"https://m:5000"}},
 	)
-	// Pin the full sentence: the same helper serves mirror endpoints and
-	// configs-only hosts pulled directly, so it must not say "mirror".
+	// The helper serves configs-only hosts too, so the warning must not say "mirror".
 	if !hasWarn(warns, "insecure_skip_verify is set for https://m:5000 — TLS verification is DISABLED") {
 		t.Errorf("insecure_skip_verify warning must name the target and say TLS verification is DISABLED, got %v", warns)
 	}
@@ -192,15 +180,14 @@ func TestApplyWildcardToDefaultDir(t *testing.T) {
 	if _, err := Apply(); err != nil {
 		t.Fatal(err)
 	}
-	// "*" → containerd's _default catch-all dir, not a literal certs.d/*/
+	// "*" maps to containerd's _default, not a literal certs.d/*/
 	if _, err := os.Stat(filepath.Join(certsDir, "_default", "hosts.toml")); err != nil {
 		t.Errorf("wildcard '*' should map to certs.d/_default: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(certsDir, "*", "hosts.toml")); !os.IsNotExist(err) {
 		t.Error("a literal certs.d/*/ dir must not be created")
 	}
-	// Idempotent re-apply must NOT prune _default (prune keeps on the dir name, so
-	// keep must be keyed by "_default", not the mirror key "*").
+	// Re-apply must not prune _default: keep is keyed by the dir name.
 	if _, err := Apply(); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +205,6 @@ func hasWarn(warns []string, sub string) bool {
 	return false
 }
 
-// redirect points the package paths at a temp tree for a hermetic Apply test.
 func redirect(t *testing.T) (certsDir, confd, regYaml string) {
 	t.Helper()
 	root := t.TempDir()
@@ -253,12 +239,10 @@ configs:
 	if !r.Configured || !r.Changed {
 		t.Fatalf("expected Configured+Changed, got %+v", r)
 	}
-	// conf.d drop-in sets config_path.
 	cb, err := os.ReadFile(confd)
 	if err != nil || !strings.Contains(string(cb), "config_path = '"+certsDir+"'") {
 		t.Fatalf("conf.d drop-in wrong: %v / %s", err, cb)
 	}
-	// hosts.toml with a credential must be 0600.
 	hp := filepath.Join(certsDir, "docker.io", "hosts.toml")
 	fi, err := os.Stat(hp)
 	if err != nil {
@@ -271,7 +255,7 @@ configs:
 		t.Errorf("second registry hosts.toml missing: %v", err)
 	}
 
-	// Second Apply with identical input must be idempotent (no restart needed).
+	// Re-apply of identical input must be idempotent.
 	r2, err := Apply()
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +269,6 @@ func TestApplyTightensModeWhenCredAdded(t *testing.T) {
 	certsDir, _, regYaml := redirect(t)
 	hp := filepath.Join(certsDir, "docker.io", "hosts.toml")
 
-	// First: no creds → 0644.
 	if err := os.WriteFile(regYaml, []byte("mirrors:\n  docker.io:\n    endpoint: [\"https://m:5000\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -295,8 +278,7 @@ func TestApplyTightensModeWhenCredAdded(t *testing.T) {
 	if fi, _ := os.Stat(hp); fi.Mode().Perm() != 0o644 {
 		t.Fatalf("no-cred hosts.toml mode = %o, want 644", fi.Mode().Perm())
 	}
-	// Re-apply WITH a credential for the same registry: mode must tighten to 0600
-	// even though the file already exists (os.WriteFile alone would leave it 0644).
+	// os.WriteFile alone would leave the existing file 0644.
 	withAuth := "mirrors:\n  docker.io:\n    endpoint: [\"https://m:5000\"]\nconfigs:\n  \"m:5000\":\n    auth: {username: u, password: p}\n"
 	if err := os.WriteFile(regYaml, []byte(withAuth), 0o600); err != nil {
 		t.Fatal(err)
@@ -320,7 +302,6 @@ func TestApplyPrunesRemovedMirror(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(certsDir, "docker.io", "hosts.toml")); err != nil {
 		t.Fatalf("docker.io not written: %v", err)
 	}
-	// Hand-authored entry must survive prune.
 	hand := filepath.Join(certsDir, "private.example.com")
 	if err := os.MkdirAll(hand, 0o755); err != nil {
 		t.Fatal(err)
@@ -328,7 +309,6 @@ func TestApplyPrunesRemovedMirror(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(hand, "hosts.toml"), []byte("server = \"https://x\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Remove docker.io from config and re-apply.
 	if err := os.WriteFile(regYaml, []byte("mirrors:\n  quay.io:\n    endpoint: [\"https://m:5000\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -344,11 +324,6 @@ func TestApplyPrunesRemovedMirror(t *testing.T) {
 	_ = confd
 }
 
-// TestApplyConfigsOnly pins the configs-only shape: a registries.yaml with only
-// a `configs` entry (auth + TLS, no mirrors) must still produce that registry's
-// certs.d hosts.toml, with the registry's own auth/TLS as ROOT-level keys (no
-// `server` line, no [host.*] table) so containerd uses them when pulling from
-// the registry directly.
 func TestApplyConfigsOnly(t *testing.T) {
 	certsDir, confd, regYaml := redirect(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\":\n    auth: {auth: dTpw}\n    tls: {ca_file: /etc/stratum/corp-ca.crt}\n"), 0o600); err != nil {
@@ -389,10 +364,6 @@ func TestApplyConfigsOnly(t *testing.T) {
 	}
 }
 
-// TestApplyMixedConfigsAndMirrors pins the mixed shape: a registry that is BOTH
-// mirrored and configured keeps its [host.*] mirror tables AND gains the
-// registry's own auth as a root-level [header] table ABOVE them; a configs-only
-// registry in the same file gets its own hosts.toml too.
 func TestApplyMixedConfigsAndMirrors(t *testing.T) {
 	certsDir, _, regYaml := redirect(t)
 	yaml := `mirrors:
@@ -424,10 +395,7 @@ configs:
 	if i, j := strings.Index(out, "[header]"), strings.Index(out, `[host."https://mirror.internal:5000"]`); i < 0 || j < 0 || i > j {
 		t.Errorf("root [header] must precede the [host.*] table (TOML root keys before tables):\n%s", out)
 	}
-	// The toml.Unmarshal below asserts the header is a ROOT table carrying
-	// docker.io's credential; it does NOT prove ordering — a [header] table
-	// after the [host.*] table still decodes at root. The strings.Index check
-	// above is the only ordering pin.
+	// Unmarshal proves a root table; only the Index check pins the ordering.
 	var doc struct {
 		Header map[string]string `toml:"header"`
 	}
@@ -442,8 +410,6 @@ configs:
 	}
 }
 
-// TestApplyConfigsWildcardTLS pins that a configs "*" entry with only TLS gets
-// the _default catch-all dir, with its CA as a root-level key.
 func TestApplyConfigsWildcardTLS(t *testing.T) {
 	certsDir, _, regYaml := redirect(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"*\":\n    tls: {ca_file: /etc/pki/ca.crt}\n"), 0o600); err != nil {
@@ -468,11 +434,6 @@ func TestApplyConfigsWildcardTLS(t *testing.T) {
 	}
 }
 
-// TestApplyWildcardCredentialsAreNotWritten pins that configs."*" credentials
-// and client certificate never reach _default/hosts.toml: that file has no
-// server, so containerd fills in the pulled registry and, for a loopback one,
-// turns TLS verification off. Its CA and the mirror endpoints still apply, and
-// the operator is warned. The file then holds no secret, so it is not 0600.
 func TestApplyWildcardCredentialsAreNotWritten(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml     string
@@ -543,8 +504,6 @@ func TestApplyWildcardCredentialsAreNotWritten(t *testing.T) {
 	}
 }
 
-// TestEffectiveKeepsNamedRegistries pins that only the catch-all entry is
-// trimmed: a named registry keeps its credentials and client certificate.
 func TestEffectiveKeepsNamedRegistries(t *testing.T) {
 	full := RegConfig{
 		Auth: Auth{Username: "u", Password: "p"},
@@ -562,8 +521,6 @@ func TestEffectiveKeepsNamedRegistries(t *testing.T) {
 	}
 }
 
-// TestApplyConfigsOnlySkipVerifyWarns pins that disabling TLS verification on a
-// configs-only host is warned about and lands as a root-level skip_verify.
 func TestApplyConfigsOnlySkipVerifyWarns(t *testing.T) {
 	certsDir, _, regYaml := redirect(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\":\n    tls: {insecure_skip_verify: true}\n"), 0o600); err != nil {
@@ -585,13 +542,8 @@ func TestApplyConfigsOnlySkipVerifyWarns(t *testing.T) {
 	}
 }
 
-// TestApplyConfigsEntryWithoutAuthOrTLSIsNothing pins the "nothing to do" exit:
-// a configs entry that carries neither auth nor TLS configures nothing, so a
-// file holding only that is treated as unconfigured and stale stratum files are
-// pruned.
 func TestApplyConfigsEntryWithoutAuthOrTLSIsNothing(t *testing.T) {
 	certsDir, confd, regYaml := redirect(t)
-	// Leftovers from an earlier configuration must be pruned.
 	stale := filepath.Join(certsDir, "old.corp:5000")
 	if err := os.MkdirAll(stale, 0o755); err != nil {
 		t.Fatal(err)
@@ -629,8 +581,6 @@ func TestApplyConfigsEntryWithoutAuthOrTLSIsNothing(t *testing.T) {
 	}
 }
 
-// TestApplyPrunesRemovedConfigsEntry pins keep/prune agreement for configs-only
-// hosts: removing the entry and re-applying removes its hosts.toml.
 func TestApplyPrunesRemovedConfigsEntry(t *testing.T) {
 	certsDir, _, regYaml := redirect(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\":\n    auth: {username: u, password: p}\n"), 0o600); err != nil {
@@ -657,10 +607,6 @@ func TestApplyPrunesRemovedConfigsEntry(t *testing.T) {
 	}
 }
 
-// TestRegistriesCertOnlyIsNothing pins that an incomplete client cert/key pair
-// (one file without the other) configures nothing: the renderer emits `client`
-// only when BOTH are set, so a hosts.toml written for the lone file would be a
-// marker with no payload that still shadows the _default ("*") mirror.
 func TestRegistriesCertOnlyIsNothing(t *testing.T) {
 	c := &Config{Configs: map[string]RegConfig{
 		"certonly.corp:5000": {TLS: TLS{CertFile: "/c.crt"}},
@@ -673,9 +619,6 @@ func TestRegistriesCertOnlyIsNothing(t *testing.T) {
 	}
 }
 
-// TestApplyCertOnlyConfigsWritesNothing pins the Apply side of the same rule:
-// a configs entry with a cert_file but no key_file must produce no certs.d
-// directory at all.
 func TestApplyCertOnlyConfigsWritesNothing(t *testing.T) {
 	certsDir, _, regYaml := redirect(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"certonly.corp:5000\":\n    tls: {cert_file: /c.crt}\n"), 0o600); err != nil {
@@ -693,17 +636,13 @@ func TestApplyCertOnlyConfigsWritesNothing(t *testing.T) {
 	}
 }
 
-// TestRegistries pins the shared "what is configured" predicate: the sorted
-// union of mirror keys and configs keys that carry auth or TLS on their own.
-// A configs entry with neither auth nor TLS configures nothing, and a nil
-// config configures nothing.
 func TestRegistries(t *testing.T) {
 	c := &Config{
 		Mirrors: map[string]Mirror{"docker.io": {Endpoint: []string{"https://m:5000"}}},
 		Configs: map[string]RegConfig{
 			"registry.corp:5000": {Auth: Auth{Username: "u", Password: "p"}},
 			"tls.corp:5000":      {TLS: TLS{CAFile: "/ca"}},
-			"docker.io":          {Auth: Auth{Auth: "dTpw"}}, // mirrored; not listed twice
+			"docker.io":          {Auth: Auth{Auth: "dTpw"}},
 			"empty.corp:5000":    {},
 		},
 	}
@@ -727,7 +666,6 @@ func TestRegistries(t *testing.T) {
 
 func TestApplyAbsentRegistriesRemovesDropin(t *testing.T) {
 	certsDir, confd, regYaml := redirect(t)
-	// First configure, then remove registries.yaml entirely.
 	if err := os.WriteFile(regYaml, []byte("mirrors:\n  docker.io:\n    endpoint: [\"https://m:5000\"]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -752,8 +690,7 @@ func TestApplyAbsentRegistriesRemovesDropin(t *testing.T) {
 	}
 }
 
-// Nodes upgraded in place carry certs.d and conf.d files opened by this exact
-// line; prune recognises stratum's files by it, so it must not change.
+// Nodes upgraded in place already carry files opened by this exact marker.
 func TestGeneratedMarkerMatchesFilesAlreadyOnNodes(t *testing.T) {
 	const onNodes = "# generated by stratum — do not edit (source: stratum registries.yaml)\n"
 	if generatedMarker != onNodes {

@@ -15,23 +15,19 @@ import (
 	"github.com/ctrliq/stratum/internal/pki"
 )
 
-// ClusterAdminsBinding binds pki.ClusterAdminsGroup, the admin leaf's group,
-// to cluster-admin. Deleting it revokes every admin.conf.
+// Deleting it revokes every admin.conf.
 const ClusterAdminsBinding = pki.ClusterAdminsGroup
 
-// ClusterAdminsMarker is the kube-system ConfigMap through which the
-// controllers agree on which of them creates ClusterAdminsBinding, and which
-// records that it was created, so a binding deleted afterwards stays deleted.
+// Controllers agree through it on who creates the binding; a deleted binding stays deleted.
 const ClusterAdminsMarker = "stratum-cluster-admins-binding"
 
-// The marker's states: claimed by the controller its holder key names, which
-// alone may create the binding, then bound.
+// The holder named in "claimed" alone may create the binding; bound records it.
 const (
 	clusterAdminsClaimed = "claimed"
 	clusterAdminsBound   = "bound"
 )
 
-var clusterAdminsMu sync.Mutex
+var clusterAdminsMu sync.Mutex // two tasks ensure the binding under one holder; serialize them
 
 func wantClusterAdminsBinding() *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
@@ -41,24 +37,7 @@ func wantClusterAdminsBinding() *rbacv1.ClusterRoleBinding {
 	}
 }
 
-// EnsureClusterAdminsBinding creates ClusterAdminsBinding once per cluster.
-// Absent ClusterAdminsMarker it claims the marker for holder, a controller's
-// node name; the controller holding the claim creates the binding unless one
-// exists, then marks it bound. A bound marker, or one in a state it does not
-// know, means nothing is done, whatever became of the binding.
-//
-// The claim comes before the binding, so a controller that read no marker and
-// then stalled cannot recreate a binding revoked meanwhile: its claim fails on
-// the existing marker. A claim whose holder never finishes fails closed: the
-// binding stays absent, and every other controller returns an error naming the
-// holder, until the holder's next `stratum up` finishes it or an administrator
-// creates the binding or deletes the marker.
-//
-// Calls in one process run one at a time. A controller ensures the binding
-// from more than one task under the same holder, and two concurrent calls
-// could both read the marker as claimed: after the first marked it bound, the
-// second would create the binding again, undoing a revocation made in
-// between. Serialized, the second reads the marker as bound.
+// One binding per cluster: claim the marker first, and a stalled claim fails closed.
 func EnsureClusterAdminsBinding(ctx context.Context, cs kubernetes.Interface, holder string) error {
 	clusterAdminsMu.Lock()
 	defer clusterAdminsMu.Unlock()

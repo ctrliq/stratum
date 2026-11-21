@@ -10,17 +10,13 @@ import (
 	"time"
 )
 
-// serveBytes returns a server writing n bytes, optionally without a
-// Content-Length so the body must actually be read to discover its size —
-// which is the case that matters, because the apiserver streams list
-// responses and declares no length for them.
+// No declared length: the apiserver streams lists this way, so size is known only by reading.
 func serveBytes(t *testing.T, n int, declareLength bool) *httptest.Server {
 	t.Helper()
 	body := strings.Repeat("x", n)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !declareLength {
-			// Forcing chunked encoding: without a declared length the
-			// transport streams and ContentLength arrives as -1.
+			// Chunked encoding: ContentLength arrives as -1.
 			w.Header().Set("Transfer-Encoding", "chunked")
 		}
 		io.WriteString(w, body)
@@ -29,9 +25,7 @@ func serveBytes(t *testing.T, n int, declareLength bool) *httptest.Server {
 	return srv
 }
 
-// serveThenEnd streams head, flushes, and only then sends tail and ends the
-// response, so the client reads the end of the body separately from its
-// bytes — as with an apiserver that streams a list and then closes it.
+// The client reads the end of the body separately from its bytes.
 func serveThenEnd(t *testing.T, head, tail int) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +38,6 @@ func serveThenEnd(t *testing.T, head, tail int) *httptest.Server {
 	return srv
 }
 
-// lateEOF never returns data and io.EOF from the same Read.
 type lateEOF struct{ r io.Reader }
 
 func (l lateEOF) Read(p []byte) (int, error) {
@@ -79,9 +72,7 @@ func TestResponseLimit(t *testing.T) {
 		}
 	})
 
-	// The boundary is the case a naive io.LimitReader gets wrong: a body of
-	// exactly the limit is within budget, and must not be reported as an
-	// overflow just because the reader had no room left to prove otherwise.
+	// A body of exactly the limit is within budget, not an overflow.
 	t.Run("exactly the limit passes", func(t *testing.T) {
 		got, err := get(t, serveBytes(t, limit, false), limit, "")
 		if err != nil {
@@ -92,8 +83,7 @@ func TestResponseLimit(t *testing.T) {
 		}
 	})
 
-	// net/http usually hands back EOF with the last bytes, which hides the
-	// boundary; here the end arrives on its own read.
+	// Here the end arrives on its own read, not with the last bytes.
 	t.Run("exactly the limit passes when the end arrives late", func(t *testing.T) {
 		got, err := get(t, serveThenEnd(t, limit, 0), limit, "")
 		if err != nil {
@@ -111,7 +101,6 @@ func TestResponseLimit(t *testing.T) {
 		}
 	})
 
-	// The Content-Length pre-check and the reader must agree on the boundary.
 	t.Run("a declared length of exactly the limit passes", func(t *testing.T) {
 		got, err := get(t, serveBytes(t, limit, true), limit, "")
 		if err != nil {
@@ -129,7 +118,6 @@ func TestResponseLimit(t *testing.T) {
 		}
 	})
 
-	// A declared Content-Length lets us refuse before transferring the body.
 	t.Run("declared length fails without transferring", func(t *testing.T) {
 		_, err := get(t, serveBytes(t, limit*4, true), limit, "")
 		if !IsResponseTooLarge(err) {
@@ -158,8 +146,7 @@ func TestResponseLimit(t *testing.T) {
 		}
 	})
 
-	// The reader on its own, with EOF always on a separate read and reads of
-	// every size, so no transport buffering decides the outcome.
+	// EOF always on a separate read, reads of every size, so no buffering decides.
 	t.Run("the reader tells EOF from overflow at the boundary", func(t *testing.T) {
 		for _, tc := range []struct {
 			name     string
@@ -191,7 +178,6 @@ func TestResponseLimit(t *testing.T) {
 					if !IsResponseTooLarge(err) {
 						t.Errorf("%s, %d-byte reads: err = %v, want ErrResponseTooLarge", tc.name, chunk, err)
 					}
-					// Once over, it stays over.
 					if _, again := r.Read(buf); !IsResponseTooLarge(again) {
 						t.Errorf("%s, %d-byte reads: read after overflow = %v, want ErrResponseTooLarge", tc.name, chunk, again)
 					}

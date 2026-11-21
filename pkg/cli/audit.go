@@ -8,15 +8,13 @@ import (
 	"github.com/ctrliq/stratum/internal/trustaudit"
 )
 
-// AuditResult is the outcome of one engine audit.
 type AuditResult int
 
 const (
-	// AuditPass means the audit verified the property.
 	AuditPass AuditResult = iota + 1
-	// AuditFail means the audit found the property violated, or could not read what it must.
+	// AuditFail also covers a check that could not read what it must.
 	AuditFail
-	// AuditException means the audit could not verify the property and reports it unverified.
+	// AuditException reports the property as unverified, not violated.
 	AuditException
 )
 
@@ -32,7 +30,6 @@ func (r AuditResult) String() string {
 	return "unknown"
 }
 
-// AuditVerdict is an audit's result and the detail an operator reads.
 type AuditVerdict struct {
 	Result AuditResult
 	Detail string
@@ -49,17 +46,17 @@ func auditVerdict(v trustaudit.Verdict) AuditVerdict {
 	return AuditVerdict{Result: r, Detail: v.Detail}
 }
 
-// AuditEtcdTrust reports whether this node's running etcd refuses a client certificate the cluster root signs.
+// Reports whether the node's running etcd refuses a root-signed client certificate.
 func AuditEtcdTrust(ctx context.Context) AuditVerdict {
 	return auditVerdict(trustaudit.EtcdTrust(ctx))
 }
 
-// AuditKubeletClientTrust reports whether this node's kubelet trusts a client CA distinct from the cluster root.
+// Reports whether this node's kubelet trusts a client CA distinct from the cluster root.
 func AuditKubeletClientTrust() AuditVerdict {
 	return auditVerdict(trustaudit.KubeletClientTrust())
 }
 
-// AuditKubeletsRefuseRoot reports whether every kubelet cs lists refuses a root-signed client certificate and accepts apiserver-kubelet-client.
+// Reports whether every kubelet refuses a root-signed client certificate.
 func AuditKubeletsRefuseRoot(ctx context.Context, cs kubernetes.Interface) AuditVerdict {
 	return auditVerdict(trustaudit.KubeletsRefuseRoot(ctx, cs))
 }

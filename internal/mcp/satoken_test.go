@@ -15,15 +15,12 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// tokenPod is a Pod manifest whose spec is containers plus extra.
 func tokenPod(extra map[string]any) map[string]any {
 	spec := map[string]any{"containers": []any{map[string]any{"name": "c", "image": "busybox"}}}
 	maps.Copy(spec, extra)
 	return map[string]any{"apiVersion": "v1", "kind": "Pod", "spec": spec}
 }
 
-// tokenDeployment is a Deployment manifest whose template spec is containers
-// plus extra.
 func tokenDeployment(extra map[string]any) map[string]any {
 	pod := tokenPod(extra)
 	return map[string]any{
@@ -52,9 +49,6 @@ func saSubject(ns, name string) rbacv1.Subject {
 	return rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Namespace: ns, Name: name}
 }
 
-// A pod spec that would mount the token of an account a binding grants
-// anything is refused, in a Pod or a workload template, and the refusal names
-// the account, the binding and pod_logs.
 func TestServiceAccountTokenOfABoundAccountIsRefused(t *testing.T) {
 	falseVal := false
 	for _, tc := range []struct {
@@ -63,9 +57,7 @@ func TestServiceAccountTokenOfABoundAccountIsRefused(t *testing.T) {
 		obj     map[string]any
 		want    string // "" means allowed
 	}{
-		// End to end a bare Pod that gets a token is refused anyway: admission
-		// adds a projected serviceAccountToken volume that checkPodSpec refuses.
-		// This row is the binding rule alone, which is what workload templates get.
+		// Admission already refuses a bare Pod's projected token; this row is the binding rule alone.
 		{"a pod spec whose default account no binding names", nil,
 			tokenPod(nil), ""},
 		{"a bare pod whose default account a RoleBinding names",
@@ -145,9 +137,6 @@ func TestServiceAccountTokenOfABoundAccountIsRefused(t *testing.T) {
 	}
 }
 
-// checkApplyResult, which judges the object resource_apply would store, runs
-// the token check and says the refusal is about that object; and the fix the
-// refusal names gets through.
 func TestApplyResultIsCheckedForBoundServiceAccountTokens(t *testing.T) {
 	cs := k8sfake.NewClientset(saClusterBinding("op-admin", saSubject("apps", "op")))
 	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
@@ -162,8 +151,6 @@ func TestApplyResultIsCheckedForBoundServiceAccountTokens(t *testing.T) {
 	}
 }
 
-// An object with no namespace, such as a cluster-scoped resource carrying a
-// pod spec, is checked against the accounts in default.
 func TestServiceAccountTokenCheckWithNoNamespaceUsesDefault(t *testing.T) {
 	cs := k8sfake.NewClientset(saBinding("default", "default-edit", saSubject("default", "default")))
 	err := checkServiceAccountTokens(t.Context(), cs, tokenPod(nil), "")
@@ -172,8 +159,7 @@ func TestServiceAccountTokenCheckWithNoNamespaceUsesDefault(t *testing.T) {
 	}
 }
 
-// A service account that cannot be read refuses the apply rather than let it
-// through: the account might switch automount off, or might not.
+// An unreadable account refuses the apply: it might switch automount off, or not.
 func TestServiceAccountTokenCheckRefusesWhenTheAccountCannotBeRead(t *testing.T) {
 	cs := k8sfake.NewClientset()
 	cs.PrependReactor("get", "serviceaccounts", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -185,7 +171,6 @@ func TestServiceAccountTokenCheckRefusesWhenTheAccountCannotBeRead(t *testing.T)
 	}
 }
 
-// Bindings that cannot be read refuse the apply rather than let it through.
 func TestServiceAccountTokenCheckRefusesWhenBindingsCannotBeRead(t *testing.T) {
 	cs := k8sfake.NewClientset()
 	cs.PrependReactor("list", "clusterrolebindings", func(k8stesting.Action) (bool, runtime.Object, error) {

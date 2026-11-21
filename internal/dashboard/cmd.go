@@ -22,13 +22,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Command returns `stratum dash`.
-//
-// It is registered by cmd/stratum/main.go rather than inside
-// pkg/cli.NewRootCommand, and that is not a style choice: pkg/cli is the one
-// package a downstream build is permitted to import, so registering dash
-// there would compile the dashboard server, the proxy and the embedded SPA
-// into every embedding binary, which must not carry them.
+// Registered outside pkg/cli: downstream builds import it and must not link the dashboard.
 func Command() *cobra.Command {
 	var (
 		listen        string
@@ -108,15 +102,7 @@ type options struct {
 	Out           io.Writer
 }
 
-// nodeShellImageOrErr resolves the image the node-shell debug pod runs, and
-// fails closed when the feature is enabled but this build has no bundled image
-// stamped. The image comes from version.NsenterImage (the mirrored,
-// payload-carried busybox); an unstamped build leaves that at the ":unknown"
-// sentinel. A public registry is no fallback either: containerd resolves an
-// unqualified reference against docker.io, which the airgap payload does not
-// carry, so refuse at startup. When the feature is off no image is served —
-// the field stays empty so /api/v1/config never discloses the internal image
-// name to a client that cannot use the feature anyway.
+// Fails closed when the feature is on but this build has no bundled image stamped.
 func nodeShellImageOrErr(enabled bool, image string) (string, error) {
 	if !enabled {
 		return "", nil
@@ -128,7 +114,6 @@ func nodeShellImageOrErr(enabled bool, image string) (string, error) {
 	return image, nil
 }
 
-// nodeShellFallsBack reports whether the default-on node shell turns off for want of an image.
 func nodeShellFallsBack(enabled, explicit bool, image string) bool {
 	return enabled && !explicit && !nodeShellImageStamped(image)
 }
@@ -145,21 +130,11 @@ func run(ctx context.Context, o options) error {
 	if serveTLS && (o.TLSCert == "" || o.TLSKey == "") {
 		return errors.New("--tls-cert and --tls-key must be given together")
 	}
-	// The session cookie carries a live bearer token, so plaintext is only
-	// acceptable where nothing can observe it. Refusing up front beats
-	// discovering it in a packet capture.
 	if !serveTLS && !o.AllowInsecure && !loopbackOnly(o.Listen) {
 		return fmt.Errorf("refusing to serve %s over plain HTTP: the session cookie carries a bearer token. "+
 			"Pass --tls-cert/--tls-key, listen on loopback, or --insecure-http if TLS is terminated in front of this process", o.Listen)
 	}
 
-	// --insecure-http means something in front terminates TLS, so the browser
-	// IS on HTTPS and the session cookie must be marked Secure — but this
-	// process cannot know the scheme it was reached on unless it is told.
-	// Without that, the cookie carrying a live bearer token goes out without
-	// Secure, and the browser will then also send it over plain HTTP to the
-	// same host. --public-url is what the origin check already wants, so it
-	// is required here rather than adding a flag to say "yes, really".
 	if o.AllowInsecure && !loopbackOnly(o.Listen) && o.PublicURL == "" {
 		return errors.New("--insecure-http requires --public-url: the session cookie carries a bearer token, and its Secure flag " +
 			"(and the CSRF origin check) have to follow the scheme users actually reach the dashboard on")
@@ -184,11 +159,6 @@ func run(ctx context.Context, o options) error {
 	}
 
 	log := slog.Default()
-	// Reachable only by naming an http:// public URL, which is an explicit
-	// statement that users arrive over plaintext. Refusing would block a
-	// deployment an operator may have reasons for; saying nothing would hide
-	// that a bearer token is travelling in a cookie any plaintext request to
-	// the same host will also carry.
 	if !secureCookie && !loopbackOnly(o.Listen) {
 		log.Warn("the session cookie will NOT be marked Secure because --public-url is not https; "+
 			"it carries a bearer token and the browser will send it over plain HTTP to this host",
@@ -234,9 +204,7 @@ func run(ctx context.Context, o options) error {
 	}
 	httpSrv := &http.Server{
 		Handler: srv.routes(),
-		// No WriteTimeout and no ReadTimeout: an exec stream and a log follow
-		// are long-lived by design. ReadHeaderTimeout still bounds a client
-		// that connects and dribbles headers.
+		// No Read/WriteTimeout: exec streams and log follows are long-lived by design.
 		ReadHeaderTimeout: 20 * time.Second,
 		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
@@ -275,10 +243,6 @@ func run(ctx context.Context, o options) error {
 	}
 }
 
-// restConfig resolves how to reach the apiserver: in-cluster first (so the
-// same command works as a Deployment), then the usual kubeconfig precedence
-// with stratum's own admin.conf appended as a last resort, so running this on
-// a control-plane node needs no flags.
 func restConfig(explicit string) (*rest.Config, error) {
 	if explicit == "" {
 		if cfg, err := rest.InClusterConfig(); err == nil {
@@ -298,9 +262,6 @@ func restConfig(explicit string) (*rest.Config, error) {
 	return cfg, nil
 }
 
-// loopbackOnly reports whether addr can only be reached from this host. An
-// unspecified address (":8443", "0.0.0.0:8443") is not loopback, and neither
-// is an empty host — that is the case this guard exists for.
 func loopbackOnly(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil || host == "" {
@@ -312,20 +273,7 @@ func loopbackOnly(addr string) bool {
 	return host == "localhost"
 }
 
-// reachedOverHTTPS reports whether the BROWSER arrives over TLS, which is not
-// the same question as whether this process terminates it. It decides the
-// session cookie's Secure flag and HSTS, and both have to follow the scheme
-// users actually use:
-//
-//   - we serve TLS ourselves: yes, plainly.
-//   - something in front terminates TLS: only --public-url can say so, which
-//     is why --insecure-http requires it off loopback. Getting this wrong puts
-//     a bearer token in a cookie without Secure, and the browser then also
-//     sends it over plain HTTP to the same host.
-//   - an http:// public URL: the operator has said users arrive over
-//     plaintext, so no — and run() warns about it.
-//   - the loopback default: no, and a Secure cookie would be dropped by some
-//     browsers over http://127.0.0.1 anyway. Nothing observes the connection.
+// The browser's scheme, not this process's; --public-url is the only signal behind a terminator.
 func reachedOverHTTPS(serveTLS bool, publicURL string) bool {
 	if serveTLS {
 		return true
@@ -334,8 +282,6 @@ func reachedOverHTTPS(serveTLS bool, publicURL string) bool {
 	return ok && scheme == "https"
 }
 
-// publicOrigin reduces --public-url to the scheme://host[:port] the origin
-// policy compares against, rejecting a value it could not use.
 func publicOrigin(publicURL string) (string, error) {
 	if publicURL == "" {
 		return "", nil

@@ -30,8 +30,7 @@ func TestLegacySupervisorHandoff(t *testing.T) {
 				t.Fatal(err)
 			}
 			read := func(string) (*debug.BuildInfo, error) { return tc.info, nil }
-			// The control socket and children are already gone, but parent cleanup
-			// can still unlink a replacement. Refuse until that parent exits.
+			// Parent cleanup can still unlink a replacement; refuse until the parent exits.
 			if pid, err := findLegacySupervisor(root, 999, read); err != nil || pid != 123 {
 				t.Fatalf("pid=%d err=%v", pid, err)
 			}
@@ -78,13 +77,7 @@ func TestLegacySupervisorInspectionFailures(t *testing.T) {
 	}
 }
 
-// TestLegacySupervisorSkipsAProcessExitingMidScan: a process that exits
-// between the /proc listing and the cmdline read has no readable cmdline file
-// (ENOENT once the kernel removes the directory). That process is gone, not a
-// supervisor whose exit cannot be verified, so a start must not refuse — and
-// must not inspect the binary of a process it could not even read. The
-// skip-or-fail decision for /proc reads is procid's (Exited and the walk's
-// fail-closed policy) and is tested there.
+// A process gone between the listing and the cmdline read is skipped, not unverifiable.
 func TestLegacySupervisorSkipsAProcessExitingMidScan(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "2396"), 0o700); err != nil {
@@ -146,15 +139,7 @@ func TestLegacySupervisorMatchesOnlyUpSubcommand(t *testing.T) {
 	}
 }
 
-// TestLegacySupervisorAgreesWithUninstallOnUpDetection: the legacy handoff
-// check and uninstall must decide the up subcommand identically — one shared
-// stratum-up rule, not two scans that can drift. The rows are the shared
-// table of procid's TestStratumUpPredicatesAgree (keep the two in sync):
-// flags before and after up, the "--" terminator, a missing up. The rules'
-// deliberate difference is not argv-shaped and is neutralized here: the
-// legacy check accepts any stratum build's up (readInfo returns one for every
-// candidate), while uninstall matches its own binary exactly (the process's
-// exe is this test binary, the only file IsStratumTopLevel can confirm).
+// The legacy handoff check and uninstall must decide the up subcommand identically.
 func TestLegacySupervisorAgreesWithUninstallOnUpDetection(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {

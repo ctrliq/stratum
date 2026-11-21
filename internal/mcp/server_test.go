@@ -15,8 +15,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// TestServeHTTPReturnsWhenItCannotBind is the regression test for a hang,
-// not for an error message.
+// TestServeHTTPReturnsWhenItCannotBind pins that Serve returns rather than hanging.
 func TestServeHTTPReturnsWhenItCannotBind(t *testing.T) {
 	tf := tokenFile(t, testToken, 0o600)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -47,9 +46,7 @@ func TestServeHTTPReturnsWhenItCannotBind(t *testing.T) {
 	}
 }
 
-// TestServeHTTPStopsOnCancel: cancellation is the only way this server is
-// meant to stop, and it has to drain rather than report the close as a
-// failure.
+// TestServeHTTPStopsOnCancel: cancellation must stop Serve without an error.
 func TestServeHTTPStopsOnCancel(t *testing.T) {
 	tf := tokenFile(t, testToken, 0o600)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -83,13 +80,10 @@ func TestServeRejectsUnknownTransport(t *testing.T) {
 	}
 }
 
-// TestRefusesNonLoopbackBind: the HTTP transport has no TLS, so
-// --addr is the one input that turns a local tool into a network service.
-// A log line is not a control; refuse, and name the opt-out.
+// The HTTP transport has no TLS: refuse the non-loopback bind and name the opt-out.
 func TestRefusesNonLoopbackBind(t *testing.T) {
 	tf := tokenFile(t, testToken, 0o600)
-	// Bounded, not Background: if the refusal ever regresses, Serve would
-	// happily serve until the package test timeout.
+	// Bounded: a regression would otherwise serve until the package test timeout.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -106,9 +100,7 @@ func TestRefusesNonLoopbackBind(t *testing.T) {
 	}
 }
 
-// TestInsecureListenIsTheOnlyWayPast keeps the refusal from being a wall
-// with no door — an operator who has put TLS in front of this
-// has to be able to say so.
+// TestInsecureListenIsTheOnlyWayPast: TLS in front must be declarable.
 func TestInsecureListenIsTheOnlyWayPast(t *testing.T) {
 	tf := tokenFile(t, testToken, 0o600)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -169,7 +161,7 @@ func TestLoopbackIsDecidedByTheBoundSocket(t *testing.T) {
 				return
 			}
 
-			// Served: nothing comes back until we cancel.
+			// Served: nothing returns until the test cancels.
 			select {
 			case err := <-done:
 				t.Fatalf("%s was refused: %v", tc.addr, err)
@@ -188,8 +180,7 @@ func TestLoopbackIsDecidedByTheBoundSocket(t *testing.T) {
 	}
 }
 
-// TestHostnameFollowsWhereItBinds is the localhost case, written as the
-// property rather than as an expected outcome.
+// TestHostnameFollowsWhereItBinds accepts whichever way this host resolves localhost.
 func TestHostnameFollowsWhereItBinds(t *testing.T) {
 	tf := tokenFile(t, testToken, 0o600)
 	probe, err := net.Listen("tcp", "localhost:0")
@@ -237,8 +228,7 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// TestVersionGetOverStreamableHTTP drives a real MCP request through the
-// HTTP transport.
+// TestVersionGetOverStreamableHTTP drives a real request over the HTTP transport.
 func TestVersionGetOverStreamableHTTP(t *testing.T) {
 	tf := tokenFile(t, testToken, 0o600)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -295,15 +285,7 @@ func TestVersionGetOverStreamableHTTP(t *testing.T) {
 		t.Errorf("os/arch not populated over HTTP: %+v", out)
 	}
 
-	// Bounded under Serve's shutdown grace, which is what this guards: an
-	// abandoned SSE stream never goes idle, so without closing sessions first
-	// Shutdown waits the grace out. Not tighter. A streamable client
-	// reconnects 1-2s after its stream ends (the SDK's 1s backoff plus up to
-	// 1s of jitter), and http.Server.Shutdown re-checks connections on a
-	// backoff that reaches 500ms, so a sound shutdown that meets a reconnect
-	// can take ~2.1s. A bound tighter than that fails sound shutdowns that
-	// reconnect mid-grace; the grace period is the backstop, not the
-	// measure.
+	// Not tighter: a reconnecting streamable client takes ~2.1s, so a sound shutdown can too.
 	stopping := time.Now()
 	cancel()
 	select {
@@ -319,8 +301,7 @@ func TestVersionGetOverStreamableHTTP(t *testing.T) {
 	}
 }
 
-// freePort returns a loopback address nothing is listening on. Serve takes
-// an address rather than a listener, so the port has to be named up front.
+// freePort: Serve takes an address, not a listener, so the port is named up front.
 func freePort(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -334,8 +315,7 @@ func freePort(t *testing.T) string {
 	return addr
 }
 
-// waitForListener blocks until addr accepts a connection, failing fast if
-// Serve gives up first.
+// waitForListener blocks until addr accepts a connection, failing if Serve gives up first.
 func waitForListener(t *testing.T, addr string, served <-chan error) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

@@ -61,8 +61,7 @@ func TestDNSDrainState(t *testing.T) {
 	if h, _, _ := dnsDrainState(pods(dnsReplica("b", "w2", true)), nodes, "w1"); h {
 		t.Error("a node without a replica reported as hosting one")
 	}
-	// A terminating replica here still counts as hosting; one elsewhere is
-	// not serving.
+	// A terminating replica here still counts as hosting; one elsewhere is not serving.
 	gone := dnsReplica("b", "w1", true)
 	gone.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 	if h, _, _ := dnsDrainState(pods(gone), nodes, "w1"); !h {
@@ -73,8 +72,7 @@ func TestDNSDrainState(t *testing.T) {
 	if _, r, _ := dnsDrainState(pods(dnsReplica("a", "w1", true), goneElsewhere), nodes, "w1"); r {
 		t.Error("a terminating replica elsewhere counted as serving")
 	}
-	// A replica whose node is NotReady is not serving, however stale its own
-	// Ready condition is.
+	// A replica whose node is NotReady is not serving, however stale its own Ready condition is.
 	failed := []corev1.Node{*readyNode("w1", true, true), *readyNode("w2", false, false)}
 	if _, r, _ := dnsDrainState(pods(dnsReplica("a", "w1", true), dnsReplica("b", "w2", true)), failed, "w1"); r {
 		t.Error("a Ready replica on a NotReady node counted as serving elsewhere")
@@ -88,8 +86,6 @@ func TestDNSDrainState(t *testing.T) {
 	}
 }
 
-// TestGateCoreDNSDrainSerializesHosts: the second host's drain waits until the
-// first has released the gate.
 func TestGateCoreDNSDrainSerializesHosts(t *testing.T) {
 	shortDNSWait(t, 5*time.Second)
 	cs := fake.NewSimpleClientset([]runtime.Object{
@@ -136,8 +132,6 @@ func TestGateCoreDNSDrainRefusesWithoutAServingReplica(t *testing.T) {
 	dnsDrainMu.Unlock()
 }
 
-// TestGateCoreDNSDrainSingleNodeStillDrains: the case a PDB would have broken.
-// Nowhere else can run a replica, so the drain proceeds at once.
 func TestGateCoreDNSDrainSingleNodeStillDrains(t *testing.T) {
 	shortDNSWait(t, time.Hour)
 	cs := fake.NewSimpleClientset([]runtime.Object{
@@ -173,9 +167,6 @@ func TestGateCoreDNSDrainIgnoresNodesWithoutAReplica(t *testing.T) {
 	release()
 }
 
-// TestGateCoreDNSDrainDoesNotTreatCordonedPeersAsASingleNode: a cordoned peer
-// is not "nowhere else", so the drain waits for a Ready replica and fails
-// closed without one.
 func TestGateCoreDNSDrainDoesNotTreatCordonedPeersAsASingleNode(t *testing.T) {
 	shortDNSWait(t, 50*time.Millisecond)
 	cs := fake.NewSimpleClientset([]runtime.Object{

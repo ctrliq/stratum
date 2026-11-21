@@ -12,11 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/pki"
 )
 
-// `rotate-ca --rollback --check` is read-only: it needs no --yes, runs the
-// node check or the cluster-wide one, and turns a refusal into the exit
-// status the cluster-wide check reads from each node's Job. A rollback with
-// --cluster and no --check is refused, because the rollback itself stays per
-// node.
+// Read-only: no --yes, and the refusal is the exit status the node Jobs report.
 func TestRotateCARollbackCheck(t *testing.T) {
 	oldNode, oldCluster := rollbackCheck, rollbackCheckCluster
 	t.Cleanup(func() { rollbackCheck, rollbackCheckCluster = oldNode, oldCluster })

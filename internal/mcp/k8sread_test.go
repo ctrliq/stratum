@@ -8,9 +8,6 @@ import (
 	"testing/iotest"
 )
 
-// TestTrimLog covers trimLog itself, which only ever sees a buffer the
-// reader has already capped. The cap as pod_logs applies it is
-// TestReadLogTail.
 func TestTrimLog(t *testing.T) {
 	t.Run("a short log is untouched", func(t *testing.T) {
 		got := trimLog([]byte("one\ntwo\nthree\n"))
@@ -43,9 +40,6 @@ func TestTrimLog(t *testing.T) {
 	})
 }
 
-// TestReadLogTail covers the cap at the boundary pod_logs uses: a stream,
-// not a buffer. A container log arrives oldest-first, so reading from the
-// front keeps the wrong end.
 func TestReadLogTail(t *testing.T) {
 	t.Run("a short log is returned whole", func(t *testing.T) {
 		got, err := readLogTail(strings.NewReader("one\ntwo\nthree\n"))
@@ -128,8 +122,6 @@ func TestListOptionsLimit(t *testing.T) {
 	}
 }
 
-// An untruncated list must not carry truncation noise, or a model learns to
-// ignore the field.
 func TestNewListMeta(t *testing.T) {
 	full := newListMeta(3, 100, "")
 	if full.Truncated || full.Note != "" || full.Continue != "" {

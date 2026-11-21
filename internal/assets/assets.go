@@ -1,19 +1,4 @@
-// Package assets stages the payload embedded in the stratum executable onto disk
-// at runtime.
-//
-// The executable is a normal ELF binary with a ZIP archive concatenated onto
-// the end (see the package target in the repo Makefile). ZIP readers locate the
-// central directory by scanning backwards from EOF, so the archive is found
-// regardless of how much ELF precedes it, and the ELF loader ignores the
-// trailing bytes. That trick is the whole reason one artifact can carry a control
-// plane.
-//
-// SKE carries the container images in that payload as well as the binaries, so
-// the single artifact is airgap-complete: nothing is fetched from a registry at
-// install time. The archive has two top-level directories:
-//
-//	bin/     component binaries, staged executable
-//	images/  an OCI archive of the pinned image set, staged read-only
+// The payload is a ZIP archive concatenated onto the executable and staged to disk.
 package assets
 
 import (
@@ -32,37 +17,21 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// DefaultRoot is where the payload is staged. Binaries land in
-// DefaultRoot/bin, images in DefaultRoot/images.
-//
-// The path itself lives in internal/version, derived from the data root. This
-// name stays for its existing callers and snapshots version.DefaultRoot once
-// at package init: production never reassigns the roots, so the snapshot and
-// the derived path agree, but a test that moves the roots with version.SetRoots
-// moves version.DefaultRoot and NOT this var — read version.DefaultRoot
-// directly when a test-redirectable path is what the caller needs.
+// Snapshotted at init, so version.SetRoots in a test does not redirect this var.
 var DefaultRoot = version.DefaultRoot
 
-// Payload directory names, matching the archive's top-level layout.
+// Directory names must match the archive's top-level layout.
 const (
 	BinDir    = "bin"
 	ImagesDir = "images"
 )
 
-// ErrNoPayload reports an executable built without an embedded archive
-// (EMBEDDED_BINS=none). Callers fall back to Lookup.
+// Set for EMBEDDED_BINS=none builds; callers fall back to Lookup.
 var ErrNoPayload = errors.New("no embedded payload in this executable")
 
-// Stage extracts the whole payload under root, preserving the archive's bin/
-// and images/ layout, and returns the staged paths relative to root.
-//
-// Extraction is skipped per file when the destination already has the same size
-// and modification time, which is what makes a restart cheap: the executable's
-// own mtime is stamped onto each staged file, so "already staged by this exact
-// binary" is a two-field comparison rather than a hash of half a gigabyte.
+// Skips files already staged by this executable: same size and its own mtime.
 func Stage(root string) ([]string, error) { return StageWithWriter(os.Stdout, root) }
 
-// StageWithWriter stages this executable's payload and reports label warnings to w.
 func StageWithWriter(w io.Writer, root string) ([]string, error) {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -71,15 +40,11 @@ func StageWithWriter(w io.Writer, root string) ([]string, error) {
 	return StageFromWithWriter(w, exePath, root)
 }
 
-// StageFrom is Stage with the executable named explicitly: it extracts the
-// ZIP-append payload of the binary at exePath. The upgrade path uses it to
-// stage a staged upgrade binary's payload; it is also what makes staging
-// testable without re-execing the test binary.
+// Exists so tests stage a stand-in executable without re-execing the test binary.
 func StageFrom(exePath, root string) ([]string, error) {
 	return StageFromWithWriter(os.Stdout, exePath, root)
 }
 
-// StageFromWithWriter stages a payload and reports label warnings to w.
 func StageFromWithWriter(w io.Writer, exePath, root string) ([]string, error) {
 	exeInfo, err := os.Stat(exePath)
 	if err != nil {
@@ -126,10 +91,7 @@ func StageFromWithWriter(w io.Writer, exePath, root string) ([]string, error) {
 	return staged, nil
 }
 
-// payloadPath validates an archive member name and returns its path relative to
-// the staging root. Only members under the known payload directories are
-// accepted, which is also what makes traversal ("../../etc/passwd") impossible:
-// a cleaned path that no longer starts with a payload directory is dropped.
+// Only members under the payload directories pass, which also blocks traversal.
 func payloadPath(name string) (string, bool) {
 	clean := path.Clean("/" + name)[1:] // absolute-then-trim: kills . and ..
 	dir, file := path.Split(clean)
@@ -149,13 +111,10 @@ func upToDate(path string, size int64, mtime time.Time) bool {
 	return err == nil && fi.Size() == size && fi.ModTime().Equal(mtime)
 }
 
-// labelLike is selinux.LabelLikeWithWriter; a var so a test can see which files are
-// labelled.
+// A var so a test can see which files are labelled.
 var labelLike = selinux.LabelLikeWithWriter
 
-// extract writes to a temp file in the destination directory and renames it
-// into place, so a crashed or concurrent staging never leaves a half-written
-// binary that a supervisor would happily exec.
+// Writes a temp file and renames it, so a crash never leaves a half-written binary.
 func extract(w io.Writer, f *zip.File, dst string, mode os.FileMode, mtime time.Time) error {
 	src, err := f.Open()
 	if err != nil {
@@ -180,8 +139,7 @@ func extract(w io.Writer, f *zip.File, dst string, mode os.FileMode, mtime time.
 	if err := os.Chmod(tmpName, mode); err != nil {
 		return err
 	}
-	// Stamp before rename: the mtime is the staging cache key, so it must be
-	// correct the instant the file becomes visible under its real name.
+	// The mtime is the staging cache key, so stamp before the rename makes it visible.
 	if err := os.Chtimes(tmpName, mtime, mtime); err != nil {
 		return err
 	}
@@ -191,9 +149,7 @@ func extract(w io.Writer, f *zip.File, dst string, mode os.FileMode, mtime time.
 	return os.Rename(tmpName, dst)
 }
 
-// Names lists the payload members of the given executable without extracting
-// anything, so `stratum version --components` can report what the artifact
-// carries cheaply.
+// Lists payload members without extracting, for `stratum version --components`.
 func Names(exePath string) ([]string, error) {
 	zr, err := zip.OpenReader(exePath)
 	if err != nil {
@@ -219,9 +175,7 @@ func Names(exePath string) ([]string, error) {
 	return names, nil
 }
 
-// Lookup resolves a component binary for a no-payload build: an already-staged
-// file first, then PATH. Used by EMBEDDED_BINS=none builds (dev and
-// OS-packaged variants, where the OS package places the binaries).
+// For EMBEDDED_BINS=none builds: a staged file first, then PATH.
 func Lookup(root, name string) (string, error) {
 	staged := filepath.Join(root, BinDir, name)
 	if fi, err := os.Stat(staged); err == nil && !fi.IsDir() {

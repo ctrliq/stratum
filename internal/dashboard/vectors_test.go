@@ -9,13 +9,7 @@ import (
 	"testing"
 )
 
-// The security vectors are the dashboard's security decisions held as data
-// rather than repeated across handler tests: origin decisions, the request
-// headers that never reach the apiserver, the shapes that escape the proxy
-// deadline, and the API paths the parser accepts. A looser decision —
-// accepting a plaintext origin behind an HTTPS terminator, say — fails here
-// instead of passing silently, and a downstream copy of these handlers can be
-// reconciled against the same file.
+// Security decisions held as data: a looser decision fails here, not silently.
 
 type originVector struct {
 	Name         string `json:"name"`
@@ -28,9 +22,7 @@ type originVector struct {
 
 type scrubVector struct {
 	Name string `json:"name"`
-	// StoredAs is the header key exactly as the caller stored it. The prefix
-	// scrub must catch family members stored non-canonically, which
-	// Header.Del cannot remove.
+	// The key exactly as stored: the scrub must catch keys Header.Del cannot.
 	StoredAs string `json:"storedAs"`
 	Value    string `json:"value"`
 }
@@ -106,8 +98,7 @@ func TestSecurityVectors(t *testing.T) {
 				t.Errorf("%q (stored as %q) survived the scrub; it must never reach the apiserver", tc.Name, tc.StoredAs)
 			}
 		}
-		// With no session in the context the proxy must install no credential
-		// of its own either: the request goes out anonymous.
+		// With no session in the context the proxy installs no credential either.
 		if got := out.Header.Get("Authorization"); got != "" {
 			t.Errorf("Authorization = %q, want none without a session", got)
 		}

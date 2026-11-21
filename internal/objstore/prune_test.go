@@ -12,8 +12,7 @@ import (
 	"testing"
 )
 
-// stubBucket lists keys for a ListObjectsV2 and records every DELETE. Like S3,
-// a "/" delimiter leaves out keys nested below the requested prefix.
+// a / delimiter leaves out keys nested below the requested prefix, as S3 does.
 func stubBucket(t *testing.T, keys ...string) (*Target, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -51,8 +50,6 @@ func stubBucket(t *testing.T, keys ...string) (*Target, func() []string) {
 	}
 }
 
-// TestPruneDeletesOnlyTheOldestOwnedObjects: Prune keeps the newest `keep` of
-// the objects owned accepts and never touches the rest of the bucket.
 func TestPruneDeletesOnlyTheOldestOwnedObjects(t *testing.T) {
 	tgt, deleted := stubBucket(t, "mine-1.db", "mine-2.db", "mine-3.db", "theirs-0.db")
 	owned := func(name string) bool { return strings.HasPrefix(name, "mine-") }
@@ -72,9 +69,6 @@ func TestPruneDeletesOnlyTheOldestOwnedObjects(t *testing.T) {
 	}
 }
 
-// TestPruneIgnoresNestedKeys: objects under a sub-prefix (another cluster's
-// prefix, say) are not this target's, so they neither count toward keep nor
-// get their base name deleted at the top level.
 func TestPruneIgnoresNestedKeys(t *testing.T) {
 	tgt, deleted := stubBucket(t, "cp1-1.db", "cp1-2.db", "cp1-3.db", "other/cp1-4.db", "other/cp1-5.db")
 	owned := func(name string) bool { return strings.HasPrefix(name, "cp1-") }
@@ -87,8 +81,6 @@ func TestPruneIgnoresNestedKeys(t *testing.T) {
 	}
 }
 
-// stubDatedBucket lists each key with its own LastModified and refuses the
-// DELETE of any key in refuse, recording every DELETE it receives.
 func stubDatedBucket(t *testing.T, objs map[string]string, refuse ...string) (*Target, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -128,8 +120,7 @@ func stubDatedBucket(t *testing.T, objs map[string]string, refuse ...string) (*T
 	}
 }
 
-// TestPruneKeepsTheNewestByLastModified: objects uploaded after a clock step
-// back carry earlier-looking names; Prune keeps the ones uploaded last.
+// the names suggest the opposite of LastModified: a clock stepped back.
 func TestPruneKeepsTheNewestByLastModified(t *testing.T) {
 	tgt, deleted := stubDatedBucket(t, map[string]string{
 		"mine-2027-a.db": "2026-10-20T00:00:00.000Z",
@@ -145,8 +136,6 @@ func TestPruneKeepsTheNewestByLastModified(t *testing.T) {
 	}
 }
 
-// TestPruneTriesEveryExpiredObject: a refused DELETE (object lock, a policy)
-// must not stop retention for the other expired objects, and is returned.
 func TestPruneTriesEveryExpiredObject(t *testing.T) {
 	tgt, deleted := stubDatedBucket(t, map[string]string{
 		"mine-1.db": "2026-10-20T01:00:00.000Z",

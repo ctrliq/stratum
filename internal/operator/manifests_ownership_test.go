@@ -222,7 +222,7 @@ func TestRecordedBundledCleanupRetriesAfterLabelRemoval(t *testing.T) {
 			if !slices.Contains(refs, kubeCM("orphan")) {
 				t.Fatal("failed deletion lost its trusted history")
 			}
-			// The label no longer finds the object. Its recorded retry must.
+			// the recorded retry must find the object the label no longer matches.
 			resource := r.fakeDyn.Resource(schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}).Namespace("kube-system")
 			obj, err := resource.Get(ctx, "orphan", metav1.GetOptions{})
 			if err != nil {
@@ -276,8 +276,6 @@ func TestRecordedBundledCleanupRespectsReconcileGates(t *testing.T) {
 	}
 }
 
-// Recorded bundle ownership survives add-on retirement, including a dashboard's
-// namespace and privileged binding. Labels on unrelated objects grant no claim.
 func TestBundledCleanupUsesTrustedHistory(t *testing.T) {
 	for _, cluster := range []bool{false, true} {
 		name := "local record"
@@ -331,9 +329,6 @@ func TestBundledCleanupUsesTrustedHistory(t *testing.T) {
 	}
 }
 
-// A RuntimeClass the runtime-classes stack applied is deleted once the stack
-// is removed, as spec.runtimeClasses emptied removes it, and the other
-// stacks' objects stay.
 func TestRuntimeClassStackIsPrunedWhenRemoved(t *testing.T) {
 	ctx := context.Background()
 	r := deployFixture(t, cp("cp1", "10.0.0.11"))
@@ -364,11 +359,6 @@ func runtimeClass(name, handler string, labels map[string]string) *unstructured.
 	return u
 }
 
-// A RuntimeClass the cluster already has under a declared name, without the
-// runtime-classes stack label, is another installer's, such as a GPU
-// operator's: Stratum neither applies over it nor records it, so removing
-// the name never deletes it. One with another handler, which an apply could
-// not change, does not stop the pass from pruning either.
 func TestRuntimeClassStackLeavesAClassItDidNotCreate(t *testing.T) {
 	for _, handler := range []string{"nvidia", "nvidia-cdi"} {
 		t.Run(handler, func(t *testing.T) {
@@ -402,8 +392,6 @@ func TestRuntimeClassStackLeavesAClassItDidNotCreate(t *testing.T) {
 	}
 }
 
-// A class Stratum applied carries the stack label, so a later pass applies
-// it again rather than taking it for another installer's.
 func TestRuntimeClassStackReappliesItsOwnClass(t *testing.T) {
 	r := deployFixture(t, cp("cp1", "10.0.0.11"), runtimeClass("nvidia", "nvidia", map[string]string{group + "/stack": addons.RuntimeClassStack}))
 	seedInventory(t, r.fakeCs, pruneInventory{Nodes: map[string]map[string][]objRef{"cp1": {}}})
@@ -414,11 +402,6 @@ func TestRuntimeClassStackReappliesItsOwnClass(t *testing.T) {
 	}
 }
 
-// A foreign class the inventory already records as the runtime-classes
-// stack's, from a class Stratum once published under that name or an apply it
-// recorded but never made, is neither pruned in the pass that finds it foreign
-// nor left recorded: its ownership is released as a loose file's is, so
-// removing the name later deletes nothing.
 func TestRuntimeClassStackReleasesAForeignClassItHadRecorded(t *testing.T) {
 	ctx := context.Background()
 	nvidia := objRef{GVK: "node.k8s.io/v1,RuntimeClass", Name: "nvidia"}

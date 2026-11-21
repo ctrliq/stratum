@@ -18,9 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// fakeKubectl stands in for seedKubectl: it records each call's arguments
-// and answers with the exit status failures maps its key to. A key is the verb
-// and object: "get ds/cilium", "restart deploy/coredns", "status ds/cilium".
+// fakeKubectl records each kubectl call, keyed "verb object", and answers per its tables.
 type fakeKubectl struct {
 	mu          sync.Mutex
 	calls       []string
@@ -29,12 +27,11 @@ type fakeKubectl struct {
 	noCilium    bool
 	noCoreDNS   bool
 	noLocalPath bool
-	onStatus    func()          // called as each rollout status begins, before it returns
+	onStatus    func()          // called as each rollout status begins
 	hang        map[string]bool // keys whose kubectl never answers, until its context ends
 }
 
-// got is the recorded calls in a stable order: the rollout waits run together,
-// so their order is not.
+// got is the recorded calls in a stable order; the rollout waits run concurrently.
 func (f *fakeKubectl) got() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -69,15 +66,12 @@ func (f *fakeKubectl) cmd(ctx context.Context, args ...string) *exec.Cmd {
 		out = ""
 	}
 	if f.hang[key] {
-		// exec, so the process the context kills is the one holding the pipes
 		return exec.CommandContext(ctx, "sh", "-c", "exec sleep 30")
 	}
 	return exec.CommandContext(ctx, "sh", "-c", fmt.Sprintf("echo %q; exit %d", out, f.failures[key])+" # "+strings.ReplaceAll(call, "\n", " "))
 }
 
-// withFakeKubectl builds an effects value whose seedKubectl is f.cmd, with the
-// production timing knobs: the caller drives restartClusterWorkloads and
-// waitSeedHealthz through it, so no package variable is swapped.
+// withFakeKubectl builds an effects value whose seedKubectl is f.cmd, at production timing.
 func withFakeKubectl(t *testing.T, f *fakeKubectl) *restoreEffects {
 	t.Helper()
 	fx := &restoreEffects{
@@ -89,10 +83,7 @@ func withFakeKubectl(t *testing.T, f *fakeKubectl) *restoreEffects {
 	return fx
 }
 
-// seedEffects wires the production kubectl chain onto fx: the seed's own
-// apiserver over k8sutil.KubectlContext, at the production windows, so a test
-// runs the real kubectl binary — vipKubectl's fake script in BinDir — rather
-// than a stub.
+// seedEffects wires the production kubectl chain, so a test runs the real kubectl binary.
 func seedEffects(fx *restoreEffects) {
 	fx.baseKubectl = k8sutil.KubectlContext
 	fx.kubectlCallTimeout = defaultKubectlCallTimeout
@@ -101,13 +92,11 @@ func seedEffects(fx *restoreEffects) {
 	fx.seedKubectl = fx.localKubectl
 }
 
-// realSeedGate replaces a harness's health-gate stub with the production gate
-// over the same effects value: what Restore itself builds.
+// realSeedGate replaces a harness's health-gate stub with the production gate.
 func realSeedGate(fx *restoreEffects) {
 	fx.restoreWaitHealthz = func() error { return fx.waitSeedHealthz(fx.healthzWindow, healthzPollInterval) }
 }
 
-// workload is restartClusterWorkloads' result for one entry, by name.
 func workload(t *testing.T, fx *restoreEffects, name string) workloadResult {
 	t.Helper()
 	for _, r := range fx.restartClusterWorkloads() {
@@ -119,7 +108,6 @@ func workload(t *testing.T, fx *restoreEffects, name string) workloadResult {
 	return workloadResult{}
 }
 
-// restartCilium is Cilium's entry in the result, for the tests of its behavior.
 func restartCilium(t *testing.T, fx *restoreEffects) (present bool, warn, err error) {
 	t.Helper()
 	r := workload(t, fx, "cilium agent + operator")
@@ -142,9 +130,6 @@ func TestRestartClusterWorkloadsRestartsAllAndWaitsOnAll(t *testing.T) {
 	}
 }
 
-// TestRestartCiliumRestartsTheOperatorWhenTheDaemonSetFails: a failed
-// restart of one target must not skip the other, and only a target that was
-// restarted has a rollout to wait on.
 func TestRestartCiliumRestartsTheOperatorWhenTheDaemonSetFails(t *testing.T) {
 	f := &fakeKubectl{failures: map[string]int{"restart ds/cilium": 1}}
 	fx := withFakeKubectl(t, f)
@@ -179,9 +164,6 @@ func TestRestartCiliumJoinsBothRestartFailures(t *testing.T) {
 	}
 }
 
-// TestCiliumRolloutTimeoutIsAWarning: the targets were restarted and may still
-// finish, so a rollout that does not is not a failure to restart, and each
-// rollout is still checked.
 func TestCiliumRolloutTimeoutIsAWarning(t *testing.T) {
 	f := &fakeKubectl{failures: map[string]int{"status ds/cilium": 1}}
 	fx := withFakeKubectl(t, f)
@@ -213,9 +195,6 @@ func TestRestartCiliumSkipsAClusterWithoutIt(t *testing.T) {
 	}
 }
 
-// TestCoreDNSIsRestartedAndNamedWhenItFails: CoreDNS
-// watches Services and EndpointSlices, so a restore that leaves it on its
-// pre-restore watch answers headless-Service names from post-snapshot endpoints.
 func TestCoreDNSIsRestartedAndNamedWhenItFails(t *testing.T) {
 	f := &fakeKubectl{failures: map[string]int{"restart deploy/coredns": 1}}
 	fx := withFakeKubectl(t, f)
@@ -251,9 +230,7 @@ func TestCoreDNSSkippedWhenTheClusterHasNone(t *testing.T) {
 	}
 }
 
-// The local-path provisioner watches PersistentVolumeClaims, so a restored claim
-// stays unprovisioned until it restarts. It lives in
-// its own namespace and is there only when the default storage is local-path.
+// The local-path provisioner watches PVCs; it lives only where default storage is local-path.
 func TestLocalPathProvisionerIsRestartedInItsOwnNamespace(t *testing.T) {
 	f := &fakeKubectl{}
 	fx := withFakeKubectl(t, f)
@@ -289,8 +266,6 @@ func TestLocalPathProvisionerRolloutTimeoutIsAWarning(t *testing.T) {
 	}
 }
 
-// A cluster whose default storage is not local-path has no provisioner, which is
-// not an error.
 func TestLocalPathProvisionerSkippedWhenTheClusterHasNone(t *testing.T) {
 	f := &fakeKubectl{noLocalPath: true}
 	fx := withFakeKubectl(t, f)
@@ -305,10 +280,6 @@ func TestLocalPathProvisionerSkippedWhenTheClusterHasNone(t *testing.T) {
 	}
 }
 
-// TestRolloutRestartCommandsNameEverythingTheRestoreRolls: the guidance that
-// tells an operator to restart the workloads by hand, or to repeat the restore's
-// restarts, is built from the same list the restore uses, one command per
-// namespace.
 func TestRolloutRestartCommandsNameEverythingTheRestoreRolls(t *testing.T) {
 	want := []string{
 		"kubectl -n kube-system rollout restart ds/cilium deploy/cilium-operator deploy/coredns",
@@ -325,9 +296,6 @@ func TestRolloutRestartCommandsNameEverythingTheRestoreRolls(t *testing.T) {
 	}
 }
 
-// TestCiliumKubectlTargetsTheLocalApiserver: admin.conf may name the
-// VIP, which before the other control planes rejoin can lead to a member that
-// still holds the old datastore.
 func TestCiliumKubectlTargetsTheLocalApiserver(t *testing.T) {
 	fx := &restoreEffects{baseKubectl: k8sutil.KubectlContext}
 	cmd, err := fx.localKubectl(context.Background(), "-n", "kube-system", "get", "ds/cilium")
@@ -343,14 +311,11 @@ func TestCiliumKubectlTargetsTheLocalApiserver(t *testing.T) {
 	}
 }
 
-// workloads stubs a run's workload restarts with one result per entry.
 func workloads(t *testing.T, fx *restoreEffects, rs ...workloadResult) {
 	t.Helper()
 	fx.restoreWorkloads = func() []workloadResult { return rs }
 }
 
-// TestRolloutWarningDoesNotFailTheRestore: the recovery steps follow a restore
-// that only has a slow rollout.
 func TestRolloutWarningDoesNotFailTheRestore(t *testing.T) {
 	n := newFakeNode(t)
 	workloads(t, n.fx, workloadResult{name: "cilium agent + operator", present: true, warn: errors.New("ds/cilium did not finish rolling out")})
@@ -359,8 +324,6 @@ func TestRolloutWarningDoesNotFailTheRestore(t *testing.T) {
 	}
 }
 
-// TestWorkloadRestartFailureIsNamed: a workload that could not be restarted at
-// all is reported by name, with the data still restored and the rest restarted.
 func TestWorkloadRestartFailureIsNamed(t *testing.T) {
 	names := []string{"cilium agent + operator", "coredns", "local-path provisioner"}
 	for _, name := range names {
@@ -391,9 +354,7 @@ func TestWorkloadRestartFailureIsNamed(t *testing.T) {
 	}
 }
 
-// vipKubectl installs a kubectl that answers "ok" only for an apiserver on
-// 127.0.0.1, working out the server as the real one does: --server wins over
-// the kubeconfig. admin.conf names a VIP, as after `stratum ha-repoint`.
+// vipKubectl answers ok only for 127.0.0.1; admin.conf names a VIP, as after ha-repoint.
 func vipKubectl(t *testing.T) {
 	t.Helper()
 	root := version.BinDir
@@ -411,9 +372,6 @@ case "$server" in https://127.0.0.1:*) echo ok ;; *) echo "answered by $server" 
 	}
 }
 
-// TestHealthGateChecksTheSeedNotTheVIP: with admin.conf on a VIP that
-// is down, or that an old control plane answers, the gate must still be about
-// the seed's own apiserver.
 func TestHealthGateChecksTheSeedNotTheVIP(t *testing.T) {
 	swap(t, &version.BinDir, t.TempDir())
 	vipKubectl(t)
@@ -422,15 +380,11 @@ func TestHealthGateChecksTheSeedNotTheVIP(t *testing.T) {
 	if err := fx.waitSeedHealthz(5*time.Second, 0); err != nil {
 		t.Fatalf("a healthy seed failed the gate because admin.conf names the VIP: %v", err)
 	}
-	// The same fake, asked the way k8sutil.WaitHealthz asks, is answered by the VIP.
 	if err := k8sutil.Kubectl("get", "--raw", "/healthz").Run(); err == nil {
 		t.Fatal("the fake did not model a VIP admin.conf")
 	}
 }
 
-// TestHealthGateUsedByRestoreAndRollbackIsTheSeedOne: the restore's gate, and
-// the rollback's recovery after a failed restore, call restoreWaitHealthz, whose
-// default must be the seed gate rather than k8sutil.WaitHealthz.
 func TestHealthGateUsedByRestoreAndRollbackIsTheSeedOne(t *testing.T) {
 	seedGate := func(fx *restoreEffects) { seedEffects(fx); realSeedGate(fx) }
 	n := newFakeNode(t)
@@ -451,20 +405,12 @@ func TestHealthGateUsedByRestoreAndRollbackIsTheSeedOne(t *testing.T) {
 	}
 }
 
-// TestRolloutsShareOneBudget: live, a Cilium rollout may not finish
-// while a worker's kubelet is stale, and two sequential 300 s waits held the
-// restore for about 13 minutes before it printed what the operator must do. All
-// the rollouts, CoreDNS's and local-path's included, are waited on together, each for the one
-// budget.
-//
-// A barrier proves the waits overlap without timing them: each status call
-// blocks as it begins until all have begun. Waited on one after the other, the
-// first would wait for another that cannot begin, and the barrier times out.
+// All rollouts share one budget; the barrier proves the waits overlap.
 func TestRolloutsShareOneBudget(t *testing.T) {
 	if defaultRolloutWait != 60*time.Second {
 		t.Errorf("the shared budget is %v, want 60s", defaultRolloutWait)
 	}
-	const waits = 5 // ds/cilium, deploy/cilium-operator, deploy/coredns, deploy/local-path-provisioner, deploy/stratum-dashboard
+	const waits = 5 // cilium ds + operator, coredns, local-path-provisioner, stratum-dashboard
 	var arrived sync.WaitGroup
 	arrived.Add(waits)
 	all := make(chan struct{})
@@ -497,10 +443,7 @@ func TestRolloutsShareOneBudget(t *testing.T) {
 	}
 }
 
-// A kubectl that never answers (a stalled apiserver request blocks before
-// `--timeout` applies) must cost its deadline and nothing more: the call is
-// killed, named, and the rest of the recovery goes on.
-// Each test fails by not returning, so it is bounded by a generous limit.
+// within bounds an operation that must not block, failing the test after limit.
 func within(t *testing.T, limit time.Duration, what string, fn func()) {
 	t.Helper()
 	done := make(chan struct{})
@@ -555,8 +498,6 @@ func TestHungRestartIsNamedAndTheOthersProceed(t *testing.T) {
 	}
 }
 
-// A rollout whose status call never answers is killed at the shared deadline and
-// reported as that rollout's warning; the others are not held up by it.
 func TestHungRolloutStatusIsAWarningWithinTheBudget(t *testing.T) {
 	f := &fakeKubectl{hang: map[string]bool{"status deploy/coredns": true}}
 	fx := withFakeKubectl(t, f)

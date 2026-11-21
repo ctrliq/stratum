@@ -17,10 +17,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A rotation that fails after reissuing the leaves leaves fresh leaves on disk
-// beside kubeconfigs and processes still on the old ones. The next timer run
-// must not read the fresh leaves as nothing to do: it rotates again until a
-// run completes.
 func TestRotationThatFailsAfterReissueIsRetriedByTheTimer(t *testing.T) {
 	timer := Options{Quiet: true, IfExpiringDays: 45}
 

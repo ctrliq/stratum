@@ -13,39 +13,25 @@ import (
 	"github.com/ctrliq/stratum/internal/runtime"
 )
 
-// NodeSpec is spec.node: what this node declares about itself to the
-// scheduler and to containerd. Labels and taints are its Node object's;
-// runtimeHandlers are extra containerd runtime handlers, by name, each the
-// absolute path of its OCI runtime binary. A control plane reads it at its
-// first boot or join and on every start after; a worker reads it at its join,
-// and a restart changes its labels and handlers only through its flags.
+// NodeSpec is spec.node: what this node declares to the scheduler and containerd.
 type NodeSpec struct {
 	Labels          map[string]string `json:"labels,omitempty"`
 	Taints          []string          `json:"taints,omitempty"` // key[=value]:Effect
 	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
 }
 
-// engineOwnedKey reports the label and taint keys stratum manages itself,
-// which a node must not declare: the control-plane mark, and the per-handler labels
-// a RuntimeClass selects nodes by.
+// Keys stratum manages itself, which a node must not declare.
 func engineOwnedKey(key string) bool {
 	return key == k8sutil.ControlPlaneLabel || strings.HasPrefix(key, k8sutil.RuntimeHandlerLabelPrefix)
 }
 
-// kubeletLabels are the kubernetes.io labels outside the kubelet.kubernetes.io
-// and node.kubernetes.io namespaces that NodeRestriction lets a node set on
-// itself and the kubelet does not set to its own values.
+// kubernetes.io labels NodeRestriction lets a node set and the kubelet does not overwrite.
 var kubeletLabels = []string{
 	"topology.kubernetes.io/zone", "topology.kubernetes.io/region",
 	"failure-domain.beta.kubernetes.io/zone", "failure-domain.beta.kubernetes.io/region",
 	"beta.kubernetes.io/instance-type",
 }
 
-// nodeMaySetLabel reports whether a node may declare key on its own Node.
-// Its kubelet applies the labels, and NodeRestriction refuses a node the
-// kubernetes.io and k8s.io namespaces outside the labels the kubelet may set,
-// and node-restriction.kubernetes.io always; the kubelet also overwrites the
-// hostname, os and arch labels with its own.
 func nodeMaySetLabel(key string) bool {
 	ns, _, ok := strings.Cut(key, "/")
 	if !ok {
@@ -63,8 +49,7 @@ func nodeMaySetLabel(key string) bool {
 	return true
 }
 
-// Validate reports the first label, taint or runtime handler the node cannot
-// declare. It reads nothing from the host; CheckBinaries does.
+// Reports the first refusal; reads nothing from the host (CheckBinaries does).
 func (n NodeSpec) Validate() error {
 	for _, k := range slices.Sorted(maps.Keys(n.Labels)) {
 		if err := validateLabel(k, n.Labels[k]); err != nil {
@@ -90,9 +75,7 @@ func (n NodeSpec) Validate() error {
 	return nil
 }
 
-// CheckBinaries reports the first runtime handler whose binary is not an
-// executable file on this host. A join refuses it; a restart only warns. The
-// error says what failed; each caller says what to do about it.
+// A join refuses a missing handler binary; a restart only warns.
 func (n NodeSpec) CheckBinaries() error {
 	for _, name := range slices.Sorted(maps.Keys(n.RuntimeHandlers)) {
 		if err := runtime.CheckHandlerBinary(n.RuntimeHandlers[name]); err != nil {
@@ -119,8 +102,6 @@ func validateLabel(key, value string) error {
 	return nil
 }
 
-// parseTaint splits key[=value]:Effect, validates each part as the API server
-// would, and refuses a key stratum sets itself.
 func parseTaint(t string) (key, value, effect string, err error) {
 	key, value, effect, err = runtime.ParseTaint(t)
 	if err != nil {
@@ -132,9 +113,7 @@ func parseTaint(t string) (key, value, effect string, err error) {
 	return key, value, effect, nil
 }
 
-// ParseKeyValues turns repeated name=value flag values into a map, refusing a
-// value without "=" and a name given twice. flag names the flag in errors.
-// No values is nil, which a restart reads as "not given".
+// No values gives a nil map, which a restart reads as not given.
 func ParseKeyValues(flag string, values []string) (map[string]string, error) {
 	if len(values) == 0 {
 		return nil, nil
@@ -153,10 +132,7 @@ func ParseKeyValues(flag string, values []string) (map[string]string, error) {
 	return out, nil
 }
 
-// JoinNodeSpec is the spec.node a worker join saves: its flags laid over its
-// config file's, validated, with every runtime handler's binary installed. It
-// reads only the host's handler binaries, so a caller can run it before
-// anything on the host is changed.
+// Reads only handler binaries from the host, so it can run before touching it.
 func JoinNodeSpec(file, flags NodeSpec) (NodeSpec, error) {
 	node := mergeNodeSpec(file, flags)
 	if err := node.Validate(); err != nil {
@@ -168,9 +144,6 @@ func JoinNodeSpec(file, flags NodeSpec) (NodeSpec, error) {
 	return node, nil
 }
 
-// mergeNodeSpec lays a join's flags over its config file's spec.node: a flag
-// label or handler replaces the file's of the same name, and a flag taint the
-// file's with the same key and effect.
 func mergeNodeSpec(file, flags NodeSpec) NodeSpec {
 	out := NodeSpec{Labels: mergeMaps(file.Labels, flags.Labels), RuntimeHandlers: mergeMaps(file.RuntimeHandlers, flags.RuntimeHandlers)}
 	keyEffect := func(t string) string {
@@ -202,8 +175,6 @@ func mergeMaps(base, over map[string]string) map[string]string {
 	return out
 }
 
-// validateRuntimeClasses reports the first spec.runtimeClasses entry that is
-// not a handler name a RuntimeClass can carry.
 func validateRuntimeClasses(names []string) error {
 	seen := map[string]bool{}
 	for _, n := range names {
@@ -221,9 +192,7 @@ func validateRuntimeClasses(names []string) error {
 	return nil
 }
 
-// sameTaints reports whether two taint lists declare the same taints,
-// whatever their order or spelling of an empty value. A taint that does not
-// parse compares by its spelling.
+// Order-insensitive; a taint that does not parse compares by its spelling.
 func sameTaints(a, b []string) bool {
 	canon := func(ts []string) []string {
 		out := make([]string, 0, len(ts))

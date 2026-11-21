@@ -16,8 +16,6 @@ func newRegistryCommand() *cobra.Command {
 		newRegistryApplyCommand(), newRegistryCheckCommand())
 }
 
-// newRegistryApplyCommand translates the per-node /etc/stratum/registries.yaml
-// into containerd certs.d mirrors.
 func newRegistryApplyCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "apply",
@@ -44,7 +42,6 @@ func newRegistryApplyCommand() *cobra.Command {
 	}
 }
 
-// newRegistryCheckCommand previews what `apply` would configure.
 func newRegistryCheckCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "check",
@@ -63,15 +60,12 @@ func newRegistryCheckCommand() *cobra.Command {
 				fmt.Printf("%s: %s\n", version.RegistriesConfig, registry.NothingConfigured)
 				return nil
 			}
-			// Same predicate as apply, so check and apply can never disagree on
-			// what is configured. A registry with no mirror entry is pulled
-			// directly (auth/TLS only); a mirrored one lists its endpoints.
+			// Same predicate as apply, so check and apply cannot disagree on what is configured.
 			printRows := func(cfg registry.RegConfig, name string) {
 				if h := describeAuth(cfg.Auth); h != "" {
 					fmt.Printf("    %s: auth=%s\n", name, h)
 				}
-				// Match the renderer: client cert/key render only as a pair, so
-				// the row lists every file a hosts.toml would actually carry.
+				// Match the renderer: client cert/key render only as a pair.
 				if cfg.TLS.CAFile != "" || cfg.TLS.CertFile != "" || cfg.TLS.KeyFile != "" || cfg.TLS.InsecureSkipVerify {
 					fmt.Printf("    %s: tls ca=%q cert=%q key=%q skip_verify=%v\n", name, cfg.TLS.CAFile, cfg.TLS.CertFile, cfg.TLS.KeyFile, cfg.TLS.InsecureSkipVerify)
 				}
@@ -83,8 +77,6 @@ func newRegistryCheckCommand() *cobra.Command {
 				} else {
 					fmt.Printf("%s (direct)\n", reg)
 				}
-				// The registry's own auth/TLS (used when pulling from it
-				// directly), then each mirror endpoint's.
 				if cfg, ok := c.Configs[reg]; ok {
 					cfg, _ = registry.Effective(reg, cfg)
 					printRows(cfg, reg)
@@ -93,8 +85,6 @@ func newRegistryCheckCommand() *cobra.Command {
 					continue
 				}
 				for _, ep := range m.Endpoint {
-					// An endpoint hosted at the registry itself was already
-					// printed as the registry's own row above.
 					if registry.EndpointHost(ep) == reg {
 						continue
 					}
@@ -113,8 +103,7 @@ func newRegistryCheckCommand() *cobra.Command {
 	}
 }
 
-// describeAuth reports the auth kind for `registry check` WITHOUT printing the
-// secret itself.
+// Never prints the secret itself.
 func describeAuth(a registry.Auth) string {
 	switch {
 	case a.IdentityToken != "":

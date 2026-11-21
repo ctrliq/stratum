@@ -2,16 +2,6 @@ package ha
 
 import "testing"
 
-// TestPeerURLMatchComparesHostAndPort pins how a peer URL is matched. The
-// peer URL is the identity of an unstarted member (memberByPeerURL), and the
-// rollback of a failed join finds the member to remove by it (MemberRemove).
-// Matching the raw strings strands that rollback the first time the builder
-// that made the lookup URL and the builder that made the recorded one format
-// the same address differently — an IPv6 literal can be bracketed or not, and
-// its hex digits and zero runs spelled several ways, all naming the same
-// member. The comparison is therefore the parsed host and port: the same
-// host and port in any valid spelling finds the member, and a different port
-// or host does not.
 func TestPeerURLMatchComparesHostAndPort(t *testing.T) {
 	const listed = "https://[fd00::10]:2380" // the URL the member was added under
 	m := etcdMembership{Members: []etcdMember{{ID: 7, Name: "cp2", PeerURLs: []string{listed}}}}
@@ -37,8 +27,6 @@ func TestPeerURLMatchComparesHostAndPort(t *testing.T) {
 	}
 }
 
-// A member added but not yet started has published no client URL. It is
-// still a member, so it is named by its peer address rather than left out.
 func TestMemberHostsNamesAnUnstartedMemberByItsPeerAddress(t *testing.T) {
 	got, err := memberHosts([]etcdMember{
 		{ID: 1, Name: "cp1", PeerURLs: []string{"https://10.0.0.1:2380"},

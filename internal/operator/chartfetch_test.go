@@ -22,9 +22,7 @@ import (
 	"helm.sh/helm/v4/pkg/cli"
 )
 
-// TestRepoURLEntry pins how a spec.repo URL matches a repositories.yaml
-// entry: one repository, not merely a similar one. Loose matching would send
-// an administrator entry's credentials to an unrelated host or path.
+// Loose matching would send an administrator entry's credentials to an unrelated host.
 func TestRepoURLEntry(t *testing.T) {
 	const (
 		chartsRoot = "https://h/charts"
@@ -96,11 +94,6 @@ func TestRepoURLEntry(t *testing.T) {
 	})
 }
 
-// TestLoadChartRepoURLPathIsComparedVerbatim pins the credential binding
-// against a spec.repo path that only path cleaning would equate to the
-// entry's: Helm fetches the spec.repo path as written, so a URL naming a
-// different path on the server is a different repository and must be fetched
-// anonymously, not with the entry's credentials.
 func TestLoadChartRepoURLPathIsComparedVerbatim(t *testing.T) {
 	for _, tc := range []struct {
 		repoPath  string
@@ -140,13 +133,7 @@ func TestLoadChartRepoURLPathIsComparedVerbatim(t *testing.T) {
 	}
 }
 
-// TestLoadChartArchiveCredentialOriginSpelling pins how the entry's
-// credentials are bound when the shared origin is spelled differently in the
-// archive's URL: Helm's HTTP getter compares scheme and host verbatim, so
-// binding the entry's lowercased URL withholds the credentials from a
-// same-origin archive whose host is upper-case in spec.repo or in the index —
-// while a different host spelling stays unauthenticated even when it resolves
-// to the same server.
+// Helm's getter compares origin host verbatim, so the binding must use the archive's spelling.
 func TestLoadChartArchiveCredentialOriginSpelling(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -209,9 +196,7 @@ func TestLoadChartArchiveCredentialOriginSpelling(t *testing.T) {
 	}
 }
 
-// upperHost spells a server URL's loopback host the way an administrator's
-// repository configuration might record it: DNS names are case-insensitive,
-// so the same server is reachable under either spelling.
+// DNS names are case-insensitive, so an administrator may record either spelling.
 func upperHost(srv string) string {
 	return strings.Replace(srv, "127.0.0.1", "LOCALHOST", 1)
 }
@@ -269,12 +254,6 @@ func TestLoadChartDirectURLSkipsUnreadableRepositoryIndexes(t *testing.T) {
 	}
 }
 
-// TestLoadChartRepoURLEntryTLS pins the TLS half of a spec.repo entry: the
-// repositories.yaml entry naming the repository carries the CA, the mTLS
-// key pair and the credentials, and the fetch must present them — the
-// server demands a client certificate and authentication on every request,
-// and its self-signed certificate can only be trusted through the entry's
-// caFile, since spec.repoCA is empty.
 func TestLoadChartRepoURLEntryTLS(t *testing.T) {
 	redirectHelmCacheDir(t)
 	tgz := makeChartTGZ(t, "widget", "1.0.0")
@@ -320,12 +299,6 @@ func TestLoadChartRepoURLEntryTLS(t *testing.T) {
 	}
 }
 
-// TestLoadChartEntryClientCertStaysOnItsOrigin pins that the entry's client
-// certificate follows the same origin rule as its basic auth: an archive the
-// index puts on another host, or a redirect there, is fetched without the
-// certificate unless the entry sets pass_credentials_all. Both servers share
-// httptest's certificate, so the entry's caFile trusts both and only the
-// client certificate differs.
 func TestLoadChartEntryClientCertStaysOnItsOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -346,8 +319,7 @@ func TestLoadChartEntryClientCertStaysOnItsOrigin(t *testing.T) {
 				otherCerts.Add(int32(len(r.TLS.PeerCertificates)))
 				_, _ = w.Write(tgz)
 			}))
-			// Ask for a certificate without requiring one, so a presented
-			// certificate is recorded rather than refused.
+			// RequestClientCert records a presented certificate instead of refusing the handshake.
 			other.TLS = &tls.Config{ClientAuth: tls.RequestClientCert}
 			other.StartTLS()
 			t.Cleanup(other.Close)
@@ -402,10 +374,6 @@ func TestLoadChartEntryClientCertStaysOnItsOrigin(t *testing.T) {
 	}
 }
 
-// TestLoadChartRepoURLProtectedIndex pins the credentials half of a spec.repo
-// entry: the fetch of an index-requiring server must authenticate both the
-// index.yaml and the archive with the matching entry's credentials, even
-// though the entry's URL carries the trailing slash the spec.repo leaves off.
 func TestLoadChartRepoURLProtectedIndex(t *testing.T) {
 	redirectHelmCacheDir(t)
 	tgz := makeChartTGZ(t, "widget", "1.0.0")
@@ -436,18 +404,11 @@ func TestLoadChartRepoURLProtectedIndex(t *testing.T) {
 	if chart.Metadata.Name != "widget" || chart.Metadata.Version != "1.0.0" {
 		t.Fatalf("loaded unexpected chart: %+v", chart.Metadata)
 	}
-	// The index and the archive were both fetched, both authenticated.
 	if requests.Load() < 2 {
 		t.Fatalf("the repository saw %d requests, want the index and the archive", requests.Load())
 	}
 }
 
-// TestLoadChartRepoURLEntryMixedCaseHost pins the credential binding across a
-// case-only host difference: entry matching folds the scheme and host to
-// lower case, so an entry recorded as http://LOCALHOST:<port>/charts/ matches
-// a lower-case spec.repo — and the archive fetch must fold the entry's URL
-// the same way, because Helm's HTTP getter origin check compares hosts
-// verbatim and would otherwise withhold the credentials there.
 func TestLoadChartRepoURLEntryMixedCaseHost(t *testing.T) {
 	redirectHelmCacheDir(t)
 	tgz := makeChartTGZ(t, "widget", "1.0.0")
@@ -469,9 +430,6 @@ func TestLoadChartRepoURLEntryMixedCaseHost(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
-	// The entry spells the host in upper case; spec.repo is lower case. Entry
-	// matching must still find it, and the archive download must still
-	// authenticate with the entry's credentials.
 	config := fmt.Sprintf("repositories:\n- name: private\n  url: http://LOCALHOST:%s/charts/\n  username: reader\n  password: secret\n", port)
 	if err := os.WriteFile(filepath.Join(version.HelmCacheDir, "repositories.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
@@ -488,10 +446,6 @@ func TestLoadChartRepoURLEntryMixedCaseHost(t *testing.T) {
 	}
 }
 
-// TestLoadChartRepoURLUncachedRegisteredRepo pins the anonymous path: a
-// spec.repo with no matching entry fetches and downloads publicly, without
-// forwarding some unrelated entry's credentials — and without failing on the
-// unrelated entry's missing cached index.
 func TestLoadChartRepoURLUncachedRegisteredRepo(t *testing.T) {
 	redirectHelmCacheDir(t)
 	tgz := makeChartTGZ(t, "widget", "1.0.0")
@@ -508,7 +462,6 @@ func TestLoadChartRepoURLUncachedRegisteredRepo(t *testing.T) {
 		_, _ = w.Write(tgz)
 	}))
 	t.Cleanup(srv.Close)
-	// The unrelated entry carries credentials and no cached index anywhere.
 	config := "repositories:\n- name: unrelated\n  url: https://unrelated.invalid\n  username: reader\n  password: secret\n"
 	if err := os.WriteFile(filepath.Join(version.HelmCacheDir, "repositories.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
@@ -525,10 +478,6 @@ func TestLoadChartRepoURLUncachedRegisteredRepo(t *testing.T) {
 	}
 }
 
-// TestLoadChartRepoURLCrossHostArchive pins where an entry's credentials may
-// go when the repository's index points at another host: nowhere, unless the
-// entry itself declares pass_credentials_all — the getter's origin policy,
-// not the operator's own forwarding, decides.
 func TestLoadChartRepoURLCrossHostArchive(t *testing.T) {
 	for _, forward := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pass-credentials-all=%t", forward), func(t *testing.T) {
@@ -572,11 +521,6 @@ func TestLoadChartRepoURLCrossHostArchive(t *testing.T) {
 	}
 }
 
-// TestLoadChartRepoURLOwnerScanFallback pins the fallback for an archive
-// fetched for a spec.repo that matched no entry: the credentials still come
-// from the registered repository whose cached index lists the archive — even
-// when an unrelated registered entry has no cached index at all, which must
-// not end the scan.
 func TestLoadChartRepoURLOwnerScanFallback(t *testing.T) {
 	redirectHelmCacheDir(t)
 	tgz := makeChartTGZ(t, "widget", "1.0.0")
@@ -598,8 +542,7 @@ func TestLoadChartRepoURLOwnerScanFallback(t *testing.T) {
 	if err := os.MkdirAll(cache, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The owner entry comes after one with no cached index: the scan must
-	// skip that one, not stop at it.
+	// The owner entry comes after one with no cached index: the scan must skip, not stop.
 	config := fmt.Sprintf("repositories:\n- name: unrelated\n  url: https://unrelated.invalid\n  username: nobody\n  password: nobody\n- name: private\n  url: %s\n  username: reader\n  password: secret\n", archive.URL)
 	if err := os.WriteFile(filepath.Join(version.HelmCacheDir, "repositories.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
@@ -701,8 +644,6 @@ func TestLoadChartDirectURLRepositoryCredentialOrigin(t *testing.T) {
 	}
 }
 
-// Observe cancellation at the remote endpoint: returning to the reconciler
-// while a detached SDK request continues does not stop the chart fetch.
 func TestLoadChartCancelsRepositoryRequests(t *testing.T) {
 	for _, stage := range []string{"index", "archive", "direct archive", "oci"} {
 		for _, stop := range []string{"timeout", "leadership loss"} {
@@ -818,9 +759,7 @@ func TestLoadChartRepositoryTLSAndCredentials(t *testing.T) {
 			case "repository CA":
 				spec.repo = srv.URL
 			case "named repository credentials", "direct URL credentials":
-				// A cached named repository carries its own CA, mTLS pair,
-				// credentials and origin policy, which the downloader supplies
-				// through opaque getter options.
+				// The downloader supplies the cached repository's CA, mTLS pair and credentials.
 				caPath := filepath.Join(version.HelmCacheDir, "ca.pem")
 				keyPath := filepath.Join(version.HelmCacheDir, "key.pem")
 				if err := os.WriteFile(caPath, ca, 0o600); err != nil {
@@ -898,19 +837,6 @@ func TestLoadChartResolvedRepositoryRetainsArchiveCredentials(t *testing.T) {
 	}
 }
 
-// TestLoadChartMigratesLegacyRepositoryState pins the upgrade carry-over: a
-// node brought up by a release that kept the operator's helm cache at the
-// legacy /var/lib/stratum-helm carries repositories.yaml (named repositories,
-// credentials, TLS file paths) and the cached <repo>-index.yaml files there.
-// Nothing in the operator downloads an index, so against the data-dir lookup
-// a fetch of chart "private/widget" would fail "repo private not found" or
-// "no cached repo found" where it resolved before — dropping the entry's
-// credentials and TLS options on the floor. The first loadChart migrates both
-// into the data dir, the fetch resolves as before, the legacy files stay
-// untouched, and the cache carries only what a lookup reads: no non-index
-// file. The legacy files are written 0640 and the migrated copies must carry
-// that mode: the copy preserves the source's permission bits rather than
-// falling back to a default.
 func TestLoadChartMigratesLegacyRepositoryState(t *testing.T) {
 	redirectHelmCacheDir(t)
 	legacy := t.TempDir()
@@ -955,8 +881,6 @@ func TestLoadChartMigratesLegacyRepositoryState(t *testing.T) {
 		t.Fatalf("loaded unexpected chart: %+v", chart.Metadata)
 	}
 
-	// The migrated files sit in the data-dir home with the credentials and
-	// index the fetch consulted, at the mode the legacy file carried.
 	for path, want := range map[string]string{
 		filepath.Join(version.HelmCacheDir, "repositories.yaml"):           config,
 		filepath.Join(version.HelmCacheDir, "cache", "private-index.yaml"): index,
@@ -986,16 +910,6 @@ func TestLoadChartMigratesLegacyRepositoryState(t *testing.T) {
 	}
 }
 
-// TestLoadChartKeepsAnEstablishedHelmCacheHome pins the migration's refusal:
-// once repositories.yaml exists in the data-dir home with content of its own,
-// the legacy copy is stale — the lookup reads the established home alone, the
-// migration must not overwrite it (a stale private entry must not come back
-// to life), and its cached indexes must not land in the established home
-// either: an index of the same name would point the lookup at another
-// repository's URLs. The legacy cache here carries a private index so the
-// no-carry-over assertion can actually fail. The pinned error text is Helm
-// v4.3.0's own (pkg/downloader/chart_downloader.go, "repo %s not found") —
-// the string is imported, not owned, so a Helm upgrade may reword it.
 func TestLoadChartKeepsAnEstablishedHelmCacheHome(t *testing.T) {
 	redirectHelmCacheDir(t)
 	legacy := t.TempDir()
@@ -1027,22 +941,12 @@ func TestLoadChartKeepsAnEstablishedHelmCacheHome(t *testing.T) {
 	if got, err := os.ReadFile(filepath.Join(version.HelmCacheDir, "repositories.yaml")); err != nil || string(got) != "repositories: []\n" {
 		t.Errorf("the established repositories.yaml was replaced: %q, %v", got, err)
 	}
-	// loadChart creates the home's cache dir itself; the legacy state must
-	// not have landed in it.
+	// loadChart creates the home's cache dir itself; the legacy state must not land in it.
 	if got, err := os.ReadFile(filepath.Join(version.HelmCacheDir, "cache", "private-index.yaml")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the established home took a cached index from the legacy state: %q, %v", got, err)
 	}
 }
 
-// TestLoadChartResumesAnInterruptedMigration pins the recovery: a migration
-// that landed repositories.yaml and was interrupted before the cached indexes
-// must not stick. A byte-identical repositories.yaml in the data-dir home is
-// this migration's own earlier copy — the config is created exclusively, so
-// byte equality is the signature — and the index scan resumes on the next
-// reconcile: without that, the migrated configuration names the repository,
-// the lookup finds no cached index, and every fetch fails "no cached repo
-// found" forever, with no recovery short of an administrator deleting the
-// migrated file by hand.
 func TestLoadChartResumesAnInterruptedMigration(t *testing.T) {
 	redirectHelmCacheDir(t)
 	legacy := t.TempDir()
@@ -1072,8 +976,7 @@ func TestLoadChartResumesAnInterruptedMigration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(legacy, "cache", "private-index.yaml"), []byte(index), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// What a previous, interrupted migration left: the configuration in the
-	// data dir, byte-identical to the legacy copy, no index.
+	// What an interrupted migration left: the config in the data dir, byte-identical, no index.
 	if err := os.MkdirAll(version.HelmCacheDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1092,13 +995,7 @@ func TestLoadChartResumesAnInterruptedMigration(t *testing.T) {
 		t.Errorf("the interrupted migration's index did not resume: %q, %v", got, err)
 	}
 
-	// The next reconcile runs the migration again, and the legacy index is
-	// gone by now — uninstalled, or left a dangling symlink by a mid-delete
-	// run. The migrated cache needs neither read nor copy from it: the
-	// destination exists, so the load skips the legacy source however
-	// unreadable it has become, instead of spending the fetch's window on a
-	// copy the exclusive create then refuses — or failing the fetch on a
-	// source it cannot read.
+	// The destination exists, so the load skips the legacy source however unreadable it is.
 	if err := os.Remove(filepath.Join(legacy, "cache", "private-index.yaml")); err != nil {
 		t.Fatal(err)
 	}
@@ -1116,8 +1013,6 @@ func TestLoadChartResumesAnInterruptedMigration(t *testing.T) {
 	if err != nil || string(got2) != index {
 		t.Errorf("the migrated index was disturbed by the second reconcile: %q, %v", got2, err)
 	}
-	// Nothing was staged into the migrated cache either: it holds exactly
-	// what the first load migrated.
 	entries, err := os.ReadDir(filepath.Join(version.HelmCacheDir, "cache"))
 	if err != nil {
 		t.Fatal(err)

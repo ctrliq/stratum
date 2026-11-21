@@ -41,9 +41,6 @@ func TestWriteBundlesStagesRuntimeClassesOnlyWhileDeclared(t *testing.T) {
 	}
 }
 
-// Earlier releases staged nothing in the runtime-classes directory, so a file
-// an administrator dropped there is theirs: a start refuses rather than
-// overwrite or remove it, naming it, and leaves it as it was.
 func TestWriteBundlesRefusesARuntimeClassFileItDidNotStage(t *testing.T) {
 	for name, file := range map[string]string{
 		"another file":            "gpu.yaml",
@@ -72,8 +69,7 @@ func TestWriteBundlesRefusesARuntimeClassFileItDidNotStage(t *testing.T) {
 	}
 }
 
-// RuntimeClasses need the operator to publish them, and to remove them once
-// published.
+// RuntimeClasses need the operator to publish them, and to remove them once published.
 func TestRuntimeClassesRefuseTheOperatorOff(t *testing.T) {
 	withImporterStacks(t, nil)
 	off := false

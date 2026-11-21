@@ -14,20 +14,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// The startup gate a GPU node joins behind: the taint holds workloads off it
-// until it is released, and the annotation records who released it and when.
+// The startup gate a GPU node joins behind, until it is released.
 const (
 	UnverifiedTaint    = "stratum.ciq.com/unverified"
 	VerifiedAnnotation = "stratum.ciq.com/verified"
 )
 
-// nodeLabelChanges is the label patch that gives a Node the labels it
-// declares and the runtime-handler label of each handler it declares, and
-// removes every other label under the handler prefix, which stratum owns: a
-// node cannot declare a label there, so one it carries is a handler the node
-// no longer declares or a label set by hand. A label outside the prefix that
-// the node does not declare is left alone: it is another writer's. nil means
-// the Node already carries them.
+// stratum owns the handler prefix: stale labels there are removed; other writers' labels stay.
 func nodeLabelChanges(current, declared map[string]string, handlers []string) map[string]*string {
 	want := maps.Clone(declared)
 	if want == nil {
@@ -53,12 +46,7 @@ func nodeLabelChanges(current, declared map[string]string, handlers []string) ma
 	return changes
 }
 
-// ReconcileOwnNodeLabels gives a node's own Node the labels it declares and
-// the runtime-handler labels of its handlers, as its kubelet: NodeRestriction
-// lets a node set those on itself, and the patch carries labels only, so it
-// never touches the taints a kubelet may not change. It reads the Node first
-// and patches only what differs, so a start that changes nothing writes
-// nothing.
+// As the kubelet: NodeRestriction allows labels only, so taints are never touched.
 func ReconcileOwnNodeLabels(ctx context.Context, node string, declared map[string]string, handlers []string) error {
 	cs, err := kubeletClientset()
 	if err != nil {

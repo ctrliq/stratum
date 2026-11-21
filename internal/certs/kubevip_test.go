@@ -18,10 +18,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// kubeVIPNode sets up a controller with a VIP in the state `up` leaves on the
-// initiator, and returns a check that kube-vip.kubeconfig trusts exactly the
-// current bundle (wantCAs certificates), carries the current kube-vip leaf, and
-// targets the local apiserver.
 func kubeVIPNode(t *testing.T) (check func(phase string, wantCAs int)) {
 	t.Helper()
 	fakeAdminClientset(t)
@@ -35,8 +31,7 @@ func kubeVIPNode(t *testing.T) (check func(phase string, wantCAs int)) {
 	version.K8sConfDir = filepath.Join(base, "kubernetes")
 	version.AdminConf = filepath.Join(version.K8sConfDir, "admin.conf")
 	version.NetConfigPath = filepath.Join(base, "netconfig") // absent: the IPv4 defaults
-	// No manifests under K8sConfDir and no supervisor on this socket, so a
-	// path that restarts the control plane finds nothing to restart.
+	// No manifests and no supervisor on this socket: restart paths find nothing to restart.
 	origSock := version.ControlSocket
 	version.ControlSocket = filepath.Join(base, "stratum.sock")
 	t.Cleanup(func() { version.ControlSocket = origSock })
@@ -51,7 +46,7 @@ func kubeVIPNode(t *testing.T) (check func(phase string, wantCAs int)) {
 	if err := pki.GenerateAll("cp1", "192.168.99.12", nil); err != nil {
 		t.Fatal(err)
 	}
-	// The state `up` leaves on the initiator: everything else targets the VIP.
+	// The state `up` leaves on the initiator: every other kubeconfig targets the VIP.
 	if err := kubeconfig.GenerateAll("cp1", "https://"+vip+":6443", true); err != nil {
 		t.Fatal(err)
 	}
@@ -86,16 +81,9 @@ func kubeVIPNode(t *testing.T) (check func(phase string, wantCAs int)) {
 	}
 }
 
-// TestCARotationRewritesKubeVIPKubeconfig pins the kube-vip kubeconfig rewrite.
-// A rotation that rewrote every control-plane kubeconfig except kube-vip's
-// would leave the apiservers serving new-CA certs to a kube-vip that trusted
-// only the old CA: it could not renew its Lease, and no node held the VIP. Each
-// phase must leave kube-vip.kubeconfig trusting what the other kubeconfigs
-// trust, carrying the leaf on disk, and pointed at the local apiserver.
 func TestCARotationRewritesKubeVIPKubeconfig(t *testing.T) {
 	check := kubeVIPNode(t)
 
-	// trust-new
 	if err := pki.RotateCAMaterial(false); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +92,6 @@ func TestCARotationRewritesKubeVIPKubeconfig(t *testing.T) {
 	}
 	check("trust-new", 2)
 
-	// sign-new: the phase that lost the VIP.
 	if err := pki.PromoteCA(); err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +110,6 @@ func TestCARotationRewritesKubeVIPKubeconfig(t *testing.T) {
 	}
 	check("sign-new", 2)
 
-	// finalize
 	if err := pki.FinalizeCA(); err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +130,6 @@ func countPEM(b []byte) int {
 	}
 }
 
-// TestCARollbackRewritesKubeVIPKubeconfig: a rollback must collapse kube-vip's
-// trust back to the restored CA whether or not sign-new promoted the new one.
-// Rewriting the kubeconfigs only after a promotion would leave a rollback
-// straight after trust-new with kube-vip, now widened by trust-new, still
-// trusting the CA the rollback throws away.
 func TestCARollbackRewritesKubeVIPKubeconfig(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -203,11 +184,6 @@ func TestCARollbackRewritesKubeVIPKubeconfig(t *testing.T) {
 	}
 }
 
-// TestLeafRotationRewritesKubeVIPKubeconfig: `certs rotate` reissues kube-vip's
-// leaf on disk, and kube-vip.kubeconfig embeds that leaf, so the rotation must
-// rewrite it — otherwise kube-vip keeps presenting the old leaf until it expires
-// and the VIP goes with it. Drives the rotation itself, not only the
-// CA-rotation helper the other tests cover.
 func TestLeafRotationRewritesKubeVIPKubeconfig(t *testing.T) {
 	check := kubeVIPNode(t)
 	before, err := os.ReadFile(filepath.Join(version.PKIDir, "kube-vip.crt"))
@@ -227,13 +203,6 @@ func TestLeafRotationRewritesKubeVIPKubeconfig(t *testing.T) {
 	check("certs rotate", 1)
 }
 
-// TestRegenKubeconfigsKeepsEachServer pins regenKubeconfigs' endpoint rule:
-// every control-plane kubeconfig keeps the server admin.conf holds, and only
-// kube-vip's stays on the local apiserver. A rotation that moved a kubeconfig
-// onto a different endpoint than the one bring-up wrote strands every client
-// that reads it — kubectl through admin.conf, the controller manager and
-// scheduler through their own files — the moment the endpoint it now names is
-// not the one serving.
 func TestRegenKubeconfigsKeepsEachServer(t *testing.T) {
 	serverOf := func(t *testing.T, f string) string {
 		t.Helper()
@@ -246,7 +215,7 @@ func TestRegenKubeconfigsKeepsEachServer(t *testing.T) {
 	plain := []string{"admin.kubeconfig", "controller-manager.kubeconfig", "scheduler.kubeconfig", "kubelet.kubeconfig"}
 
 	t.Run("VIP node", func(t *testing.T) {
-		kubeVIPNode(t) // state with a VIP; bring-up wrote every kubeconfig but kube-vip's onto it
+		kubeVIPNode(t)
 		if err := regenFromNodeState(); err != nil {
 			t.Fatal(err)
 		}
@@ -277,8 +246,6 @@ func TestRegenKubeconfigsKeepsEachServer(t *testing.T) {
 		version.K8sConfDir = filepath.Join(base, "kubernetes")
 		version.AdminConf = filepath.Join(version.K8sConfDir, "admin.conf")
 		version.NetConfigPath = filepath.Join(base, "netconfig")
-		// A controller with no VIP, as `up` leaves it: every kubeconfig on the
-		// local apiserver.
 		if err := nodestate.SaveState(&nodestate.NodeState{
 			Role: "controller", NodeIP: "192.168.99.12", KubeletNodeIP: "192.168.99.12",
 		}); err != nil {
@@ -307,10 +274,6 @@ func TestRegenKubeconfigsKeepsEachServer(t *testing.T) {
 	})
 }
 
-// A phase reads the VIP once, before it changes anything, and rewrites the
-// kubeconfigs from that read: node state that changes or becomes unreadable
-// afterwards cannot make the kube-vip.kubeconfig rewrite disagree with the
-// leaves the phase reissued.
 func TestKubeconfigRewriteUsesTheVIPReadBeforeTheChange(t *testing.T) {
 	kubeVIPNode(t)
 	hostname, _, _, vip, err := hostNodeIP()

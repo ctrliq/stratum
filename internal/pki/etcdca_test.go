@@ -11,11 +11,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// etcdTrusts runs the decision etcd actually makes for an incoming client under
-// `--client-cert-auth --trusted-ca-file etcd-ca-bundle.crt`: verify the chain
-// against a pool built from that file, with the client-auth EKU. This is not a
-// stand-in for etcd — it is the same crypto/x509 call path etcd's TLS stack
-// takes, so a leaf this rejects is a leaf etcd rejects.
+// The same crypto/x509 call path etcd's TLS stack takes: a leaf this rejects, etcd rejects.
 func etcdTrusts(t *testing.T, leaf string) error {
 	t.Helper()
 	_, err := loadCert(t, leaf).Verify(x509.VerifyOptions{
@@ -25,10 +21,6 @@ func etcdTrusts(t *testing.T, leaf string) error {
 	return err
 }
 
-// migrateAll brings a node to the fully-migrated end state, walking the phases
-// when there is anything to walk. A fresh install is already there — GenerateAll
-// splits it in one pass — and the replay guard correctly refuses trust-both on a
-// node that has no root left in its etcd bundle.
 func migrateAll(t *testing.T) {
 	t.Helper()
 	if ReadEtcdTrust().State() == EtcdStateMigrated {
@@ -45,9 +37,7 @@ func migrateAll(t *testing.T) {
 	}
 }
 
-// A node past drop-root whose etcd leaf no longer pairs with its key cannot
-// start etcd. Issue-new is owed again there, and running it rewrites the pair
-// under the etcd CA without re-adding the root.
+// A node past drop-root with a mismatched etcd leaf pair cannot start etcd; issue-new repairs it.
 func TestIssueNewRepairsAMismatchedPairAfterDropRoot(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -81,10 +71,7 @@ func TestIssueNewRepairsAMismatchedPairAfterDropRoot(t *testing.T) {
 	}
 }
 
-// unmigratedNode reproduces a cluster installed before the etcd CA existed: the
-// etcd leaves are signed by the cluster root and there is no etcd-ca on disk.
-// This is the state every existing cluster upgrades from, so most of the risk
-// lives in what happens to a node in exactly this shape.
+// The pre-split layout every existing cluster upgrades from, so most risk lives here.
 func unmigratedNode(t *testing.T) {
 	t.Helper()
 	version.PKIDir = t.TempDir()
@@ -117,26 +104,10 @@ func unmigratedNode(t *testing.T) {
 	}
 }
 
-// TestKubeletCertRejectedByEtcdAfterMigration is THE test for the etcd trust hole. The
-// reported vulnerability is that a kubelet client certificate — readable as root
-// on any worker — authenticates to etcd, because etcd trusted the same root that
-// signs it. After the migration it must not.
-//
-// It starts from unmigratedNode, NOT from a fresh install, and that is the whole
-// point: a fresh install is already in the end state (GenerateAll splits it in one
-// pass), so migrateAll returns immediately and the test asserts nothing the
-// one-pass test does not already cover. The upgrade path — an existing cluster
-// walked through all three phases — is the ONLY path on which the etcd trust hole was ever
-// open, so it is the one that has to be pinned here.
-//
-// Asserting UnknownAuthorityError specifically (not merely "some error") is
-// deliberate: an expiry or EKU mismatch would also produce an error and would
-// pass a weaker check while leaving the trust domains joined.
+// The upgrade path is the only state where the hole was ever open, pinned as UnknownAuthorityError.
 func TestKubeletCertRejectedByEtcdAfterMigration(t *testing.T) {
 	unmigratedNode(t)
-	// A pre-etcd-CA-split node has no etcd bundle at all — etcd's --trusted-ca-file was
-	// ca-bundle.crt — so that is the trust set the vulnerability lives in, and it
-	// must accept the kubelet leaf here or this test starts from the wrong place.
+	// No etcd bundle yet: --trusted-ca-file was ca-bundle.crt, the trust set the hole lives in.
 	if _, err := loadCert(t, "kubelet").Verify(x509.VerifyOptions{
 		Roots:     poolFromBundle(t, "ca"),
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
@@ -153,21 +124,13 @@ func TestKubeletCertRejectedByEtcdAfterMigration(t *testing.T) {
 	if !errors.As(err, &unknown) {
 		t.Fatalf("kubelet cert rejected, but not as an untrusted issuer (%T: %v) — the trust domains may still overlap", err, err)
 	}
-	// The legitimate client must still work, or we have broken the cluster.
+	// The legitimate client must still work, or the cluster is broken.
 	if err := etcdTrusts(t, "apiserver-etcd-client"); err != nil {
 		t.Fatalf("apiserver-etcd-client rejected by etcd after migration: %v", err)
 	}
 }
 
-// TestTrustBothStillAcceptsKubeletCert pins the uncomfortable half of the design:
-// phase trust-both is a security NO-OP. A cluster parked there is fully healthy
-// and fully exploitable.
-//
-// This exists so "we ran phase 1, the hole is closed" cannot be claimed in code. If a
-// future change makes trust-both start rejecting root-signed clients, that is a
-// behaviour change in the migration's safety story — peers still presenting
-// root-signed leaves would be cut off — and this test should fail loudly rather
-// than quietly bless it.
+// trust-both stays fully exploitable; rejecting root-signed clients there would cut off peers.
 func TestTrustBothStillAcceptsKubeletCert(t *testing.T) {
 	unmigratedNode(t)
 	if err := MigrateEtcdTrustBoth(true); err != nil {
@@ -181,9 +144,6 @@ func TestTrustBothStillAcceptsKubeletCert(t *testing.T) {
 	}
 }
 
-// TestFreshInstallSplitsInOnePass: a brand-new cluster is never vulnerable and
-// never needs the migration — GenerateAll issues etcd's leaves from etcd-ca and
-// the bundle carries that anchor alone.
 func TestFreshInstallSplitsInOnePass(t *testing.T) {
 	genInto(t)
 	if got := EtcdMigrationState(); got != EtcdStateMigrated {
@@ -197,16 +157,7 @@ func TestFreshInstallSplitsInOnePass(t *testing.T) {
 	}
 }
 
-// TestExistingClusterLandsInTrustBoth covers the upgrade hazard that makes this a
-// staged migration rather than a flag flip.
-//
-// GenerateAll is skip-if-exists, so on an existing node it mints etcd-ca but
-// leaves the live etcd leaves root-signed — while `stratum server` re-renders the
-// etcd unit unconditionally, pointing --trusted-ca-file at the etcd bundle. If
-// that bundle held etcd-ca alone, etcd would restart trusting a CA that signed
-// none of the live certificates and the apiserver would lose its own etcd.
-//
-// So: both anchors, and the leaves untouched.
+// GenerateAll is skip-if-exists: a 1-CA bundle on an existing node bricks the node at restart.
 func TestExistingClusterLandsInTrustBoth(t *testing.T) {
 	unmigratedNode(t)
 	before := loadCert(t, "apiserver-etcd-client").SerialNumber
@@ -221,9 +172,7 @@ func TestExistingClusterLandsInTrustBoth(t *testing.T) {
 	if got := EtcdMigrationState(); got != EtcdStateTrustBoth {
 		t.Errorf("state = %q, want %q", got, EtcdStateTrustBoth)
 	}
-	// The live leaves must be left exactly as they were: reissuing them here would
-	// be a unilateral phase issue-new on one node, breaking peer TLS against every
-	// control plane that has not migrated yet.
+	// Reissuing here would be a unilateral issue-new breaking peer TLS against unmigrated peers.
 	if after := loadCert(t, "apiserver-etcd-client").SerialNumber; before.Cmp(after) != 0 {
 		t.Error("GenerateAll reissued apiserver-etcd-client on an existing node — that is issue-new, and it is not safe to do unilaterally")
 	}
@@ -232,9 +181,6 @@ func TestExistingClusterLandsInTrustBoth(t *testing.T) {
 	}
 }
 
-// TestMigrationStateMachine walks the three phases and checks the reported state
-// at each step — the surface an operator uses to answer "am I done?", which is
-// otherwise unanswerable because phases 1 and 2 change nothing observable.
 func TestMigrationStateMachine(t *testing.T) {
 	unmigratedNode(t)
 	if got := EtcdMigrationState(); got != EtcdStateNotMigrated {
@@ -262,10 +208,7 @@ func TestMigrationStateMachine(t *testing.T) {
 	if got := EtcdMigrationState(); got != EtcdStateMigrated {
 		t.Errorf("after drop-root: %q, want %q", got, EtcdStateMigrated)
 	}
-	// The state string is a label this package computes about itself; the property
-	// the etcd trust hole is about is that the kubelet leaf no longer chains to an anchor etcd
-	// trusts. Assert the outcome, on the upgrade path, at the end of the walk —
-	// otherwise every assertion in this test is self-reported.
+	// The state string is self-reported; assert the outcome itself too.
 	err := etcdTrusts(t, "kubelet")
 	if err == nil {
 		t.Fatal("after a full upgrade-path migration a kubelet cert still authenticates to etcd — the etcd trust hole is NOT closed on upgraded clusters")
@@ -279,8 +222,6 @@ func TestMigrationStateMachine(t *testing.T) {
 	}
 }
 
-// TestPhasesRefuseOutOfOrder: each phase guards its own precondition, so an
-// operator driving phases by hand cannot lock a node out of its own etcd.
 func TestPhasesRefuseOutOfOrder(t *testing.T) {
 	unmigratedNode(t)
 	if err := MigrateEtcdIssueNew(tHost, tIP, nil); err == nil {
@@ -298,15 +239,7 @@ func TestPhasesRefuseOutOfOrder(t *testing.T) {
 	}
 }
 
-// TestRotateCAKeepsEtcdLeavesOnEtcdCA is the FORWARD-path regression test for
-// the trap: etcd's leaves signed by the cluster root on a migrated cluster.
-//
-// Four callers reach RotateLeaves: certs.Rotate (the daily renew timer),
-// `stratum server` (which runs certs.Rotate with --if-expiring=45 before writing
-// units), rotate-ca's sign-new phase, and rotate-ca's rollback. Any of them
-// re-signing etcd's leaves with the root on a migrated cluster would lock each
-// apiserver out of its own etcd — so the fuse is not "a year until the renew
-// timer fires", it is "the next time anyone runs `stratum certs rotate-ca`".
+// A RotateLeaves caller re-signing etcd's leaves with the root locks out each apiserver.
 func TestRotateCAKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -340,19 +273,13 @@ func TestRotateCAKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	if err := etcdTrusts(t, "apiserver-etcd-client"); err != nil {
 		t.Fatalf("apiserver locked out of its own etcd by a root rotation: %v", err)
 	}
-	// And the split must still hold afterward.
+	// And the split must still hold.
 	if err := etcdTrusts(t, "kubelet"); err == nil {
 		t.Error("a root rotation reopened the etcd trust hole")
 	}
 }
 
-// TestRotateCARollbackKeepsEtcdLeavesOnEtcdCA covers the ROLLBACK branch, which
-// needs its own test rather than a parameter on the forward one: it is reached
-// only after something has already gone wrong, a second failure there compounds,
-// and a trust-new -> sign-new -> finalize test passes while it is broken.
-//
-// certs.RollbackCA calls RotateLeaves whenever sign-new was reached (detected via
-// the .pre-carotate backup), so the same trap applies on the recovery path.
+// Reached only after something already went wrong, where a second failure compounds.
 func TestRotateCARollbackKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -371,8 +298,7 @@ func TestRotateCARollbackKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	if err := RollbackCA(); err != nil {
 		t.Fatalf("RollbackCA: %v", err)
 	}
-	// certs.RollbackCA reissues the leaves under the RESTORED root when sign-new
-	// was reached; reproduce that call here (the certs layer owns the detection).
+	// RollbackCA reissues under the restored root when sign-new was reached.
 	if err := RotateLeaves(tHost, tIP, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -390,10 +316,7 @@ func TestRotateCARollbackKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	}
 }
 
-// TestRotateLeavesPreservesRootSignerPreMigration is the mirror image: on a node
-// that has NOT migrated, a leaf rotation must leave etcd's certs root-signed.
-// Silently upgrading them to etcd-ca would be a unilateral phase issue-new — the
-// node's peers would still trust only the root and would reject it.
+// A leaf rotation on an unmigrated node must leave etcd's certs root-signed, or it is issue-new.
 func TestRotateLeavesPreservesRootSignerPreMigration(t *testing.T) {
 	unmigratedNode(t)
 	if err := GenerateAll(tHost, tIP, nil); err != nil { // mints etcd-ca, lands in trust-both
@@ -413,9 +336,6 @@ func TestRotateLeavesPreservesRootSignerPreMigration(t *testing.T) {
 	}
 }
 
-// TestEnsureEtcdTrustBundleNeverNarrows: the safety net must not silently perform
-// drop-root. Collapsing the bundle is gated on cluster-wide health and belongs to
-// the migration command alone.
 func TestEnsureEtcdTrustBundleNeverNarrows(t *testing.T) {
 	unmigratedNode(t)
 	if err := EnsureEtcdTrustBundle(); err != nil {
@@ -431,7 +351,6 @@ func TestEnsureEtcdTrustBundleNeverNarrows(t *testing.T) {
 	}
 }
 
-// TestEtcdCAKeyPerms: the etcd CA key is as sensitive as the root's.
 func TestEtcdCAKeyPerms(t *testing.T) {
 	genInto(t)
 	fi, err := os.Stat(filepath.Join(version.PKIDir, EtcdCAName+".key"))
@@ -443,14 +362,7 @@ func TestEtcdCAKeyPerms(t *testing.T) {
 	}
 }
 
-// A joining control plane has no etcd.crt, so GenerateAll mints one. Minting it
-// under the etcd CA while the rest of the cluster is still root-signed is a
-// unilateral issue-new: the live peers trust only the root, they reject the new
-// member's peer certificate, it never enters raft — and because MemberAdd has
-// already registered a VOTING member, a 1-CP→2-CP expansion moves quorum to
-// 2-of-2 with one member dead and the surviving control plane goes read-only.
-//
-// The downloaded trust bundle is what says which CA the live members accept.
+// Minting a joining node's etcd.crt under the etcd CA while the cluster is root-signed strands it.
 func TestJoiningNodeSignsEtcdLeavesTheClusterAccepts(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -461,7 +373,7 @@ func TestJoiningNodeSignsEtcdLeavesTheClusterAccepts(t *testing.T) {
 		{"cluster fully migrated", []string{EtcdCAName}, EtcdCAName},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// A joining node: shared CA material downloaded, no node-local leaves.
+			// Shared CA material downloaded, no node-local leaves.
 			version.PKIDir = t.TempDir()
 			if err := EnsureDir(); err != nil {
 				t.Fatal(err)
@@ -499,14 +411,7 @@ func TestJoiningNodeSignsEtcdLeavesTheClusterAccepts(t *testing.T) {
 	}
 }
 
-// A follower must not mint its own etcd CA.
-//
-// A bare command fanned out by `migrate-etcd-ca --cluster` would hit EnsureCA
-// on every control plane, each generating its OWN self-signed anchor. Phase
-// trust-both still looks healthy on all of them — every leaf is root-signed, so
-// nothing is observably wrong — and the cluster only comes apart at issue-new,
-// when each member presents a leaf its peers could not verify. Failing here
-// turns a silent quorum loss into a distribution error.
+// A fan-out minting a CA per control plane looks healthy until issue-new breaks peer TLS.
 func TestFollowerRefusesToMintEtcdCA(t *testing.T) {
 	unmigratedNode(t) // no etcd-ca on disk: material was not distributed
 
@@ -521,8 +426,7 @@ func TestFollowerRefusesToMintEtcdCA(t *testing.T) {
 		t.Error("refused but minted the CA anyway")
 	}
 
-	// With the cluster's anchor present (i.e. --fetch-shared worked), it proceeds
-	// and adopts that anchor rather than making a new one.
+	// With the cluster's anchor distributed (i.e. --fetch-shared worked), adopt it.
 	distributed, err := NewCA(EtcdCAName, "stratum-etcd-ca")
 	if err != nil {
 		t.Fatal(err)
@@ -535,9 +439,7 @@ func TestFollowerRefusesToMintEtcdCA(t *testing.T) {
 	}
 }
 
-// TestTrustStateIsOneAnswer: orchestrator distribution, the join-time signer
-// and the rotation-time anchors all turn on "what etcd trust state is this
-// cluster in". Three independent notions of that would drift, so they read one.
+// Orchestrator, join signer and rotation anchors read one trust state, so answers cannot drift.
 func TestTrustStateIsOneAnswer(t *testing.T) {
 	unmigratedNode(t)
 	if err := GenerateAll(tHost, tIP, nil); err != nil {
@@ -547,9 +449,7 @@ func TestTrustStateIsOneAnswer(t *testing.T) {
 	if !trust.TrustsRoot() || trust.State() != EtcdStateTrustBoth || trust.EtcdSignerName() != "ca" {
 		t.Fatalf("trust-both must be self-consistent, got %+v state=%s signer=%s", trust, trust.State(), trust.EtcdSignerName())
 	}
-	// A stale root — one a rotation replaced — is still a valid etcd client-auth
-	// anchor, and must not be mistaken for a migrated cluster just because it is
-	// no longer ca.crt. Counting anchors would miss exactly this.
+	// A rotation-replaced root is still a valid etcd client-auth anchor; counting anchors misses it.
 	if _, err := NewCA("ca", "stratum-ca-rotated"); err != nil {
 		t.Fatal(err)
 	}
@@ -565,16 +465,7 @@ func TestTrustStateIsOneAnswer(t *testing.T) {
 	}
 }
 
-// TestRootRotationOnUnmigratedClusterKeepsEtcdWorking is the forward-path
-// regression test, and the failure it catches is the OUTAGE, not a bundle
-// mismatch.
-//
-// etcd trusts etcd-ca-bundle.crt, which the rotation state machine does not
-// maintain — it maintains ca-bundle.crt. So on an unmigrated cluster — every
-// existing cluster, immediately after the binary upgrade — rotate-ca's sign-new
-// promotes a new root, etcdLeafSigner correctly keeps etcd's leaves on the root
-// (now the NEW one), and etcd's stale bundle cannot verify it. Cluster-wide
-// control-plane outage from the documented rotation command.
+// etcd trusts etcd-ca-bundle.crt, which the rotation does not maintain; sign-new is an outage.
 func TestRootRotationOnUnmigratedClusterKeepsEtcdWorking(t *testing.T) {
 	unmigratedNode(t)
 	if err := GenerateAll(tHost, tIP, nil); err != nil { // lands in trust-both
@@ -598,9 +489,7 @@ func TestRootRotationOnUnmigratedClusterKeepsEtcdWorking(t *testing.T) {
 	if err := RotateLeaves(tHost, tIP, nil); err != nil {
 		t.Fatal(err)
 	}
-	// THE assertion: etcd still accepts its own apiserver. A miss here is
-	// "certificate signed by unknown authority" — the apiserver locked out
-	// of its own etcd, which is the outage.
+	// The assertion: etcd still accepts its own apiserver, else it is locked out — the outage.
 	if err := etcdTrusts(t, "apiserver-etcd-client"); err != nil {
 		t.Fatalf("after rotate-ca sign-new the apiserver is locked out of its own etcd — this is the outage: %v", err)
 	}
@@ -608,8 +497,7 @@ func TestRootRotationOnUnmigratedClusterKeepsEtcdWorking(t *testing.T) {
 		t.Fatalf("after rotate-ca sign-new etcd's own server/peer cert is untrusted by its peers: %v", err)
 	}
 
-	// finalize: the old root must leave etcd's trust at the same instant it leaves
-	// Kubernetes trust — this is the --force / compromised-root case.
+	// The old root must leave etcd's trust as it leaves Kubernetes trust: the --force case.
 	oldRoot := loadCert(t, "ca.pre-carotate")
 	if err := FinalizeCA(); err != nil {
 		t.Fatal(err)
@@ -624,10 +512,7 @@ func TestRootRotationOnUnmigratedClusterKeepsEtcdWorking(t *testing.T) {
 	}
 }
 
-// TestRootRotationRollbackDropsTheNewRootFromEtcdTrust is the site that
-// fails silently: after a rolled-back rotation the etcd leaves go
-// back to the old root, which is still in the stale bundle, so the cluster keeps
-// running while etcd goes on trusting the root the rollback existed to un-trust.
+// After a rolled-back rotation the etcd leaves return to the old root, still in the stale bundle.
 func TestRootRotationRollbackDropsTheNewRootFromEtcdTrust(t *testing.T) {
 	unmigratedNode(t)
 	if err := GenerateAll(tHost, tIP, nil); err != nil {
@@ -666,9 +551,6 @@ func TestRootRotationRollbackDropsTheNewRootFromEtcdTrust(t *testing.T) {
 	}
 }
 
-// TestRootRotationLeavesMigratedClustersAlone: once the split is complete, a root
-// rotation must not touch etcd at all — that is the point of separating the
-// domains.
 func TestRootRotationLeavesMigratedClustersAlone(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -699,13 +581,7 @@ func TestRootRotationLeavesMigratedClustersAlone(t *testing.T) {
 	}
 }
 
-// TestTrustBothRefusesOnAMigratedNode is the trust-both replay guard. trust-both
-// re-adds the cluster root as an etcd client-auth anchor; replayed against a node
-// that has completed drop-root it re-opens the etcd trust hole — reported as success, by the
-// command named for closing it. A complete re-run would narrow again; the hazard
-// is one that stops early.
-//
-// rotate-ca solves the same problem the same way, at the start.
+// Replayed past drop-root, trust-both re-opens the etcd trust hole while reporting success.
 func TestTrustBothRefusesOnAMigratedNode(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -726,19 +602,7 @@ func TestTrustBothRefusesOnAMigratedNode(t *testing.T) {
 	}
 }
 
-// TestTrustBothRunsOnANodeThatOnlyLooksMigrated pins the OTHER half of the
-// replay guard: refusing the wrong node is its own defect.
-//
-// Asking only "does this node have the etcd anchor and no root?" also matches
-// a node holding an etcd-ca-only bundle whose leaves are still root-signed —
-// a node that has migrated NOTHING. A follower lands in exactly
-// that shape running `--phase=trust-both --fetch-shared` against a cluster whose
-// initiator has already finished: certs.migrateEtcdCAWith fetches before it migrates,
-// and the fetched material includes the cluster's current, narrow
-// etcd-ca-bundle.crt (ha.rotationCerts), while this node's own leaves are
-// untouched. Refused there, it never migrates at all — and it is now carrying a
-// bundle that does not accept its own apiserver's etcd client cert, so the next
-// etcd restart locks the apiserver out of its own etcd.
+// Refusing the wrong node strands it: it never migrates and a restart then locks its apiserver out.
 func TestTrustBothRunsOnANodeThatOnlyLooksMigrated(t *testing.T) {
 	unmigratedNode(t)
 	if _, err := EnsureCA(EtcdCAName, etcdCACommonName); err != nil {
@@ -763,11 +627,7 @@ func TestTrustBothRunsOnANodeThatOnlyLooksMigrated(t *testing.T) {
 	}
 }
 
-// Once Reissue has overwritten etcd.crt under the etcd CA, nothing else in this
-// tree puts it back on the root — a failed issue-new would otherwise be
-// unrecoverable, landing first on the initiator (the node the operator is
-// sitting on). Recovery is by re-derivation, matching rotate-ca's --rollback;
-// no leaf is backed up anywhere here.
+// Nothing but re-derivation puts etcd.crt back on the root; no leaf is backed up anywhere.
 func TestRollbackRederivesEtcdLeavesUnderTheRoot(t *testing.T) {
 	unmigratedNode(t)
 	if err := GenerateAll(tHost, tIP, nil); err != nil {
@@ -790,8 +650,7 @@ func TestRollbackRederivesEtcdLeavesUnderTheRoot(t *testing.T) {
 			t.Errorf("%s was not re-derived under the cluster root: %v", leaf, err)
 		}
 	}
-	// Trust must be WIDE after a rollback, not narrow: peers that already
-	// completed issue-new are still presenting etcd-CA-signed certs.
+	// Peers past issue-new still present etcd-CA-signed certs, so trust stays wide.
 	tr := ReadEtcdTrust()
 	if !tr.HasEtcdAnchor || !tr.TrustsRoot() {
 		t.Errorf("rollback left trust at %+v, want both anchors so mixed peers still verify", tr)
@@ -804,15 +663,7 @@ func TestRollbackRederivesEtcdLeavesUnderTheRoot(t *testing.T) {
 	}
 }
 
-// TestRollbackRefusesOnAMigratedNode is the replay guard applied to rollback.
-//
-// Rollback is the only path in this package back to a root-trusting etcd bundle,
-// and a presence-only check — a root CA is here, an etcd CA is here — passes on
-// a fully migrated node. Run there, one command re-opens the etcd trust hole on
-// a cluster the operator believes is fixed, and does it more thoroughly than a
-// replayed trust-both: the bundle widens AND this node's etcd.crt goes back to
-// the cluster root, while its peers enforce etcd-CA-only peer trust, so the node
-// also drops out of raft.
+// A presence-only check passes on a migrated node, where rollback also costs quorum.
 func TestRollbackRefusesOnAMigratedNode(t *testing.T) {
 	unmigratedNode(t)
 	migrateAll(t)
@@ -827,26 +678,12 @@ func TestRollbackRefusesOnAMigratedNode(t *testing.T) {
 	if !strings.Contains(err.Error(), EtcdPhaseDropRoot) {
 		t.Errorf("refusal should say the node already completed drop-root, got: %v", err)
 	}
-	// The refusal is the only place an operator learns there IS a way through, so
-	// it must name the escape hatch — as a WHOLE COMMAND, not a loose flag.
-	//
-	// A loose --force substring check passes on the prose while the command
-	// itself drifts, and the failure lands in front of an operator mid-incident
-	// who has been handed a command that does not exist. The command is named
-	// here, so this pins the command rather than the exported Go function.
-	//
-	// Pinning a string here can only prove the message is self-consistent. That
-	// the string is a command the BINARY actually has is asserted where the
-	// command tree lives, by resolving this same constant through cobra:
-	// pkg/cli, TestRefusalCommandsResolveThroughTheCommandTree. Together they
-	// close the loop that single assertion alone left half-open.
+	// The refusal must name the escape hatch as a whole command; pkg/cli resolves it through cobra.
 	wantHatch := EtcdMigrateCommand + " --cluster --rollback --force --yes"
 	if !strings.Contains(err.Error(), wantHatch) {
 		t.Errorf("refusal should name the escape hatch as a whole command %q, got: %v", wantHatch, err)
 	}
-	// It must refuse BEFORE writing: the bundle widens first, so a guard that
-	// fired after that step would have re-opened the vulnerability on its way to
-	// reporting a refusal.
+	// The bundle widens first, so the guard must fire before that step.
 	if err := etcdTrusts(t, "kubelet"); err == nil {
 		t.Fatal("the refused rollback still widened the bundle — a kubelet cert authenticates to etcd again")
 	}
@@ -854,9 +691,7 @@ func TestRollbackRefusesOnAMigratedNode(t *testing.T) {
 		t.Errorf("state after a refused rollback = %q, want %q", got, EtcdStateMigrated)
 	}
 
-	// The explicit opt-in is the only way through, and it really does un-migrate
-	// the node — which is why it is a separate, named entry point rather than a
-	// condition someone can fall into.
+	// The explicit opt-in really does un-migrate the node, hence a named entry point.
 	if err := MigrateEtcdRollbackFromMigrated(tHost, tIP, nil); err != nil {
 		t.Fatalf("explicit un-migration: %v", err)
 	}
@@ -871,11 +706,7 @@ func TestRollbackRefusesOnAMigratedNode(t *testing.T) {
 	}
 }
 
-// TestUnreadableTrustIsNeverAState is the pattern test: an error suppressed
-// becomes a plausible wrong state. Here that means a corrupt bundle on a
-// migrated node reading as "not migrated" — so trust-both would re-add the
-// cluster root it had just dropped, defeating the replay guard through a
-// swallowed parse error rather than by removing it.
+// A suppressed error becomes a plausible wrong state that trust-both acts on.
 func TestUnreadableTrustIsNeverAState(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -907,8 +738,7 @@ func TestUnreadableTrustIsNeverAState(t *testing.T) {
 	if !strings.Contains(err.Error(), "cannot determine") {
 		t.Errorf("refusal should say the state is undeterminable, got: %v", err)
 	}
-	// And so must rollback, for the same reason: "unknown" is not "not migrated",
-	// and rollback on a migrated node re-derives its leaves under the cluster root.
+	// Rollback on a migrated node re-derives its leaves under the cluster root.
 	err = MigrateEtcdRollback(tHost, tIP, nil)
 	if err == nil {
 		t.Fatal("rollback proceeded against an unreadable bundle — on a migrated node that re-opens the etcd trust hole and costs the node quorum")
@@ -918,11 +748,7 @@ func TestUnreadableTrustIsNeverAState(t *testing.T) {
 	}
 }
 
-// TestResumeSkipsAppliedPhases. The orchestrator's loop always restarts at
-// trust-both, so after a follower failed at drop-root, re-running --cluster
-// would hit the initiator's own replay guard with no way to resume. Skipping an
-// applied phase is not weakening that guard — a phase already applied adds
-// nothing for the guard to prevent.
+// A resumed run restarts at trust-both, so an applied phase must be skippable.
 func TestResumeSkipsAppliedPhases(t *testing.T) {
 	genInto(t)
 	migrateAll(t) // fully migrated: root already dropped
@@ -937,8 +763,7 @@ func TestResumeSkipsAppliedPhases(t *testing.T) {
 			t.Errorf("%s reported as not applied on a fully-migrated node — a resumed --cluster run would re-run it and trip the replay guard", phase)
 		}
 	}
-	// ...but drop-root is never skipped: nothing is past it, it is idempotent,
-	// and it ends in the process-derived probe, so re-running re-verifies.
+	// ...but drop-root is never skipped: re-running it re-verifies rather than re-does.
 	if applied, err := EtcdPhaseApplied(EtcdPhaseDropRoot); err != nil || applied {
 		t.Errorf("drop-root reported as skippable (%v, err=%v) — it is the phase that proves the migration landed", applied, err)
 	}
@@ -948,9 +773,7 @@ func TestResumeSkipsAppliedPhases(t *testing.T) {
 	if err := GenerateAll(tHost, tIP, nil); err != nil {
 		t.Fatal(err)
 	}
-	// Nothing is skippable here. A node AT trust-both is not PAST it: its restart
-	// may never have happened and the on-disk bundle cannot tell us, so a resumed
-	// run re-does the phase — which is idempotent — rather than assuming.
+	// A node AT trust-both is not PAST it: its restart may never have happened.
 	for phase, want := range map[string]bool{
 		EtcdPhaseTrustBoth: false,
 		EtcdPhaseIssueNew:  false,

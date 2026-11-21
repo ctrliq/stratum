@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// writeFakeBin drops an executable shell script at version.BinDir/name that
-// exits with code, redirecting version.BinDir to a temp dir for the
-// duration of the test (it's a var precisely so tests can do this).
 func writeFakeBin(t *testing.T, name string, code int) {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,11 +28,7 @@ func writeFakeBin(t *testing.T, name string, code int) {
 	}
 }
 
-// TestRunMulticallPropagatesExitCode pins runMulticall's contract: the
-// kubectl/etcdctl passthrough returns *ErrExitCode with the child's exact
-// code and never calls os.Exit itself — pkg/cli is a public, importable
-// package, so an os.Exit would terminate an importer's whole process
-// instead of returning an observable error the caller can see and handle.
+// pkg/cli is importable: a child failure must return *ErrExitCode, never os.Exit.
 func TestRunMulticallPropagatesExitCode(t *testing.T) {
 	for _, code := range []int{1, 2, 137} {
 		t.Run(strconv.Itoa(code), func(t *testing.T) {
@@ -59,23 +52,7 @@ func TestRunMulticallSuccessReturnsNil(t *testing.T) {
 	}
 }
 
-// writeEnvDumpBin drops an executable at version.BinDir/name that writes its
-// own environment to a file, and returns that file's path. It is the sibling of
-// writeFakeBin for the questions that are about the CHILD'S ENVIRONMENT rather
-// than its exit code.
-//
-// The dump goes to a file rather than stdout on purpose. runMulticall assigns
-// cmd.Stdout = os.Stdout inside the function, so capturing stdout means swapping
-// the process's own os.Stdout for a pipe; the pattern used elsewhere in this repo
-// for that (internal/upgrade/node_test.go) reads the pipe only after closing the
-// write end, which deadlocks once the child writes more than the pipe buffer. An
-// environment dump is comfortably under that today, which is exactly the kind of
-// margin that disappears silently.
-//
-// The path is passed through the environment rather than argv because the
-// commands under test are DisableFlagParsing passthroughs: anything in argv is
-// the child's business, and a test that relies on argv would be pinning the
-// wrong contract.
+// the path rides in the env, not argv: these are DisableFlagParsing passthroughs.
 func writeEnvDumpBin(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -92,10 +69,7 @@ func writeEnvDumpBin(t *testing.T, name string) string {
 	return out
 }
 
-// childEnv runs the command and returns the environment its child actually saw.
-// exec.Cmd de-duplicates Env before spawning, so each key appears once and the
-// map needs no last-wins handling of its own — that de-duplication is precisely
-// the mechanism the precedence rule relies on.
+// exec dedups Env last-wins, which is the mechanism the precedence rule relies on.
 func childEnv(t *testing.T, cmd *cobra.Command, outFile string) map[string]string {
 	t.Helper()
 	if err := cmd.RunE(nil, nil); err != nil {
@@ -114,8 +88,6 @@ func childEnv(t *testing.T, cmd *cobra.Command, outFile string) map[string]strin
 	return env
 }
 
-// redirectPKI points version.PKIDir at a temp dir so the injected credential
-// paths are deterministic and do not depend on the machine running the test.
 func redirectPKI(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -125,19 +97,14 @@ func redirectPKI(t *testing.T) string {
 	return dir
 }
 
-// `stratum etcdctl` has to be usable as typed. etcd is rendered TLS-only with
-// --client-cert-auth (internal/staticpod/args.go), while an unconfigured etcdctl
-// opens a PLAINTEXT connection to 127.0.0.1:2379 — without the injected
-// credentials every `stratum etcdctl` subcommand would fail on every node.
+// etcd is rendered TLS-only, so without the injected mTLS env etcdctl cannot connect.
 func TestEtcdctlCommandInjectsMTLSEnv(t *testing.T) {
 	pki := redirectPKI(t)
 	out := writeEnvDumpBin(t, "etcdctl")
 
 	env := childEnv(t, newEtcdctlCommand(), out)
 
-	// Not ETCDCTL_API: the bundled etcdctl is v3-only and prints
-	// `unrecognized environment variable ETCDCTL_API=3` if it is set, which
-	// would land in front of the operator on every invocation.
+	// etcdctl 3.x warns about ETCDCTL_API on every run.
 	if v, ok := env["ETCDCTL_API"]; ok {
 		t.Errorf("ETCDCTL_API=%q was injected; etcdctl 3.x warns about it on every run", v)
 	}
@@ -150,22 +117,13 @@ func TestEtcdctlCommandInjectsMTLSEnv(t *testing.T) {
 			t.Errorf("child saw %s=%q, want %q", k, got, want)
 		}
 	}
-	// CACERT is resolved through pki.EtcdTrustFile, whose preference order is
-	// that package's business and is pinned by its own tests. All this asserts
-	// is that a trust file was named at all.
+	// the trust file's exact name is pki's business, pinned by its own tests.
 	if env["ETCDCTL_CACERT"] == "" {
 		t.Error("child saw no ETCDCTL_CACERT, so etcdctl cannot verify the server")
 	}
 }
 
-// The operator is the authority. Injecting OVER an explicit ETCDCTL_ENDPOINTS
-// would silently redirect `member remove <ID>` from the peer the operator named
-// to the local node — removing the wrong member from the cluster. That is a
-// worse defect than a missing default, so it gets its own test.
-//
-// This is also the case that distinguishes the two possible precedence
-// schemes: under all-or-nothing deference the injected CACERT below would be
-// absent, and the operator would have to supply all five variables to use one.
+// injecting over the operator's endpoint could remove the wrong etcd member.
 func TestEtcdctlCommandDefersToOperatorEnv(t *testing.T) {
 	redirectPKI(t)
 	out := writeEnvDumpBin(t, "etcdctl")
@@ -181,10 +139,7 @@ func TestEtcdctlCommandDefersToOperatorEnv(t *testing.T) {
 	}
 }
 
-// etcdctl refuses a flag and its environment variable together, so a
-// default injected for a flag the operator also passed made the command fail
-// ("conflicting environment variable"). The flag withdraws its own default —
-// only that one; the mTLS credentials stay so the named member is reachable.
+// etcdctl refuses a flag paired with its env var ("conflicting environment variable").
 func TestEtcdctlDefaultsYieldToFlags(t *testing.T) {
 	env := []string{
 		"ETCDCTL_ENDPOINTS=https://127.0.0.1:2379",
@@ -222,9 +177,6 @@ func TestEtcdctlDefaultsYieldToFlags(t *testing.T) {
 	}
 }
 
-// End to end through the real command: `stratum etcdctl --endpoints <peer>`
-// reaches the child with the operator's endpoint on argv, no injected
-// ETCDCTL_ENDPOINTS to conflict with it, and the credentials still injected.
 func TestEtcdctlCommandEndpointsFlagDoesNotConflict(t *testing.T) {
 	redirectPKI(t)
 	out := writeEnvDumpBin(t, "etcdctl")
@@ -246,7 +198,6 @@ func TestEtcdctlCommandEndpointsFlagDoesNotConflict(t *testing.T) {
 	}
 }
 
-// On a control-plane node kubectl should just work.
 func TestKubectlCommandInjectsKubeconfigWhenAdminConfExists(t *testing.T) {
 	out := writeEnvDumpBin(t, "kubectl")
 	conf := filepath.Join(t.TempDir(), "admin.conf")
@@ -262,9 +213,7 @@ func TestKubectlCommandInjectsKubeconfigWhenAdminConfExists(t *testing.T) {
 	}
 }
 
-// A WORKER has no admin.conf. Naming a file that does not exist is worse than
-// naming nothing: kubectl stops at the missing file instead of falling through
-// to its own resolution, so the operator loses the config they do have.
+// naming a missing KUBECONFIG file is worse than none: kubectl stops at it.
 func TestKubectlCommandStaysPassthroughWithoutAdminConf(t *testing.T) {
 	out := writeEnvDumpBin(t, "kubectl")
 	orig := version.AdminConf
@@ -278,7 +227,6 @@ func TestKubectlCommandStaysPassthroughWithoutAdminConf(t *testing.T) {
 	}
 }
 
-// Same authority rule as etcdctl.
 func TestKubectlCommandDefersToOperatorKubeconfig(t *testing.T) {
 	out := writeEnvDumpBin(t, "kubectl")
 	conf := filepath.Join(t.TempDir(), "admin.conf")

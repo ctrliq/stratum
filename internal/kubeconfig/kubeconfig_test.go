@@ -14,8 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// useTempDirs points the kubeconfig and PKI paths at a fresh temp tree with a
-// generated PKI, for one test.
 func useTempDirs(t *testing.T) {
 	t.Helper()
 	base := t.TempDir()
@@ -49,7 +47,6 @@ func TestGenerateAll(t *testing.T) {
 		}
 	}
 
-	// admin.conf must be a usable kubeconfig with embedded creds + CA.
 	cfg, err := clientcmd.LoadFromFile(version.AdminConf)
 	if err != nil {
 		t.Fatalf("load admin.conf: %v", err)
@@ -85,7 +82,6 @@ func TestKubeconfigPermsRestrictive(t *testing.T) {
 	if err := GenerateAll("cp1", "https://127.0.0.1:6443", false); err != nil {
 		t.Fatal(err)
 	}
-	// kubeconfigs embed private keys, so they must not be world/group readable.
 	fi, err := os.Stat(filepath.Join(version.KubeconfigDir, "admin.kubeconfig"))
 	if err != nil {
 		t.Fatal(err)
@@ -95,9 +91,6 @@ func TestKubeconfigPermsRestrictive(t *testing.T) {
 	}
 }
 
-// TestGenerateAllWithoutSuperAdminLeaf pins that a control plane an earlier
-// release started, with no super-admin leaf yet, still regenerates its
-// kubeconfigs, as CA rotation's trust-new does, and gets no super-admin.conf.
 func TestGenerateAllWithoutSuperAdminLeaf(t *testing.T) {
 	base := t.TempDir()
 	version.PKIDir = filepath.Join(base, "pki")
@@ -123,9 +116,6 @@ func TestGenerateAllWithoutSuperAdminLeaf(t *testing.T) {
 	}
 }
 
-// TestGenerateAllSuperAdmin pins that super-admin.conf is written 0600 beside
-// admin.conf, against the same server, carrying the super-admin leaf, and that
-// admin.conf carries the admin leaf rather than it.
 func TestGenerateAllSuperAdmin(t *testing.T) {
 	base := t.TempDir()
 	version.PKIDir = filepath.Join(base, "pki")
@@ -168,9 +158,6 @@ func TestGenerateAllSuperAdmin(t *testing.T) {
 	}
 }
 
-// TestWriteEmbedsBundle: Write embeds the (possibly multi-cert) ca-bundle.crt so
-// a kubeconfig trusts old‖new across a CA rotation, and falls back to ca.crt when
-// no bundle exists (clusters predating the bundle files).
 func TestWriteEmbedsBundle(t *testing.T) {
 	countCerts := func(pemBytes []byte) int {
 		n := 0
@@ -193,7 +180,6 @@ func TestWriteEmbedsBundle(t *testing.T) {
 	if err := pki.GenerateAll("cp1", "10.0.0.5", nil); err != nil {
 		t.Fatal(err)
 	}
-	// stage a CA rotation → ca-bundle.crt now has old‖new
 	if err := pki.RotateCAMaterial(false); err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +194,6 @@ func TestWriteEmbedsBundle(t *testing.T) {
 		t.Errorf("kubeconfig embeds %d CA certs during rotation, want 2 (bundle)", got)
 	}
 
-	// fallback: no bundle → embed the single ca.crt
 	if err := os.Remove(filepath.Join(version.PKIDir, "ca-bundle.crt")); err != nil {
 		t.Fatal(err)
 	}
@@ -221,9 +206,6 @@ func TestWriteEmbedsBundle(t *testing.T) {
 	}
 }
 
-// TestReadWithClusterCA rewrites the embedded CA data (the worker-trust refresh path)
-// while preserving the server endpoint, and leaves the original file untouched —
-// the caller stages the returned bytes and commits them itself.
 func TestReadWithClusterCA(t *testing.T) {
 	base := t.TempDir()
 	version.PKIDir = filepath.Join(base, "pki")
@@ -258,7 +240,6 @@ func TestReadWithClusterCA(t *testing.T) {
 	if c.Server != lb {
 		t.Errorf("ReadWithClusterCA changed the server endpoint: %q, want %q", c.Server, lb)
 	}
-	// Returning bytes must not be a write: the atomic-commit caller relies on it.
 	after, err := os.ReadFile(kc)
 	if err != nil {
 		t.Fatal(err)
@@ -268,8 +249,6 @@ func TestReadWithClusterCA(t *testing.T) {
 	}
 }
 
-// TestCurrentServer round-trips the endpoint — the guard that cert rotation
-// preserves a post-ha-repoint LB endpoint instead of reverting to :6443.
 func TestCurrentServer(t *testing.T) {
 	version.PKIDir = t.TempDir()
 	version.KubeconfigDir = t.TempDir()
@@ -291,11 +270,6 @@ func TestCurrentServer(t *testing.T) {
 	}
 }
 
-// TestGenerateAllKubeVIP pins that kube-vip.kubeconfig is written by
-// GenerateAll on a VIP node, so every caller that rewrites the others (CA
-// rotation, leaf rotation) rewrites it too. It targets the local apiserver even
-// when the others target the VIP, and carries the current kube-vip leaf and
-// trust bundle.
 func TestGenerateAllKubeVIP(t *testing.T) {
 	base := t.TempDir()
 	version.PKIDir = filepath.Join(base, "pki")
@@ -356,10 +330,6 @@ func TestGenerateAllKubeVIP(t *testing.T) {
 	}
 }
 
-// TestGenerateAllScheduler pins that the scheduler's kubeconfig is written,
-// against the server the others carry, in its own directory and at the legacy
-// path an older kube-scheduler manifest names, and that RefreshScheduler
-// rewrites both from the server at the legacy path.
 func TestGenerateAllScheduler(t *testing.T) {
 	base := t.TempDir()
 	version.PKIDir = filepath.Join(base, "pki")
@@ -413,13 +383,6 @@ func TestGenerateAllScheduler(t *testing.T) {
 	}
 }
 
-// TestWriteReplacesTheFileNotTruncate: Write renders the kubeconfig with
-// clientcmd.Write and replaces the file atomically — a reader holding the old
-// file (the hard link below) keeps the old bytes while the file at path gains
-// the new server. clientcmd.WriteToFile writes in place with no temp file, so
-// a crash mid-write leaves a truncated kubeconfig: on a worker that is a
-// kubelet.kubeconfig that stops the kubelet from starting at all — the
-// hazard the package's own comment names.
 func TestWriteReplacesTheFileNotTruncate(t *testing.T) {
 	useTempDirs(t)
 	e := Entry{File: "admin.kubeconfig", User: "admin", CertName: "admin"}
@@ -458,10 +421,6 @@ func TestWriteReplacesTheFileNotTruncate(t *testing.T) {
 	}
 }
 
-// TestSetServerReplacesTheFileNotTruncate: SetServer — the HA repoint
-// primitive — replaces the kubeconfig atomically and keeps its 0600 mode: it
-// rewrites the file the kubelet authenticates with, and a truncated one stops
-// a worker nobody is logged in to.
 func TestSetServerReplacesTheFileNotTruncate(t *testing.T) {
 	useTempDirs(t)
 	if err := GenerateAll("cp1", "https://127.0.0.1:6443", false); err != nil {
@@ -500,9 +459,6 @@ func TestSetServerReplacesTheFileNotTruncate(t *testing.T) {
 	}
 }
 
-// TestWriteFailureLeavesNoScratch: a Write that fails (the destination
-// occupied by a directory here) leaves the directory as it found it — no temp
-// copy of the kubeconfig beside it.
 func TestWriteFailureLeavesNoScratch(t *testing.T) {
 	useTempDirs(t)
 	occupied := filepath.Join(version.KubeconfigDir, "admin.kubeconfig")
@@ -525,12 +481,6 @@ func TestWriteFailureLeavesNoScratch(t *testing.T) {
 	}
 }
 
-// TestGenerateAllAdminConfCopyIsAtomic covers the admin.conf copy that closes
-// GenerateAll: it is the operator's --kubeconfig and kubectl's on a control
-// plane, so it is written like every kubeconfig above it. The copy replaces
-// the file (a reader holding the old one keeps the old bytes) at 0600, and a
-// copy that fails (the destination occupied by a directory here) leaves no
-// temp copy beside it.
 func TestGenerateAllAdminConfCopyIsAtomic(t *testing.T) {
 	t.Run("replaces the file, not truncates, at 0600", func(t *testing.T) {
 		useTempDirs(t)
@@ -547,9 +497,6 @@ func TestGenerateAllAdminConfCopyIsAtomic(t *testing.T) {
 		}
 		t.Cleanup(func() { os.Remove(reader) })
 
-		// A second GenerateAll against a different endpoint rewrites
-		// admin.kubeconfig, so the copy's bytes differ and the test can
-		// tell a replace from a truncate.
 		if err := GenerateAll("cp1", "https://10.0.0.9:6443", false); err != nil {
 			t.Fatal(err)
 		}
@@ -601,8 +548,6 @@ func TestNodeServerURL(t *testing.T) {
 		{"a record without a recorded endpoint derives the VIP", "", "10.0.0.10", "https://10.0.0.10:6443"},
 		{"a recorded endpoint wins over the VIP", "https://192.168.99.240:6443", "10.0.0.10", "https://192.168.99.240:6443"},
 		{"a recorded endpoint wins without a VIP", "https://127.0.0.1:7445", "", "https://127.0.0.1:7445"},
-		// An IPv6 VIP must be bracketed: unbracketed, url.Parse reads the
-		// address's last groups as the port and every client refuses it.
 		{"an IPv6 VIP is bracketed", "", "fd00::10", "https://[fd00::10]:6443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

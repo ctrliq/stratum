@@ -6,11 +6,7 @@ import (
 	"testing"
 )
 
-// TestAPIServerForIsLeaderIndependent pins leader-independent apiserver
-// settings. The deployer runs on whichever control plane holds the operator
-// lease, so a render that bakes in that node's own IP would re-point every
-// agent and roll the DaemonSet in the middle of the failover that caused it.
-// Given the same cluster, every leader must produce the same settings.
+// A render baking in the leader's own IP would roll the DaemonSet mid-failover.
 func TestAPIServerForIsLeaderIndependent(t *testing.T) {
 	cps := []string{"192.168.99.13", "192.168.99.12", "192.168.99.14"}
 	want := APIServerFor("", "192.168.99.12", cps)
@@ -54,9 +50,6 @@ func TestAPIServerFor(t *testing.T) {
 	}
 }
 
-// TestFillAPIServerWithOneAddressRendersEmptyURLList: a VIP or single-node
-// cluster renders the empty URL list the chart produces with
-// k8s.apiServerURLs unset, so upgrading one rolls nothing.
 func TestFillAPIServerWithOneAddressRendersEmptyURLList(t *testing.T) {
 	out := string(FillAPIServer(RenderCilium(false, CiliumSettings{}), APIServer{Host: "10.0.0.10"}))
 	for _, want := range []string{`k8s-api-server-urls: ""`, `- "--k8s-api-server-urls="`} {

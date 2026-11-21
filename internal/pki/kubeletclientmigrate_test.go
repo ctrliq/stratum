@@ -50,10 +50,7 @@ func assertPKIUnchanged(t *testing.T, when string, before map[string]string) {
 	}
 }
 
-// Each phase moves a legacy control plane one step, and the apiserver's kubelet
-// client certificate stays trusted by its kubelet at every step. Until
-// drop-root the kubelet still trusts the root, and the root-bundle sync that
-// a restart or a rotation runs leaves the widened bundle alone.
+// Each phase moves a legacy node one step with the apiserver's client cert trusted throughout.
 func TestKubeletClientMigrationMovesALegacyNodeOntoItsOwnCA(t *testing.T) {
 	genLegacy(t)
 	assertKubeletState(t, "legacy", KubeletStateNotMigrated)
@@ -90,8 +87,6 @@ func TestKubeletClientMigrationMovesALegacyNodeOntoItsOwnCA(t *testing.T) {
 	assertSplit(t, KubeletPhaseDropRoot)
 }
 
-// The rollback phases take a migrated control plane back to the root, its
-// kubelet trusting the apiserver's client certificate at every step.
 func TestKubeletClientRollbackReturnsAMigratedNodeToTheRoot(t *testing.T) {
 	genInto(t)
 	assertKubeletState(t, "fresh install", KubeletStateMigrated)
@@ -120,8 +115,6 @@ func TestKubeletClientRollbackReturnsAMigratedNodeToTheRoot(t *testing.T) {
 	assertKubeletTrustsAPIServer(t, KubeletPhaseRemoveCA)
 }
 
-// A phase run out of order, or on a node it does not fit, is refused before it
-// writes anything.
 func TestKubeletClientMigrationRefusesAPhaseOutOfOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -159,8 +152,7 @@ func TestKubeletClientMigrationRefusesAPhaseOutOfOrder(t *testing.T) {
 	}
 }
 
-// A CA rotation would rewrite the kubelet bundle from ca-bundle.crt and drop
-// the kubelet-client CA, so it is refused part way through the migration.
+// A rotation would rewrite the kubelet bundle from ca-bundle.crt, so it is refused mid-migration.
 func TestCARotationRefusesAMigratingNode(t *testing.T) {
 	genLegacy(t)
 	if err := KubeletClientTrustBoth(true); err != nil {
@@ -174,9 +166,7 @@ func TestCARotationRefusesAMigratingNode(t *testing.T) {
 	assertPKIUnchanged(t, "the refused rotation", before)
 }
 
-// A legacy rotation's finalize leaves the kubelet bundle old‖new beside a new
-// ca-bundle.crt before the sync. No kubelet-client CA is in it, so it is not
-// read as a migration and the sync narrows it.
+// A legacy rotation's finalize leaves no kubelet-client CA in the bundle, so the sync narrows it.
 func TestALegacyRotationIsNotAMigration(t *testing.T) {
 	genLegacy(t)
 	for _, phase := range []func() error{func() error { return RotateCAMaterial(false) }, PromoteCA} {
@@ -225,8 +215,6 @@ func TestAddKubeletClientAnchorTakesOnlyAKubeletClientCA(t *testing.T) {
 	}
 }
 
-// ProbeKubeletClientAuth reports the kubelet's answer to the client
-// certificate it presents.
 func TestProbeKubeletClientAuthReportsTheKubeletsAnswer(t *testing.T) {
 	genInto(t)
 	pool := poolFromBundle(t, KubeletClientBundleBase)
@@ -272,8 +260,6 @@ func TestProbeKubeletClientAuthReportsTheKubeletsAnswer(t *testing.T) {
 	}
 }
 
-// A legacy node's unreadable kubelet bundle does not stop a rotation, which
-// re-syncs it from ca-bundle.crt.
 func TestCARotationStillRepairsALegacyKubeletBundle(t *testing.T) {
 	genLegacy(t)
 	if err := os.WriteFile(KubeletClientBundlePath(), []byte("not PEM"), 0o644); err != nil {

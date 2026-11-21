@@ -13,24 +13,12 @@ import (
 	"time"
 )
 
-// Request logging, cut down to the access log.
-//
-// It does not record every mutating proxied request or every Secret read: a
-// proxy that acted as one privileged ServiceAccount would need that, since its
-// log would be the only place a human action was attributed. Here each
-// request carries the user's own bearer token, so the apiserver's audit log
-// records the real user for every proxied call — a second, weaker copy in the
-// dashboard's stdout would add nothing it does not already have. What is kept
-// is the access log (so a refusal has a trace), the panic guard, and the
-// streaming-safe recorder both need.
-
 func requestID(ctx context.Context) string {
 	id, _ := ctx.Value(ctxRequestID).(string)
 	return id
 }
 
-// requestIDMiddleware stamps a fresh 16-hex id on each request and echoes it
-// in X-Request-ID. Inbound ids are ignored: they are attacker-controlled text.
+// Stamps a fresh id per request; inbound X-Request-ID values are attacker-controlled text.
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var b [8]byte
@@ -41,8 +29,6 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// recoverMiddleware turns a handler panic into a 500 and a log line.
-// http.ErrAbortHandler is re-panicked as net/http expects.
 func recoverMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,8 +39,7 @@ func recoverMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 					}
 					log.Error("panic serving request", "id", requestID(r.Context()), "path", r.URL.Path, "panic", rec, "stack", string(debug.Stack()))
 					if rw, ok := w.(*responseRecorder); !ok || !rw.wrote {
-						// Not http.Error: it forces Content-Type to text/plain,
-						// so this JSON body would go out mislabelled.
+						// Not http.Error: it forces Content-Type to text/plain.
 						h := w.Header()
 						h.Del("Content-Length")
 						h.Set("Content-Type", "application/json")
@@ -69,10 +54,7 @@ func recoverMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// responseRecorder captures status and byte count while staying transparent to
-// streaming and hijacking: it implements Flush, Hijack and Unwrap so
-// httputil.ReverseProxy (via http.ResponseController) reaches the real writer.
-// Without that, exec and log-follow break.
+// Flush/Hijack/Unwrap so httputil.ReverseProxy reaches the real writer; else streaming breaks.
 type responseRecorder struct {
 	http.ResponseWriter
 	status int
@@ -99,20 +81,14 @@ func (r *responseRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer.
 func (r *responseRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
-// Flush commits the response headers exactly as Write does, so it has to mark
-// the recorder written. Otherwise a handler that flushes a stream and then
-// panics looks untouched to recoverMiddleware, which appends a JSON 500 to a
-// response already on the wire — and the access log reports the status the
-// stream never had.
+// Marks the recorder written, or a flushed-then-panicked stream gets a 500 appended on the wire.
 func (r *responseRecorder) Flush() {
 	r.wrote = true
 	_ = http.NewResponseController(r.ResponseWriter).Flush()
 }
 
-// Hijack forwards to the underlying writer; the status is recorded as 101.
 func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	c, rw, err := http.NewResponseController(r.ResponseWriter).Hijack()
 	if err == nil {
@@ -122,8 +98,6 @@ func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return c, rw, err
 }
 
-// accessLog logs one line per request, with the actor once the session layer
-// has resolved it.
 func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -145,8 +119,7 @@ func accessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// remoteIP is the client IP without port. X-Forwarded-For is deliberately
-// ignored: it is caller-supplied, and the proxy scrubs it anyway.
+// X-Forwarded-For is deliberately ignored: caller-supplied, and the proxy scrubs it anyway.
 func remoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

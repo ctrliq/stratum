@@ -27,9 +27,7 @@ once when a cluster that began as a single controller grows into HA.`,
 			if vip == "" {
 				return fmt.Errorf("ha-repoint: --vip is required")
 			}
-			// A failed best-effort restart is a warning beside a nil error
-			// (the repoint landed), and the operation prints the warning
-			// itself, so the command still succeeds and says so.
+			// A failed restart is a warning beside a nil error; the operation prints it itself.
 			if cilium {
 				_, err := ha.RepointCilium(os.Stdout, vip)
 				return err

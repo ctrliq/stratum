@@ -29,22 +29,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// --- the join fence admission policy ---
-//
-// The stratum:certs-reader Role gives every control-plane join token create,
-// update and delete on the maintenance leases, and RBAC cannot restrict the
-// create by name. The JoinFencePolicy admission policy is what keeps a token
-// to its own fence, so the mint must never publish those rules without it. Its
-// CEL is evaluated by a real apiserver in internal/operator's
-// TestJoinTokenHoldsOnlyItsOwnMaintenanceFence; the fake clientset here
-// emulates the policy's rules (joinFencePolicyDenial) the way
-// leaseRequestAllowed emulates RBAC's, with the denial the real apiserver
-// answers.
-
-// TestUploadCertsPutsTheJoinFencePolicyInPlaceBeforeTheLeaseGrant: the mint
-// writes the admission policy and a binding that denies on it before the Role
-// that grants join tokens the leases, so there is no moment at which the grant
-// exists without the policy.
 func TestUploadCertsPutsTheJoinFencePolicyInPlaceBeforeTheLeaseGrant(t *testing.T) {
 	cs := uploadFixture(t)
 	if err := UploadCerts(mustKey(t), tokenOwner("bootstrap-token-abc123", "uid-token-1"), nil); err != nil {
@@ -71,10 +55,7 @@ func TestUploadCertsPutsTheJoinFencePolicyInPlaceBeforeTheLeaseGrant(t *testing.
 	joinFencePolicyInPlace(t, cs)
 }
 
-// TestUploadCertsGrantsNoLeasesWithoutTheJoinFencePolicy: a mint that cannot
-// put the policy or its binding in place fails before the Role, so neither a
-// fresh cluster nor one whose Role predates the lease grant gains lease rules,
-// and no Secret is written under a grant the mint did not finish.
+// the Role must not exist before the policy and its binding deny on it
 func TestUploadCertsGrantsNoLeasesWithoutTheJoinFencePolicy(t *testing.T) {
 	for _, resource := range []string{"validatingadmissionpolicies", "validatingadmissionpolicybindings"} {
 		for _, existingRole := range []bool{false, true} {
@@ -115,10 +96,6 @@ func TestUploadCertsGrantsNoLeasesWithoutTheJoinFencePolicy(t *testing.T) {
 	}
 }
 
-// TestUploadCertsConvergesADriftedJoinFencePolicy: create-if-absent is not
-// enough. A policy whose rules were edited, or a binding that only warns or
-// audits, leaves the lease grant unconstrained, so the mint rewrites both to
-// the shipped spec before the Role.
 func TestUploadCertsConvergesADriftedJoinFencePolicy(t *testing.T) {
 	cs := uploadFixture(t)
 	adm := cs.AdmissionregistrationV1()
@@ -153,9 +130,6 @@ func TestUploadCertsConvergesADriftedJoinFencePolicy(t *testing.T) {
 	}
 }
 
-// joinFencePolicyInPlace fails unless the policy and a binding that denies on
-// it, with nothing narrowing what it matches, are stored, and returns the
-// policy.
 func joinFencePolicyInPlace(t *testing.T, cs kubernetes.Interface) *admissionregistrationv1.ValidatingAdmissionPolicy {
 	t.Helper()
 	adm := cs.AdmissionregistrationV1()
@@ -177,12 +151,7 @@ func joinFencePolicyInPlace(t *testing.T, cs kubernetes.Interface) *admissionreg
 	return p
 }
 
-// joinFencePolicyDenial emulates the JoinFencePolicy admission policy for a
-// lease request by username, a member of the control-plane bootstrap group:
-// nil when the policy admits it, otherwise the denial in the shape the
-// apiserver's admission dispatcher answers with (an Invalid status naming the
-// policy and its binding, which the envtest case holds the real one to).
-// stored is the lease as the apiserver has it, nil when absent.
+// the denial must match the apiserver's shape: an Invalid status naming the policy and its binding
 func joinFencePolicyDenial(username string, action k8stesting.Action, stored *coordinationv1.Lease) error {
 	if action.GetNamespace() != "kube-system" {
 		return nil
@@ -241,10 +210,7 @@ func joinFencePolicyDenial(username string, action k8stesting.Action, stored *co
 	return nil
 }
 
-// joinerClientset is a fake apiserver as a control-plane join token sees it:
-// lease requests pass RBAC under role (leaseRequestAllowed) and then the join
-// fence policy for user system:bootstrap:<tokenID>. Leases the test seeds
-// through the tracker come from some other identity, which neither applies to.
+// leases seeded through the tracker come from another identity, which neither layer applies to
 func joinerClientset(role *rbacv1.Role, tokenID string) *fake.Clientset {
 	cs := fake.NewSimpleClientset()
 	gvr := coordinationv1.SchemeGroupVersion.WithResource("leases")
@@ -279,7 +245,6 @@ func joinerClientset(role *rbacv1.Role, tokenID string) *fake.Clientset {
 	return cs
 }
 
-// publishedCertsReaderRole is the stratum:certs-reader Role a mint publishes.
 func publishedCertsReaderRole(t *testing.T) *rbacv1.Role {
 	t.Helper()
 	cs := uploadFixture(t)
@@ -293,8 +258,6 @@ func publishedCertsReaderRole(t *testing.T) *rbacv1.Role {
 	return role
 }
 
-// joinFenceFixture writes the bootstrap kubeconfig a join carries for token
-// <tokenID>.<secret> and points the join fence's client at cs.
 func joinFenceFixture(t *testing.T, cs kubernetes.Interface, tokenID string) {
 	t.Helper()
 	origConf, origBoot := version.ConfDir, version.BootstrapKubeconfig
@@ -328,10 +291,7 @@ func seedLease(t *testing.T, cs *fake.Clientset, name, holder string, renewed ti
 	}
 }
 
-// TestJoinFenceHolderNamesTheBootstrapToken: the join takes its fence under
-// a holder that starts with its bootstrap token's username, so the policy
-// admits it, and renews and releases it as its own; the rest of the identity
-// is MaintenanceHolder's host/pid/nanoseconds, distinct per take.
+// the holder is the token username plus MaintenanceHolder's host/pid/nanoseconds, distinct per take
 func TestJoinFenceHolderNamesTheBootstrapToken(t *testing.T) {
 	cs := joinerClientset(publishedCertsReaderRole(t), "abc123")
 	joinFenceFixture(t, cs, "abc123")
@@ -361,14 +321,6 @@ func TestJoinFenceHolderNamesTheBootstrapToken(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesAMaintenanceLeaseAnUnfinishedRunLeft: a run that
-// died holding the fence leaves an expired lease naming its own holder, and
-// the policy never lets a join token take over a lease another run holds. The
-// join refuses before the member-add, naming the lease and its holder and the
-// two ways out — any control-plane mint's fence takes the lease over and
-// releases it, or deleting it by hand — and says nothing was added. It is not
-// the refusal for a Role that predates the lease grant: this token's Role
-// grants the leases.
 func TestControlPlaneJoinRefusesAMaintenanceLeaseAnUnfinishedRunLeft(t *testing.T) {
 	joinFixture(t)
 	cs := joinerClientset(publishedCertsReaderRole(t), "abc123")
@@ -407,10 +359,6 @@ func TestControlPlaneJoinRefusesAMaintenanceLeaseAnUnfinishedRunLeft(t *testing.
 	}
 }
 
-// TestControlPlaneJoinStillRefusesARoleThatPredatesTheLeaseGrant: through the
-// production fence take, a token whose Role carries only the secrets rule is
-// refused its first lease read, and the join says the command was minted by a
-// stratum that predates the grant.
 func TestControlPlaneJoinStillRefusesARoleThatPredatesTheLeaseGrant(t *testing.T) {
 	joinFixture(t)
 	released := &rbacv1.Role{Rules: []rbacv1.PolicyRule{{
@@ -430,9 +378,6 @@ func TestControlPlaneJoinStillRefusesARoleThatPredatesTheLeaseGrant(t *testing.T
 	}
 }
 
-// TestJoinFenceRefusalNamesEveryLeaseLeft: when an unfinished run left both
-// maintenance leases, the refusal names both, with their holders, and the
-// delete covers both, so one way out clears the whole fence.
 func TestJoinFenceRefusalNamesEveryLeaseLeft(t *testing.T) {
 	cs := joinerClientset(publishedCertsReaderRole(t), "abc123")
 	stale := time.Now().Add(-10 * maintlease.Duration)
@@ -454,10 +399,7 @@ func TestJoinFenceRefusalNamesEveryLeaseLeft(t *testing.T) {
 	}
 }
 
-// TestJoinFenceRefusesAKubeconfigWithoutABootstrapToken: a holder without the
-// token's username is one the policy refuses, so a bootstrap kubeconfig that
-// carries no <id>.<secret> token refuses the take before any lease is
-// written, rather than taking it under a holder the token cannot release.
+// refuse before any lease is written rather than take a fence the token cannot release
 func TestJoinFenceRefusesAKubeconfigWithoutABootstrapToken(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	joinFenceFixture(t, cs, "abc123")

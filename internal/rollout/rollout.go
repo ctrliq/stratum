@@ -1,5 +1,4 @@
-// Package rollout restarts the in-cluster workloads Stratum owns, so that every
-// command that has to do it (snapshot restore, and rotate-ca) rolls one list.
+// Package rollout restarts the in-cluster workloads Stratum owns, as one list.
 package rollout
 
 import (
@@ -12,31 +11,15 @@ import (
 	"time"
 )
 
-// Workload is a set of in-cluster workloads that hold watches or credentials
-// from before an operation, and are restarted together as one entry in its
-// report.
+// Workload is a set of workloads holding pre-operation watches, restarted together.
 type Workload struct {
-	Name      string   // as reported to the operator
-	Namespace string   // where its targets live
-	Probe     string   // an object whose presence says the cluster runs it
-	Targets   []string // what is rolled
+	Name      string
+	Namespace string
+	Probe     string // an object whose presence says the cluster runs it
+	Targets   []string
 }
 
-// Workloads are restarted after the control plane's own watchers. Cilium's
-// service table and endpoint state, and CoreDNS's Service and EndpointSlice
-// view (headless-Service names answer from it), are built from watches that now
-// point past etcd's restored resourceVersions.
-// The local-path provisioner watches PersistentVolumeClaims, so a claim restored
-// from the snapshot stays unprovisioned until it has restarted. It is there only
-// when the cluster's default storage is local-path, and each workload is found by
-// its own namespace and skipped when absent.
-//
-// What is not here, and why: cilium-envoy has no ClusterRole, takes its config
-// from a mounted ConfigMap and the agent, and opens no API watch; containerd
-// and the cluster controller (`stratum up`) hold no long watch; and user
-// workloads, and third-party controllers and operators, are never restarted by
-// the restore, since that would widen a destructive command to what it does not
-// own (snapshot-restore.md gives the command to restart them by hand).
+// Workloads' watches would point past etcd's restored resourceVersions.
 var Workloads = []Workload{
 	{"cilium agent + operator", "kube-system", "ds/cilium", []string{"ds/cilium", "deploy/cilium-operator"}},
 	{"coredns", "kube-system", "deploy/coredns", []string{"deploy/coredns"}},
@@ -44,9 +27,7 @@ var Workloads = []Workload{
 	{"dashboard", "stratum-dashboard", "deploy/stratum-dashboard", []string{"deploy/stratum-dashboard"}},
 }
 
-// Owned reports whether kind (a Kubernetes kind: Deployment or DaemonSet) named
-// name in namespace is one of the Targets Stratum rolls itself, so a caller
-// that looks for workloads Stratum does not own can leave these out.
+// Owned reports whether a workload is one of the Targets Stratum rolls itself.
 func Owned(namespace, kind, name string) bool {
 	short := map[string]string{"Deployment": "deploy", "DaemonSet": "ds"}[kind]
 	if short == "" {
@@ -60,10 +41,7 @@ func Owned(namespace, kind, name string) bool {
 	return false
 }
 
-// RestartCommands is one `rollout restart` command per namespace for the
-// workloads the restore rolls, each prefixed with kubectl, for the guidance that
-// tells an operator to restart them by hand or to repeat the restore's restarts.
-// One list, so the guidance cannot drift from what the restore does.
+// RestartCommands is the guidance's copy of what the restore rolls, one list.
 func RestartCommands(kubectl string) []string {
 	var cmds []string
 	var namespaces []string
@@ -80,25 +58,18 @@ func RestartCommands(kubectl string) []string {
 	return cmds
 }
 
-// Result is what Roller.Restart reports for one Workload.
-// Err joins the restarts that failed: those components still hold their old
-// watches. Warn joins the rollouts that did not finish in time. They were
-// restarted and may yet finish, so that is a warning, not a failure: the
-// operator's recovery steps must not wait on it.
+// Result is what Roller.Restart reports for one Workload; Warn is not a failure.
 type Result struct {
 	Name      string
-	Present   bool // false when the cluster does not run it
+	Present   bool
 	Warn, Err error
 }
 
 // Roller restarts Workloads through the apiserver its Kubectl talks to.
 type Roller struct {
-	// Kubectl runs one kubectl call under its own deadline and returns its
-	// output (combined with stderr when combined is set). A call that gets no
-	// answer in time must be killed and reported, never waited on.
+	// A Kubectl call that gets no answer in time must be killed, never waited on.
 	Kubectl func(ctx context.Context, timeout time.Duration, combined bool, args ...string) ([]byte, error)
-	// Hint is the command line an operator runs by hand against the same
-	// apiserver, for args.
+	// Hint is the command line an operator runs by hand for the same args.
 	Hint func(args string) string
 	// CallTimeout bounds one discovery or restart call.
 	CallTimeout time.Duration
@@ -106,13 +77,10 @@ type Roller struct {
 	Wait time.Duration
 }
 
-// Restart rolls every Workload the cluster runs. Each target is always
-// restarted, and every rollout that started is checked.
+// Restart rolls every Workload the cluster runs.
 func (r Roller) Restart() []Result { return r.RestartOf(Workloads) }
 
-// RestartOf is Restart for ws, so a caller can roll workloads that are not
-// Stratum's own (rotate-ca's --restart-workloads) with the same waiting and
-// reporting.
+// RestartOf is Restart for workloads that are not Stratum's own.
 func (r Roller) RestartOf(ws []Workload) []Result {
 	results := make([]Result, len(ws))
 	restartErrs := make([][]error, len(ws))
@@ -143,14 +111,7 @@ func (r Roller) RestartOf(ws []Workload) []Result {
 			started = append(started, &rollout{group: i, namespace: w.Namespace, target: t})
 		}
 	}
-	// The rollouts, of every workload, are waited on together, so Wait is
-	// one budget for all of them, not one each. Any may not finish while a node's
-	// kubelet still holds a pre-restore watch, which the operator only fixes after
-	// the restore returns.
-	//
-	// The budget is also a deadline on the calls themselves, one shared by all of
-	// them, because `--timeout` does not bound a first request that never gets
-	// an answer. A call killed at the deadline is a warning like a timed-out one.
+	// One Wait budget covers all rollouts; `--timeout` does not bound a first request.
 	ctx, cancel := context.WithTimeout(context.Background(), r.Wait)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -166,7 +127,7 @@ func (r Roller) RestartOf(ws []Workload) []Result {
 	wg.Wait()
 	warns := make([][]error, len(ws))
 	for _, ro := range started {
-		warns[ro.group] = append(warns[ro.group], ro.err) // errors.Join drops the nils
+		warns[ro.group] = append(warns[ro.group], ro.err)
 	}
 	for i := range results {
 		results[i].Warn = errors.Join(warns[i]...)

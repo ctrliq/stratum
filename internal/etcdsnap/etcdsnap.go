@@ -1,7 +1,4 @@
-// Package etcdsnap wraps the host-staged etcdctl for etcd snapshot save (the
-// pre-upgrade data-safety floor), over the same mTLS endpoint/flags as
-// `stratum etcdctl`, and the host-staged etcdutl for an offline single-member
-// snapshot restore (the heavy rollback path).
+// Package etcdsnap wraps the host-staged etcdctl/etcdutl for etcd snapshot save and restore.
 package etcdsnap
 
 import (
@@ -36,45 +33,30 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// defaultSnapshotDir is where snapshots are written when nothing else is
-// configured (matches the oss-etcd-backup-setup.sh / operator convention).
-// Unexported: the effective snapshot directory comes from the resolver
-// (cluster.LoadSnapshotConfig), which carries the same fallback, so a new
-// caller cannot pick a directory of its own. It stays here for the
-// pre-upgrade snapshot name and for Save's fallback when a caller passes no
-// directory at all.
+// Unexported: the effective snapshot dir comes from cluster.LoadSnapshotConfig.
 const defaultSnapshotDir = "/var/backups/etcd"
 
-// scheduledPrefix begins every scheduled snapshot's name; pre-upgrade snapshots
-// use "pre-upgrade-" instead so the two classes prune independently.
+// Pre-upgrade snapshots use "pre-upgrade-" instead, so the two classes prune independently.
 const scheduledPrefix = "etcd-snapshot-"
 
 func etcdctl() string { return filepath.Join(version.BinDir, "etcdctl") }
 
-// etcdutl is the offline etcd tool. Since etcd 3.6, snapshot restore lives here
-// and not in etcdctl, whose `snapshot` has only `save`.
+// etcdutl holds snapshot restore since etcd 3.6; etcdctl snapshot has only save.
 func etcdutl() string { return filepath.Join(version.BinDir, "etcdutl") }
 
-// DefaultSnapshotPath returns a timestamped pre-upgrade snapshot path. ts must be
-// the caller's UTC timestamp (callers pass one so the value is deterministic/testable).
+// DefaultSnapshotPath returns a timestamped pre-upgrade snapshot path.
 func DefaultSnapshotPath(ts string) string {
 	return filepath.Join(defaultSnapshotDir, "pre-upgrade-"+ts+".db")
 }
 
-// ScheduledName is the file name for a scheduled snapshot taken on host at ts.
-// The host is in the name so 3 CPs uploading to one S3 bucket never clobber each
-// other and each prunes only its own.
+// ScheduledName names a scheduled snapshot; the host in it keeps shared-bucket writes apart.
 func ScheduledName(host, ts string) string {
 	return fmt.Sprintf("%s%s-%s.db", scheduledPrefix, host, ts)
 }
 
-// scheduledHostPrefix is the name prefix for THIS host's scheduled snapshots
-// (what Prune keys on so a node only prunes its own copies, locally and in S3).
 func scheduledHostPrefix(host string) string { return scheduledPrefix + host + "-" }
 
-// hostSnapshot matches host's scheduled snapshot names: the host prefix, then
-// exactly one NowStamp and ".db". A bare prefix match would also take host
-// "cp-2"'s snapshots for host "cp"'s, and prune them first in a shared bucket.
+// hostSnapshot matches exactly one stamp and .db; a bare prefix would prune "cp-2" for "cp".
 func hostSnapshot(host string) func(name string) bool {
 	hp := scheduledHostPrefix(host)
 	return func(name string) bool {
@@ -96,14 +78,7 @@ const stampLayout = "20060102-150405"
 // NowStamp returns a UTC %Y%m%d-%H%M%S stamp for snapshot/.bak naming.
 func NowStamp() string { return time.Now().UTC().Format(stampLayout) }
 
-// snapshotContext saves an etcd snapshot of the local member to path, bounded
-// by ctx: a context that has already ended launches no etcdctl run, and a run
-// that is in flight when ctx ends is killed rather than waited out. The run group joins the snapshot loop at shutdown,
-// so an unbounded save would hold that join open — and under systemd's
-// KillMode=process a lingering etcdctl is exactly where a snapshot dies
-// mid-write. etcdctl's progress goes to w, so SaveContext can supply its
-// caller's stream and an MCP save cannot write progress into the JSON-RPC
-// transport.
+// snapshotContext saves a snapshot of the local member via etcdctl, bounded by ctx.
 func snapshotContext(ctx context.Context, w io.Writer, path string) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("etcd snapshot save: %w", err)
@@ -112,22 +87,13 @@ func snapshotContext(ctx context.Context, w io.Writer, path string) error {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, etcdctl(), "snapshot", "save", path)
-	// A killed etcdctl must not leave Run waiting on a child that holds the
-	// output pipes open (the same reason k8sutil's probes carry a WaitDelay).
+	// A killed etcdctl must not leave Run waiting on a child holding the output pipes.
 	cmd.WaitDelay = 5 * time.Second
-	// Injected values win here, which is the OPPOSITE of `stratum etcdctl`
-	// (pkg/cli/multicall.go, where the operator is the authority). Deliberate:
-	// this runs unattended from the snapshot timer and the pre-upgrade hook, and
-	// it means "snapshot THIS node's member" — the filename encodes the host and
-	// retention prunes on that prefix. Letting a stray ETCDCTL_ENDPOINTS in the
-	// service environment point it elsewhere would file another member's
-	// snapshot under this host's name, or stop backups with nobody paged.
+	// Injected env wins, the opposite of `stratum etcdctl`: unattended runs must reach this node.
 	cmd.Env = append(os.Environ(), k8sutil.EtcdctlEnv()...)
 	cmd.Stdout, cmd.Stderr = w, os.Stderr
 	if err := cmd.Run(); err != nil {
-		// etcdctl writes path + ".part" and renames it only after a complete,
-		// synced snapshot. A killed process cannot clean up that temporary file.
-		// Leave the final path alone: it may contain an earlier valid backup.
+		// etcdctl renames .part only after a complete snapshot; the final path may hold a backup.
 		partial := path + ".part"
 		if rmErr := os.Remove(partial); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			return fmt.Errorf("etcd snapshot save: %w (the partial snapshot it left at %s could not be removed: %v)", err, partial, rmErr)
@@ -140,46 +106,25 @@ func snapshotContext(ctx context.Context, w io.Writer, path string) error {
 	return nil
 }
 
-// SaveOptions configures a scheduled/on-demand snapshot with optional S3 offload
-// and retention.
+// SaveOptions configures a snapshot save with optional S3 offload and retention.
 type SaveOptions struct {
 	Dir    string           // local dir (default defaultSnapshotDir)
 	Host   string           // node name for the file name (default host.Hostname, short)
 	Name   string           // explicit file name (default ScheduledName(host, now))
 	S3     *objstore.Target // optional off-box copy (nil / !Enabled = local only)
 	Retain int              // keep newest N of THIS host's scheduled snapshots (0 = keep all)
-	// PruneWarn, when set, receives each failed prune as data while the save
-	// still prints it: a failed prune is a warning beside the returned path,
-	// never a save error, since the snapshot itself succeeded. A caller that
-	// assembles a result from data (the snapshot_save tool) collects the
-	// failures here instead of matching the printed text; the CLI and the
-	// scheduled loop leave it nil and keep reading the printed line.
+	// PruneWarn receives each failed prune as data; a failed prune is a warning, never a save error.
 	PruneWarn func(error)
-	// Evidence, when true, records this save's attempts durably: the local
-	// snapshot attempt, the S3 off-box copy attempt, the retention prune
-	// attempt and the warnings the tick ran with go into the node's snapshot
-	// evidence record (snapshot-evidence.yaml in the config area), so what a
-	// scheduled tick did survives the process the way the cert-renewal record
-	// does. The scheduled loop turns it on; a manual save, an MCP save and
-	// the pre-upgrade snapshot leave it off and record nothing.
+	// Evidence durably records this save's attempts; the scheduled loop turns it on.
 	Evidence bool
-	// EvidenceWarnings are the scheduling warnings the tick already ran
-	// with — the WARN lines the options resolution printed, an unreadable
-	// snapshot.conf among them — recorded beside the attempts. Each recorded
-	// attempt replaces the record's warnings with the tick's current ones,
-	// so a warning from a condition that has healed does not linger.
+	// EvidenceWarnings carries the tick's scheduling warnings, recorded beside the attempts.
 	EvidenceWarnings []string
 }
 
-// Save takes a local snapshot, optionally uploads it to S3, then prunes both
-// locations to Retain. Returns the local path. Its warnings go through the
-// writer it is handed first: the CLI passes os.Stdout byte-identically, the
-// scheduled loop the daemon's log stream, and the snapshot_save tool a buffer.
+// Save takes a local snapshot, optionally uploads it to S3, prunes, returns the local path.
 func Save(w io.Writer, o SaveOptions) (string, error) { return SaveContext(context.Background(), w, o) }
 
-// SaveContext is Save bounded by ctx: the etcdctl run and the S3 upload it
-// starts are killed when ctx ends, so a shutdown joins it promptly instead of
-// waiting a snapshot out.
+// SaveContext is Save bounded by ctx: the etcdctl run and the S3 upload are killed when ctx ends.
 func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error) {
 	dir := o.Dir
 	if dir == "" {
@@ -187,9 +132,7 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	}
 	hn := o.Host
 	if hn == "" {
-		// Short name (host.Hostname strips the domain) to match the naming used
-		// by `snapshot prune`, rejoin, and the rest of the codebase — an FQDN here
-		// would make manual prune (which keys on the short name) never match.
+		// Short name, to match the name `snapshot prune` keys on; an FQDN would never match.
 		hn, _ = host.Hostname()
 	}
 	name := o.Name
@@ -197,12 +140,6 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		name = ScheduledName(hn, NowStamp())
 	}
 	path := filepath.Join(dir, name)
-	// The scheduled save records each attempt as it happens, so evidence of
-	// a snapshot that exists locally survives a failed remote copy and
-	// evidence of a failed tick survives the process. A save that is not
-	// scheduled (the CLI, an MCP tool, the pre-upgrade hook) records
-	// nothing: its attempts are interactive and reported by their own
-	// output.
 	var evidence *evidenceRecorder
 	if o.Evidence {
 		evidence = &evidenceRecorder{warnings: o.EvidenceWarnings}
@@ -222,8 +159,6 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	if remote.Enabled() {
 		upload := remote.Upload(ctx, path, name)
 		if evidence != nil {
-			// The upload attempt is recorded however it went, beside the
-			// save attempt that already says the local artifact exists.
 			evidence.recordUpload(upload)
 		}
 		if upload != nil {
@@ -232,11 +167,6 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		}
 	}
 	if o.Retain > 0 && ctx.Err() == nil {
-		// A failed prune is a warning, not an error: the snapshot itself
-		// succeeded. Each failure is printed through the writer the save was
-		// handed for the scheduled loop and `stratum snapshot save`, whose
-		// output must not change, and handed to PruneWarn as data for callers
-		// that report it beside the path.
 		var pruneErrs []error
 		for _, perr := range PruneScheduledContext(ctx, dir, hn, o.Retain, remote) {
 			fmt.Fprintf(w, "  WARN: %v\n", perr)
@@ -246,28 +176,18 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 			pruneErrs = append(pruneErrs, perr)
 		}
 		if evidence != nil {
-			// The prune attempt is recorded beside the save and the upload,
-			// never over them: pruning is maintenance, and its refusal must
-			// not touch the backup's own evidence.
 			evidence.recordPrune(pruneErrs)
 		}
 	}
 	return path, uploadErr
 }
 
-// PruneScheduled keeps the newest `keep` of `host`'s scheduled snapshots, locally
-// and (if configured) in S3, and returns one error per failed target. Prune
-// failures are warnings, not errors (a snapshot already succeeded), but they
-// travel as returned data so a caller reports them from the return value
-// instead of matching printed text. keep <= 0 is a no-op; a nil result means
-// every target was pruned.
+// PruneScheduled keeps the newest `keep` snapshots locally and in S3, one error per failed target.
 func PruneScheduled(dir, host string, keep int, s3 *objstore.Target) []error {
 	return PruneScheduledContext(context.Background(), dir, host, keep, s3)
 }
 
-// PruneScheduledContext bounds remote retention by the save's context, so
-// shutdown can also interrupt an S3 list or delete after upload completes.
-// Each returned error names the target that failed; nothing is printed.
+// PruneScheduledContext bounds remote retention by ctx; each error names its target.
 func PruneScheduledContext(ctx context.Context, dir, host string, keep int, s3 *objstore.Target) []error {
 	if ctx.Err() != nil || keep <= 0 {
 		return nil
@@ -285,49 +205,27 @@ func PruneScheduledContext(ctx context.Context, dir, host string, keep int, s3 *
 	return errs
 }
 
-// The durable snapshot evidence record: what the scheduled loop's last save,
-// upload and prune attempts did, and when the save and the upload last
-// succeeded, in snapshot-evidence.yaml beside node.yaml and renewal.yaml in
-// the node's config area — the same place and the same shape the
-// cert-renewal record uses, so evidence of a tick survives the process the
-// way renewal does. The loop is the record's only writer; its reader is the
-// backup-evidence interface (internal/backupevidence), which resolves its
-// policy through this package and internal/cluster and so cannot be imported
-// from here: the file is the contract between the writer and the reader, and
-// the recording tests hold the two together.
+// snapshot-evidence.yaml is the file contract with internal/backupevidence, which cannot import it.
 
-// evidenceSchemaVersion is the record's schema version this binary writes
-// and reads, in lockstep with the reader's own version. The recording tests
-// pin the two, so a revision of the record changes both together.
+// evidenceSchemaVersion is the record's schema version, pinned in lockstep with the reader.
 const evidenceSchemaVersion = 1
 
-// evidencePath is where the record persists, beside the node's other
-// durable per-node records.
 func evidencePath() string {
 	return filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml")
 }
 
-// snapshotAttempt is one attempt of the record: when it started and how it
-// went, the result empty when it succeeded.
+// snapshotAttempt is one recorded attempt; Result is empty when it succeeded.
 type snapshotAttempt struct {
 	AttemptedAt time.Time `json:"attemptedAt"`
 	Result      string    `json:"result,omitempty"`
 }
 
-// IsZero reports whether no attempt is recorded in this value, so a slot
-// the loop has never run is absent from the file instead of carrying a
-// zero timestamp a reader must know to read as "never".
+// IsZero reports no attempt recorded, so a never-run slot is absent from the file.
 func (a snapshotAttempt) IsZero() bool {
 	return a.AttemptedAt.IsZero() && a.Result == ""
 }
 
-// snapshotEvidence is the durable record. The save and upload
-// last-success stamps are separate because a snapshot can save locally and
-// fail its remote copy: each says on its own whether the artifact exists on
-// the node and whether a remote copy does. The prune attempt is independent
-// of both: pruning is maintenance beside the backup, and a save that
-// succeeded while retention failed is a working backup with broken
-// retention.
+// Save and Upload carry separate last-success stamps: a save can succeed locally, fail its copy.
 type snapshotEvidence struct {
 	SchemaVersion     int             `json:"schemaVersion"`
 	Save              snapshotAttempt `json:"save,omitzero"`
@@ -338,9 +236,7 @@ type snapshotEvidence struct {
 	Warnings          []string        `json:"warnings,omitempty"`
 }
 
-// recordSave records a save attempt: the attempt itself always, the
-// last-success stamp only when it succeeded, so a failed retry never moves
-// the stamp of the last backup that worked.
+// recordSave records a save attempt; the last-success stamp moves only on success.
 func (e *snapshotEvidence) recordSave(at time.Time, err error) {
 	e.Save = snapshotAttemptOf(at, err)
 	if err == nil {
@@ -348,7 +244,6 @@ func (e *snapshotEvidence) recordSave(at time.Time, err error) {
 	}
 }
 
-// recordUpload records an upload attempt the way recordSave records a save.
 func (e *snapshotEvidence) recordUpload(at time.Time, err error) {
 	e.Upload = snapshotAttemptOf(at, err)
 	if err == nil {
@@ -356,8 +251,7 @@ func (e *snapshotEvidence) recordUpload(at time.Time, err error) {
 	}
 }
 
-// recordPrune records a prune attempt. Retention has no last-success stamp:
-// the attempt itself says whether it last worked.
+// recordPrune records the attempt; retention has no last-success stamp.
 func (e *snapshotEvidence) recordPrune(at time.Time, err error) {
 	e.Prune = snapshotAttemptOf(at, err)
 }
@@ -371,13 +265,7 @@ func snapshotAttemptOf(at time.Time, err error) snapshotAttempt {
 	return a
 }
 
-// mutateEvidence applies one mutation to the record as its single writer's
-// read-modify-write: the etcd data lock is held across the read, the
-// mutation and the write, so while a rejoin, a restore or an `up` holds it
-// the recording refuses — best-effort, the next tick retries — instead of
-// writing between that operation's own read and write. A record that does
-// not exist yet is a fresh empty one (the loop's first tick has nothing to
-// read); one a newer binary wrote is refused, never misread or overwritten.
+// mutateEvidence runs one mutation under the etcd data lock; a newer schema is refused.
 func mutateEvidence(mutate func(*snapshotEvidence)) error {
 	release, err := etcddata.Lock(version.EtcdDataDir)
 	if err != nil {
@@ -392,15 +280,7 @@ func mutateEvidence(mutate func(*snapshotEvidence)) error {
 	return saveEvidence(rec)
 }
 
-// loadEvidence reads the record from disk through the bounded regular-file
-// reader — the same rules the backup-evidence reader applies on its side of
-// the file — because this read runs under the etcd data lock: a FIFO or an
-// oversized stand-in swapped in at the record's path must refuse promptly,
-// never stall the single writer's read-modify-write — a read stalled under
-// the lock would hold it, refusing every rejoin, restore and `up` that
-// tries to take it. The read is not bounded by the save's own context: a
-// save that context ended still records its failed attempt, best-effort,
-// so loadEvidence reads with a fresh background context.
+// loadEvidence reads under the etcd data lock, so the bounded reader must refuse a FIFO promptly.
 func loadEvidence() (*snapshotEvidence, error) {
 	b, err := boundedfile.Read(context.Background(), evidencePath())
 	if err != nil {
@@ -419,10 +299,7 @@ func loadEvidence() (*snapshotEvidence, error) {
 	return &rec, nil
 }
 
-// saveEvidence stamps the record's schema version and persists it through
-// the shared atomic writer at mode 0600: the record names failures, so a
-// torn write must never leave a half-parsable one where a working one was,
-// and a node-local record of what failed must not be world-readable.
+// saveEvidence persists atomically at 0600: the record names failures; no torn writes.
 func saveEvidence(rec *snapshotEvidence) error {
 	rec.SchemaVersion = evidenceSchemaVersion
 	b, err := yaml.Marshal(rec)
@@ -435,14 +312,7 @@ func saveEvidence(rec *snapshotEvidence) error {
 	return atomicfile.WriteFile(evidencePath(), b, 0o600)
 }
 
-// evidenceRecorder is one scheduled save's recording into the durable
-// record: each attempt is persisted the moment it finishes — the local
-// snapshot first, so evidence that a snapshot exists on the node survives a
-// failed S3 copy — with the tick's warnings carried beside every write,
-// replacing what an earlier tick warned so a healed condition does not
-// linger. Recording is best-effort: the first failure to persist is
-// remembered and reported once through the save's writer, and the save is
-// never failed by its own evidence.
+// evidenceRecorder records a save's attempts as they finish, best-effort; it never fails the save.
 type evidenceRecorder struct {
 	warnings []string
 	err      error
@@ -456,7 +326,6 @@ func (r *evidenceRecorder) recordSave(err error) {
 	})
 }
 
-// recordUpload records the S3 copy attempt's outcome.
 func (r *evidenceRecorder) recordUpload(err error) {
 	r.mutate(func(e *snapshotEvidence) {
 		e.recordUpload(time.Now(), err)
@@ -464,11 +333,7 @@ func (r *evidenceRecorder) recordUpload(err error) {
 	})
 }
 
-// recordPrune records the retention prune's outcome. Each failed target is
-// also a warning in its own right — the same line the save printed — so a
-// refused delete is visible beside the structured attempt; a clean prune
-// records a clean attempt and still replaces the warnings with the tick's
-// current ones.
+// recordPrune also appends each failed target to the tick's warnings.
 func (r *evidenceRecorder) recordPrune(errs []error) {
 	var joined error
 	if len(errs) > 0 {
@@ -483,17 +348,14 @@ func (r *evidenceRecorder) recordPrune(errs []error) {
 	})
 }
 
-// report writes the one WARN a failed recording deserves, through the
-// save's writer: evidence going silently missing is exactly what the record
-// exists to prevent.
+// report warns once when a recording failed; silent evidence loss is what the record prevents.
 func (r *evidenceRecorder) report(w io.Writer) {
 	if r.err != nil {
 		fmt.Fprintf(w, "  WARN: recording snapshot evidence: %v\n", r.err)
 	}
 }
 
-// mutate persists one mutation, remembering the first failure so a tick
-// whose first record was refused still tries its later ones.
+// mutate remembers the first failure so later attempts still try.
 func (r *evidenceRecorder) mutate(mutate func(*snapshotEvidence)) {
 	if err := mutateEvidence(mutate); err != nil && r.err == nil {
 		r.err = err
@@ -502,9 +364,7 @@ func (r *evidenceRecorder) mutate(mutate func(*snapshotEvidence)) {
 
 var removeSnapshot = os.Remove
 
-// Prune keeps the newest `keep` local snapshots whose name owned accepts,
-// newest by modification time with the name breaking ties, and removes every
-// older one it can. keep <= 0 is a no-op.
+// Prune keeps the newest `keep` snapshots owned accepts, by modification time, name breaking ties.
 func Prune(dir string, owned func(name string) bool, keep int) error {
 	if keep <= 0 {
 		return nil
@@ -549,7 +409,6 @@ func Prune(dir string, owned func(name string) bool, keep int) error {
 	return errors.Join(errs...)
 }
 
-// SnapItem is one snapshot in a listing (local or S3).
 type SnapItem struct {
 	Name     string
 	Location string // "local" or "s3"
@@ -586,14 +445,7 @@ func List(dir string, s3 *objstore.Target) ([]SnapItem, error) {
 	return items, nil
 }
 
-// RestoreLocalSeed restores snapshotPath as a NEW single-member cluster on THIS
-// node — the seed for a full-cluster restore. The
-// other control planes then rejoin via ha.RejoinEtcd. Unlike the upgrade rollback
-// path it does NOT guard against a prior multi-member cluster: resetting one is
-// the whole point. The caller must confirm (--yes) — it stops apiserver+etcd and
-// rewrites cluster state. The writer leads, so every "etcd restore:" step and
-// warning reaches the caller's stream: the CLI passes os.Stdout byte-identically,
-// the MCP handler the buffer its result is built from.
+// RestoreLocalSeed restores as a new single-member seed; resetting a prior cluster is the point.
 func RestoreLocalSeed(w io.Writer, snapshotPath string) error {
 	nodeIP, err := nodestate.NodeIP()
 	if err != nil {
@@ -615,22 +467,11 @@ type RestoreOptions struct {
 	PeerURL        string // https://<nodeIP>:2380
 	InitialCluster string // "<name>=<peerURL>"
 	Stamp          string // UTC stamp for the moved-aside data dir
-	// NodeLockHeld says the caller already holds the node maintenance lock
-	// (internal/nodelock) — the way RollbackNode does for the restore nested
-	// in a rollback — so Restore skips that acquire instead of refusing
-	// against its own holder. It lifts only the maintenance lock, never the
-	// data lock, which Restore always takes itself.
+	// NodeLockHeld says the caller holds the maintenance lock, so Restore skips the acquire.
 	NodeLockHeld bool
 }
 
-// restoreEffects is one restore run's complete set of host effects. The runner
-// consults nothing else for its effects, so a run cannot perform a host effect
-// through a path the value does not carry, and a harness that builds a zero
-// value — or forgets one stub — stops on the unset-effect sentinel instead of
-// performing the effect. Paths and filesystem probes belong to the run too,
-// so independent fake runs need no shared version-path redirects. Restore is the only place
-// that builds the production value, one per call; the copies removal builds the
-// subset it needs.
+// Every host effect is a field, so a run cannot act through a path the value does not carry.
 type restoreEffects struct {
 	etcdDataDir              string
 	etcdutlPath              string
@@ -648,10 +489,7 @@ type restoreEffects struct {
 	restorePathExists        func(path string) (bool, error)
 	restoreRun               func(cmd *exec.Cmd) error
 	restoreNonce             func() string
-	// restoreKubelet and restoreOperator are the supervised watchers' per-name
-	// restarts, the grain the kubelet and operator restarts were injected at
-	// before the restart set. A run value carries the roster effects below, and
-	// restartSupervisedWatcher consults these only when it finds no roster on it.
+	// Per-name supervised-watcher restarts, consulted only when no roster effect is set.
 	restoreKubelet         func() (bool, error)
 	restoreOperator        func() (bool, error)
 	compsStatus            func() (map[string]supervisor.ProcStatus, error)
@@ -662,44 +500,29 @@ type restoreEffects struct {
 	restoreStaticPod       func(name string) error
 	restoreStaticPodExists func(name string) bool
 	restoreRemoveAll       func(path string) error
-	// restoreMoveDir renames a directory (os.Rename in production). Moving the
-	// live data dir aside, and putting it back, are the restore's most
-	// destructive steps, so they go through the value like every other effect.
-	restoreMoveDir func(from, to string) error
+	restoreMoveDir         func(from, to string) error
 
-	// The timing knobs the kubectl work reads. Fields, not package variables,
-	// so parallel tests shorten them per run instead of swapping shared state.
+	// Fields, not package variables, so parallel tests shorten them without shared state.
 	kubectlCallTimeout time.Duration
 	healthzWindow      time.Duration
 	rolloutWait        time.Duration
 }
 
-// The production values for the timing knobs. Constants, so no run inherits
-// another's shortening and the defaults cannot drift per call site.
+// The production timing knobs; constants, so no run inherits another's shortening.
 const (
 	defaultKubectlCallTimeout = 30 * time.Second
 	defaultHealthzWindow      = 2 * time.Minute
 	defaultRolloutWait        = 60 * time.Second
-	// healthzPollInterval is how long the health gate waits between probes.
-	healthzPollInterval = 2 * time.Second
+	healthzPollInterval       = 2 * time.Second
 )
 
-// errUnsetEffect marks an effect the caller never set. It is what a zero
-// restoreEffects answers with, so a test harness that forgets a stub sees the
-// sentinel instead of the effect's real host behavior.
+// errUnsetEffect marks an effect the caller never set, what a zero value answers with.
 var errUnsetEffect = errors.New("unset restore effect")
 
-// unsetEffect is the fail-closed error for the named field: identifiable with
-// errors.Is against errUnsetEffect, and naming the field so the harness can
-// say which stub is missing.
+// unsetEffect fails closed, naming the field so a harness sees which stub is missing.
 func unsetEffect(name string) error {
 	return fmt.Errorf("%w: restoreEffects.%s is not set", errUnsetEffect, name)
 }
-
-// The accessors below are the only way the runner and the rollback touch the
-// effects: each fails closed on an unset field, so no code path — the restore
-// itself or the rollback it runs — can panic through a nil function or fall
-// back to a real host call.
 
 func (fx *restoreEffects) acquireDataLock() (func(), error) {
 	if fx.restoreAcquireDataLock == nil {
@@ -771,17 +594,10 @@ func (fx *restoreEffects) move(from, to string) error {
 	return fx.restoreMoveDir(from, to)
 }
 
-// ErrWatchersNotRestarted marks a restore that put the data back and left the
-// apiserver healthy, but could not restart every component holding a watch
-// from before it. Those components keep serving the pre-restore view of the
-// cluster until they are restarted, so the restore is not finished.
+// ErrWatchersNotRestarted marks a healthy restore that could not restart every watcher.
 var ErrWatchersNotRestarted = errors.New("etcd restored, but not every component holding a pre-restore watch or start-up state was restarted")
 
-// restartSupervised restarts a component the supervisor runs as a host process;
-// false when the supervisor's roster, successfully read, has none. A roster that
-// cannot be read is an error, not an absent component: skipping it would report
-// a restore with a stale watch as complete. (comps.UnitExists answers false for
-// both, so it is not used.)
+// restartSupervised restarts a supervisor-run component; false when the roster has none.
 func restartSupervised(fx *restoreEffects, name string) (bool, error) {
 	if fx.compsStatus == nil {
 		return true, unsetEffect("compsStatus")
@@ -799,9 +615,6 @@ func restartSupervised(fx *restoreEffects, name string) (bool, error) {
 	return true, fx.compsRestart(name)
 }
 
-// supervisedRestart is the value's per-name restart for the supervised watcher
-// name — the grain the kubelet and operator restarts were injected at before
-// the restart set — nil when the value carries none.
 func (fx *restoreEffects) supervisedRestart(name string) func() (bool, error) {
 	switch name {
 	case "kubelet":
@@ -812,9 +625,6 @@ func (fx *restoreEffects) supervisedRestart(name string) func() (bool, error) {
 	return nil
 }
 
-// restartSupervisedWatcher restarts the supervised watcher name: through the
-// value's per-name restart when it carries no roster effect, and through the
-// supervisor's roster (restartSupervised) otherwise.
 func (fx *restoreEffects) restartSupervisedWatcher(name string) (bool, error) {
 	if fx.compsStatus == nil {
 		if restart := fx.supervisedRestart(name); restart != nil {
@@ -824,25 +634,15 @@ func (fx *restoreEffects) restartSupervisedWatcher(name string) (bool, error) {
 	return restartSupervised(fx, name)
 }
 
-// restartKubelet restarts the supervised kubelet.
 func restartKubelet(fx *restoreEffects) (bool, error) { return restartSupervised(fx, "kubelet") }
 
-// restartOperator restarts the supervised stratum operator. It polls rather than
-// watching, but it loads the shared requester-signing key and registers its
-// webhook endpoint when it starts, and works under a leader lease, so it carries
-// state from before the restore until it restarts. Present only on control
-// planes.
+// The operator carries pre-restore state (signing key, webhook, leader lease), so it restarts.
 func restartOperator(fx *restoreEffects) (bool, error) { return restartSupervised(fx, "operator") }
 
-// seedServer is this node's own apiserver. The restore runs on the seed, and
-// its kubectl calls must reach it, not whatever admin.conf names: `stratum
-// ha-repoint` points admin.conf at the VIP, and before the other control planes
-// have rejoined the VIP can be down, or lead to a member that still holds the
-// old datastore.
+// kubectl must reach this apiserver, not the VIP, which can be down or serve old data pre-rejoin.
 func seedServer() string { return fmt.Sprintf("https://127.0.0.1:%d", version.APIServerPort) }
 
-// localKubectl is kubectl against the seed's own apiserver, through the run's
-// baseKubectl effect.
+// localKubectl is kubectl against the seed's own apiserver.
 func (fx *restoreEffects) localKubectl(ctx context.Context, args ...string) (*exec.Cmd, error) {
 	if fx.baseKubectl == nil {
 		return nil, unsetEffect("baseKubectl")
@@ -853,15 +653,9 @@ func (fx *restoreEffects) localKubectl(ctx context.Context, args ...string) (*ex
 	return cmd, nil
 }
 
-// The recovery's kubectl calls run under deadlines. A stalled apiserver request
-// blocks the first request of a `kubectl` before its own --timeout applies, so
-// without one a single hung call would hold the whole recovery, and the recovery
-// guidance that follows it, open. Per-run fields on the effects value, so tests
-// can shorten them without swapping shared state.
+// A stalled apiserver request blocks kubectl before its own --timeout; each call gets a deadline.
 
-// seedOutput runs one kubectl call against the seed under its own deadline and
-// returns its output (combined with stderr when combined is set). A call that
-// gets no answer in time is killed and reported as such, never waited on.
+// seedOutput runs one kubectl call under its own deadline, returning its output.
 func (fx *restoreEffects) seedOutput(ctx context.Context, timeout time.Duration, combined bool, args ...string) ([]byte, error) {
 	if fx.seedKubectl == nil {
 		return nil, unsetEffect("seedKubectl")
@@ -884,13 +678,7 @@ func (fx *restoreEffects) seedOutput(ctx context.Context, timeout time.Duration,
 	return out, err
 }
 
-// waitSeedHealthz polls the seed's /healthz until it answers "ok" or window
-// ends, each probe under the run's kubectlCallTimeout. It is
-// k8sutil.WaitHealthzContext against the seed rather than admin.conf's
-// server, for the restore and its rollback only: the gate that the restore
-// worked, or that the rollback put the original back, has to be about THIS
-// apiserver. A VIP that is down would fail it with a healthy seed, and an old
-// control plane answering at the VIP would pass it for the seed.
+// waitSeedHealthz polls the seed's /healthz: the gate must be about THIS apiserver, not the VIP.
 func (fx *restoreEffects) waitSeedHealthz(window, interval time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), window)
 	defer cancel()
@@ -910,22 +698,12 @@ func (fx *restoreEffects) waitSeedHealthz(window, interval time.Duration) error 
 	}
 }
 
-// SeedKubectlHint is the command line for an operator to run kubectl against
-// the seed by hand: on the seed, and not through admin.conf's server.
+// SeedKubectlHint is the command line for an operator to run kubectl against the seed by hand.
 func SeedKubectlHint(args string) string {
 	return "stratum kubectl --server " + seedServer() + " " + args
 }
 
-// restoredStaticPods are the control-plane static pods, besides etcd and the
-// apiserver that the restore itself restarts and health-gates, that hold
-// watches. The roster is staticpod.Names's full candidate set — kube-vip in
-// it whether or not this node renders one, because the repeat tells an
-// operator to restart these on every control plane and each control plane
-// renders its own. They are restarted from the manifests on disk
-// (staticpod.RestartAsIs); a component with no manifest on this node is
-// skipped and named, never dropped from the set, so the restore's own account
-// contradicts neither the guidance nor what the node printed. A fresh slice
-// per call: no run shares a mutable record with another.
+// restoredStaticPods lists the static pods, besides etcd and apiserver, that hold watches.
 func restoredStaticPods() []string {
 	var out []string
 	for _, n := range staticpod.Names {
@@ -937,71 +715,30 @@ func restoredStaticPods() []string {
 	return out
 }
 
-// How the restore restarts a component of its restart set: one value per kind
-// of component. The supervisor's watchers are restarted by the supervisor, the
-// static pods from the manifests on disk, and the in-cluster workloads with
-// kubectl.
+// How a restart-set entry is restarted, one value per kind of component.
 const (
 	howSupervisor = "supervisor"
 	howManifest   = "manifest"
 	howRollout    = "rollout"
 )
 
-// RestartEntry is one component of the restore's restart set: what the restore
-// restarts because it holds a watch, or start-up state, from before the
-// restore, and how an operator restarts it by hand.
+// RestartEntry is one component of the restore's restart set.
 type RestartEntry struct {
-	// Component is the name the restore reports the component under.
 	Component string
-	// How is how the restore restarts it: one of the how* constants above.
-	How string
-	// Command is how an operator restarts it by hand. For a workload it is
-	// the arguments after the kubectl binary; for everything else a whole
-	// command line.
+	How       string
+	// Command is the arguments after kubectl for a workload, a whole command line otherwise.
 	Command string
-	// Repeat says whether the restart belongs in the per-control-plane repeat:
-	// the host-side watchers are restarted on every control plane once each
-	// has rejoined, the in-cluster workloads once for the cluster.
+	// Repeat says whether the restart runs on every control plane or once for the cluster.
 	Repeat bool
 
-	// display is how prose names the component, when that differs from the
-	// name the restore reports it under ("CoreDNS", reported as "coredns").
-	// Empty renders Component.
 	display string
-	// namespace and targets are a workload entry's rollout restart, so the
-	// set renders one command per namespace, exactly as the roster's owner
-	// does. An entry built by hand carries neither and renders its command
-	// whole.
+	// namespace and targets render one command per namespace; a hand-built entry carries neither.
 	namespace string
 	targets   []string
 }
 
-// RestartSet is the restore's restart set, in the order the restore restarts
-// them.
 type RestartSet []RestartEntry
 
-// RestoreRestartSet is the restore's restart set, built from the rosters that
-// own the components: the supervised watchers filtered out of comps.Units —
-// every roster unit but containerd, which holds no long watch on the cluster —
-// each with the command its roster name has in supervisedWatcherCommands, and
-// refused when it has none; the control-plane static pods of staticpod.Names
-// besides etcd and the apiserver, which the restore restarts and health-gates
-// itself; and rollout.Workloads. A component added to a roster joins the set,
-// and through it every surface rendered from the set, without a second list to
-// forget.
-//
-// The set is the candidate roster, as restoredStaticPods is: kube-vip is in
-// it whether or not this node renders one, because the
-// repeat tells an operator to restart these on every control plane and each
-// control plane renders its own; the restore itself skips a component that is
-// not on the node. kube-vip restarts from its manifest exactly like the
-// controller manager and scheduler, so its pkill belongs in the repeat
-// alongside theirs.
-//
-// The order is dependency order: the roster's first supervised watcher —
-// kubelet — goes first, since the static pods are containers it has to
-// recreate; the remaining supervised watchers follow them in roster order, and
-// the workloads are rolled last, once for the cluster.
 func RestoreRestartSet() RestartSet {
 	watchers := supervisedWatchers()
 	if len(watchers) == 0 {
@@ -1031,29 +768,16 @@ func RestoreRestartSet() RestartSet {
 	return set
 }
 
-// supervisedWatcherCommands is the command that restarts a supervised watcher
-// of comps.Units by hand, per roster name: the process is killed so the
-// supervisor starts it again. The kubelet is matched by executable name; the
-// operator by its subcommand and Stratum's flags, which is what makes it the
-// operator and more than `pkill -x` can match (comps.OperatorCommandLinePattern).
-// A roster watcher with no command here refuses RestoreRestartSet — the
-// pattern of comps' predicate table — because a watcher with no command would
-// render into every surface with nothing for the operator to run.
+// Kill patterns so the supervisor restarts each watcher; a roster watcher without one is refused.
 var supervisedWatcherCommands = map[string]string{
 	"kubelet":  "sudo pkill -x kubelet",
 	"operator": "sudo pkill -TERM -f '" + comps.OperatorCommandLinePattern() + "'",
 }
 
-// supervisedWatcherDisplay is how prose names a supervised watcher, when that
-// differs from the roster name it is restarted under. A watcher the map does
-// not name renders under its roster name.
 var supervisedWatcherDisplay = map[string]string{
 	"operator": "stratum operator",
 }
 
-// supervisedWatchers are comps.Units's supervised watchers — every roster unit
-// but containerd, which holds no long watch on the cluster — in roster order,
-// each with the command its roster name has in supervisedWatcherCommands.
 func supervisedWatchers() []RestartEntry {
 	var out []RestartEntry
 	for _, name := range comps.Units {
@@ -1075,27 +799,16 @@ func supervisedWatchers() []RestartEntry {
 	return out
 }
 
-// workloadDisplay is how prose names a workload, when that differs from the
-// name the restore reports it under (rollout.Workload.Name). A workload the
-// map does not name is rendered under its roster name.
 var workloadDisplay = map[string]string{
 	"cilium agent + operator": "Cilium agents and operator",
 	"coredns":                 "CoreDNS",
 }
 
-// pkillCommand is the command that restarts a static pod's controller by hand:
-// kubelet recreates the container once its process exits. The pattern matches
-// the executable at the start of the command line, including an absolute path:
-// `pkill -x` matches only the first 15 characters of a process name, which
-// kube-controller-manager exceeds, and a bare `-f` pattern would match the sudo
-// and shell wrappers. The brackets around the pattern's first character keep
-// pkill from matching its own invocation.
+// pkill -x matches 15 chars and bare -f hits sudo wrappers; the [x] brackets avoid self-match.
 func pkillCommand(name string) string {
 	return `sudo pkill -TERM -f '^([^[:space:]]*/)?[` + name[:1] + `]` + name[1:] + `([[:space:]]|$)'`
 }
 
-// RepeatCommands is the set's per-control-plane block: the command each repeat
-// entry is restarted by hand with, in roster order.
 func (set RestartSet) RepeatCommands() []string {
 	var commands []string
 	for _, e := range set {
@@ -1106,11 +819,6 @@ func (set RestartSet) RepeatCommands() []string {
 	return commands
 }
 
-// RolloutRestartCommands is the set's once-for-the-cluster block: one
-// `kubectl -n <namespace> rollout restart` command per namespace the set's
-// workloads live in, in roster order — the same commands their roster owner
-// renders (rollout.RestartCommands), so the texts keep the commands the
-// operator-facing docs carry.
 func (set RestartSet) RolloutRestartCommands(kubectl string) []string {
 	var commands []string
 	var namespaces []string
@@ -1120,8 +828,6 @@ func (set RestartSet) RolloutRestartCommands(kubectl string) []string {
 			continue
 		}
 		if e.namespace == "" {
-			// An entry built by hand carries its command whole, without the
-			// kubectl prefix.
 			commands = append(commands, kubectl+" "+e.Command)
 			continue
 		}
@@ -1136,8 +842,6 @@ func (set RestartSet) RolloutRestartCommands(kubectl string) []string {
 	return commands
 }
 
-// split divides the set into its host-side watchers and its in-cluster
-// workloads, in roster order.
 func (set RestartSet) split() (watchers, workloads []RestartEntry) {
 	for _, e := range set {
 		if e.How == howRollout {
@@ -1149,8 +853,6 @@ func (set RestartSet) split() (watchers, workloads []RestartEntry) {
 	return watchers, workloads
 }
 
-// label is how prose names the entry: its display form when the set carries
-// one, its component name otherwise.
 func (e RestartEntry) label() string {
 	if e.display != "" {
 		return e.display
@@ -1158,7 +860,6 @@ func (e RestartEntry) label() string {
 	return e.Component
 }
 
-// labels is entries as prose names them.
 func labels(entries []RestartEntry) []string {
 	names := make([]string, len(entries))
 	for i, e := range entries {
@@ -1167,8 +868,6 @@ func labels(entries []RestartEntry) []string {
 	return names
 }
 
-// englishList is names as prose lists them: comma-separated, the last two
-// joined by "and".
 func englishList(names []string) string {
 	switch len(names) {
 	case 0:
@@ -1180,11 +879,7 @@ func englishList(names []string) string {
 	}
 }
 
-// RestartedProse is the sentence that says what the restore restarted: the
-// set's host-side watchers as this node's, then its workloads as the cluster's,
-// in roster order. The CLI success text and the MCP next-step text are built
-// from it, so a component added to the set is named without the sentence being
-// edited by hand.
+// RestartedProse names what the restore restarted, rendered from the set.
 func (set RestartSet) RestartedProse() string {
 	watchers, workloads := set.split()
 	return "This node's " + englishList(labels(watchers)) + ", and the cluster's " +
@@ -1192,34 +887,22 @@ func (set RestartSet) RestartedProse() string {
 		", were restarted where the cluster runs them: they held watches, or start-up state, from before the restore."
 }
 
-// RolloutRestartCommands is the restart set's once-for-the-cluster block: the
-// guidance's commands to restart by hand what the restore rolls.
 func RolloutRestartCommands(kubectl string) []string {
 	return RestoreRestartSet().RolloutRestartCommands(kubectl)
 }
 
-// SeedRolloutRestartCommands is RolloutRestartCommands run against the seed's own
-// apiserver, as the guidance before the other control planes rejoin needs.
 func SeedRolloutRestartCommands() []string {
 	return RestoreRestartSet().RolloutRestartCommands("stratum kubectl --server " + seedServer())
 }
 
-// RepeatRestartCommands are the commands to restart a control plane's host-side
-// watchers by hand, for the guidance that tells an operator to repeat the
-// restore's restarts once every control plane has rejoined: the restart set's
-// per-control-plane block. Kubelet recreates the controller containers once
-// they exit, and the supervisor restarts kubelet and the operator.
 func RepeatRestartCommands() []string { return RestoreRestartSet().RepeatCommands() }
 
-// workloadResult is rollout.Result, for restartClusterWorkloads' callers here.
 type workloadResult struct {
 	name      string
 	present   bool // false when the cluster does not run it
 	warn, err error
 }
 
-// restartClusterWorkloads rolls every Stratum-owned workload the cluster runs,
-// through the seed's own apiserver, under the run's timing knobs.
 func (fx *restoreEffects) restartClusterWorkloads() []workloadResult {
 	rs := rollout.Roller{Kubectl: fx.seedOutput, Hint: SeedKubectlHint, CallTimeout: fx.kubectlCallTimeout, Wait: fx.rolloutWait}.Restart()
 	results := make([]workloadResult, len(rs))
@@ -1229,27 +912,7 @@ func (fx *restoreEffects) restartClusterWorkloads() []workloadResult {
 	return results
 }
 
-// restartWatchers restarts what holds a watch on the cluster from before the
-// restore. etcd's resourceVersions went back to the snapshot's, so a watch or
-// informer that had already seen a later one is never told that its view is
-// stale: kubelet keeps running the post-snapshot pods and never starts the
-// restored ones, Cilium keeps no backend for the kubernetes Service, CoreDNS
-// answers headless-Service names from the post-snapshot endpoints, and the
-// local-path provisioner never provisions a restored claim. The set is
-// what SKE ships and runs a watch in; see rollout.Workloads for what is left out.
-//
-// It executes the restore's restart set (RestoreRestartSet), dispatching each
-// entry by its How: a supervised watcher through restartSupervisedWatcher under
-// its roster name, a static pod through the manifest gate, and the set's
-// rollout entries in one workload pass. The order is the set's — dependency
-// order, so kubelet goes first, since the rest are pods it has to recreate, and
-// the controller manager and scheduler come before the in-cluster workloads: a
-// rolling DaemonSet or Deployment needs both to act on the new pods, so
-// waiting on those rollouts with their stale watches still running could time
-// out on the very thing it is waiting for. The static pods are restarted from
-// the manifests on disk (RestartAsIs), not re-rendered: an upgrade rollback
-// restores older manifests and runs the newer binary. Everything is attempted,
-// and the ones that failed are named.
+// Pre-restore watchers are never told their resourceVersion view is stale, so they restart.
 func (fx *restoreEffects) restartWatchers(w io.Writer) error {
 	if fx.restoreStaticPodExists == nil {
 		return unsetEffect("restoreStaticPodExists")
@@ -1288,8 +951,7 @@ func (fx *restoreEffects) restartWatchers(w io.Writer) error {
 			}
 			report(e.Component, true, fx.restoreStaticPod(e.Component))
 		case howRollout:
-			// The set names one entry per workload, but the roller restarts
-			// them in one pass; the first rollout entry rolls them all.
+			// The roller restarts all workloads in one pass; only the first rollout entry rolls.
 			if rolled {
 				continue
 			}
@@ -1308,10 +970,7 @@ func (fx *restoreEffects) restartWatchers(w io.Writer) error {
 	return nil
 }
 
-// startManifest starts a static pod from the manifest it had before the restore
-// stopped it, and renders one only when it had none. Rendering takes
-// the images from this binary, and an upgrade rollback runs the newer binary
-// against the older manifests it has just restored.
+// Rendering takes images from this binary; an upgrade rollback must reuse the older manifests.
 func startManifest(name string, manifest []byte) error {
 	if manifest == nil {
 		return staticpod.Start(name)
@@ -1319,35 +978,19 @@ func startManifest(name string, manifest []byte) error {
 	return staticpod.Put(name, manifest)
 }
 
-// newNonce is 8 random hex characters, unique to one restore attempt.
 func newNonce() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b) // crypto/rand.Read never returns an error
 	return hex.EncodeToString(b)
 }
 
-// restoreCmd is the etcdutl invocation for a restore, with its progress passed
-// through to the operation's writer.
 func (fx *restoreEffects) restoreCmd(w io.Writer, o RestoreOptions, token string) *exec.Cmd {
 	cmd := exec.Command(fx.etcdutlPath, restoreArgs(o, token, fx.etcdDataDir)...)
 	cmd.Stdout, cmd.Stderr = w, os.Stderr
 	return cmd
 }
 
-// restoreArgs is the etcdutl command line for a single-member restore into the
-// etcd data dir.
-//
-// It uses a UNIQUE cluster token, not the shared version.EtcdClusterToken: etcd
-// derives the cluster-id from initial-cluster + token, so reusing the bootstrap
-// token reproduces the OLD cluster-id, and any still-running old member (a peer
-// not reset yet) would then reach this fresh single-member etcd and crash its
-// raft log ("tocommit out of range"). A distinct token gives a distinct
-// cluster-id, so stray old peers are rejected. Rejoining members use
-// --initial-cluster-state=existing and adopt this cluster-id via member-add, so
-// they don't need the token to match.
-//
-// The token is unique per attempt, not per Stamp: Stamp has second precision,
-// so two restores in the same second would otherwise share a cluster-id.
+// A unique token gives a unique cluster-id, so stray old peers are rejected, not crash raft.
 func restoreArgs(o RestoreOptions, token, dataDir string) []string {
 	return []string{"snapshot", "restore", o.Snapshot,
 		"--data-dir", dataDir,
@@ -1358,33 +1001,9 @@ func restoreArgs(o RestoreOptions, token, dataDir string) []string {
 	}
 }
 
-// Restore is the disruptive single-CP recovery path: stop apiserver + etcd, move
-// the data dir aside, snapshot-restore into a fresh data dir, restart, health-gate.
-// The caller MUST guard against running this in a live multi-member cluster
-// (restoring one member's snapshot corrupts quorum).
-//
-// A failure before etcd is running on the restored data is rolled back:
-// the original data dir goes back in place, a failed restore is kept
-// aside for inspection, and what was stopped is started again. etcd is started
-// again only on the original data, and kube-apiserver only once etcd is serving,
-// so a node that had no data dir before the restore is left stopped. Once etcd
-// is up on the restored data the restore has worked, and a later failure (the
-// apiserver not coming back) does not throw it away; it is reported as exactly
-// that. Once the apiserver is healthy, the components on this node and in the
-// cluster that hold watches from before the restore are restarted
-// (restartWatchers); one that cannot be is ErrWatchersNotRestarted.
-//
-// The moved-aside data dir, and any failed restore, are full copies of etcd's
-// data on the same filesystem. They are kept for the operator to inspect and
-// are never removed here; delete them once the cluster is verified.
-//
-// The writer leads: every "etcd restore:" step, warning and rollback note is
-// written through it, never to the process's own stdout.
+// Restore stops apiserver and etcd, restores into a fresh data dir, and rolls back on failure.
 func Restore(w io.Writer, o RestoreOptions) error {
-	// The one place a production effects value is built: one per call, with
-	// every effect's real implementation wired inline, so a second Restore never
-	// inherits the first run's value and no effect stays behind as a package
-	// variable a forgotten stub could fall back to.
+	// One value per call, wired inline, so no stub lingers as a package variable.
 	fx := &restoreEffects{
 		etcdDataDir:              version.EtcdDataDir,
 		etcdutlPath:              etcdutl(),
@@ -1410,31 +1029,19 @@ func Restore(w io.Writer, o RestoreOptions) error {
 		rolloutWait:              defaultRolloutWait,
 	}
 	fx.restoreAcquireDataLock = func() (func(), error) { return etcddata.Lock(fx.etcdDataDir) }
-	// The steps that are themselves built from other effects close over fx: by
-	// the time any of them runs, the value above is complete.
+	// These close over fx; by the time any of them runs, the value above is complete.
 	fx.seedKubectl = fx.localKubectl
 	fx.restoreWaitHealthz = func() error { return fx.waitSeedHealthz(fx.healthzWindow, healthzPollInterval) }
 	fx.restoreWorkloads = func() []workloadResult { return fx.restartClusterWorkloads() }
 	return runRestore(w, o, fx)
 }
 
-// runRestore is the restore sequence Restore hands its effects value to. The
-// writer leads, before the options: the run's progress goes through it. Every
-// host effect it reaches is a field on fx: one that is not set stops the run
-// with the unset-effect sentinel before that effect's host call is made, so a
-// zero value can never drive a restore against the node. Filesystem probes
-// use the same effects value and captured paths as the destructive steps.
+// runRestore runs the restore against fx; an unset effect stops the run before its host call.
 func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 	if o.Snapshot == "" || o.PeerURL == "" || o.InitialCluster == "" {
 		return fmt.Errorf("etcd restore: snapshot, peer URL and initial cluster are required")
 	}
-	// The node maintenance lock first, then the data lock: the data lock
-	// fences only other writers of the etcd data dir, and an upgrade, rollback
-	// or CA rotation takes none, so a restore that took it alone would run
-	// beside them. While another maintenance operation holds the lock, the
-	// restore refuses before anything is stopped. A caller that already holds
-	// it (the restore nested in a rollback) passes NodeLockHeld; the data lock
-	// below is always taken.
+	// Node maintenance lock first: the data lock does not fence upgrades or CA rotation.
 	if !o.NodeLockHeld {
 		if fx.restoreAcquireNodeLock == nil {
 			return unsetEffect("restoreAcquireNodeLock")
@@ -1450,11 +1057,7 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 		return err
 	}
 	defer release()
-	// The data lock alone leaves a gap: `stratum up` releases it after preparing
-	// node state and before its supervisor is visible, and a restore landing there
-	// would replace the data dir under a start that then runs with state prepared
-	// against the old one. Refused before anything is stopped. The two probes are
-	// host reads, so a missing stub is caught before they are consulted.
+	// `stratum up` releases the data lock before its supervisor is visible; refuse that window.
 	if fx.restoreSupervisorRunning == nil {
 		return unsetEffect("restoreSupervisorRunning")
 	}
@@ -1485,8 +1088,7 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 	} else if fi.IsDir() {
 		return fmt.Errorf("etcd restore: snapshot %s is a directory (nothing was stopped)", o.Snapshot)
 	}
-	// A node staged by an older release has no etcdutl. Finding that out
-	// once the control plane is down would cost an outage and a rollback.
+	// A node staged by an older release has no etcdutl; finding out costs an outage.
 	if ok, err := fx.pathExists(fx.etcdutlPath); err != nil || !ok {
 		if err == nil {
 			err = os.ErrNotExist
@@ -1494,9 +1096,7 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 		return fmt.Errorf("etcd restore: %s: %w; run `stratum stage` to install it (nothing was stopped)", fx.etcdutlPath, err)
 	}
 
-	// Both paths are chosen before anything is stopped: NowStamp has second
-	// precision, and a retry within the same second would otherwise find the
-	// previous attempt's directory in the way of a rename mid-rollback.
+	// Both aside paths are chosen before anything stops: a same-second retry must not collide.
 	asideCandidate, err := freePath(fx.etcdDataDir+".pre-restore-"+o.Stamp, fx.pathExists)
 	if err != nil {
 		return fmt.Errorf("etcd restore: %w", err)
@@ -1506,8 +1106,7 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 		return fmt.Errorf("etcd restore: %w", err)
 	}
 	r := &restoreRollback{failed: failed, manifests: map[string][]byte{}}
-	// Read before anything is stopped: Stop removes the manifest, and starting
-	// the component again puts back exactly these bytes.
+	// Stop removes the manifest; read it first so the rollback can put back these bytes.
 	if fx.restoreReadManifest == nil {
 		return unsetEffect("restoreReadManifest")
 	}
@@ -1520,26 +1119,15 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 	}
 
 	k8sutil.Step(w, "etcd restore: stopping apiserver + etcd")
-	// The rename below is destructive: if either component is still running when
-	// the data dir moves, the OLD process keeps serving pre-restore data and the
-	// post-restore health checks pass against it — reporting success falsely.
-	// staticpod.Stop removes the manifest and returns only once the listener has
-	// closed and the process is gone. A component is recorded as stopped before
-	// the call: a Stop that fails part-way has still removed its manifest, and
-	// the rollback must put it back.
+	// If the data dir moves under a live process, health checks pass against old data.
 	if fx.restoreStop == nil {
 		return unsetEffect("restoreStop")
 	}
-	// The restore nonce is checked here, beside the stop gate and before
-	// anything is stopped: past this point a bare return would leave the
-	// control plane stopped and the data dir moved aside with no rollback,
-	// which is why every failure below goes through r.undo instead.
+	// Past this point a bare return leaves the control plane stopped; failures go through r.undo.
 	if fx.restoreNonce == nil {
 		return unsetEffect("restoreNonce")
 	}
-	// Recovery needs the same start, health gates and directory moves as
-	// the forward path. Missing wiring cannot be repaired by undo, so reject
-	// it while both pods and the original data are still untouched.
+	// Missing wiring cannot be repaired by undo, so reject it while the node is untouched.
 	if fx.restoreStart == nil {
 		return unsetEffect("restoreStart")
 	}
@@ -1562,8 +1150,7 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 		}
 	}
 
-	// A missing data dir is a node whose etcd data is gone, which is what a
-	// restore is for; anything else that stops the check is not that.
+	// A missing data dir is what a restore is for; anything else that stops the check is not.
 	present, err := fx.pathExists(fx.etcdDataDir)
 	if err != nil {
 		return r.undo(w, fx, fmt.Errorf("etcd restore: %w (aborted before touching the data dir)", err))
@@ -1606,23 +1193,19 @@ func runRestore(w io.Writer, o RestoreOptions, fx *restoreEffects) error {
 	return fx.restartWatchers(w)
 }
 
-// restoreRollback records what Restore has changed, so a failure can put it back.
+// restoreRollback records what Restore changed, so a failure can put it back.
 type restoreRollback struct {
-	failed  string   // where a failed restore is kept, chosen up front
-	stopped []string // components whose manifests were removed, in stop order
-	aside   string   // where the original data dir was moved; "" if there was none
-	ran     bool     // etcdutl has run, so the data dir may hold a failed restore
-	// manifests holds each component's manifest from before the restore, nil
-	// when it had none.
+	failed    string   // where a failed restore is kept, chosen up front
+	stopped   []string // components whose manifests were removed, in stop order
+	aside     string   // where the original data dir was moved; "" if there was none
+	ran       bool     // etcdutl has run, so the data dir may hold a failed restore
 	manifests map[string][]byte
 }
 
-// start starts name from the manifest it had before the restore.
 func (r *restoreRollback) start(fx *restoreEffects, name string) error {
 	return fx.startPod(name, r.manifests[name])
 }
 
-// original says where the pre-restore data is.
 func (r *restoreRollback) original() string {
 	if r.aside == "" {
 		return "there was no data dir before the restore"
@@ -1630,15 +1213,7 @@ func (r *restoreRollback) original() string {
 	return "the original data is kept at " + r.aside
 }
 
-// undo puts the node back as it was before the restore began, and wraps cause
-// with what it did. A rollback that cannot finish says what is left and where
-// the original data is, instead of leaving an operator to discover it.
-//
-// etcd is started again only on the original data: never beside an etcd that
-// would not stop, and never on a failed restore or on nothing, which would
-// bootstrap an empty cluster. kube-apiserver is started again only once etcd is
-// serving; without it the apiserver cannot come up, and with an etcd that would
-// not stop it could serve the failed restore.
+// undo puts the node back; etcd restarts only on the original data, never on a failed restore.
 func (r *restoreRollback) undo(w io.Writer, fx *restoreEffects, cause error) error {
 	k8sutil.Step(w, "etcd restore FAILED — rolling back")
 	var problems []string
@@ -1646,10 +1221,7 @@ func (r *restoreRollback) undo(w io.Writer, fx *restoreEffects, cause error) err
 
 	etcdStopFailed, back, kept := false, false, ""
 	if r.ran {
-		// Stopped unconditionally, not only when its port answers: an etcd that
-		// is starting or shutting down holds the data dir without listening, and
-		// the data dir must not move under a live process. Stop is a no-op when
-		// there is no manifest and no process.
+		// An etcd starting or shutting down holds the data dir without listening; stop unconditionally.
 		if err := fx.stopPod("etcd"); err != nil {
 			etcdStopFailed = true
 			note("stop etcd on the failed restore, so the data dir was left as it is: %v", err)
@@ -1697,7 +1269,6 @@ func (r *restoreRollback) undo(w io.Writer, fx *restoreEffects, cause error) err
 			where += "; the failed restore is kept at " + kept
 		}
 		if r.ran && !back && kept == "" {
-			// Nothing moved it out, so it is where etcd would start.
 			if present, err := fx.pathExists(fx.etcdDataDir); err == nil && present {
 				where += "; the failed restore is still in " + fx.etcdDataDir
 			}
@@ -1724,9 +1295,6 @@ func (r *restoreRollback) undo(w io.Writer, fx *restoreEffects, cause error) err
 	return fmt.Errorf("%w; %s", cause, msg)
 }
 
-// putBack moves a failed restore out of the data dir and the original data
-// back in. It reports whether the original is back, and where the failed
-// restore went.
 func (r *restoreRollback) putBack(w io.Writer, fx *restoreEffects, note func(string, ...any)) (back bool, kept string) {
 	vacated := false
 	present, err := fx.pathExists(fx.etcdDataDir)
@@ -1754,8 +1322,7 @@ func (r *restoreRollback) putBack(w io.Writer, fx *restoreEffects, note func(str
 	return back, kept
 }
 
-// pathExists reports whether path exists. Only not-existing is "no"; any other
-// error is returned, not read as either answer.
+// pathExists answers "no" only for not-existing; any other error is returned.
 func pathExists(path string) (bool, error) {
 	_, err := os.Lstat(path)
 	if err == nil {
@@ -1767,10 +1334,7 @@ func pathExists(path string) (bool, error) {
 	return false, fmt.Errorf("check %s: %w", path, err)
 }
 
-// freePath returns base, or base with the first free numeric suffix when
-// something already exists there. Any error other than not-existing is
-// returned rather than read as "taken", so an unreadable parent cannot turn
-// this into an endless search.
+// freePath returns base, or base with the first free numeric suffix; other errors are returned.
 func freePath(base string, exists func(string) (bool, error)) (string, error) {
 	p := base
 	for i := 1; i <= 100; i++ {

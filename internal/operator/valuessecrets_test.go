@@ -32,8 +32,6 @@ import (
 	ktesting "k8s.io/client-go/testing"
 )
 
-// valuesSecret is a Secret ns/name at resourceVersion rv whose data holds the
-// given keys.
 func valuesSecret(ns, name, rv string, data map[string]string) *unstructured.Unstructured {
 	d := map[string]interface{}{}
 	for k, v := range data {
@@ -67,9 +65,6 @@ func TestParseValuesSecrets(t *testing.T) {
 	}
 }
 
-// Every listed key is read in order, and versions name each Secret's
-// resourceVersion; a missing Secret or key, or a body that is not a values
-// map, fails without quoting the Secret's content.
 func TestReadValuesSecrets(t *testing.T) {
 	t.Parallel()
 	const secretWord = "hunter2-not-a-map"
@@ -112,8 +107,7 @@ func TestReadValuesSecrets(t *testing.T) {
 	}
 }
 
-// Secrets sit over valuesContent and the HelmChartConfig and under set and
-// setString, later Secrets over earlier ones.
+// Secret order matters: later Secrets over earlier, all over the overlays, under set.
 func TestMergedValuesLayersValuesSecretsBetweenTheOverlayAndSet(t *testing.T) {
 	t.Parallel()
 	spec := helmSpec{
@@ -133,8 +127,7 @@ func TestMergedValuesLayersValuesSecretsBetweenTheOverlayAndSet(t *testing.T) {
 	}
 }
 
-// A chart without valuesSecrets hashes exactly as released builds did, so an
-// operator upgrade does not upgrade every release.
+// The released hash, so an operator upgrade does not upgrade every release.
 func TestSpecHashWithoutValuesSecretsIsTheReleasedHash(t *testing.T) {
 	t.Parallel()
 	spec := helmSpec{repo: "https://charts.example", chart: "app", version: "1.2.3", chartContent: "Y2hhcnQ="}
@@ -150,8 +143,6 @@ func TestSpecHashWithoutValuesSecretsIsTheReleasedHash(t *testing.T) {
 	}
 }
 
-// lastReleaseValues is the values the newest stored revision of ns/name was
-// installed with.
 func lastReleaseValues(t *testing.T, h *fakeHelm, ns, name string) map[string]interface{} {
 	t.Helper()
 	h.mem.SetNamespace(ns)
@@ -166,9 +157,6 @@ func lastReleaseValues(t *testing.T, h *fakeHelm, ns, name string) map[string]in
 	return rel.Config
 }
 
-// The password case: the value reaches the release from a Secret,
-// never appears in the HelmChart, status included, and a change to the Secret
-// upgrades the release, while a reconcile with nothing changed does not.
 func TestValuesSecretsReachTheReleaseAndStayOutOfTheHelmChart(t *testing.T) {
 	const password = "s3cret-pw"
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -192,8 +180,7 @@ func TestValuesSecretsReachTheReleaseAndStayOutOfTheHelmChart(t *testing.T) {
 		t.Errorf("the HelmChart carries the Secret's value: %s", stored)
 	}
 
-	// The hot path skips Helm only while the release Secret exists in the
-	// cluster; the fake Helm keeps releases in memory, so store it.
+	// The fake Helm keeps releases in memory, so store the release Secret the hot path checks.
 	if _, err := dyn.Resource(secretGVR).Namespace(flowNS).Create(context.Background(),
 		valuesSecret(flowNS, "sh.helm.release.v1."+flowRelease+".v1", "1", nil), metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
@@ -216,8 +203,6 @@ func TestValuesSecretsReachTheReleaseAndStayOutOfTheHelmChart(t *testing.T) {
 	}
 }
 
-// A HelmChart applied before its Secret fails with a reason, and installs on
-// the first reconcile after the Secret exists, with no failed-chart backoff.
 func TestValuesSecretsWaitForAMissingSecret(t *testing.T) {
 	useFakeHelm(t, fakeHelmOptions{})
 	hc := newFlowHCIn(t, flowNS, flowName, "secretvals-missing", map[string]interface{}{
@@ -240,10 +225,6 @@ func TestValuesSecretsWaitForAMissingSecret(t *testing.T) {
 	}
 }
 
-// A Secret-backed chart's hash covers its public inputs as written and the
-// Secrets' versions. The values merged without the Secrets were not enough: a
-// set entry that takes back a key a Secret overrides changes the release but
-// not that merge, so the hot path skipped the upgrade.
 func TestSecretSpecHash(t *testing.T) {
 	t.Parallel()
 	versions := []string{"s\x00values.yaml\x00uid\x001"}
@@ -268,10 +249,7 @@ func TestSecretSpecHash(t *testing.T) {
 	}
 }
 
-// A configuration valid only with the Secret's values installs: valuesContent
-// makes a a scalar, the Secret makes it a map, and set adds a key to that map.
-// Merging the public layers alone fails on it, so neither the hash nor any
-// other step may depend on that merge.
+// The public layers' merge alone fails here, so no step may depend on that merge.
 func TestValuesSecretsInstallWhatOnlyTheSecretMakesValid(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	hc := newFlowHCIn(t, flowNS, flowName, "secretvals-valid-only-with-secret", map[string]interface{}{
@@ -290,8 +268,6 @@ func TestValuesSecretsInstallWhatOnlyTheSecretMakesValid(t *testing.T) {
 	}
 }
 
-// failChart is spec.chartContent for a chart named app whose template fails
-// with admin.password as its message when boom is set, as a chart can.
 func failChart(t *testing.T) string {
 	t.Helper()
 	files := map[string]string{
@@ -319,10 +295,6 @@ func failChart(t *testing.T) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// Helm's error can quote values, and for a chart without valuesSecrets a
-// failed install or upgrade copies it into status.message, readable wherever
-// the HelmChart is. For a Secret-backed chart the status says only that it
-// failed.
 func TestValuesSecretsKeepHelmErrorsOutOfTheStatus(t *testing.T) {
 	const password = "s3cret-in-a-helm-error"
 	secretSpec := func(boom bool) map[string]interface{} {
@@ -379,8 +351,6 @@ func TestValuesSecretsKeepHelmErrorsOutOfTheStatus(t *testing.T) {
 	})
 }
 
-// The take-back case end to end: valuesContent sets a password, the Secret
-// overrides it, and a later set entry takes it back. The release must follow.
 func TestValuesSecretsUpgradeWhenSetTakesBackAKey(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	spec := map[string]interface{}{
@@ -407,9 +377,6 @@ func TestValuesSecretsUpgradeWhenSetTakesBackAKey(t *testing.T) {
 	}
 }
 
-// A release rendered with Secret values keeps them in Helm's history after
-// spec.valuesSecrets is removed, and a recovery can roll back to it: an error
-// from that rollback stays out of the status, as the status marks.
 func TestValuesSecretsKeepRecoveryErrorsOutOfTheStatusAfterRemoval(t *testing.T) {
 	const password = "s3cret-in-a-rollback-error"
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -422,8 +389,6 @@ func TestValuesSecretsKeepRecoveryErrorsOutOfTheStatusAfterRemoval(t *testing.T)
 		t.Fatalf("status = %+v, want Deployed revision 1", st)
 	}
 
-	// The references go, an upgrade is cut short, and rolling back to the
-	// Secret-backed revision 1 fails with an error that quotes its values.
 	updateHCIn(t, dyn, flowNS, flowName, func(hc *unstructured.Unstructured) {
 		hc.Object["spec"] = map[string]interface{}{"chartContent": flowChart(t, "1.1.0")}
 	})
@@ -444,17 +409,11 @@ func TestValuesSecretsKeepRecoveryErrorsOutOfTheStatusAfterRemoval(t *testing.T)
 	}
 }
 
-// nameAfter renames the object forbidOwnershipCheck leaves unverifiable, as a
-// template that names an object after a value would.
 func nameAfter(kc *kubefake.FailingKubeClient, name string) {
 	kc.DummyResources[0].Name = name
 	kc.DummyResources[0].Object.(*corev1.ConfigMap).Name = name
 }
 
-// A template can name an object after a Secret value. When an uninstall
-// cannot verify such an object, a private chart's hold lists it only in the
-// operator's log, on a recovery and on a deletion, and the hold still keeps
-// the release from being reinstalled and the finalizer in place.
 func TestValuesSecretsKeepHeldObjectNamesOutOfTheStatus(t *testing.T) {
 	const secretName = "s3cret-name"
 	spec := func() map[string]interface{} {
@@ -513,9 +472,7 @@ func TestValuesSecretsKeepHeldObjectNamesOutOfTheStatus(t *testing.T) {
 	})
 }
 
-// A Deployed chart keeps its release through a Secret read that may work next
-// pass: marking it Failed made the next good pass upgrade it with the same
-// values. A Secret that is gone still fails it.
+// Marking a Deployed chart Failed makes the next good pass re-upgrade it.
 func TestValuesSecretsDeployedChartRidesOutAFailedRead(t *testing.T) {
 	spec := func() map[string]interface{} {
 		return map[string]interface{}{
@@ -561,10 +518,7 @@ func TestValuesSecretsDeployedChartRidesOutAFailedRead(t *testing.T) {
 	})
 }
 
-// Outside a privileged namespace a HelmChart that names valuesSecrets is
-// refused before any Secret is read, stamped requester or not: a Secret's
-// writer, who need not be able to write the HelmChart, would otherwise steer
-// the release with the requester's authority.
+// A Secret's writer need not write the HelmChart; its values must not steer the release.
 func TestValuesSecretsAreRefusedOutsideAPrivilegedNamespace(t *testing.T) {
 	signer := testSigner()
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -593,8 +547,6 @@ func TestValuesSecretsAreRefusedOutsideAPrivilegedNamespace(t *testing.T) {
 	}
 }
 
-// Only what can work unchanged on the next pass is retried; anything else
-// fails the chart, so an edit that cannot work is reported, not ignored.
 func TestRetryableSecretRead(t *testing.T) {
 	t.Parallel()
 	gr := schema.GroupResource{Resource: "secrets"}
@@ -621,7 +573,6 @@ func TestRetryableSecretRead(t *testing.T) {
 	}
 }
 
-// A name client-go would refuse before sending is reported before any read.
 func TestReadValuesSecretsRefusesAnInvalidName(t *testing.T) {
 	t.Parallel()
 	for _, name := range []string{"app/params", "app%2Fparams", "App-Params"} {
@@ -641,8 +592,6 @@ func TestReadValuesSecretsRefusesAnInvalidName(t *testing.T) {
 	}
 }
 
-// A Deployed chart edited to a reference that cannot work goes Failed with
-// the reason, instead of staying Deployed and ignoring the edit.
 func TestValuesSecretsReportAnInvalidReferenceOnADeployedChart(t *testing.T) {
 	useFakeHelm(t, fakeHelmOptions{})
 	dyn := newFlowDynClient(t, newFlowHCIn(t, flowNS, flowName, "secretvals-invalid-name", map[string]interface{}{
@@ -665,7 +614,6 @@ func TestValuesSecretsReportAnInvalidReferenceOnADeployedChart(t *testing.T) {
 	}
 }
 
-// The CRD refuses a reference that is not a Secret name or key at apply time.
 func TestHelmChartCRDRestrictsValuesSecretsReferences(t *testing.T) {
 	t.Parallel()
 	item, _ := nested(helmChartCRDSpecSchema(t), "properties", "valuesSecrets", "items", "properties").(map[string]interface{})

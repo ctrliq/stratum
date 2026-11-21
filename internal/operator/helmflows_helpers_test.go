@@ -1,11 +1,5 @@
 package operator
 
-// Helm-typed setup for the flow tests in helmflows_test.go. Those tests pin the
-// operator's Helm flows and must not change when stratum moves to another Helm
-// major version, so they import no helm.sh package: every Helm type lives here,
-// behind plain-typed helpers, and this file is the only one a Helm migration may
-// edit.
-
 import (
 	"context"
 	"errors"
@@ -36,40 +30,25 @@ import (
 	"helm.sh/helm/v4/pkg/storage/driver"
 )
 
-// helmRecord is one stored revision of a Helm release, reduced to what the flow
-// tests assert. status uses Helm's release status strings ("deployed",
-// "pending-install", "pending-upgrade", ...).
 type helmRecord struct {
 	revision     int
 	status       string
 	chartVersion string
-	// description is what seed stores as Helm's description. Empty means what
-	// Helm writes for the status: "Upgrade complete" for deployed and
-	// superseded, which served. history leaves it empty.
-	description string
+	description  string
 }
 
-// fakeHelmOptions selects how the fake Kubernetes client behaves.
 type fakeHelmOptions struct {
-	// createErr, when set, fails every Kubernetes create with this error.
 	createErr error
-	// renderedObject makes the client report one rendered object (a ConfigMap
-	// the cluster does not have yet), so an install reaches the create of the
-	// chart's own objects instead of applying an empty manifest.
+	// One rendered object, so an install reaches the chart's own creates.
 	renderedObject bool
 }
 
-// fakeHelm is an in-memory Helm backend: Helm's fake Kubernetes client plus
-// in-memory release storage, shared by every action configuration the
-// operator builds during one test.
 type fakeHelm struct {
 	mem *queryFaultMemory
 	cfg *action.Configuration
 }
 
-// queryFaultMemory is in-memory release storage whose failAt'th Query fails
-// with err, once failAt is set. Release history and the last-revision lookup
-// both go through Query.
+// Release history and last-revision lookups both go through Query.
 type queryFaultMemory struct {
 	*driver.Memory
 	queries int
@@ -85,16 +64,11 @@ func (m *queryFaultMemory) Query(keyvals map[string]string) ([]helmreleaser.Rele
 	return m.Memory.Query(keyvals)
 }
 
-// failQuery makes the n'th release storage query after this call fail with
-// err, and only that one.
 func (h *fakeHelm) failQuery(n int, err error) {
 	h.mem.queries, h.mem.failAt, h.mem.err = 0, n, err
 }
 
-// useFakeHelm points newActionConfigFn at a fakeHelm for the rest of the test.
-// The storage driver is bound to the namespace the operator asks for, as the
-// real "secret" driver is, so a release looked up in the wrong namespace is
-// not found.
+// The storage driver binds the requested namespace, as the real secret driver does.
 func useFakeHelm(t *testing.T, opts fakeHelmOptions) *fakeHelm {
 	t.Helper()
 	kc := &kubefake.FailingKubeClient{
@@ -105,7 +79,6 @@ func useFakeHelm(t *testing.T, opts fakeHelmOptions) *fakeHelm {
 		kc.DummyResources = absentConfigMap()
 	}
 	mem := &queryFaultMemory{Memory: driver.NewMemory()}
-	// Helm's own log goes to the test log, debug messages included.
 	cfg := action.NewConfiguration(action.ConfigurationSetLogger(
 		slog.NewTextHandler(t.Output(), &slog.HandlerOptions{Level: slog.LevelDebug})))
 	cfg.Releases = storage.Init(mem)
@@ -121,8 +94,6 @@ func useFakeHelm(t *testing.T, opts fakeHelmOptions) *fakeHelm {
 	return h
 }
 
-// seed stores the given revisions of release namespace/name directly in
-// release storage, as if earlier operator runs had left them there.
 func (h *fakeHelm) seed(t *testing.T, namespace, name string, recs ...helmRecord) {
 	t.Helper()
 	for _, r := range recs {
@@ -149,8 +120,6 @@ func (h *fakeHelm) seed(t *testing.T, namespace, name string, recs ...helmRecord
 	}
 }
 
-// history returns every stored revision of release namespace/name in revision
-// order, or nil when release storage holds none.
 func (h *fakeHelm) history(t *testing.T, namespace, name string) []helmRecord {
 	t.Helper()
 	h.mem.SetNamespace(namespace)
@@ -180,9 +149,7 @@ func (h *fakeHelm) history(t *testing.T, namespace, name string) []helmRecord {
 	return out
 }
 
-// absentConfigMap is a rendered-object list holding one ConfigMap whose REST
-// client answers every request with 404, so Helm's pre-install ownership check
-// finds no conflicting object and the install goes on to create it.
+// Answers 404 so Helm's pre-install ownership check finds no conflict and the install creates.
 func absentConfigMap() kube.ResourceList {
 	notFound := func(*http.Request) (*http.Response, error) {
 		return &http.Response{

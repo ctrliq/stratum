@@ -123,7 +123,6 @@ func TestLoadConfigRefusesABadSpecNode(t *testing.T) {
 	}
 }
 
-// executable writes an executable file standing in for a handler's runtime.
 func executable(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "nvidia-container-runtime")
@@ -158,8 +157,7 @@ func TestWorkerJoinSavesItsNodeFacts(t *testing.T) {
 	}
 }
 
-// A join refuses a bad or uninstalled spec.node before it touches the host:
-// the host-preparation and directory seams fail the test if reached.
+// The host seams fail the test if a refusal reaches host preparation.
 func TestWorkerJoinRefusesBadNodeFactsBeforeTheHost(t *testing.T) {
 	for name, o := range map[string]WorkerOptions{
 		"engine-owned label": {Node: NodeSpec{Labels: map[string]string{"runtime.stratum.ciq.com/x": "true"}}},
@@ -326,8 +324,6 @@ func TestWorkerRestartNodeFacts(t *testing.T) {
 	})
 }
 
-// A worker restart reads only spec.selinux from its file; a spec.node it
-// ignores, valid or not, must not cost it that setting.
 func TestWorkerSELinuxIgnoresSpecNode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	body := "spec:\n  selinux: false\n  node:\n    labels:\n      stratum.ciq.com/control-plane: \"true\"\n"

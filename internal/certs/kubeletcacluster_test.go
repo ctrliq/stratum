@@ -51,10 +51,6 @@ var (
 	kcaWorkers  = []cnode{{Name: "w1"}}
 )
 
-// Each phase reaches every node, control planes first, before the next
-// begins; the API servers' certificate is checked against every kubelet
-// before drop-root, and drop-root ends with every kubelet refusing a
-// root-signed one.
 func TestKubeletCAClusterRunsEachPhaseEverywhereInOrder(t *testing.T) {
 	var log kubeletClusterLog
 	if err := runKubeletCACluster(io.Discard, KubeletCAOptions{}, kcaOtherCPs, kcaWorkers, log.ops()); err != nil {
@@ -74,8 +70,6 @@ func TestKubeletCAClusterRunsEachPhaseEverywhereInOrder(t *testing.T) {
 	}
 }
 
-// The rollback re-adds the root everywhere before any certificate moves back,
-// and unpublishes the kubelet-client CA before the workers drop it.
 func TestKubeletCAClusterRollbackRunsInReverse(t *testing.T) {
 	var log kubeletClusterLog
 	if err := runKubeletCACluster(io.Discard, KubeletCAOptions{Rollback: true, Force: true}, kcaOtherCPs, kcaWorkers, log.ops()); err != nil {
@@ -95,8 +89,6 @@ func TestKubeletCAClusterRollbackRunsInReverse(t *testing.T) {
 	}
 }
 
-// A failure stops the run where it is, says how to resume or roll back, and
-// still removes the staged key.
 func TestKubeletCAClusterHaltsOnTheFirstFailure(t *testing.T) {
 	for _, tc := range []struct {
 		failAt, phase string
@@ -127,7 +119,6 @@ func TestKubeletCAClusterHaltsOnTheFirstFailure(t *testing.T) {
 	}
 }
 
-// A single control plane stages no key, since no follower fetches one.
 func TestKubeletCAClusterOnOneControlPlaneStagesNoKey(t *testing.T) {
 	var log kubeletClusterLog
 	if err := runKubeletCACluster(io.Discard, KubeletCAOptions{}, nil, kcaWorkers, log.ops()); err != nil {

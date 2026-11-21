@@ -11,27 +11,11 @@ import (
 	"testing"
 )
 
-// docsRoot is the public documentation tree, relative to this package.
 const docsRoot = "../../docs/docs"
 
-// TestDocsClusterConfigSamplesParse runs every ClusterConfig sample in the
-// public docs through the engine's own strict parser.
-//
-// The installation page shipped `spec.worker: false`, a field ClusterConfig has
-// never had; the parser is strict on purpose, so anyone who copied the example
-// got a config `stratum up` refused. The docs are prose to a reviewer and data
-// to the engine, and only a test that treats them as data catches that drift.
-//
-// A fenced yaml block is a ClusterConfig sample when it says `kind:
-// ClusterConfig`, or when it has a top-level `spec:` and no `kind:` at all —
-// every Kubernetes object in the docs carries a kind, so this does not sweep
-// up HelmCharts or Deployments.
 func TestDocsClusterConfigSamplesParse(t *testing.T) {
 	samples := docsClusterConfigSamples(t)
 	if len(samples) < 4 {
-		// Four pages carry one today (installation, hardening, high availability,
-		// networking). Fewer means the extraction rotted, not that the docs got
-		// better.
 		t.Fatalf("found %d ClusterConfig samples in %s; the extractor does not match the docs", len(samples), docsRoot)
 	}
 	for _, s := range samples {

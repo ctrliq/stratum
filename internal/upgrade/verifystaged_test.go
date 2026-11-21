@@ -13,8 +13,7 @@ import (
 	"testing"
 )
 
-// An MCP rollout has each node check the staged binary before running it; a
-// CLI rollout runs --from as given.
+// an MCP rollout verifies the staged binary per node; a CLI rollout runs --from as given
 func TestStagedUpgradeArgvVerifiesOnlyWhenAsked(t *testing.T) {
 	o := ClusterOptions{From: "/var/lib/stratum/upgrade/stratum", Target: "v1.37.2", expectSHA256: "abc", arch: "amd64"}
 	cli := stagedUpgradeArgv(o, Node{Arch: "amd64"})
@@ -40,8 +39,6 @@ func TestStagedUpgradeArgvVerifiesOnlyWhenAsked(t *testing.T) {
 	}
 }
 
-// The script, run as a node would: it execs the binary only when the file and
-// its directory are what an operator staged.
 func TestVerifyStagedScript(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the script uses GNU stat, as on the nodes")

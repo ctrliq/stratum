@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// stubS3 serves body for every GET, or a 500 when fail is set.
 func stubS3(t *testing.T, body string, fail bool) *Target {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +24,6 @@ func stubS3(t *testing.T, body string, fail bool) *Target {
 	return &Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
 }
 
-// openRoot opens a fresh temp dir as a Root, and returns it with its path.
 func openRoot(t *testing.T) (*os.Root, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -110,22 +108,21 @@ func TestRemoveStaleTemps(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(".x.db.123456", old)               // stale temp: removed
-	write(".x.db.789", time.Now())           // recent temp, maybe a live download: kept
-	write("x.db", old)                       // the snapshot itself: kept
-	write("y.db", old)                       // unrelated: kept
-	write(".x.db.bak", old)                  // not digits after the name: kept
-	write(".x.db.", old)                     // no random part: kept
-	write(".x.db.4294967296", old)           // overflows uint32, tempName never makes it: kept
-	write(".x.db.000123", old)               // leading zeros, tempName never makes them: kept
-	write(".x.db.99999999999999999999", old) // far past uint32: kept
-	write(".x.db.4294967295", old)           // largest uint32, a genuine temp: removed
-	write(".x.db.0", old)                    // smallest uint32, a genuine temp: removed
-	write(".y.db.123456", old)               // another name's temp: kept
+	write(".x.db.123456", old)
+	write(".x.db.789", time.Now())
+	write("x.db", old)
+	write("y.db", old)
+	write(".x.db.bak", old)
+	write(".x.db.", old)
+	write(".x.db.4294967296", old)
+	write(".x.db.000123", old)
+	write(".x.db.99999999999999999999", old)
+	write(".x.db.4294967295", old)
+	write(".x.db.0", old)
+	write(".y.db.123456", old)
 	if err := os.Mkdir(filepath.Join(dir, ".x.db.555"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// a symlink is not a regular file: it is left, and never followed
 	victim := filepath.Join(t.TempDir(), "victim")
 	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
@@ -151,9 +148,6 @@ func TestRemoveStaleTemps(t *testing.T) {
 	}
 }
 
-// TestDownloadSurvivesADirSwap pins that Download writes through the handle it
-// was given, so swapping the directory's path for a symlink after the check
-// redirects nothing.
 func TestDownloadSurvivesADirSwap(t *testing.T) {
 	root, dir := openRoot(t)
 	victim := t.TempDir()

@@ -10,8 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A cluster whose control planes saved Cilium settings shares them, and one
-// that never set any shares no entry, so an older binary can still join it.
 func TestCollectBundleSharesTheCiliumSettingsOnlyWhenSet(t *testing.T) {
 	bundleHost(t)
 	orig := version.CiliumSettingsPath
@@ -42,7 +40,6 @@ func TestCollectBundleSharesTheCiliumSettingsOnlyWhenSet(t *testing.T) {
 	}
 }
 
-// A joining control plane must carry the cluster's spec.network.cilium.
 func TestCheckJoinCilium(t *testing.T) {
 	orig := version.CiliumSettingsPath
 	version.CiliumSettingsPath = filepath.Join(t.TempDir(), ciliumSettingsEntry)
@@ -78,8 +75,6 @@ func TestCheckJoinCilium(t *testing.T) {
 	}
 }
 
-// A settings file that exists but cannot be read is an error, not "no
-// settings": a joiner would take the missing entry as the shipped ones.
 func TestCollectBundleRefusesAnUnreadableCiliumSettings(t *testing.T) {
 	bundleHost(t)
 	orig := version.CiliumSettingsPath

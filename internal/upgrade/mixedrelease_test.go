@@ -1,31 +1,6 @@
 package upgrade
 
-// The acceptance suite for released-identity exclusivity and the
-// rollback nesting, on the upgrade side. Two identities are released
-// contracts — version.NodeUpgradeLockPath (/run/stratum-upgrade.lock) and the
-// cluster Lease kube-system/stratum-cluster-upgrade — because an orchestrator
-// and a lockNode on the PREVIOUS release meet this build on exactly those. A
-// rename, a second lock kind, or a lease that is not live would let an old
-// and a new run work the same cluster or host at once, so each pin here holds
-// the identity from one side and refuses from the other:
-//
-//   - a released-style holder of the released lease (a live lease object, no
-//     shared maintenance lease — the released binary creates none) refuses the
-//     new orchestrator before it creates anything;
-//   - the new run holds the released lease LIVE — holder set, renewed through
-//     a readiness window — so a released-style acquire would refuse it;
-//   - the new node lock still arbitrates by flock: a released-style raw flock
-//     taker cannot take the node while the new code holds it (the reverse
-//     direction, a released holder refusing the new entries, is
-//     nodelock_test.go's and the certs suite's);
-//   - a rollback holds the node lock through its nested etcd restore and
-//     passes the held-lock capability, so the nested Restore holds rather
-//     than reacquires.
-//
-// Patterns are the package's own: the fake clientset, the fake clock over
-// leaseNow, and the orchestrator seams of duallease_test.go
-// (fastOrchestrator, runUpgrade, liveHeldLease) and resume_test.go
-// (etcdRollbackFixture, captureStdout).
+// Both released identities are pinned: each test holds from one side and refuses from the other.
 
 import (
 	"io"
@@ -48,13 +23,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestUpgradeClusterRefusesAReleasedStyleHolderOfTheReleasedLease is the
-// mixed-release cluster pin, refusing direction: an orchestrator on the
-// previous release holds kube-system/stratum-cluster-upgrade and knows no
-// shared lease. The new UpgradeCluster refuses it, names the old holder, and
-// gets no further than the released lease: the shared maintenance lease is
-// never created, no per-node Job is dispatched, and the old holder's lease
-// survives the refused run.
+// Refusing direction: the new run refuses a live released lease and creates nothing of its own.
 func TestUpgradeClusterRefusesAReleasedStyleHolderOfTheReleasedLease(t *testing.T) {
 	fakeClock(t, time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC))
 	oldHolder := "old-orchestrator/9/9"
@@ -85,15 +54,7 @@ func TestUpgradeClusterRefusesAReleasedStyleHolderOfTheReleasedLease(t *testing.
 	}
 }
 
-// TestUpgradeClusterKeepsTheReleasedLeaseLiveThroughReadiness is the
-// mixed-release pin, holding direction, with the renewal case: the clock
-// jumps 45 s while node 1 waits for readiness — an API server restarting and
-// rejoining, long enough to cross two renewal ticks — and the run completes
-// both nodes with BOTH leases renewed to the jumped clock, the released lease
-// among them. The released check is spelled the released binary's acquire
-// reads it: a holder other than ours, with a renew time whose 60 s window is
-// still open, is refused — so a released orchestrator meeting this run
-// mid-rollout refuses instead of upgrading beside it.
+// Both leases stay renewed through the readiness window, so a released-style acquire would refuse.
 func TestUpgradeClusterKeepsTheReleasedLeaseLiveThroughReadiness(t *testing.T) {
 	t0 := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
 	now := fakeClock(t, t0)
@@ -101,7 +62,7 @@ func TestUpgradeClusterKeepsTheReleasedLeaseLiveThroughReadiness(t *testing.T) {
 	var released, shared time.Time
 	jobs := fastOrchestrator(t, func(n int) {
 		if n == 1 {
-			*now = now.Add(45 * time.Second) // the readiness wait spans an API restart
+			*now = now.Add(45 * time.Second)
 		}
 		if n == 2 {
 			for _, read := range []struct {
@@ -142,13 +103,7 @@ func TestUpgradeClusterKeepsTheReleasedLeaseLiveThroughReadiness(t *testing.T) {
 	}
 }
 
-// TestNewNodeLockStillArbitratesByFlock pins the mixed-release host pin,
-// holding direction: the new lockNode records "op pid" in the lock file, but
-// the lock itself must still be the released flock. A released binary takes a
-// raw syscall.Flock on a fresh descriptor; while the new code holds the lock,
-// that raw taker must be refused. A rewrite to a pid file, a different lock
-// kind, or a moved path would pass every record-format test and still let an
-// old and a new binary run one host at once.
+// The lock itself must stay the released flock, not a record a released binary cannot contend on.
 func TestNewNodeLockStillArbitratesByFlock(t *testing.T) {
 	redirect(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
 	release, err := nodelock.Acquire("upgrade")
@@ -169,16 +124,7 @@ func TestNewNodeLockStillArbitratesByFlock(t *testing.T) {
 	}
 }
 
-// TestRollbackHoldsTheNodeLockThroughTheNestedRestore is the rollback ->
-// Restore nesting acceptance case: RollbackNode holds the node maintenance
-// lock for the whole rollback and its nested etcd restore runs under it, so
-// the restore must be told the caller holds the lock (RestoreOptions.
-// NodeLockHeld) instead of reacquiring — which would refuse against the
-// rollback's own holder and fail every rollback with a snapshot. The probe
-// that stands in for the restore checks both halves: the capability is set,
-// and at that moment the lock really is held by the rollback operation. The
-// etcd data lock stays the restore's own: it is a different lock, and it is
-// takeable under the held node lock.
+// Reacquiring would refuse against the rollback's own hold, so the capability is passed.
 func TestRollbackHoldsTheNodeLockThroughTheNestedRestore(t *testing.T) {
 	redirect(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
 	redirect(t, &version.EtcdDataDir, filepath.Join(t.TempDir(), "etcd"))
@@ -191,8 +137,7 @@ func TestRollbackHoldsTheNodeLockThroughTheNestedRestore(t *testing.T) {
 		} else if !strings.Contains(err.Error(), "rollback") {
 			t.Errorf("the node lock at the nested restore is held by %v; want the rollback's own hold", err)
 		}
-		// The data lock is the nested restore's own acquire, under the held
-		// node lock: the capability lifts only the maintenance lock.
+		// The capability lifts only the maintenance lock, not the data lock.
 		releaseData, err := etcddata.Lock(version.EtcdDataDir)
 		if err != nil {
 			t.Errorf("the etcd data lock was not takeable under the rollback's node lock: %v", err)

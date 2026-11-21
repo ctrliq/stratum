@@ -16,23 +16,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The multi-node harness for `certs migrate-etcd-ca --cluster`.
-//
-// These tests are about the ORCHESTRATION — phase-major ordering, the drop-root
-// gate, refusal on a partially-migrated cluster, halting safely, rollback.
-// internal/pki already covers the per-node primitives in 939 lines and none of
-// that is repeated here.
-//
-// What makes the assertions mean anything is that the driver below is not a
-// mock. version.PKIDir is a package var, so each node gets its own REAL PKI
-// directory, and RunPhase calls the production per-node path
-// (migrateEtcdCAWith) against real files — so a phase a real node would refuse
-// is refused here too, and the cross-node checks verify certificates with
-// crypto/x509 rather than trusting a bookkeeping flag. The primitives and the
-// per-node sequencing are the fixture; the cluster logic is what is under test.
-//
-// version.PKIDir is global, so none of these may run in parallel — the same
-// constraint internal/pki's own tests already live under.
+// Orchestration harness; each node gets a real PKI dir, so nothing runs in parallel.
 
 // fakeCluster is an etcdDriver backed by one real PKI directory per node.
 type fakeCluster struct {
@@ -45,41 +29,26 @@ type fakeCluster struct {
 	failRestartAt    map[string]bool // "node:phase" -> the phase writes, then its restart fails
 	unreachable      map[string]bool // node -> Survey reports unknown
 	unreachableAfter map[string]bool // "node:phase" -> node goes unknown AFTER this phase's etcd restart
-	// transientFor reports unknown+transient for the first N surveys of the
-	// node, then its real running state — what a just-restarted etcd looks
-	// like while its listener is up but it is not back in raft yet.
+	// unknown+transient for the first N surveys, then the real state, as a just-restarted etcd looks.
 	transientFor  map[string]int
 	transientSeen map[string]int
-	// notListening makes transientFor's members report the refused-port
-	// kind (etcd not listening yet) instead of the stalled one.
+	// Makes transientFor's members report the refused-port kind instead of the stalled one.
 	notListening map[string]bool
-	// surveys counts Survey calls per node, for assertions that a node was
-	// probed exactly once (definite unknowns are never retried).
+	// Counts Survey calls per node; definite unknowns are never retried.
 	surveys map[string]int
 
-	// restarts records the components each node bounced, in order, so a test can
-	// assert the per-phase restart SET (not just that etcd moved).
+	// Records each node's bounced components in order, for the per-phase restart SET.
 	restarts map[string][]string
-	// confirmed counts ConfirmClosed calls; confirmFail forces it to fail for a
-	// node, so the closing-verification failure path is testable.
+	// Counts ConfirmClosed calls; confirmFail forces a failure for one node.
 	confirmed   int
 	confirmFail map[string]bool
 
-	// running is what each node's etcd has actually ADOPTED — updated only when
-	// a restart succeeds. Survey reads this, never the disk.
-	//
-	// This is the whole premise of the design under test: etcd builds its CA
-	// pool once at startup, so a bundle can be written while the process still
-	// enforces the previous one. A fake that surveyed the filesystem could never
-	// produce that divergence, and gateDropRoot would never be exercised against
-	// the failure it exists to catch.
+	// What each node's etcd has ADOPTED, updated only on restart; Survey reads this, not the disk.
 	running map[string]string
 
 	healthErr, quorumErr error
 
-	// published/cleaned track the fetch-key lifetime: the key that decrypts
-	// every cluster private key must be removed on every exit path, not only
-	// the happy one.
+	// Tracks the fetch-key lifetime: removed on every exit path, not only the happy one.
 	published, cleaned, reaped int
 	interrupt                  error
 }
@@ -98,11 +67,7 @@ func newFakeCluster(t *testing.T, names ...string) (*fakeCluster, []etcdNode) {
 	saved := version.PKIDir
 	t.Cleanup(func() { version.PKIDir = saved })
 
-	// One cluster, one root. The shared CA must be byte-identical on every node,
-	// or "is this leaf root-signed" quietly means something different per node
-	// and every cross-node assertion below is measuring nothing. Mint it once,
-	// distribute it, THEN issue each node's leaves from it — which is the order a
-	// real HA join uses (internal/ha, sharedCerts).
+	// The shared CA must be byte-identical on every node; mint once, distribute, then issue leaves.
 	rootDir := t.TempDir()
 	version.PKIDir = rootDir
 	if err := pki.EnsureDir(); err != nil {
@@ -122,9 +87,7 @@ func newFakeCluster(t *testing.T, names ...string) (*fakeCluster, []etcdNode) {
 		for _, file := range []string{"ca.crt", "ca.key"} {
 			copyFile(t, filepath.Join(rootDir, file), filepath.Join(dir, file))
 		}
-		// Every node starts as a pre-split control plane (etcd trusts the cluster
-		// root): all leaves signed by the shared cluster root, no etcd CA on
-		// disk. That is the only state from which this migration is ever needed.
+		// Every node starts pre-split: leaves root-signed, no etcd CA on disk.
 		f.in(name, func() { seedUnmigratedNode(t, name, ip) })
 		f.running[name] = pki.EtcdStateNotMigrated
 	}
@@ -142,9 +105,7 @@ func (f *fakeCluster) in(node string, fn func()) {
 
 func (f *fakeCluster) initiator() string { return f.order[0] }
 
-// distributeEtcdCA is what ha.DownloadCertsAdmin does for real: hand a follower
-// the cluster's etcd CA and its current trust bundle. Without it
-// MigrateEtcdTrustBoth(allowMint=false) correctly refuses on a follower.
+// What ha.DownloadCertsAdmin does for real; without it MigrateEtcdTrustBoth(false) refuses.
 func (f *fakeCluster) distributeEtcdCA(node string) {
 	f.t.Helper()
 	init := f.initiator()
@@ -163,8 +124,7 @@ func (f *fakeCluster) distributeEtcdCA(node string) {
 	}
 }
 
-// Survey reports what the node's etcd is RUNNING, which is what the real
-// driver's TLS handshake reads — not what is on its disk.
+// Reports what the node's etcd is RUNNING, not what is on its disk.
 func (f *fakeCluster) Survey(n etcdNode) (string, string, bool) {
 	f.surveys[n.Name]++
 	if budget, transient := f.transientFor[n.Name]; transient {
@@ -185,8 +145,7 @@ func (f *fakeCluster) Survey(n etcdNode) (string, string, bool) {
 	return f.running[n.Name], "", false
 }
 
-// diskState is the file-derived state, for assertions that care about what was
-// written rather than what was adopted.
+// The file-derived state, for assertions about what was written rather than adopted.
 func (f *fakeCluster) diskState(node string) string {
 	var s string
 	f.in(node, func() { s = pki.EtcdMigrationState() })
@@ -204,25 +163,19 @@ func (f *fakeCluster) RunPhase(n etcdNode, phase string, fetchShared, force bool
 			EtcdCAOptions{Phase: phase, FetchShared: fetchShared, Force: force, Quiet: true},
 			nodeIdent{Hostname: n.Name, NodeIP: n.IP},
 			etcdNodeOps{
-				// Stands in for ha.DownloadCertsAdmin: the follower receives the
-				// cluster's etcd CA and its current trust bundle. Everything else
-				// in the per-node path is the production code.
+				// Stands in for ha.DownloadCertsAdmin; the rest of the per-node path is production code.
 				fetchShared: func() error { f.distributeEtcdCA(n.Name); return nil },
-				// This machine renders no manifests, so the real staticpod.Exists
-				// would report every control plane as a worker.
+				// No manifests render here, so real staticpod.Exists would report every CP a worker.
 				podExists: func(string) bool { return true },
 				restartPod: func(name string) error {
 					f.restarts[n.Name] = append(f.restarts[n.Name], name)
 					if f.failRestartAt[n.Name+":"+phase] {
 						return fmt.Errorf("node %s: %s did not restart", n.Name, name)
 					}
-					// etcd adopting the new trust material is the ONLY thing that
-					// moves a node's running state. Anything that writes a bundle
-					// without reaching here leaves the process behind its disk.
+					// Adoption on restart is the only thing that moves a node's running state.
 					if name == "etcd" {
 						f.running[n.Name] = f.diskStateLocked(n.Name)
-						// Simulate a node whose etcd flaps unreachable right after
-						// adopting this phase — so a later survey reads it as unknown.
+						// etcd flaps unreachable right after adopting, so a later survey reads unknown.
 						if f.unreachableAfter[n.Name+":"+phase] {
 							f.unreachable[n.Name] = true
 						}
@@ -251,9 +204,7 @@ func (f *fakeCluster) ClusterHealthy([]etcdNode) error { return f.healthErr }
 
 func (f *fakeCluster) EtcdQuorumHealthy([]etcdNode) error { return f.quorumErr }
 
-// ConfirmClosed stands in for the TLS probe. On a real node it asks the running
-// etcd; here it asks the same question of the trust bundle that etcd would build
-// its pool from — a cluster-root-signed client leaf must no longer verify.
+// Asks of the bundle the question the TLS probe asks the running etcd.
 func (f *fakeCluster) ConfirmClosed(n etcdNode) error {
 	f.confirmed++
 	if f.confirmFail[n.Name] {
@@ -278,18 +229,13 @@ func (f *fakeCluster) state(node string) string { return f.running[node] }
 
 // ─── fixtures ────────────────────────────────────────────────────────────────
 
-// seedUnmigratedNode builds a control plane as it looked before the etcd CA split: every
-// leaf, etcd's included, signed by the cluster root, and no etcd CA.
+// A control plane as before the etcd CA split: leaves root-signed, no etcd CA.
 func seedUnmigratedNode(t *testing.T, host, ip string) {
 	t.Helper()
 	if err := pki.EnsureDir(); err != nil {
 		t.Fatal(err)
 	}
-	// EnsureCA here LOADS the shared root already copied in; it never mints one.
-	// Deliberately not pki.GenerateAll: that calls EnsureEtcdTrustBundle, which
-	// would mint an etcd CA and leave the node at trust-both before the test has
-	// run anything — a fixture that starts halfway through the migration under
-	// test.
+	// EnsureCA here only loads the copied-in root; pki.GenerateAll would mint an etcd CA.
 	ca, err := pki.EnsureCA("ca", "stratum-ca")
 	if err != nil {
 		t.Fatal(err)
@@ -319,19 +265,13 @@ func copyFile(t *testing.T, src, dst string) {
 	}
 }
 
-// etcdAcceptsRootSignedLeaf runs the decision etcd makes for an incoming client
-// under `--client-cert-auth --trusted-ca-file etcd-ca-bundle.crt`: verify the
-// chain against a pool built from that file, with the client-auth EKU. Same
-// call path etcd's TLS stack takes, so a leaf this accepts is one etcd accepts.
+// etcd's own accept decision: verify the chain against the bundle's pool with the client-auth EKU.
 func etcdAcceptsRootSignedLeaf(t *testing.T, dir string) bool {
 	t.Helper()
 	return leafVerifiesAgainstEtcdBundle(t, dir, dir, "kubelet")
 }
 
-// leafVerifiesAgainstEtcdBundle checks a leaf from leafDir against the etcd
-// trust bundle in bundleDir. Cross-node use is the point: it answers "would
-// THAT node's etcd accept THIS node's certificate", which is the property that
-// decides whether a halted migration left a working cluster.
+// Answers "would THAT node's etcd accept THIS node's certificate".
 func leafVerifiesAgainstEtcdBundle(t *testing.T, leafDir, bundleDir, leaf string) bool {
 	t.Helper()
 	pool := x509.NewCertPool()
@@ -368,10 +308,7 @@ func loadLeaf(t *testing.T, p string) *x509.Certificate {
 	return c
 }
 
-// assertClusterStillWorks is the assertion that turns "halting is safe" from a
-// comment into a test: for EVERY pair of control planes, the certificate one
-// serves must verify against the anchors the other enforces. If that holds, no
-// member has been locked out of raft, whatever phase the run stopped at.
+// For EVERY node pair, one's served certificate verifies against the other's anchors.
 func assertClusterStillWorks(t *testing.T, f *fakeCluster) {
 	t.Helper()
 	for _, from := range f.order {

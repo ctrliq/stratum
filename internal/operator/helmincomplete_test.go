@@ -16,14 +16,6 @@ import (
 	ktesting "k8s.io/client-go/testing"
 )
 
-// TestUninstallIncompleteWriteKeepsFailing pins the fail-safe when the
-// "uninstall incomplete:" status write fails for longer than one reconcile's
-// retries. Helm has purged the release by then, so only the operator's
-// in-memory record of the unwritten status stops the next reconcile, which
-// finds no release, from removing the finalizer (deletion) or reinstalling
-// over the objects Helm could not verify (pending-install recovery). While the
-// writes keep failing, every reconcile keeps the finalizer and reinstalls
-// nothing; once a write succeeds, the status is Failed with the message.
 func TestUninstallIncompleteWriteKeepsFailing(t *testing.T) {
 	t.Run("deletion", func(t *testing.T) {
 		forgetUnwrittenIncomplete(t)
@@ -69,8 +61,6 @@ func TestUninstallIncompleteWriteKeepsFailing(t *testing.T) {
 		}
 		outage.wantEveryAttemptRejected(t, "after the recovery uninstall")
 
-		// The apiserver answers reads again, so a reinstall would now succeed:
-		// only the record of the unwritten status can stop it.
 		kc.DummyResources = nil
 		reconcileFlow(t, dyn)
 
@@ -87,8 +77,6 @@ func TestUninstallIncompleteWriteKeepsFailing(t *testing.T) {
 		}
 		wantOnlyUnverifiableListed(t, dyn, uninstallIncompleteRecover, "once the status write succeeds")
 
-		// The written status now holds the reinstall back, so the record must be
-		// gone: the spec change the message asks for reinstalls as usual.
 		updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 			if err := unstructured.SetNestedField(hc.Object, flowChart(t, "1.1.0"), "spec", "chartContent"); err != nil {
 				t.Fatal(err)
@@ -100,16 +88,6 @@ func TestUninstallIncompleteWriteKeepsFailing(t *testing.T) {
 	})
 }
 
-// TestUninstallIncompleteRecordRewrittenForDeletion pins what deleting a
-// HelmChart does while the record of an unwritten recovery status is still
-// pending. The pending-install recovery uninstalls the release, Helm cannot
-// verify the ownership of an object it left, and the "uninstall incomplete:"
-// status write keeps failing, so the operator parks the record in memory and
-// retries it each reconcile. The parked message asks for a spec change to
-// reinstall, which does nothing once the HelmChart is being deleted, so the
-// retry the deletion drives must ask for the finalizer instead: the written
-// status carries the deletion wording, keeping Helm's list of objects, and the
-// finalizer stays until a person has removed them.
 func TestUninstallIncompleteRecordRewrittenForDeletion(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	shortIncompleteWriteBackoff(t)
@@ -133,8 +111,6 @@ func TestUninstallIncompleteRecordRewrittenForDeletion(t *testing.T) {
 		t.Fatalf("parked recovery record message = %q, want the recovery wording %q", rec.msg, uninstallIncompleteRecover)
 	}
 
-	// The apiserver answers again, and the HelmChart is deleted before the
-	// parked status ever reached it: the retry must carry the deletion wording.
 	kc.DummyResources = nil
 	outage.end()
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
@@ -151,8 +127,6 @@ func TestUninstallIncompleteRecordRewrittenForDeletion(t *testing.T) {
 		t.Fatalf("unwritten recovery record kept after its status write succeeded; status = %+v", readFlowStatus(t, dyn))
 	}
 
-	// The hold the written status carries keeps the finalizer on the next
-	// reconcile, still asking for the finalizer.
 	reconcileFlow(t, dyn)
 
 	if !hasFinalizer(getFlowHC(t, dyn), helmFinalizer) {
@@ -161,14 +135,9 @@ func TestUninstallIncompleteRecordRewrittenForDeletion(t *testing.T) {
 	wantOnlyUnverifiableListed(t, dyn, uninstallIncompleteDelete, "after the next reconcile")
 }
 
-// incompleteWriteAttempts is how many times one reconcile tries the
-// "uninstall incomplete:" status write under shortIncompleteWriteBackoff.
 const incompleteWriteAttempts = 3
 
-// shortIncompleteWriteBackoff gives each reconcile incompleteWriteAttempts
-// tries at the "uninstall incomplete:" status write, a millisecond apart, for
-// the rest of the test, so a write that keeps failing exhausts a reconcile's
-// retries without the production backoff's 1.5s wait.
+// Binds the production backoff to incompleteWriteAttempts tries a millisecond apart.
 func shortIncompleteWriteBackoff(t *testing.T) {
 	t.Helper()
 	prev := incompleteWriteBackoff
@@ -176,10 +145,7 @@ func shortIncompleteWriteBackoff(t *testing.T) {
 	t.Cleanup(func() { incompleteWriteBackoff = prev })
 }
 
-// forgetUnwrittenIncomplete empties the operator's in-memory record of
-// unwritten "uninstall incomplete:" statuses now and when the test ends.
-// newFlowHC's HelmChart has no UID, so every flow test shares one key into
-// that record, and an entry left behind would change how the next one runs.
+// newFlowHC's HelmChart has no UID, so every flow test shares one key into the record.
 func forgetUnwrittenIncomplete(t *testing.T) {
 	t.Helper()
 	forget := func() {
@@ -191,16 +157,10 @@ func forgetUnwrittenIncomplete(t *testing.T) {
 	t.Cleanup(forget)
 }
 
-// statusOutage fails the HelmChart's status writes as an apiserver does while
-// it cannot reach etcd, from the first "uninstall incomplete:" write until
-// end. The outage cannot start earlier: the pending-install recovery first
-// writes the release it is about to touch, and it stops before Helm work when
-// that write fails, so its uninstall would never run.
+// The outage cannot start earlier: the recovery stops before Helm work when the write fails.
 type statusOutage struct {
 	started, ended bool
-	// rejected counts the "uninstall incomplete:" writes failed since the last
-	// wantEveryAttemptRejected.
-	rejected int
+	rejected       int
 }
 
 // failStatusWritesFromIncomplete starts a statusOutage on the HelmChart in dyn.
@@ -240,10 +200,7 @@ func failStatusWritesFromIncomplete(t *testing.T, dyn dynamic.Interface) *status
 // end lets every later status write through.
 func (o *statusOutage) end() { o.ended = true }
 
-// wantEveryAttemptRejected fails unless the outage rejected exactly
-// incompleteWriteAttempts "uninstall incomplete:" writes since the last call,
-// so the reconcile just run tried the write, used up its retries, and left the
-// status unwritten.
+// Fails unless the outage rejected exactly incompleteWriteAttempts writes since the last call.
 func (o *statusOutage) wantEveryAttemptRejected(t *testing.T, when string) {
 	t.Helper()
 	if o.rejected != incompleteWriteAttempts {

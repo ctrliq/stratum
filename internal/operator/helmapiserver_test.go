@@ -1,13 +1,5 @@
 package operator
 
-// Wait-behaviour guards for the Helm v4 migration. Each test runs one reconcile
-// of a HelmChart with the real newActionConfig against a fake apiserver, so
-// Helm's own Kubernetes client, and the waiter newActionConfig gives it, do the
-// work. Helm v4's own waiter for the operator's helmWaitStrategy does not wait
-// as Helm v3 did with Wait = false: it watches every hook through
-// namespace-wide list and watch requests, and it does not wait for the CRDs an
-// install creates. These tests pin what Helm v3 did.
-
 import (
 	"archive/tar"
 	"bytes"
@@ -35,7 +27,6 @@ import (
 	dynfake "k8s.io/client-go/dynamic/fake"
 )
 
-// apiResource is one resource kind fakeAPIServer serves.
 type apiResource struct {
 	groupVersion, name, kind string
 	namespaced               bool
@@ -51,30 +42,18 @@ var (
 	widgetAPIResource = apiResource{"example.com/v1", "widgets", "Widget", true}
 )
 
-// widgetsCRDName is the name of the CRD in widgetsCRD, the only object
-// fakeAPIServer finds once it has been sent it.
 const widgetsCRDName = "widgets.example.com"
 
-// fakeAPIServer is a minimal Kubernetes apiserver. It serves discovery and
-// OpenAPI v3 for core/v1 and apiextensions.k8s.io/v1, and for example.com/v1
-// once the widgets CRD it was sent is Established. It accepts every create
-// and update, lists and finds no object but that CRD, and records every
-// request it receives.
 type fakeAPIServer struct {
-	// forbidListWatch names a resource, such as "configmaps", whose list and
-	// watch requests get 403 Forbidden, as RBAC answers a requester who may
-	// create that resource but not list or watch it.
+	// models RBAC refusing list/watch of a resource the requester may create.
 	forbidListWatch string
-	// crdDelay is how long after its creation the widgets CRD becomes
-	// Established.
-	crdDelay time.Duration
+	crdDelay        time.Duration
 
 	mu         sync.Mutex
 	requests   []apiRequest
 	crdCreated time.Time
 }
 
-// apiRequest is what fakeAPIServer records of one request.
 type apiRequest struct {
 	method, path, query string
 	user, uid           string
@@ -88,12 +67,11 @@ func (r apiRequest) String() string {
 	return r.method + " " + r.path + "?" + r.query
 }
 
-// start serves s until the test ends and returns a kubeconfig that points at it.
 func (s *fakeAPIServer) start(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(srv.Close)
-	// Keep the discovery cache, which would go under $HOME/.kube, to this test.
+	// keep the discovery cache out of $HOME/.kube.
 	t.Setenv("KUBECACHEDIR", t.TempDir())
 	kubeconfig := filepath.Join(t.TempDir(), "kubeconfig")
 	if err := os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\nclusters:\n- name: test\n  cluster:\n    server: "+srv.URL+"\ncontexts:\n- name: test\n  context:\n    cluster: test\ncurrent-context: test\n"), 0o600); err != nil {
@@ -102,14 +80,12 @@ func (s *fakeAPIServer) start(t *testing.T) string {
 	return kubeconfig
 }
 
-// all returns every request s has received.
 func (s *fakeAPIServer) all() []apiRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.requests)
 }
 
-// count returns how many requests with this method and path s has received.
 func (s *fakeAPIServer) count(method, path string) int {
 	n := 0
 	for _, r := range s.all() {
@@ -120,8 +96,6 @@ func (s *fakeAPIServer) count(method, path string) int {
 	return n
 }
 
-// crdState reports whether s has been sent the widgets CRD and whether that
-// CRD is Established.
 func (s *fakeAPIServer) crdState() (created, established bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,7 +103,6 @@ func (s *fakeAPIServer) crdState() (created, established bool) {
 	return created, created && time.Since(s.crdCreated) >= s.crdDelay
 }
 
-// served returns the resources s serves, by group version.
 func (s *fakeAPIServer) served() map[string][]apiResource {
 	gvs := map[string][]apiResource{
 		"v1":                        coreAPIResources,
@@ -210,8 +183,6 @@ func (s *fakeAPIServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// serveObject answers a request for a resource or one object of it. rest is
-// the path below the group version: [namespaces <ns>] <resource> [<name>].
 func (s *fakeAPIServer) serveObject(method string, watch bool, served []apiResource, rest []string, body []byte,
 	reply func(int, any), status func(int, metav1.StatusReason, string),
 ) {
@@ -263,8 +234,6 @@ func (s *fakeAPIServer) serveObject(method string, watch bool, served []apiResou
 	}
 }
 
-// splitAPIPath splits an API path into its group version and the path
-// segments below it.
 func splitAPIPath(p string) (gv string, rest []string, ok bool) {
 	seg := strings.Split(strings.Trim(p, "/"), "/")
 	switch {
@@ -276,7 +245,6 @@ func splitAPIPath(p string) (gv string, rest []string, ok bool) {
 	return "", nil, false
 }
 
-// apiPrefix is the path under which group version gv is served.
 func apiPrefix(gv string) string {
 	if strings.Contains(gv, "/") {
 		return "/apis/" + gv
@@ -295,9 +263,7 @@ func resourceList(gv string, served []apiResource) map[string]any {
 	return map[string]any{"kind": "APIResourceList", "groupVersion": gv, "resources": resources}
 }
 
-// openAPIDocument is an OpenAPI v3 document in which each served kind's PATCH
-// operation takes the fieldValidation parameter, so Helm's client validates
-// the objects it builds server-side rather than fetching full schemas.
+// each kind's PATCH takes fieldValidation, so Helm's client validates server-side.
 func openAPIDocument(served []apiResource) map[string]any {
 	paths := map[string]any{}
 	for _, r := range served {
@@ -318,8 +284,6 @@ func openAPIDocument(served []apiResource) map[string]any {
 	return map[string]any{"openapi": "3.0.0", "info": map[string]string{"title": "fakeAPIServer", "version": "v1"}, "paths": paths}
 }
 
-// echoObject is the object a create or update was sent, as the apiserver
-// returns it.
 func echoObject(body []byte, res apiResource) map[string]any {
 	obj := map[string]any{}
 	_ = json.Unmarshal(body, &obj)
@@ -333,7 +297,6 @@ func echoObject(body []byte, res apiResource) map[string]any {
 	return obj
 }
 
-// widgetsCRDObject is the widgets CRD as the apiserver reports it.
 func widgetsCRDObject(established bool) map[string]any {
 	condition := "False"
 	if established {
@@ -358,8 +321,6 @@ func widgetsCRDObject(established bool) map[string]any {
 	}
 }
 
-// waitChart builds spec.chartContent for a chart named app from files, whose
-// paths are relative to the chart directory.
 func waitChart(t *testing.T, files map[string]string) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -384,12 +345,7 @@ func waitChart(t *testing.T, files map[string]string) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// installAgainst runs one reconcile of an adopted HelmChart named app in
-// namespace ns whose chart holds files, with the real newActionConfig and a
-// kubeconfig that points at api, and returns the HelmChart's status phase and
-// message. kube-system is the only privileged namespace, so a HelmChart there
-// installs as the operator; elsewhere requester must be set, and the HelmChart
-// carries their authentic stamp, so the install runs impersonated as them.
+// kube-system is the only privileged namespace here; elsewhere the install impersonates.
 func installAgainst(t *testing.T, api *fakeAPIServer, ns string, files map[string]string, requester *requesterInfo) (phase, message string) {
 	t.Helper()
 	kubeconfig := api.start(t)
@@ -472,14 +428,7 @@ metadata:
 `
 )
 
-// A tenant's install of a chart with a ConfigMap pre-install hook succeeds
-// when the requester may create ConfigMaps but not list or watch them. Helm v3
-// watched only Job and Pod hooks, through a watch on the hook's name, so it
-// made no list or watch here; Helm v4's own waiter lists and watches every
-// hook's kind across the namespace, and the install failed with "failed
-// pre-install: ... forbidden". Helm v4, not the operator, builds the clients
-// for discovery, the objects and release storage, so every request it makes
-// must still carry the requester's identity.
+// helm v4's waiter lists and watches hook kinds; a requester may only create them.
 func TestTenantInstallWithHookNeedsNoListOrWatch(t *testing.T) {
 	api := &fakeAPIServer{forbidListWatch: "configmaps"}
 	requester := requesterInfo{Username: "alice", UID: "alice-uid", Groups: []string{"team-a", "system:authenticated"}}
@@ -510,11 +459,7 @@ func TestTenantInstallWithHookNeedsNoListOrWatch(t *testing.T) {
 	}
 }
 
-// TestHookDeletedBeforeCreationIsWaitedFor: before running a hook, Helm deletes
-// any earlier copy of it by its delete policy (before-hook-creation unless the
-// chart says otherwise) and, as Helm v3 did, waits until that copy is gone by
-// polling it by name. Without the wait, a hook whose earlier copy is still
-// terminating fails to create with AlreadyExists.
+// without the wait, a hook whose earlier copy still terminates fails with AlreadyExists.
 func TestHookDeletedBeforeCreationIsWaitedFor(t *testing.T) {
 	api := &fakeAPIServer{}
 
@@ -545,12 +490,7 @@ func TestHookDeletedBeforeCreationIsWaitedFor(t *testing.T) {
 	}
 }
 
-// An install of a chart whose crds/ holds a CRD waits until the apiserver
-// reports the CRD Established, and serves its API, before it renders and
-// applies the chart's templates, as Helm v3 did. Without that wait, a custom
-// resource of the new kind fails to map ("no matches for kind"), and one
-// gated on .Capabilities.APIVersions.Has is left out of a release recorded
-// Deployed.
+// without the wait, a custom resource of a new kind fails to map or is left out.
 func TestInstallWaitsForChartCRDs(t *testing.T) {
 	for _, tc := range []struct{ name, template string }{
 		{"custom resource", widget},

@@ -10,8 +10,6 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 )
 
-// decodeAll parses a multi-document YAML into unstructured objects, asserting the
-// manifest is structurally valid (the same decode path applyYAML uses).
 func decodeAll(t *testing.T, data []byte) []*unstructured.Unstructured {
 	t.Helper()
 	dec := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
@@ -33,8 +31,6 @@ func decodeAll(t *testing.T, data []byte) []*unstructured.Unstructured {
 }
 
 func TestCiliumManifestsValid(t *testing.T) {
-	// Only the kube-proxy-replacement rendering exists: Stratum
-	// ships one service dataplane.
 	for name, data := range map[string][]byte{
 		"kpr-true": ciliumKPRTrueYAML,
 	} {
@@ -122,8 +118,6 @@ func TestCiliumAgentRollsOnAConfigChange(t *testing.T) {
 	}
 }
 
-// TestCiliumAgentsRestartOneNodeAtATime: a cilium-config change restarts every
-// agent, and no new pod starts on a node while its agent is down.
 func TestCiliumAgentsRestartOneNodeAtATime(t *testing.T) {
 	ds := findObject(t, decodeAll(t, ciliumKPRTrueYAML), "DaemonSet", "cilium")
 	v, found, err := unstructured.NestedFieldNoCopy(ds.Object, "spec", "updateStrategy", "rollingUpdate", "maxUnavailable")
@@ -178,9 +172,6 @@ func TestCiliumAgentCanElectL2Announcers(t *testing.T) {
 	}
 }
 
-// TestCiliumSentinelSubstitution: both apiserver sentinels are in the asset,
-// RenderCilium leaves them for the operator, and FillAPIServer resolves them
-// completely.
 func TestCiliumSentinelSubstitution(t *testing.T) {
 	for _, s := range []string{apiserverHostSentinel, apiserverURLsSentinel} {
 		if !bytes.Contains(ciliumKPRTrueYAML, []byte(s)) {
@@ -206,17 +197,7 @@ func TestCiliumSentinelSubstitution(t *testing.T) {
 	}
 }
 
-// TestCiliumOperatorFitsASingleNode guards single-node installs: the rendered cilium-operator
-// Deployment must not ask for more replicas than one node can hold.
-//
-// The operator pod is hostNetwork with fixed hostPorts (9234/9963) and carries a
-// *required* podAntiAffinity on kubernetes.io/hostname, so at most one replica
-// can ever land on a given node — the scheduler's NodePorts filter and the
-// affinity rule each rule the second one out on their own. stratum bootstraps as
-// a single node and single-node is a supported end state, so every replica past
-// the first sits Pending forever there. Whether that is fixed by lowering the
-// count or by letting two operators share a node, the invariant below is the one
-// that matters.
+// The operator pod's hostPorts and anti-affinity admit one replica per node.
 func TestCiliumOperatorFitsASingleNode(t *testing.T) {
 	objs := decodeAll(t, FillAPIServer(RenderCilium(false, CiliumSettings{}), APIServer{Host: "10.0.0.5"}))
 
@@ -230,18 +211,13 @@ func TestCiliumOperatorFitsASingleNode(t *testing.T) {
 		t.Fatalf("spec.replicas = %d, want at least 1", replicas)
 	}
 	if replicas == 1 {
-		// A lone replica holding hostPorts cannot be replaced by a surge pod:
-		// the new one lands on the same node and cannot bind :9234/:9963 while
-		// the old one is up, so the rollout wedges. maxUnavailable has to let
-		// the running pod go down first.
+		// A lone replica holding hostPorts wedges a surge rollout; the pod must go down first.
 		if len(hostPorts(t, dep)) > 0 {
 			assertRolloutCanTakeThePodDownFirst(t, dep, replicas)
 		}
 		return
 	}
 
-	// Past one replica, the pod spec has to actually permit two operators on the
-	// same node. Report every reason it does not.
 	if key := requiredHostnameAntiAffinity(t, dep); key != "" {
 		t.Errorf("spec.replicas = %d but a required podAntiAffinity on %q admits only one operator pod per node", replicas, key)
 	}
@@ -250,8 +226,6 @@ func TestCiliumOperatorFitsASingleNode(t *testing.T) {
 	}
 }
 
-// requiredHostnameAntiAffinity returns the per-node topology key of a hard pod
-// anti-affinity term, or "" when nothing pins the pods one-per-node.
 func requiredHostnameAntiAffinity(t *testing.T, dep *unstructured.Unstructured) string {
 	t.Helper()
 	terms, _, err := unstructured.NestedSlice(dep.Object, "spec", "template", "spec",
@@ -271,7 +245,6 @@ func requiredHostnameAntiAffinity(t *testing.T, dep *unstructured.Unstructured) 
 	return ""
 }
 
-// hostPorts returns every hostPort the pod's containers claim.
 func hostPorts(t *testing.T, dep *unstructured.Unstructured) []int64 {
 	t.Helper()
 	containers, _, err := unstructured.NestedSlice(dep.Object, "spec", "template", "spec", "containers")
@@ -301,8 +274,6 @@ func hostPorts(t *testing.T, dep *unstructured.Unstructured) []int64 {
 	return out
 }
 
-// assertRolloutCanTakeThePodDownFirst checks that spec.strategy lets the whole
-// Deployment be unavailable during an update.
 func assertRolloutCanTakeThePodDownFirst(t *testing.T, dep *unstructured.Unstructured, replicas int64) {
 	t.Helper()
 	v, found, err := unstructured.NestedFieldNoCopy(dep.Object, "spec", "strategy", "rollingUpdate", "maxUnavailable")
@@ -325,11 +296,7 @@ func assertRolloutCanTakeThePodDownFirst(t *testing.T, dep *unstructured.Unstruc
 	}
 }
 
-// TestCiliumRenderAnchorsAreUnique keeps RenderCilium's byte substitutions
-// targeted. Each anchor it rewrites has exactly one home in the generated asset;
-// a regeneration that duplicates one would have ReplaceAll quietly rewrite an
-// unrelated object, and a regeneration that renames one would have it quietly
-// rewrite nothing.
+// A duplicated anchor would have ReplaceAll rewrite an unrelated object.
 func TestCiliumRenderAnchorsAreUnique(t *testing.T) {
 	for _, anchor := range []string{
 		"\n  replicas: 2\n",
@@ -348,12 +315,7 @@ func TestCiliumRenderAnchorsAreUnique(t *testing.T) {
 	}
 }
 
-// TestCiliumNodePortsAnswerOnEveryAddress pins nodeport-addresses to every
-// address on the native devices, as kube-proxy answers NodePorts on every
-// local address. Left empty, Cilium serves a NodePort on each device's
-// primary address only, so the kube-vip VIP, a secondary /32 on its holder,
-// did not answer one from another host. It holds with spec.network.cilium
-// settings applied too.
+// Left empty, Cilium answers NodePorts on each device's primary address only, not the VIP.
 func TestCiliumNodePortsAnswerOnEveryAddress(t *testing.T) {
 	for name, m := range map[string][]byte{
 		"shipped":       ciliumKPRTrueYAML,

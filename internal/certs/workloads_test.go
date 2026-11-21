@@ -62,7 +62,7 @@ func genCA(t *testing.T, cn string) (*x509.Certificate, string) {
 
 var republished = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
-// rootCA is a namespace's kube-root-ca.crt, written by kube-controller-manager at at.
+// kube-controller-manager's write of the namespace's kube-root-ca.crt, at at
 func rootCA(ns, bundle string, at time.Time) *corev1.ConfigMap {
 	t := metav1.NewTime(at)
 	return &corev1.ConfigMap{
@@ -73,8 +73,7 @@ func rootCA(ns, bundle string, at time.Time) *corev1.ConfigMap {
 	}
 }
 
-// pod is a running pod that mounts a ServiceAccount token as every pod does,
-// owned by owner (a ReplicaSet, a DaemonSet, a Job...), or bare if kind is "".
+// a running pod that mounts a ServiceAccount token as every pod does; bare when kind is ""
 func pod(ns, name, sa, kind, ownerName string, started time.Time) *corev1.Pod {
 	p := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
@@ -100,7 +99,7 @@ func tokenSecret(ns, name, account string) *corev1.Secret {
 		Annotations: map[string]string{corev1.ServiceAccountNameKey: account}}, Type: saTokenSecretType}
 }
 
-// secretOnly is a pod that mounts the token Secret and no projected token.
+// a pod that mounts the token Secret and no projected token
 func secretOnly(ns, name, podAccount, secret string, started time.Time) *corev1.Pod {
 	p := pod(ns, name, podAccount, "StatefulSet", name[:len(name)-2], started)
 	p.Spec.Volumes = []corev1.Volume{{Name: "tok", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: secret}}}}
@@ -116,9 +115,7 @@ func terminating(p *corev1.Pod, grace time.Duration) *corev1.Pod {
 
 func uidOf(kind, ns, name string) types.UID { return types.UID(kind + "/" + ns + "/" + name) }
 
-// client is a fake clientset holding objs and, for every Deployment, DaemonSet
-// or StatefulSet that a pod or a ReplicaSet names as its controller and that is
-// not among objs, that owner, with the UID the reference carries.
+// also fabricates each missing Deployment, DaemonSet or StatefulSet owner a reference names
 func client(objs ...runtime.Object) *fake.Clientset {
 	have := map[string]bool{}
 	var refs []metav1.OwnerReference
@@ -190,8 +187,7 @@ func TestSelectClients(t *testing.T) {
 	legacy := pod("legacy", "old-0", "worker", "StatefulSet", "old", before)
 	legacy.Spec.Volumes = []corev1.Volume{{Name: "tok", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "worker-token"}}}}
 	legacy.Spec.Containers[0].VolumeMounts[0].Name = "tok"
-	// A token projection under another name counts; a projected volume that
-	// carries the kube-api-access- name but no token does not.
+	// a token projection under another name counts; a non-token projection does not
 	renamed := pod("custom", "proj-0", "proj", "StatefulSet", "proj", before)
 	renamed.Spec.Volumes[0].Name = "creds"
 	renamed.Spec.Containers[0].VolumeMounts[0].Name = "creds"
@@ -200,8 +196,7 @@ func TestSelectClients(t *testing.T) {
 		Sources: []corev1.VolumeProjection{{ConfigMap: &corev1.ConfigMapProjection{}}},
 	}}}}
 	notToken.Spec.Containers[0].VolumeMounts[0].Name = "kube-api-access-cfg"
-	// A token volume only counts when a container mounts it: a regular, init or
-	// ephemeral one, and not when nothing does.
+	// a token volume only counts when a regular, init or ephemeral container mounts it
 	unused := pod("mounts", "unused-0", "m", "StatefulSet", "unused", before)
 	unused.Spec.Containers[0].VolumeMounts = nil
 	initOnly := pod("mounts", "init-0", "m", "StatefulSet", "init", before)
@@ -217,52 +212,49 @@ func TestSelectClients(t *testing.T) {
 	done.Status.Phase = corev1.PodSucceeded
 
 	cs := client(
-		// Bound by name, two replicas of one Deployment.
+		// two replicas of one Deployment, bound by name
 		pod("kong", "ingress-a", "kic", "ReplicaSet", "ingress-1", before),
 		pod("kong", "ingress-b", "kic", "ReplicaSet", "ingress-1", after),
 		replicaSet("kong", "ingress-1", "ingress"),
 		roleBinding("kong", "kic", sa("kong", "kic")),
-		// Bound only through system:serviceaccounts:<ns>.
+		// bound only through system:serviceaccounts:<ns>
 		pod("ops", "agent-x", "agent", "DaemonSet", "agent", before),
 		&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "ops"},
 			Subjects: []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: "system:serviceaccounts:ops"}}},
-		// A RoleBinding subject without a namespace is the binding's own.
+		// a RoleBinding subject without a namespace is the binding's own
 		pod("tools", "t-0", "runner", "", "", before),
 		roleBinding("tools", "runner", rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: "runner"}),
-		// The bootstrap policy binds system:serviceaccounts itself; that must not
-		// select every pod that mounts a token.
+		// the bootstrap policy binds system:serviceaccounts itself; that must not select every pod
 		&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: "system:service-account-issuer-discovery",
 			Labels: map[string]string{"kubernetes.io/bootstrapping": "rbac-defaults"}},
 			Subjects: []rbacv1.Subject{{Kind: rbacv1.GroupKind, Name: serviceAccountsGroup}}},
 		pod("unbound", "app-0", "default", "ReplicaSet", "app-1", before),
 		replicaSet("unbound", "app-1", "app"),
-		// The same name in another namespace is not bound.
+		// the same name in another namespace is not bound
 		pod("other", "runner-0", "runner", "ReplicaSet", "runner-1", before),
 		replicaSet("other", "runner-1", "runner"),
-		// A Job's pod is listed, and a finished one is not.
+		// a Job's pod is listed, and a finished one is not
 		pod("apps", "job-run", "bound", "Job", "migrate", before),
 		done,
 		roleBinding("apps", "bound", sa("apps", "bound")),
 		noToken,
 		renamed, notToken, roleBinding("custom", "proj", sa("custom", "proj")),
 		unused, initOnly, ephemeralOnly, roleBinding("mounts", "m", sa("mounts", "m")),
-		// A legacy token Secret is for the account it names, not the pod's: the
-		// pod's own account is unbound here and the Secret's is bound, and the
-		// other way round.
+		// a legacy token Secret is for the account it names, not the pod's own
 		secretOnly("xsa", "borrows-0", "unbound", "bound-token", before),
 		secretOnly("xsa", "lends-0", "bound", "unbound-token", before),
 		tokenSecret("xsa", "bound-token", "bound"), tokenSecret("xsa", "unbound-token", "unbound"),
 		roleBinding("xsa", "b", sa("xsa", "bound")),
-		// The authorizer reads a ServiceAccount as a user, too.
+		// the authorizer reads a ServiceAccount as a user, too
 		pod("users", "u-0", "usa", "StatefulSet", "u", before),
 		roleBinding("users", "u", rbacv1.Subject{Kind: rbacv1.UserKind, Name: "system:serviceaccount:users:usa"}),
 		pod("users", "v-0", "other", "StatefulSet", "v", before),
 		roleBinding("users", "v", rbacv1.Subject{Kind: rbacv1.UserKind, Name: "system:serviceaccount:elsewhere:other"}),
-		// A legacy token Secret volume counts.
+		// a legacy token Secret volume counts
 		legacy,
 		tokenSecret("legacy", "worker-token", "worker"),
 		roleBinding("legacy", "worker", sa("legacy", "worker")),
-		// Stratum's own add-on, bound.
+		// Stratum's own add-on, bound
 		pod("kube-system", "coredns-a", "coredns", "ReplicaSet", "coredns-1", before),
 		replicaSet("kube-system", "coredns-1", "coredns"),
 		roleBinding("kube-system", "coredns", sa("kube-system", "coredns")),
@@ -414,7 +406,7 @@ func TestCheckClientsRestarted(t *testing.T) {
 	}
 }
 
-// The gate fails closed when it cannot tell when the namespace took the new CA.
+// the gate fails closed when it cannot tell when the namespace took the new CA
 func TestCheckClientsRestartedWithoutAPublishTime(t *testing.T) {
 	newCA, newPEM := genCA(t, "new")
 	cm := rootCA("kong", newPEM, republished)
@@ -439,7 +431,7 @@ func stageNewCA(t *testing.T, pemData string) {
 	}
 }
 
-// fakeKubectl records the kubectl calls and answers every probe with its target.
+// records the kubectl calls and answers every probe with its target
 type fakeKubectl struct {
 	mu     sync.Mutex
 	calls  []string
@@ -466,8 +458,7 @@ func TestRestartClients(t *testing.T) {
 	stageNewCA(t, newPEM)
 	before, after := republished.Add(-time.Hour), republished.Add(time.Hour)
 
-	// kong's Deployment has one pod, started at started: before the roll, or
-	// after it, as a rollout leaves it. The Job apps/migrate never restarts.
+	// kong's Deployment has one pod, started before or after the roll; the Job never restarts
 	deployment := func(started time.Time) []runtime.Object {
 		return []runtime.Object{
 			pod("kong", "ingress-a", "kic", "ReplicaSet", "ingress-1", started),
@@ -505,7 +496,7 @@ func TestRestartClients(t *testing.T) {
 	})
 	t.Run("restart-workloads", func(t *testing.T) {
 		k := &fakeKubectl{}
-		// The Job started before the republish and is not counted: it was listed, and is not Stratum's to restart.
+		// the Job started before the republish and is not counted: listed, not Stratum's to restart
 		if err := run(t, CARotateOptions{RestartWorkloads: true}, k, deployment(after), job); err != nil {
 			t.Fatal(err)
 		}
@@ -550,7 +541,7 @@ func TestRestartClients(t *testing.T) {
 		}
 	})
 	t.Run("a partitioned StatefulSet leaves pods on the old CA", func(t *testing.T) {
-		// rollout status succeeds with a partition; the ordinal below it never restarted.
+		// rollout status succeeds with a partition; the ordinal below it never restarted
 		sts := []runtime.Object{
 			pod("kong", "db-0", "kic", "StatefulSet", "db", before),
 			pod("kong", "db-1", "kic", "StatefulSet", "db", after),
@@ -616,9 +607,7 @@ func TestSignNewClientGateSkipped(t *testing.T) {
 	}
 }
 
-// TestStagedNewCAAfterAStoppedPromotion: a sign-new resumed after it promoted
-// the new root gates the clients on that root, now ca.crt, rather than failing
-// to read the consumed ca-new.crt.
+// a sign-new resumed after promotion gates on ca.crt, not the consumed ca-new.crt
 func TestStagedNewCAAfterAStoppedPromotion(t *testing.T) {
 	prep(t)
 	if err := pki.RotateCAMaterial(true); err != nil {
@@ -646,7 +635,7 @@ func TestStagedNewCAAfterAStoppedPromotion(t *testing.T) {
 	}
 }
 
-// A refused sign-new changes nothing: the gate runs before the new CA is promoted.
+// the gate runs before the new CA is promoted
 func TestCPSignNewRefusesBeforePromoting(t *testing.T) {
 	prep(t)
 	oldConf := version.AdminConf
@@ -664,8 +653,7 @@ func TestCPSignNewRefusesBeforePromoting(t *testing.T) {
 	}
 }
 
-// Native sidecars, long-running init containers and ephemeral containers hold
-// the CA they started with, as the regular containers do.
+// native sidecars, long-running init containers and ephemeral containers hold the CA too
 func TestStartedBefore(t *testing.T) {
 	running := func(started time.Time) corev1.ContainerStatus {
 		return corev1.ContainerStatus{State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(started)}}}
@@ -675,8 +663,9 @@ func TestStartedBefore(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		created time.Time // zero: before the republish, as a pod with no creation time is
-		status  corev1.PodStatus
-		want    bool
+
+		status corev1.PodStatus
+		want   bool
 	}{
 		{"all restarted", time.Time{}, corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{running(fresh)}}, false},
 		{"stale container", time.Time{}, corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{running(stale)}}, true},
@@ -698,10 +687,7 @@ func TestStartedBefore(t *testing.T) {
 	}
 }
 
-// The owner reference is the pod author's to write. A reference that names a
-// workload that does not exist, or is not that pod's, or whose name is not a
-// name, is not trusted: the pod is listed as itself, never restarted, and no
-// text of the author's reaches the operator.
+// the owner reference is the author's to write: a non-existent or foreign owner is not trusted
 func TestSelectClientsDistrustsForgedOwners(t *testing.T) {
 	before := republished.Add(-time.Hour)
 	forged := func(name, kind, ownerName string) *corev1.Pod {
@@ -740,8 +726,7 @@ func TestSelectClientsDistrustsForgedOwners(t *testing.T) {
 	}
 }
 
-// Whatever reaches the output is quoted: names are printed so that none carries
-// a newline or an escape, and the command is one a shell takes literally.
+// whatever reaches the output is quoted: no name carries a newline or an escape
 func TestOwnerFormatting(t *testing.T) {
 	for _, tc := range []struct {
 		o                string
@@ -765,9 +750,7 @@ func TestOwnerFormatting(t *testing.T) {
 	}
 }
 
-// The old pods of a rolled workload are still running, on the old CA, until their
-// grace period ends. The run waits for them, up to the time the rollouts were
-// allowed, and halts, listing what is left, when they do not go.
+// the old pods of a rolled workload run on the old CA until their grace period ends
 func TestRestartClientsWaitsForTerminatingPods(t *testing.T) {
 	_, newPEM := genCA(t, "new")
 	_, oldPEM := genCA(t, "old")
@@ -834,8 +817,7 @@ func TestRestartClientsWaitsForTerminatingPods(t *testing.T) {
 	})
 }
 
-// The wait budget bounds the API calls too: the admin client has no request
-// timeout, so a response that never comes would otherwise hold the wait open.
+// the wait budget bounds the API calls too: the admin client has no request timeout
 func TestWaitClientsRestartedCancelsAStalledAPICall(t *testing.T) {
 	newCA, _ := genCA(t, "new")
 	cancelled := make(chan struct{})
@@ -868,8 +850,7 @@ func TestWaitClientsRestartedCancelsAStalledAPICall(t *testing.T) {
 	}
 }
 
-// stallAfter lets the first n namespace lists through and holds the rest until
-// their context ends.
+// lets the first n namespace lists through and holds the rest until their context ends
 type stallAfter struct {
 	kubernetes.Interface
 	n     int32
@@ -902,7 +883,7 @@ func (n stallNamespaces) List(ctx context.Context, opts metav1.ListOptions) (*co
 	return n.NamespaceInterface.List(ctx, opts)
 }
 
-// When a call stalls after the old pods have been seen, the halt still lists them.
+// when a call stalls after the old pods have been seen, the halt still lists them
 func TestWaitClientsRestartedReportsThePodsSeenBeforeAStall(t *testing.T) {
 	newCA, newPEM := genCA(t, "new")
 	_, oldPEM := genCA(t, "old")
@@ -932,8 +913,7 @@ func TestWaitClientsRestartedReportsThePodsSeenBeforeAStall(t *testing.T) {
 	}
 }
 
-// A namespace admin can write managedFields on their own kube-root-ca.crt. A
-// time further ahead than the clock-skew allowance is refused, not believed.
+// a time further ahead than the clock-skew allowance is refused, not believed
 func TestCheckClientsRestartedRefusesAForwardDatedRepublish(t *testing.T) {
 	newCA, newPEM := genCA(t, "new")
 	for _, tc := range []struct {
@@ -962,8 +942,7 @@ func TestCheckClientsRestartedRefusesAForwardDatedRepublish(t *testing.T) {
 	}
 }
 
-// A StatefulSet with a rollingUpdate partition is not restarted past it, so the
-// preflight refuses it while nothing has changed.
+// a rollingUpdate partition is not restarted past it, so the preflight refuses it
 func TestPreflightWorkloadsRefusesAPartitionedStatefulSet(t *testing.T) {
 	statefulSet := func(partition *int32) *appsv1.StatefulSet {
 		ss := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "kong", Name: "db", UID: uidOf("StatefulSet", "kong", "db")}}
@@ -1006,8 +985,7 @@ func TestPreflightWorkloadsRefusesAPartitionedStatefulSet(t *testing.T) {
 	}
 }
 
-// Owners are listed once per scan, whatever the number of pods and controllers,
-// not fetched one by one.
+// owners are listed once per scan, not fetched one by one
 func TestSelectClientsListsOwnersOnce(t *testing.T) {
 	var objs []runtime.Object
 	for i := range 20 {
@@ -1042,8 +1020,7 @@ func TestSelectClientsListsOwnersOnce(t *testing.T) {
 	}
 }
 
-// The forward-dated time is caught in the preflight, which runs before trust-new,
-// so the run is refused while nothing has changed, not halted after the rollouts.
+// caught in the preflight, before trust-new, so the run is refused while nothing changed
 func TestPreflightWorkloadsRefusesAForwardDatedRepublish(t *testing.T) {
 	_, newPEM := genCA(t, "new")
 	for _, tc := range []struct {
@@ -1084,9 +1061,7 @@ func TestPreflightWorkloadsRefusesAForwardDatedRepublish(t *testing.T) {
 	}
 }
 
-// The post-rollout gate counts the add-ons Stratum rolls, so a forward-dated time
-// in a namespace that holds only those is refused in the preflight too, with or
-// without --restart-workloads, and nothing is changed.
+// a forward-dated time in an owned-only namespace is refused in the preflight too
 func TestPreflightWorkloadsRefusesAForwardDatedRepublishInAnOwnedOnlyNamespace(t *testing.T) {
 	_, newPEM := genCA(t, "new")
 	for _, tc := range []struct {
@@ -1113,9 +1088,7 @@ func TestPreflightWorkloadsRefusesAForwardDatedRepublishInAnOwnedOnlyNamespace(t
 	}
 }
 
-// The preflight reads the update strategies from the lists the owner lookup
-// already made: no Get per workload, and each of StatefulSets and DaemonSets is
-// listed once whatever their number.
+// update strategies are read from the owner lists: no Get per workload, each listed once
 func TestPreflightWorkloadsReadsUpdateStrategiesFromTheOwnerLists(t *testing.T) {
 	objs := []runtime.Object{roleBinding("apps", "kic", sa("apps", "kic"))}
 	for i := range 20 {
@@ -1145,8 +1118,7 @@ func TestPreflightWorkloadsReadsUpdateStrategiesFromTheOwnerLists(t *testing.T) 
 	}
 }
 
-// A template change does not recreate the pods of a StatefulSet or DaemonSet that
-// updates only on delete, so they stay on the old CA: refused in the preflight.
+// an OnDelete update strategy does not recreate pods, so they stay on the old CA
 func TestPreflightWorkloadsRefusesOnDelete(t *testing.T) {
 	statefulSet := func(t appsv1.StatefulSetUpdateStrategyType) *appsv1.StatefulSet {
 		ss := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "apps", Name: "db", UID: uidOf("StatefulSet", "apps", "db")}}
@@ -1192,9 +1164,7 @@ func TestPreflightWorkloadsRefusesOnDelete(t *testing.T) {
 	}
 }
 
-// Stratum restarts its own add-ons whatever the flags say, so one that a restart
-// does not reach whole (here Cilium with OnDelete) is refused in the preflight
-// with or without --restart-workloads, and nothing is changed.
+// Stratum restarts its add-ons whatever the flags say, so a held one is refused in the preflight
 func TestPreflightWorkloadsRefusesAHeldOwnedAddOn(t *testing.T) {
 	cilium := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "cilium", UID: uidOf("DaemonSet", "kube-system", "cilium")}}
 	cilium.Spec.UpdateStrategy.Type = appsv1.OnDeleteDaemonSetStrategyType
@@ -1216,7 +1186,7 @@ func TestPreflightWorkloadsRefusesAHeldOwnedAddOn(t *testing.T) {
 					t.Errorf("refusal lacks %q:\n%v", w, err)
 				}
 			}
-			// The flag does not bypass the rollout of an add-on, so it is not offered.
+			// the flag does not bypass the rollout of an add-on, so it is not offered
 			if strings.Contains(err.Error(), "--skip-workload-check") {
 				t.Errorf("refusal offers --skip-workload-check for a Stratum add-on:\n%v", err)
 			}
@@ -1260,9 +1230,7 @@ func TestRefuseHeldAdvice(t *testing.T) {
 	}
 }
 
-// waiting is a pod of the kong/ingress Deployment, created at created, whose
-// container has not started: state is its status (Waiting, or Terminated between
-// restarts), or nil for a pod kubelet has not reported on yet.
+// a pod whose container has not started: state is its status, or nil before kubelet reports
 func waiting(created time.Time, state *corev1.ContainerState) *corev1.Pod {
 	p := pod("kong", "ingress-w", "kic", "ReplicaSet", "ingress-1", created)
 	p.CreationTimestamp = metav1.NewTime(created)
@@ -1273,8 +1241,7 @@ func waiting(created time.Time, state *corev1.ContainerState) *corev1.Pod {
 	return p
 }
 
-// A pod created before the republish whose container has not started can still
-// start on a ca.crt kubelet has not synced, until projectedCAMargin is over.
+// such a pod can still start on a ca.crt kubelet has not synced, until the margin is over
 func TestPodMayStillStart(t *testing.T) {
 	now := time.Now()
 	at := now.Add(-30 * time.Second) // inside the margin
@@ -1306,7 +1273,7 @@ func TestPodMayStillStart(t *testing.T) {
 	}
 }
 
-// The gate counts such a pod as stale inside the margin and not after it.
+// the gate counts such a pod as stale inside the margin and not after it
 func TestCheckClientsRestartedCountsAPodThatMayStillStart(t *testing.T) {
 	newCA, newPEM := genCA(t, "new")
 	crashLoop := &corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}}
@@ -1332,8 +1299,7 @@ func TestCheckClientsRestartedCountsAPodThatMayStillStart(t *testing.T) {
 	}
 }
 
-// The wait before sign-new waits such a pod out with its re-scan and goes on once
-// the margin is over, where a stale pod that will not go ends it at once.
+// the gate waits such a pod out and goes on once the margin is over
 func TestWaitClientsRestartedWaitsOutTheMargin(t *testing.T) {
 	newCA, newPEM := genCA(t, "new")
 	oldPoll, oldWait := republishPoll, clientRolloutWait
@@ -1352,8 +1318,7 @@ func TestWaitClientsRestartedWaitsOutTheMargin(t *testing.T) {
 	}
 }
 
-// republishedSince is what tells restartClients that kube-controller-manager
-// wrote kube-root-ca.crt after the clients were rolled, so they roll again.
+// a republish after the clients were rolled makes restartClients roll them again
 func TestRepublishedSince(t *testing.T) {
 	rolled := time.Date(2026, 10, 12, 18, 0, 0, 500_000_000, time.UTC)
 	for _, tc := range []struct {
@@ -1377,11 +1342,7 @@ func TestRepublishedSince(t *testing.T) {
 	}
 }
 
-// TestRestartClientsRollsAgainAfterALateRepublish: kube-controller-manager
-// writes kube-root-ca.crt during the restarts, which dates the rolled pod
-// before the republish. restartClients rolls once more and goes on. The write
-// lands in the same second the roll starts and the roll ends a second later, so
-// a rolledAt taken after the roll would miss it.
+// the republish lands in the same second the roll starts, so a later rolledAt would miss it
 func TestRestartClientsRollsAgainAfterALateRepublish(t *testing.T) {
 	_, newPEM := genCA(t, "new")
 	_, oldPEM := genCA(t, "old")

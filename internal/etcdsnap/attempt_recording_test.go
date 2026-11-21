@@ -1,11 +1,4 @@
-// From here: the scheduled save's durable attempt recording, pinned against
-// the record's own reader. The loop lives in internal/cluster and the
-// backup-evidence reader in internal/backupevidence, and both sit ABOVE this
-// package (the reader resolves its policy through it), so neither can be
-// imported from here — this external test package is the one place that can
-// hold the writer and the reader together and prove the file they share:
-// what SaveContext records with Evidence on is exactly what
-// backupevidence.LoadAttempts reads back.
+// External test package: the one place that can pin the record's writer against its reader.
 package etcdsnap_test
 
 import (
@@ -29,10 +22,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirectEvidence points the snapshot evidence record and the etcd data
-// lock at one temp tree: the recording writes the record through the lock,
-// so a test must redirect both or they land under the host's
-// /var/lib/stratum.
+// redirectEvidence points the evidence record and the etcd data lock at one temp tree.
 func redirectEvidence(t *testing.T) {
 	t.Helper()
 	oldConf, oldData, oldEtcd := version.K8sConfDir, version.DataDir, version.EtcdDataDir
@@ -45,10 +35,7 @@ func redirectEvidence(t *testing.T) {
 	})
 }
 
-// fakeEtcdctl points version.BinDir at a temp dir whose etcdctl runs body —
-// the same shape as the internal tests' helper, restated because this
-// external package cannot see it. The invocation is `etcdctl snapshot save
-// PATH`, so the script's $3 is the snapshot path.
+// fakeEtcdctl writes an etcdctl script whose $3 is the snapshot path.
 func fakeEtcdctl(t *testing.T, body string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -60,8 +47,7 @@ func fakeEtcdctl(t *testing.T, body string) {
 	t.Cleanup(func() { version.BinDir = old })
 }
 
-// stubFailingUpload answers the upload with a 500, so the local snapshot is
-// taken but its S3 copy fails.
+// stubFailingUpload answers the upload with a 500, so the local snapshot survives.
 func stubFailingUpload(t *testing.T) *objstore.Target {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +57,7 @@ func stubFailingUpload(t *testing.T) *objstore.Target {
 	return &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
 }
 
-// stubRefusingPrune accepts uploads, lists cp1's two older scheduled objects
-// and refuses every DELETE with a 403: the save and the upload succeed while
-// remote retention is refused.
+// stubRefusingPrune accepts uploads and refuses every DELETE with a 403.
 func stubRefusingPrune(t *testing.T) *objstore.Target {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,11 +82,6 @@ func stubRefusingPrune(t *testing.T) *objstore.Target {
 	return &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
 }
 
-// TestAttemptFailedSavePersists pins the recording's floor: a save whose
-// etcdctl run fails still leaves the failed attempt in the record the
-// backup-evidence reader loads — the failure named, no last-success stamp,
-// and no upload or prune attempt the failed tick never ran — stamped with
-// the schema version the reader reads.
 func TestAttemptFailedSavePersists(t *testing.T) {
 	redirectEvidence(t)
 	fakeEtcdctl(t, "exit 1")
@@ -133,11 +112,6 @@ func TestAttemptFailedSavePersists(t *testing.T) {
 	}
 }
 
-// TestAttemptFailedUploadKeepsTheLocalArtifactRecorded pins the local
-// evidence contract at the save itself: when the S3 upload fails, the local
-// save is recorded as a success with its last-success stamp — the artifact
-// exists on the node — while the upload attempt records the failure and
-// moves no last-success stamp of its own.
 func TestAttemptFailedUploadKeepsTheLocalArtifactRecorded(t *testing.T) {
 	redirectEvidence(t)
 	dir := t.TempDir()
@@ -172,11 +146,6 @@ func TestAttemptFailedUploadKeepsTheLocalArtifactRecorded(t *testing.T) {
 	}
 }
 
-// TestAttemptPruneRefusalRecordsAWarning pins the independence of retention
-// evidence: a refused remote prune does not fail the save, records the
-// refusal as the prune attempt and as a warning of its own, and leaves the
-// save and upload success evidence — the attempts and both last-success
-// stamps — untouched beside it.
 func TestAttemptPruneRefusalRecordsAWarning(t *testing.T) {
 	redirectEvidence(t)
 	dir := t.TempDir()
@@ -208,11 +177,6 @@ func TestAttemptPruneRefusalRecordsAWarning(t *testing.T) {
 	}
 }
 
-// TestAttemptRecordingNeverFailsTheSaveItRecords pins the recording's
-// best-effort contract: while the etcd data lock is held — a rejoin, a
-// restore, an `up` — the save still succeeds, nothing is recorded, and the
-// refusal is a WARN through the save's writer, never silence and never a
-// failed backup.
 func TestAttemptRecordingNeverFailsTheSaveItRecords(t *testing.T) {
 	redirectEvidence(t)
 	release, err := etcddata.Lock(version.EtcdDataDir)
@@ -240,18 +204,10 @@ func TestAttemptRecordingNeverFailsTheSaveItRecords(t *testing.T) {
 	}
 }
 
-// TestAttemptFailedRetriesPersistAfterRestart walks the loop's own record
-// across a restart: a tick whose save and upload both succeed, then a
-// second process whose save fails — the failed retry persists while the
-// previous successes survive it. That is the pair the record exists for:
-// an operator reading the node after a crash sees both that backups
-// stopped succeeding and when the last one that did, exactly what the
-// reader loads after the restart.
 func TestAttemptFailedRetriesPersistAfterRestart(t *testing.T) {
 	redirectEvidence(t)
 	dir := t.TempDir()
 
-	// The first tick: the save and the upload both succeed.
 	fakeEtcdctl(t, "printf snapshot > \"$3\"")
 	if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
 		Dir: dir, Host: "cp1", Name: "snap1.db", Evidence: true, S3: stubRefusingPrune(t),
@@ -266,7 +222,6 @@ func TestAttemptFailedRetriesPersistAfterRestart(t *testing.T) {
 		t.Fatalf("the successful tick did not record its successes: %+v", first)
 	}
 
-	// The restart: everything after this reads and writes only the file.
 	fakeEtcdctl(t, "exit 1")
 	if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
 		Dir: dir, Host: "cp1", Name: "snap2.db", Evidence: true, S3: stubFailingUpload(t),
@@ -292,11 +247,6 @@ func TestAttemptFailedRetriesPersistAfterRestart(t *testing.T) {
 	}
 }
 
-// TestAttemptRecordIsAtomicAndPrivate pins the write itself to the
-// node-file rule through the loop's own save: the record lands at mode
-// 0600 — a node-local record of failures must not be world-readable —
-// stamped with the schema version the reader reads, and the config area
-// is left holding the record alone, no stray temp name beside it.
 func TestAttemptRecordIsAtomicAndPrivate(t *testing.T) {
 	redirectEvidence(t)
 	dir := t.TempDir()
@@ -335,13 +285,6 @@ func TestAttemptRecordIsAtomicAndPrivate(t *testing.T) {
 	}
 }
 
-// TestAttemptRecordingRefusesAFifoRecord pins the writer's bounded read:
-// a FIFO swapped in at the record's path must refuse the recording
-// promptly — the read runs under the etcd data lock, and a blocking read
-// there would stall the tick's save, upload and prune recording while
-// holding the lock, refusing every rejoin, restore and `up` that tries to
-// take it — while the save itself still succeeds
-// with its one WARN, the record is left untouched, and the lock comes back.
 func TestAttemptRecordingRefusesAFifoRecord(t *testing.T) {
 	redirectEvidence(t)
 	if err := os.MkdirAll(version.K8sConfDir, 0o755); err != nil {
@@ -365,11 +308,9 @@ func TestAttemptRecordingRefusesAFifoRecord(t *testing.T) {
 	if !strings.Contains(buf.String(), "WARN: recording snapshot evidence") {
 		t.Errorf("the refused recording was not warned about beside the save's result: %q", buf.String())
 	}
-	// The refusal wrote nothing: the FIFO still stands at the record's path.
 	if fi, err := os.Lstat(filepath.Join(version.K8sConfDir, "snapshot-evidence.yaml")); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
 		t.Errorf("the record path = %v, %v; want the FIFO untouched by the refused recording", fi, err)
 	}
-	// The data lock came back: the next operation can take it.
 	release, err := etcddata.Lock(version.EtcdDataDir)
 	if err != nil {
 		t.Fatalf("the etcd data lock was not released after the refused recording: %v", err)

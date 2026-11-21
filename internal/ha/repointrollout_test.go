@@ -34,8 +34,6 @@ func ciliumObjects(rolledOut bool) (*appsv1.DaemonSet, *appsv1.Deployment) {
 	return ds, dep
 }
 
-// The Cilium repoint writes and waits through the client it is given, with no
-// kubectl and no admin.conf.
 func TestRepointCiliumWithUsesTheGivenClient(t *testing.T) {
 	servingVIP(t)
 	ds, dep := ciliumObjects(true)
@@ -54,8 +52,6 @@ func TestRepointCiliumWithUsesTheGivenClient(t *testing.T) {
 	}
 }
 
-// The rollout wait is what `kubectl rollout status` waited for, and a rollout
-// that does not finish is reported, not waited on forever.
 func TestCiliumRolloutWait(t *testing.T) {
 	oldPoll := rolloutPoll
 	t.Cleanup(func() { rolloutPoll = oldPoll })
@@ -82,8 +78,6 @@ func TestCiliumRolloutWait(t *testing.T) {
 	}
 }
 
-// An error waiting cannot clear ends the wait at once, rather than after the
-// whole timeout.
 func TestCiliumRolloutWaitStopsOnTerminalErrors(t *testing.T) {
 	stalled := func() *appsv1.Deployment {
 		_, dep := ciliumObjects(true)
@@ -112,11 +106,6 @@ func TestCiliumRolloutWaitStopsOnTerminalErrors(t *testing.T) {
 	}
 }
 
-// A rollout that does not finish is reported to a caller that asked for its
-// own client as a warning beside a nil error — the env change is already
-// applied, so the repoint is not a failure — while the WARN line the operator
-// reads stays printed exactly as before. The Deployment's progress-deadline
-// condition makes the wait end at once instead of out the timeout.
 func TestRepointCiliumWithReportsAnIncompleteRollout(t *testing.T) {
 	servingVIP(t)
 	oldPoll := rolloutPoll
@@ -152,9 +141,6 @@ func TestRepointCiliumWithReportsAnIncompleteRollout(t *testing.T) {
 	}
 }
 
-// captureStdout swaps os.Stdout for a pipe for the duration of fn and returns
-// what was printed, so a test can pin the printed text beside the returned
-// outcome.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()

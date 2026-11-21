@@ -9,15 +9,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestEtcdNodeArgvHasNoShell is the shell-free argv shape, pinned for this command the
-// same way cacluster_argv_test.go and orchestrate_test.go pin it for theirs.
-//
-// An argv built as one string and handed to `/bin/bash -c` would make the
-// payload executable text on every node in the cluster, as root, in the host
-// namespaces. Nothing here is attacker-influenced today — phase is
-// one of four constants and version.BinDir is fixed at compile time — so this
-// closes a shape rather than a live injection. That is exactly why it is worth
-// pinning: the guarantee should not depend on who happens to call it.
 func TestEtcdNodeArgvHasNoShell(t *testing.T) {
 	for _, phase := range append(slices.Clone(EtcdCAPhases), pki.EtcdPhaseRollback) {
 		argv := etcdNodeArgv(phase, true, true)
@@ -29,19 +20,13 @@ func TestEtcdNodeArgvHasNoShell(t *testing.T) {
 		if argv[0] != "nsenter" {
 			t.Errorf("phase %s: argv[0] = %q, want nsenter", phase, argv[0])
 		}
-		// The binary must be the on-host stratum, reached through PID 1's mount
-		// namespace, not whatever the container image happens to carry -- the
-		// installed one, since BinDir holds no stratum.
+		// BinDir holds no stratum: the Job must exec the installed on-host binary.
 		if !slices.Contains(argv, version.StratumInstallPath) {
 			t.Errorf("phase %s: argv does not exec the on-host stratum binary: %v", phase, argv)
 		}
 	}
 }
 
-// TestEtcdNodeArgvKeepsHostileValuesAsSingleElements: even a phase carrying
-// shell metacharacters must survive as ONE argv element. nsenter execs the
-// binary directly, so no interpreter ever re-parses it — this asserts that the
-// builder does not itself split or join.
 func TestEtcdNodeArgvKeepsHostileValuesAsSingleElements(t *testing.T) {
 	hostile := "trust-both; rm -rf / #"
 	argv := etcdNodeArgv(hostile, false, false)
@@ -55,11 +40,6 @@ func TestEtcdNodeArgvKeepsHostileValuesAsSingleElements(t *testing.T) {
 	}
 }
 
-// TestEtcdNodeArgvCarriesTheRequiredFlags. The Job runs unattended, so --yes
-// must always be present; --fetch-shared and --force must appear only when the
-// orchestrator asked for them. A missing --fetch-shared makes a follower try to
-// mint its own etcd CA, which pki correctly refuses — a stray one makes the
-// INITIATOR refuse to mint the anchor nobody else can then receive.
 func TestEtcdNodeArgvCarriesTheRequiredFlags(t *testing.T) {
 	for _, tc := range []struct{ fetchShared, force bool }{
 		{false, false}, {true, false}, {false, true}, {true, true},
@@ -74,7 +54,6 @@ func TestEtcdNodeArgvCarriesTheRequiredFlags(t *testing.T) {
 		if got := slices.Contains(argv, "--force"); got != tc.force {
 			t.Errorf("%+v: --force present = %v", tc, got)
 		}
-		// --phase must be followed by the phase, as two elements.
 		i := slices.Index(argv, "--phase")
 		if i < 0 || i+1 >= len(argv) || argv[i+1] != pki.EtcdPhaseTrustBoth {
 			t.Errorf("%+v: --phase is not followed by the phase: %v", tc, argv)
@@ -82,30 +61,7 @@ func TestEtcdNodeArgvCarriesTheRequiredFlags(t *testing.T) {
 	}
 }
 
-// TestEtcdNodeArgvIsAcceptedByTheCLIItInvokes closes the loop the other argv
-// tests leave open.
-//
-// Those assert the SHAPE of the argv — shell-free, --yes present, --force
-// present when asked. None of them assert that the binary on the other end
-// accepts it, and the binary is `stratum certs migrate-etcd-ca` itself: the Job
-// nsenters into the host and runs this very command. A validation rule added to
-// the CLI can therefore make every follower Job fail while every test here
-// still passes — for instance by rejecting `--force` unless the separate
-// `--rollback` bool is also set, while the argv builder emits
-// `--phase rollback --force`.
-//
-// The initiator does NOT go through cobra (clusterDriver runs it in-process),
-// so the failure is asymmetric and worse than a plain outage: the initiator
-// un-migrates and every follower refuses, splitting the cluster's trust.
-//
-// It lives here rather than in pkg/cli because this is the file that owns the
-// argv; pkg/cli cannot import internal/certs.
 func TestEtcdNodeArgvIsAcceptedByTheCLIItInvokes(t *testing.T) {
-	// Exactly the combinations the orchestrator emits, and no others: runPhase
-	// sets fetchShared only for a follower's trust-both, and force only on the
-	// rollback path. Testing the full cross-product would assert that the CLI
-	// accepts argv the driver cannot build — and then a correct validation rule
-	// would look like a failure.
 	for _, tc := range []struct {
 		phase              string
 		fetchShared, force bool
@@ -119,8 +75,6 @@ func TestEtcdNodeArgvIsAcceptedByTheCLIItInvokes(t *testing.T) {
 		{EtcdPhaseReAddRoot, false, true},    // pass 1 of a forced un-migration
 	} {
 		argv := etcdNodeArgv(tc.phase, tc.fetchShared, tc.force)
-		// Drop the nsenter prefix, the binary path and the two subcommand
-		// verbs: what cobra binds is the flags after them.
 		var args []string
 		for i, a := range argv {
 			if strings.HasSuffix(a, "/stratum") {
@@ -138,9 +92,6 @@ func TestEtcdNodeArgvIsAcceptedByTheCLIItInvokes(t *testing.T) {
 	}
 }
 
-// parseMigrateFlags turns an argv tail back into the flag set the CLI would
-// bind, so the assertion runs against the REAL validation rather than a copy of
-// it. pkg/cli binds these same names onto these same fields.
 func parseMigrateFlags(t *testing.T, args []string) EtcdCAFlags {
 	t.Helper()
 	var f EtcdCAFlags
@@ -174,7 +125,6 @@ func parseMigrateFlags(t *testing.T, args []string) EtcdCAFlags {
 	return f
 }
 
-// TestMigrateEtcdCAFlagValidation pins the combinations an operator can reach.
 func TestMigrateEtcdCAFlagValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -190,9 +140,6 @@ func TestMigrateEtcdCAFlagValidation(t *testing.T) {
 		// The orchestrator's own spelling of a forced rollback.
 		{"phase rollback with force", EtcdCAFlags{Phase: pki.EtcdPhaseRollback, Force: true}, ""},
 		{"re-add-root with force", EtcdCAFlags{Phase: EtcdPhaseReAddRoot, Force: true}, ""},
-		// Bare, it re-opens the etcd trust hole (etcd accepting any client
-		// certificate signed by the cluster root, which also signs every
-		// kubelet's certificate) on one node with no guard and no warning.
 		{"re-add-root without force", EtcdCAFlags{Phase: EtcdPhaseReAddRoot}, "RE-OPENS the etcd trust hole"},
 
 		{"cluster and phase", EtcdCAFlags{Cluster: true, Phase: pki.EtcdPhaseIssueNew}, "not both"},
@@ -217,9 +164,6 @@ func TestMigrateEtcdCAFlagValidation(t *testing.T) {
 	}
 }
 
-// TestEtcdClientAddrBracketsIPv6 — the address the final proof that the etcd
-// trust hole is closed dials. Unbracketed, it would report a correctly migrated
-// dual-stack cluster as unverified.
 func TestEtcdClientAddrBracketsIPv6(t *testing.T) {
 	for _, tc := range []struct{ ip, want string }{
 		{"10.0.0.1", "10.0.0.1:2379"},
@@ -231,9 +175,6 @@ func TestEtcdClientAddrBracketsIPv6(t *testing.T) {
 	}
 }
 
-// The Job execs the stratum installed on the node. BinDir holds the payload's
-// binaries and never stratum, so a Job that ran BinDir/stratum failed on every
-// node but the initiator, and a rollback stopped halfway.
 func TestEtcdNodeArgvExecsTheInstalledStratum(t *testing.T) {
 	argv := etcdNodeArgv(pki.EtcdPhaseTrustBoth, false, false)
 	i := slices.Index(argv, "--")

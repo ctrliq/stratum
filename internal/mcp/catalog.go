@@ -1,8 +1,3 @@
-// The engine's tool catalog, as data beside the handlers. pkg/cli's
-// registerAll walks it through an unexported registrar method applying the
-// same tier and duplicate-name checks as for contributed tool sets: the
-// checks stay with the registrar, the rows live here, next to the handlers.
-
 package mcp
 
 import (
@@ -11,19 +6,12 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 )
 
-// Tier is how much damage a tool can do. It decides whether the tool is
-// registered at all — the host registrar gates on it — not whether a call
-// is allowed.
+// Tier decides whether a tool registers at all, not whether a call is allowed.
 type Tier int
 
 const (
-	// TierRead cannot change anything. Always registered.
 	TierRead Tier = iota
-	// TierWrite mutates recoverably — a snapshot, a token, a config. The
-	// host enables it with --allow-write.
 	TierWrite
-	// TierDestructive can take a cluster down or lose data. The host enables
-	// it with --allow-destructive.
 	TierDestructive
 )
 
@@ -39,82 +27,38 @@ func (t Tier) String() string {
 	return "unknown"
 }
 
-// CredentialSource names the Kubernetes credential a tool reaches the API
-// through. Every catalog row declares its handler's source in Credential, so
-// registration records which credential each admitted tool really rides and
-// the least-privilege guide grants rights to exactly that credential — never
-// to one a registration does not use.
+// Names the Kubernetes credential a tool's handler rides.
 type CredentialSource string
 
 const (
-	// CredentialConfigurableConnector marks a tool whose handler talks
-	// through the connector the operator scopes with --kubeconfig, --context
-	// and --request-timeout, so its RBAC bounds the tool.
+	// Rides the operator-scoped connector, so its RBAC bounds the tool.
 	CredentialConfigurableConnector CredentialSource = "configurable connector"
-	// CredentialNodeConnector marks a tool whose handler reaches the API
-	// through this node's admin.conf — through the catalog's explicit node
-	// connector, or through the node-credential client the handler's own
-	// default dependencies build. RBAC neither enables nor limits it: the
-	// tier flag and running the server as root are its controls.
+	// Rides this node's admin.conf; the tier flag and root, not RBAC, are its controls.
 	CredentialNodeConnector CredentialSource = "node connector"
-	// CredentialNone marks a tool whose registration hands the handler no
-	// Kubernetes client at all — the host-local tools. Their deeper
-	// operations may still load admin.conf on their own.
+	// No Kubernetes client; deeper operations may still load admin.conf.
 	CredentialNone CredentialSource = "none"
 )
 
-// Tool is one row of the catalog: the name and description the client sees
-// in tools/list, the tier that decides whether the tool registers at all,
-// and Add, which adds the tool's typed handler once the host registrar has
-// admitted the descriptor.
+// Tool is one row of the catalog.
 type Tool struct {
 	Name        string
 	Description string
 	Tier        Tier
 
-	// Destructive marks a write-tier row whose tool is annotated as
-	// destructive: it registers with --allow-write, but its handler refuses
-	// some targets unless the server also runs with --allow-destructive, so a
-	// client should treat a call with the care a destructive annotation asks
-	// for. Read- and destructive-tier rows never set it: the tier alone
-	// already decides their annotation.
+	// Annotates a write-tier tool destructive: some targets also need --allow-destructive.
 	Destructive bool
 
-	// Credential declares which Kubernetes credential this tool's handler
-	// reaches the API with: one of the CredentialSource values. Registration
-	// records it beside the admitted tool, so a row that reaches the API
-	// without declaring a source records an empty one, which pkg/cli's
-	// credential-source pin fails on.
+	// Which credential the handler rides; an empty one fails registration.
 	Credential CredentialSource
 
-	// Add adds the tool's typed handler to srv under t. The handler travels
-	// with the row — built from the same version, connector and policy the
-	// catalog was built with — so the registrar admits a descriptor without
-	// ever naming a handler's type parameters.
 	Add func(srv *sdk.Server, t *sdk.Tool)
 }
 
-// Catalog returns one descriptor per tool the engine ships, in registration
-// order. version is what version_get reports; conn is the connector the
-// generic Kubernetes-facing handlers talk through; nodeConn is the explicit
-// node connector on admin.conf that the node-local handlers (token_list,
-// upgrade_plan, upgrade_apply) talk through, carrying the server's
-// --request-timeout; policy is the write policy the generic Kubernetes write
-// tools enforce.
-//
-// Each row also declares, in Credential, which of those credentials its
-// handler reaches the API with — including "none" for the host-local tools —
-// and pkg/cli's registrar records that declaration for every tool it admits,
-// which is what the least-privilege guide is held to.
-//
-// Names, descriptions and tiers are the shipped surface: pkg/cli's
-// mcp_surface_test.go pins what actually reaches the client over the wire.
-// A new tool adds its row here.
+// Catalog returns one descriptor per tool the engine ships, in registration order.
 func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy) []Tool {
 	buildClient := nodeClientBuilder(nodeConn)
 	ops := destructiveDepsFor(buildClient)
 	return []Tool{
-		// The engine's own tool.
 		{
 			Name:        "version_get",
 			Description: "Report the Stratum release, OS and architecture of the running binary.",
@@ -125,8 +69,6 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			},
 		},
 
-		// The Stratum read toolset — the half a generic Kubernetes MCP
-		// server cannot provide.
 		{
 			Name: "cluster_status",
 			Description: "Report Stratum's supervised process table: what the supervisor intends to be running and " +
@@ -243,7 +185,6 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			},
 		},
 
-		// The generic Kubernetes read toolset.
 		{
 			Name: "context_list",
 			Description: "List the clusters this server can address. Call this first when more than one cluster " +
@@ -336,10 +277,6 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			},
 		},
 
-		// The generic Kubernetes write toolset. resource_apply and
-		// resource_delete register at the write tier but are annotated
-		// destructive: their handlers refuse some targets unless the server
-		// also runs with --allow-destructive.
 		{
 			Name: "resource_apply",
 			Description: "Creates or replaces an object from a complete manifest, using server-side apply. Fields " +
@@ -382,7 +319,6 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			},
 		},
 
-		// The Stratum write toolset: mutating but recoverable.
 		{
 			Name: "snapshot_save",
 			Description: "Take an etcd snapshot now, copying it to the configured object store unless skip_s3 is set. " +
@@ -452,7 +388,6 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			},
 		},
 
-		// The Stratum destructive toolset.
 		{
 			Name: "upgrade_apply",
 			Description: "DRAINS AND UPGRADES nodes, restarting their workloads. scope=cluster rolls every node in " +

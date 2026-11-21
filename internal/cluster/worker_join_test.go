@@ -17,36 +17,18 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestWorkerJoinSavesTheStateItsFlagsDescribe pins the join half of
-// PrepareWorker (worker.go): with the host and bootstrap calls behind the
-// seams this package names, every flag the operator passed must land in the state
-// field of its own name, the discovered CA must reach both trust files, the
-// bootstrap kubeconfig must be written for the given server and token, and
-// the firewall must trust the pod CIDR the flags describe. The existing
-// runUp-level tests record only what runUp hands PrepareWorker; none of them
-// reaches the state this code saves, which is what the move out of
-// pkg/cli had to carry unchanged.
-
-// joinHostStubs records what PrepareWorker asked the host and the bootstrap
-// package for while answering from fixed values: the arguments DiscoverJoin
-// and WriteBootstrapKubeconfig were given, and whether the node's addresses
-// were detected.
 type joinHostStubs struct {
-	discover        []string // server, token, caHash, as given to DiscoverJoin
+	discover        []string
 	bootstrapServer string
 	bootstrapToken  string
 	bootstrapCA     []byte
 	nodeIPsCalls    int
-	// kubeletCA is what the cluster publishes for its kubelets' client trust;
 	// nil answers as a cluster that predates the split and publishes none.
 	kubeletCA      []byte
 	split          bool
-	kubeletFetchCA []byte // the trust FetchKubeletClientCA was asked to verify with
+	kubeletFetchCA []byte
 }
 
-// stubJoinHost points the host, CA-discovery and bootstrap-kubeconfig seams
-// at fixed answers, and the host-preparation seam at a no-op: the join path
-// under test, not the host it would prepare.
 func stubJoinHost(t *testing.T, hostname, nodeIPs string, ca []byte) *joinHostStubs {
 	t.Helper()
 	rec := &joinHostStubs{}
@@ -80,9 +62,6 @@ func stubJoinHost(t *testing.T, hostname, nodeIPs string, ca []byte) *joinHostSt
 	return rec
 }
 
-// redirectJoinDirs points the node's config and PKI directories at fresh
-// temp dirs, so the state and trust files this test reads are the ones
-// PrepareWorker wrote and nothing else's.
 func redirectJoinDirs(t *testing.T) (confDir, pkiDir string) {
 	t.Helper()
 	workerScratchHost(t)
@@ -118,7 +97,7 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 		caHash = "sha256:77"
 	)
 	ca := []byte("-----BEGIN CERTIFICATE-----\nthe discovered CA\n-----END CERTIFICATE-----\n")
-	const detected = "10.70.0.9,fd70::9" // a dual-stack pair, as detection hands it back
+	const detected = "10.70.0.9,fd70::9"
 
 	t.Run("every flag in its own state field", func(t *testing.T) {
 		_, pki := redirectJoinDirs(t)
@@ -148,9 +127,7 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 		if !st.CIS {
 			t.Error("saved state's cis is false, want the --cis the join was given")
 		}
-		// The state this start runs with is the join's return value, not the
-		// saved file: RunWorker's kubelet.conf render keys on it, so its
-		// profile and CIS flag must agree without a reload.
+		// RunWorker renders kubelet.conf from this returned state, not the saved file.
 		if ret.ProfileName() != "cis" || !ret.CIS {
 			t.Errorf("returned state profile=%q cis=%t; want the join's own state to agree with the profile it joined with",
 				ret.ProfileName(), ret.CIS)
@@ -179,9 +156,6 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 		}
 	})
 
-	// A split cluster's worker trusts the published kubelet-client CA for its
-	// kubelet's clients and nothing the cluster root signs; it still trusts the
-	// root for everything else.
 	t.Run("split cluster", func(t *testing.T) {
 		_, pki := redirectJoinDirs(t)
 		rec := stubJoinHost(t, "w-7", detected, ca)
@@ -233,8 +207,6 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 		}
 	})
 
-	// A profile and dual-stack changing places when the join assembly moves
-	// is caught by pinning each independently.
 	for _, tc := range []struct {
 		name    string
 		profile string
@@ -283,9 +255,6 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 		}
 	})
 
-	// A worker learns nothing of the cluster's pod range at its join, so one
-	// joined without --pod-cidr records none: a default saved here would read
-	// later as a range the user gave, and refuse the cluster's real one.
 	t.Run("no --pod-cidr records no pod range", func(t *testing.T) {
 		redirectJoinDirs(t)
 		stubJoinHost(t, "w-7", "10.70.0.9", ca)
@@ -302,8 +271,6 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 		if ret.PodCIDR != "" {
 			t.Errorf("returned pod CIDR = %q, want none, as saved", ret.PodCIDR)
 		}
-		// The interface-scoped firewall binding still converges, handed no
-		// invented range.
 		if len(*trusted) != 1 || (*trusted)[0] != "" {
 			t.Errorf("firewall trusted %q, want one call with no range", *trusted)
 		}
@@ -329,9 +296,6 @@ func TestWorkerJoinSavesTheStateItsFlagsDescribe(t *testing.T) {
 	})
 }
 
-// A worker joined without --pod-cidr takes the cluster's range from the first
-// restart given one, and from then on refuses a different one: the range the
-// user gave wins, and nothing the join assumed stands in its way.
 func TestWorkerRestartRecordsThePodCIDRItsJoinWasNotGiven(t *testing.T) {
 	redirectJoinDirs(t)
 	stubJoinHost(t, "w-7", "10.70.0.9", []byte("discovered CA"))
@@ -364,10 +328,7 @@ func TestWorkerRestartRecordsThePodCIDRItsJoinWasNotGiven(t *testing.T) {
 	}
 }
 
-// Earlier releases saved the default pod range for a worker joined without
-// --pod-cidr, so a worker they joined holds 10.245.0.0/16 it was never given.
-// A restart given the cluster's real range replaces that default rather than
-// refusing it, and from then on refuses a different range as for any other.
+// Older releases saved the default pod range for a join given no --pod-cidr.
 func TestWorkerRestartReplacesTheDefaultPodCIDRAnEarlierJoinSaved(t *testing.T) {
 	trusted := recordTrust(t)
 	workerState(t, &nodestate.NodeState{Role: "worker", Hostname: "w1", PodCIDR: "10.245.0.0/16"})
@@ -395,10 +356,6 @@ func TestWorkerRestartReplacesTheDefaultPodCIDRAnEarlierJoinSaved(t *testing.T) 
 	}
 }
 
-// The service range and cluster domain a worker joins with are what its
-// kubelet hands pods: RunWorker renders kubelet.conf from the state the join
-// returns, so the flags must reach clusterDNS and clusterDomain, not the
-// defaults.
 func TestWorkerJoinFlagsReachTheKubeletConf(t *testing.T) {
 	redirectJoinDirs(t)
 	stubJoinHost(t, "w-7", "10.70.0.9", []byte("discovered CA"))
@@ -488,11 +445,6 @@ func TestWorkerRestartCancellationKeepsTheRecordedState(t *testing.T) {
 	}
 }
 
-// A join without --node-ip finds its address through host.ResolveNodeIP,
-// which takes $NODE_IP before it falls back to detection: an operator who
-// exported NODE_IP for a multi-NIC worker must see that address registered,
-// as before the join moved out of pkg/cli. Interface detection alone would
-// pick whichever address the host offers first.
 func TestWorkerJoinTakesTheNodeIPEnvironment(t *testing.T) {
 	redirectJoinDirs(t)
 	rec := stubJoinHost(t, "w-7", "10.70.0.9", []byte("discovered CA"))

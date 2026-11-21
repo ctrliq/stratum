@@ -1,16 +1,4 @@
-// Kubelet serving-cert CSR approver.
-//
-// A kubelet that runs serverTLSBootstrap requests a `kubernetes.io/kubelet-serving`
-// CSR — every kubelet under `stratum server --cis`, and also every token-joined
-// worker, which has no local PKI to pin and so bootstraps its serving cert this
-// way. Kubernetes deliberately does NOT auto-approve that CSR (unlike
-// the kubelet CLIENT CSR), because serving-cert SANs (node IPs/DNS) are spoofable
-// and must be validated against the node's real addresses.
-// An unapproved kubelet has no serving cert at all, so the apiserver cannot
-// complete a TLS handshake with it → cluster-wide kubectl logs/exec/top +
-// metrics outage. This reconciler is what makes serverTLSBootstrap
-// safe: it approves a serving CSR ONLY when the requester is the node itself and
-// every SAN it asks for is an address that node legitimately owns.
+// Kubelet-serving CSRs get no auto-approval from Kubernetes; SANs are spoofable.
 package operator
 
 import (
@@ -73,11 +61,7 @@ func csrDecided(csr *certv1.CertificateSigningRequest) bool {
 	return false
 }
 
-// servingCSRVerdict decides a kubelet-serving CSR. It is deliberately strict:
-// deny on any positive mismatch (wrong requester, wrong usages, a SAN the node
-// doesn't own — the anti-spoofing core), but leave PENDING when we can't yet
-// prove validity (Node not registered / addresses not populated), so a kubelet
-// that races ahead of its Node.status retries instead of being permanently denied.
+// servingCSRVerdict denies provable mismatches; unprovable ones stay pending so a kubelet retries.
 func servingCSRVerdict(ctx context.Context, cs kubernetes.Interface, csr *certv1.CertificateSigningRequest) (verdict, string) {
 	const nodePrefix = "system:node:"
 	if !strings.HasPrefix(csr.Spec.Username, nodePrefix) {
@@ -122,9 +106,6 @@ func servingCSRVerdict(ctx context.Context, cs kubernetes.Interface, csr *certv1
 	return approve, ""
 }
 
-// usagesAreServingOnly requires server auth and permits only the signing/encipherment
-// usages that accompany it — any client-auth (or other) usage under the serving
-// signer is rejected.
 func usagesAreServingOnly(us []certv1.KeyUsage) bool {
 	sawServer := false
 	for _, u := range us {

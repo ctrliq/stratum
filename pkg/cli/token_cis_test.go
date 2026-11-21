@@ -10,10 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A worker reads no cluster config, so on a CIS cluster the join line is the
-// only way it learns to run the CIS profile -- and with it the kubelet's
-// seccompDefault. The worker and the control-plane join line each carry --cis
-// there, and neither does on a cluster without it.
+// A worker reads no cluster config, so the join line is how it learns the profile.
 func TestJoinLinesCarryCISOnACISCluster(t *testing.T) {
 	registerCISForTest(t)
 	old := version.K8sConfDir

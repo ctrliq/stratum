@@ -29,8 +29,7 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// kidOf and the two ids below stand for the old and the new key. They need only
-// be what tokenKeyID reads back; the derivation is tested against a real token.
+// stand-ins for the old and the new key ids; the derivation is tested against a real token
 const (
 	oldKid = "OLDKEYIDOLDKEYIDOLDKEYIDOLDKEYIDOLDKEYIDOLD"
 	newKid = "NEWKEYIDNEWKEYIDNEWKEYIDNEWKEYIDNEWKEYIDNEW"
@@ -41,10 +40,7 @@ func jwtWithKid(kid string) string {
 	return enc([]byte(`{"alg":"RS256","kid":"`+kid+`"}`)) + "." + enc([]byte(`{"sub":"x"}`)) + "." + enc([]byte("sig"))
 }
 
-// The apiserver names a key by the base64url SHA-256 of its PKIX DER. The fixture
-// is a token a real kube-apiserver (the v1.36.4 image Stratum ships) issued, and
-// the public key it verifies with; if saKeyID drifted from the apiserver's rule,
-// the old key's tokens would read as clean and finalize would proceed.
+// the fixture is a token a real kube-apiserver issued; drift would read stale tokens as clean
 func TestSAKeyIDMatchesARealApiserverToken(t *testing.T) {
 	pub, err := os.ReadFile("testdata/apiserver-sa.pub")
 	if err != nil {
@@ -104,7 +100,7 @@ func TestTokenKeyID(t *testing.T) {
 	}
 }
 
-// writeMount writes a projected token as the kubelet does for a pod's volume.
+// writeMount writes a projected token under a pod's volume as the kubelet does.
 func writeMount(root, podUID, volume, token string) error {
 	dir := filepath.Join(root, "pods", podUID, "volumes", "kubernetes.io~projected", volume)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -127,7 +123,7 @@ func TestFindStaleTokens(t *testing.T) {
 	mount(t, root, "uid-other-issuer", "oidc", jwtWithKid("somebody-elses"))
 	mount(t, root, "uid-not-a-jwt", "kube-api-access-x", "hello")
 	mount(t, root, "uid-old-2", "second", jwtWithKid(oldKid))
-	// A secret volume with a file called token is not a projected token.
+	// a secret volume with a file called token is not a projected token
 	secret := filepath.Join(root, "pods", "uid-secret", "volumes", "kubernetes.io~secret", "s")
 	if err := os.MkdirAll(secret, 0o755); err != nil {
 		t.Fatal(err)
@@ -135,7 +131,7 @@ func TestFindStaleTokens(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(secret, "token"), []byte(jwtWithKid(oldKid)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The kubelet's token is a symlink into ..data; one whose pod went away is dangling.
+	// the kubelet's token is a symlink into ..data; one whose pod went away is dangling
 	gone := filepath.Join(root, "pods", "uid-gone", "volumes", "kubernetes.io~projected", "v")
 	if err := os.MkdirAll(gone, 0o755); err != nil {
 		t.Fatal(err)
@@ -154,8 +150,7 @@ func TestFindStaleTokens(t *testing.T) {
 	}
 }
 
-// A service-account token source writes to the path the pod spec gives it, nested
-// or not, and the volume holds other files beside it.
+// a token source writes to the path the pod spec gives it, nested or not, beside other files
 func TestFindStaleTokensAnyPathInTheVolume(t *testing.T) {
 	root := t.TempDir()
 	vol := filepath.Join(root, "pods", "uid-1", "volumes", "kubernetes.io~projected", "creds")
@@ -188,9 +183,7 @@ func TestFindStaleTokensAnyPathInTheVolume(t *testing.T) {
 	}
 }
 
-// The kubelet's atomic writer: files are symlinks through ..data into a
-// timestamped directory. Only what ..data points at is current; an older
-// generation still beside it is not.
+// files are symlinks through ..data; only what ..data points at is current
 func TestFindStaleTokensReadsTheCurrentGeneration(t *testing.T) {
 	root := t.TempDir()
 	vol := filepath.Join(root, "pods", "uid-1", "volumes", "kubernetes.io~projected", "kube-api-access-x")
@@ -210,7 +203,7 @@ func TestFindStaleTokensReadsTheCurrentGeneration(t *testing.T) {
 	if got, err := findStaleTokens(context.Background(), root, oldKid); err != nil || len(got) != 0 {
 		t.Errorf("findStaleTokens = %v, %v; want nothing: the old generation is not mounted", got, err)
 	}
-	// ..data moves back to the old generation: now the token is stale, once.
+	// ..data moves back to the old generation: now the token is stale, once
 	if err := os.Remove(filepath.Join(vol, "..data")); err != nil {
 		t.Fatal(err)
 	}
@@ -223,8 +216,7 @@ func TestFindStaleTokensReadsTheCurrentGeneration(t *testing.T) {
 	}
 }
 
-// atomicVolume is a projected volume as the kubelet writes it: generations
-// beside each other, ..data pointing at the current one, token through it.
+// generations beside each other, ..data pointing at the current one, token through it
 type atomicVolume struct{ root, vol string }
 
 func newAtomicVolume(t *testing.T) atomicVolume {
@@ -243,8 +235,7 @@ func (v atomicVolume) generation(t *testing.T, name, kid string) {
 	}
 }
 
-// publish points ..data at gen, as the kubelet does: a new link renamed over the
-// old one.
+// a new link renamed over the old one, as the kubelet publishes
 func (v atomicVolume) publish(t *testing.T, gen string) {
 	t.Helper()
 	tmp := filepath.Join(v.vol, "..data_tmp")
@@ -275,9 +266,7 @@ func hookOnce(t *testing.T, f func()) {
 	}
 }
 
-// The kubelet publishes a new generation and removes the one being scanned. Both
-// can hold the same old-key token (a projected ConfigMap changed, the token did
-// not), so reading what is left of the removed one must not read as clean.
+// both generations can hold the same old-key token; the removed one must not read clean
 func TestFindStaleTokensGenerationSwappedMidScan(t *testing.T) {
 	v := newAtomicVolume(t)
 	v.generation(t, "..2026_01", oldKid)
@@ -312,8 +301,7 @@ func TestFindStaleTokensGenerationSwappedToANewTokenMidScan(t *testing.T) {
 	}
 }
 
-// A ..data that points at nothing (between generations) is retried, and one that
-// never resolves fails closed: no generation was read, so none can be called clean.
+// a ..data that never resolves fails closed: no generation was read, so none can be called clean
 func TestFindStaleTokensDanglingDataFailsClosed(t *testing.T) {
 	v := newAtomicVolume(t)
 	v.generation(t, "..2026_01", oldKid)
@@ -333,8 +321,7 @@ func TestFindStaleTokensDanglingDataFailsClosed(t *testing.T) {
 	}
 }
 
-// A volume that keeps changing, so that no complete scan can be made, fails
-// closed instead of reporting what a partial one saw.
+// no complete scan can be made, so it fails closed instead of reporting a partial one
 func TestFindStaleTokensKeepsChangingFailsClosed(t *testing.T) {
 	v := newAtomicVolume(t)
 	v.generation(t, "..2026_00", oldKid)
@@ -357,7 +344,7 @@ func TestFindStaleTokensKeepsChangingFailsClosed(t *testing.T) {
 	}
 }
 
-// A pod deleted mid-scan takes its volume with it: nothing is mounted, so clean.
+// a pod deleted mid-scan takes its volume with it: nothing is mounted, so clean
 func TestFindStaleTokensVolumeDeletedMidScanIsClean(t *testing.T) {
 	v := newAtomicVolume(t)
 	v.generation(t, "..2026_01", oldKid)
@@ -372,8 +359,7 @@ func TestFindStaleTokensVolumeDeletedMidScanIsClean(t *testing.T) {
 	}
 }
 
-// Expiry fails a scan: it must not return clean (the gate would proceed), not
-// restart the kubelet, and must stop reading.
+// expiry fails the scan: never clean, never a kubelet restart, and it stops reading
 func TestScanExpiredContextFailsClosed(t *testing.T) {
 	expired := func() context.Context {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -402,8 +388,7 @@ func TestScanExpiredContextFailsClosed(t *testing.T) {
 			t.Errorf("kubelet restarted %d time(s) after expiry", k.calls)
 		}
 	})
-	// The shared scanner enforces it, so a node with nothing to read (an empty pods
-	// directory) is no exception, whoever calls it.
+	// the shared scanner enforces it, so a node with nothing to read is no exception
 	t.Run("an empty pods directory, expired", func(t *testing.T) {
 		root := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(root, "pods"), 0o755); err != nil {
@@ -445,8 +430,7 @@ func TestFindStaleTokensNoKubeletDir(t *testing.T) {
 	}
 }
 
-// filepath.Glob drops a directory it cannot list, so a pod directory holding a
-// stale token that cannot be read must not read as clean.
+// filepath.Glob drops a directory it cannot list; that must not read as clean
 func TestFindStaleTokensUnreadableDirFailsClosed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads anything")
@@ -487,8 +471,7 @@ func TestFindStaleTokensUnreadableFailsClosed(t *testing.T) {
 	}
 }
 
-// kubelet stubs the restart: it re-issues every stale token under the root with
-// the new key, as a restarted kubelet does, and counts the calls.
+// re-issues every stale token with the new key, as a restarted kubelet does, and counts calls
 type kubelet struct {
 	root    string
 	calls   int
@@ -567,7 +550,7 @@ func TestScanNode(t *testing.T) {
 	}
 }
 
-// ScanTokens is the Job: its answer is the error the CLI turns into the exit status.
+// the Job's answer is the error the CLI turns into the exit status
 func TestScanTokens(t *testing.T) {
 	root := t.TempDir()
 	mount(t, root, "uid-old", "v", jwtWithKid(oldKid))
@@ -690,8 +673,7 @@ func TestNameStale(t *testing.T) {
 	}
 }
 
-// An offender whose uid is unknown keeps the stand-in Pod text the Job scan gave
-// it; only a uid that resolves replaces it.
+// only a uid that resolves replaces the stand-in Pod text
 func TestNameStaleKeepsTheFallbackUnlessTheUIDResolves(t *testing.T) {
 	cs := fake.NewSimpleClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", UID: "uid-1"}})
 	stale := []staleToken{
@@ -712,7 +694,7 @@ func TestNameStaleKeepsTheFallbackUnlessTheUIDResolves(t *testing.T) {
 
 // scans is a tokenScanner over a table of what each node reports on each pass.
 type scans struct {
-	// pass[node] is the stale tokens the node has on its nth scan; past the end, the last.
+	// pass[node] is the stale tokens the node has on its nth scan; past the end, the last
 	pass     map[string][][]staleToken
 	err      map[string]error
 	seen     map[string]int
@@ -776,18 +758,17 @@ func TestWaitTokensClean(t *testing.T) {
 		if err := waitTokensClean(ctx, io.Discard, nodes, s.scan); err != nil {
 			t.Fatal(err)
 		}
-		// A read-only scan finds it, one scan restarts, and after that only reads.
+		// a read-only scan finds it, one scan restarts, and after that only reads
 		if got, want := s.restarts["cp2"], []bool{false, true, false}; !slices.Equal(got, want) {
 			t.Errorf("cp2 restart flag on each scan = %v, want %v (the kubelet is restarted once)", got, want)
 		}
-		// Every node is scanned on every pass, so none finalizes ahead of a stale one.
+		// every node is scanned on every pass, so none finalizes ahead of a stale one
 		if s.seen["cp1"] != 2 || s.seen["w1"] != 2 {
 			t.Errorf("scans of the clean nodes = cp1 %d, w1 %d, want 2 each (the passes)", s.seen["cp1"], s.seen["w1"])
 		}
 	})
 
-	// A restart that cleared the node's tokens is still the node's one restart: a
-	// token that turns up later is only watched, not restarted for again.
+	// a token that turns up later is only watched, not restarted for again
 	t.Run("a successful restart is not repeated", func(t *testing.T) {
 		fastGate(t)
 		s := &scans{pass: map[string][][]staleToken{
@@ -802,8 +783,7 @@ func TestWaitTokensClean(t *testing.T) {
 		}
 	})
 
-	// The wait bounds the scans, not just the passes between them: a scan that
-	// hangs (a Job on a node that never answers) ends the gate at the cap.
+	// a scan that hangs (a Job on a node that never answers) ends the gate at the cap
 	t.Run("a scan that outlasts the cap fails the gate at the cap", func(t *testing.T) {
 		fastGate(t)
 		tokenGateWait = 30 * time.Millisecond
@@ -877,8 +857,7 @@ func TestWaitTokensClean(t *testing.T) {
 	})
 }
 
-// The single-node finalize gate on a context that is already done: refused, not
-// passed, even with nothing mounted.
+// refused, not passed, even with nothing mounted
 func TestLocalTokenGateExpiredContextRefuses(t *testing.T) {
 	pub, err := os.ReadFile("testdata/apiserver-sa.pub")
 	if err != nil {
@@ -899,7 +878,7 @@ func TestLocalTokenGateExpiredContextRefuses(t *testing.T) {
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Errorf("localTokenGate = %v, want a refusal wrapping context.Canceled", err)
 	}
-	// And the same node on a live context is clean.
+	// the same node on a live context is clean
 	if err := localTokenGate(context.Background(), io.Discard, CARotateOptions{Quiet: true}); err != nil {
 		t.Errorf("localTokenGate on a live context = %v, want nil", err)
 	}
@@ -988,9 +967,7 @@ func TestLocalTokenGate(t *testing.T) {
 			t.Errorf("a node with no old key refused, which would break re-running a finalize whose restart failed: %v", err)
 		}
 	})
-	// PromoteSA writes the backup only if it could read sa.pub, and promotes either
-	// way: no backup with two keys still in the bundle is an unidentifiable old
-	// key, not a node that finalized.
+	// no backup with two keys in the bundle is an unidentifiable old key, not a finalized node
 	t.Run("no old key but the bundle holds two keys refuses", func(t *testing.T) {
 		setup(t, false, string(tok))
 		if err := os.WriteFile(filepath.Join(pkiDir, "sa-bundle.pub"), append(append([]byte{}, pub...), pub...), 0o644); err != nil {
@@ -1004,9 +981,7 @@ func TestLocalTokenGate(t *testing.T) {
 			t.Errorf("a skipped check refused: %v", err)
 		}
 	})
-	// The apiserver also takes a certificate's public key into the verification
-	// set, and Stratum keeps whatever encoding an existing sa.pub has: a PUBLIC KEY
-	// beside a CERTIFICATE is two verifiers, not one.
+	// a PUBLIC KEY beside a CERTIFICATE is two verifiers, not one
 	t.Run("no old key, a public key and a certificate in the bundle refuse", func(t *testing.T) {
 		setup(t, false, string(tok))
 		if err := os.WriteFile(filepath.Join(pkiDir, "sa-bundle.pub"), append(append([]byte{}, pub...), selfSignedCertPEM(t)...), 0o644); err != nil {
@@ -1061,8 +1036,7 @@ func TestLocalTokenGate(t *testing.T) {
 	})
 }
 
-// selfSignedCertPEM is a certificate whose public key the apiserver would accept
-// as a ServiceAccount verifier.
+// a certificate whose public key the apiserver would accept as a ServiceAccount verifier
 func selfSignedCertPEM(t *testing.T) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -1104,8 +1078,7 @@ func TestLegacyStaleSecrets(t *testing.T) {
 	}
 }
 
-// The token gate can take an hour and restarts kubelets, so the cluster check
-// runs again after it: a node that went NotReady meanwhile refuses finalize.
+// the cluster check runs again after the token gate: a NotReady node refuses finalize
 func TestFinalizeChecks(t *testing.T) {
 	notReady := errors.New("node cp2 is not Ready")
 	for _, tc := range []struct {

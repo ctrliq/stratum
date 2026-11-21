@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 )
 
-// Surface pinning.
-
-// shippedReadTools is every tool advertised with no flags.
 var shippedReadTools = []string{
 	"backup_evidence",
 	"certs_check",
@@ -40,7 +37,6 @@ var shippedReadTools = []string{
 	"version_get",
 }
 
-// shippedWriteTools are the tools --allow-write adds.
 var shippedWriteTools = []string{
 	"registry_apply",
 	"runtime_apply",
@@ -53,7 +49,6 @@ var shippedWriteTools = []string{
 	"token_create",
 }
 
-// shippedDestructiveTools are the tools --allow-destructive adds.
 var shippedDestructiveTools = []string{
 	"certs_migrate_etcd_ca",
 	"certs_migrate_kubelet_client_ca",
@@ -68,8 +63,6 @@ var shippedDestructiveTools = []string{
 	"upgrade_apply",
 }
 
-// shippedSurface builds a server with no contributed tool sets — the
-// surface a `stratum mcp` actually serves.
 func shippedSurface(t *testing.T, allowWrite, allowDestructive bool) []string {
 	t.Helper()
 
@@ -130,11 +123,7 @@ func TestShippedSurfaceIsExactlyPinned(t *testing.T) {
 	}
 }
 
-// The tier-count table in the cluster-admin MCP page is easy to leave behind
-// when tools are added or removed, because nothing else ties its numbers to
-// the code. This pins each count to the pinned lists (already proven equal
-// to the live surface), so a future tool change fails here until the doc is
-// updated too.
+// nothing else ties the doc's tier counts to the code, so pin them here.
 func TestDocsTierTableMatchesSurface(t *testing.T) {
 	data, err := os.ReadFile("../../docs/docs/cluster-admin/mcp.md")
 	if err != nil {
@@ -158,8 +147,7 @@ func TestDocsTierTableMatchesSurface(t *testing.T) {
 				if m == nil {
 					continue
 				}
-				// Atoi's error needs no branch: it yields 0, which the count
-				// comparison below rejects as loudly as a wrong number.
+				// Atoi's error is ignored on purpose: 0 fails the count comparison below.
 				got, _ := strconv.Atoi(m[1])
 				if got != tc.want {
 					t.Errorf("docs/docs/cluster-admin/mcp.md:%d says the %s tier has %d tools, but the shipped surface has %d",
@@ -172,8 +160,6 @@ func TestDocsTierTableMatchesSurface(t *testing.T) {
 	}
 }
 
-// The counts, stated separately and in words, because a count is the thing
-// a reviewer checks against the documented tier table without reading a list.
 func TestShippedSurfaceCounts(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
@@ -193,7 +179,6 @@ func TestShippedSurfaceCounts(t *testing.T) {
 	}
 }
 
-// The two statements of the surface must agree.
 func TestPinnedListsAgreeWithTheTierLists(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -215,7 +200,6 @@ func TestPinnedListsAgreeWithTheTierLists(t *testing.T) {
 	}
 }
 
-// No tool may appear at more than one tier.
 func TestNoToolAppearsAtTwoTiers(t *testing.T) {
 	seen := map[string]string{}
 	for tier, list := range map[string][]string{
@@ -232,8 +216,7 @@ func TestNoToolAppearsAtTwoTiers(t *testing.T) {
 	}
 }
 
-// Naming is noun_verb throughout (snapshot_list, certs_check), which groups
-// tools by subject in a client's alphabetical list.
+// noun_verb groups tools by subject in a client's alphabetical list.
 func TestToolNamesFollowTheConvention(t *testing.T) {
 	all := sortedUnion(shippedReadTools, shippedWriteTools, shippedDestructiveTools)
 	for _, name := range all {
@@ -244,8 +227,7 @@ func TestToolNamesFollowTheConvention(t *testing.T) {
 			if strings.Contains(name, "-") || strings.Contains(name, " ") {
 				t.Errorf("use underscores, not dashes or spaces")
 			}
-			// Two whole-subject verbs have no noun to pair with: the subject IS the
-			// node.
+			// rollback and uninstall have no noun: the subject is the node itself.
 			singleWordByDesign := []string{"rollback", "uninstall"}
 			if !strings.Contains(name, "_") && !slices.Contains(singleWordByDesign, name) {
 				t.Errorf("expected noun_verb, got a single word")

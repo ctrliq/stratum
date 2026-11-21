@@ -15,9 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestJoinEtcdEndpoints pins that a join through the VIP dialled etcd on
-// the VIP, where nothing listens. The published member list wins; without it
-// the join host is used when it is a node, and a VIP is refused up front.
 func TestJoinEtcdEndpoints(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -50,8 +47,6 @@ func TestJoinEtcdEndpoints(t *testing.T) {
 	}
 }
 
-// TestEtcdEndpointsAnnotation: the annotation is data a joiner dials, so only
-// literal IPs survive the parse — no hostnames, no URLs, no duplicates.
 func TestEtcdEndpointsAnnotation(t *testing.T) {
 	in := []string{"10.0.0.11", "fd00::12", "10.0.0.13"}
 	if got := parseEtcdEndpoints(formatEtcdEndpoints(in)); !slices.Equal(got, in) {
@@ -66,9 +61,6 @@ func TestEtcdEndpointsAnnotation(t *testing.T) {
 	}
 }
 
-// TestIsUnhealthyCluster: MemberAdd retries etcd's strict-reconfig refusal and
-// nothing else. The client hands back the raw gRPC status, so the match has to
-// work on that form and on the wrapped one.
 func TestIsUnhealthyCluster(t *testing.T) {
 	if !isUnhealthyCluster(rpctypes.ErrGRPCUnhealthy) {
 		t.Error("the raw gRPC unhealthy-cluster status is not recognised")
@@ -83,9 +75,6 @@ func TestIsUnhealthyCluster(t *testing.T) {
 	}
 }
 
-// TestPublishableEtcdEndpoints: publishing the member list is
-// not best-effort. A token minted without it prints a join that a VIP join
-// refuses, and would have replaced a good list on an existing Secret.
 func TestPublishableEtcdEndpoints(t *testing.T) {
 	if got, err := publishableEtcdEndpoints([]string{"10.0.0.11", "10.0.0.12"}, nil); err != nil || got != "10.0.0.11,10.0.0.12" {
 		t.Errorf("healthy etcd: %q, %v", got, err)
@@ -102,9 +91,6 @@ func TestPublishableEtcdEndpoints(t *testing.T) {
 	}
 }
 
-// TestUploadCertsNeedsAControlPlane: the upload reads this
-// node's CA keys and its local etcd, so from an admin workstation it has to say
-// that plainly, before any other step fails in a way that names etcd.
 func TestUploadCertsNeedsAControlPlane(t *testing.T) {
 	orig := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -115,9 +101,6 @@ func TestUploadCertsNeedsAControlPlane(t *testing.T) {
 	}
 }
 
-// TestRejoinRefusesTheVIP: etcd does not listen on the VIP,
-// and the seed is one specific control plane, so rejoin through the VIP is
-// refused before anything is inspected or changed.
 func TestRejoinRefusesTheVIP(t *testing.T) {
 	touched := []string{}
 	restoreSeams(t,
@@ -137,9 +120,6 @@ func TestRejoinRefusesTheVIP(t *testing.T) {
 	}
 }
 
-// TestUploadCertsMintsTheEtcdTrustBeforeListing: the member
-// listing authenticates with the etcd trust bundle, which a pre-etcd-CA-split control
-// plane only has once EnsureEtcdTrustBundle has minted it.
 func TestUploadCertsMintsTheEtcdTrustBeforeListing(t *testing.T) {
 	oldReq, oldEnsure, oldList := requireControlPlanePKI, ensureEtcdTrust, uploadListMembers
 	t.Cleanup(func() { requireControlPlanePKI, ensureEtcdTrust, uploadListMembers = oldReq, oldEnsure, oldList })
@@ -153,8 +133,6 @@ func TestUploadCertsMintsTheEtcdTrustBeforeListing(t *testing.T) {
 	}
 }
 
-// TestSameIP: the VIP refusals compared strings, so an IPv6
-// VIP written in another form slipped past them.
 func TestSameIP(t *testing.T) {
 	for _, tc := range []struct {
 		a, b string

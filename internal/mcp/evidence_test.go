@@ -1,10 +1,5 @@
 package mcp
 
-// The backup_evidence tool: the MCP half of the machine-readable backup
-// evidence `stratum snapshot list -o json` prints — the same typed rows,
-// served through the catalog at the read tier, so a client with no flags
-// sees the engine's own view of what it does for backups.
-
 import (
 	"context"
 	"encoding/json"
@@ -16,7 +11,6 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// backupEvidenceRow returns the catalog's backup_evidence descriptor.
 func backupEvidenceRow(t *testing.T) *Tool {
 	t.Helper()
 	cat := testCatalog()
@@ -28,9 +22,6 @@ func backupEvidenceRow(t *testing.T) *Tool {
 	return nil
 }
 
-// TestBackupEvidenceShipsInTheCatalogAtTheReadTier: the evidence contract is
-// exposed as a read-tier tool that reaches no Kubernetes API, with the
-// description a model chooses it by and a handler that actually registers.
 func TestBackupEvidenceShipsInTheCatalogAtTheReadTier(t *testing.T) {
 	row := backupEvidenceRow(t)
 	if row == nil {
@@ -50,9 +41,6 @@ func TestBackupEvidenceShipsInTheCatalogAtTheReadTier(t *testing.T) {
 	}
 }
 
-// TestBackupEvidenceIsAdvertisedToTheClient: registering the catalog
-// advertises the tool over the wire, annotated read-only like every tool a
-// client may call with no flags.
 func TestBackupEvidenceIsAdvertisedToTheClient(t *testing.T) {
 	cs := fencedSession(t, func(s *sdk.Server) {
 		for _, d := range testCatalog() {
@@ -82,10 +70,6 @@ func TestBackupEvidenceIsAdvertisedToTheClient(t *testing.T) {
 	}
 }
 
-// useBackupEvidenceRead points the tool's evidence reader seam at fn, the
-// same seam swap the snapshot handlers' tests use for snapshotDir and
-// loadSnapshotConfig: the tool serves what the supported surface reads, and
-// a swapped fn stands in for the surface.
 func useBackupEvidenceRead(t *testing.T, fn func(context.Context, BackupEvidenceIn) BackupEvidenceOut) {
 	t.Helper()
 	old := BackupEvidenceRead
@@ -93,18 +77,6 @@ func useBackupEvidenceRead(t *testing.T, fn func(context.Context, BackupEvidence
 	BackupEvidenceRead = fn
 }
 
-// craftedBackupEvidence is one complete evidence document, built the way the
-// supported surface restates the engine's read: the fixed stamps make the
-// over-the-wire comparison exact, whenever the suite runs. The story is one
-// a working node produces at a daily interval — the 2026-11-12 11:00 tick
-// saves and uploads the shared snapshot, the next day's tick saves again
-// but fails its upload, and the maintenance record carries that tick's
-// attempts with the remote prune's failure as its warning — except the old
-// remote copy and the retention lines it produces: those exercise the
-// reserved age fields, which a working node leaves empty under count
-// retention. They stand in for a read whose caller supplied a retention
-// cutoff — no caller does today — so the restatement's mapping of the
-// reserved fields is pinned before anything can fill them.
 func craftedBackupEvidence() BackupEvidenceOut {
 	art := func(id, loc, created string, size int64, digest string) BackupArtifactRow {
 		return BackupArtifactRow{ID: id, Location: loc, Created: created, Size: size, Digest: digest}
@@ -169,17 +141,10 @@ func craftedBackupEvidence() BackupEvidenceOut {
 			AttemptsKnown:     true,
 		},
 		Complete: true,
-		// The composed warnings a whole engine read emits: the policy's,
-		// the census's and the maintenance record's, in that order —
-		// here only the maintenance record's one.
 		Warnings: []string{"WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"},
 	}
 }
 
-// TestBackupEvidenceReturnsTheRowsOverTheWire: the registered tool answers a
-// call with the typed evidence rows as structured content, and the caller's
-// caps reach the evidence reader unchanged — the read's bounds are the
-// caller's when it sets them.
 func TestBackupEvidenceReturnsTheRowsOverTheWire(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -225,8 +190,6 @@ func TestBackupEvidenceReturnsTheRowsOverTheWire(t *testing.T) {
 	}
 }
 
-// The tool is a Stratum read like its neighbours: off a Stratum node it
-// refuses with the shared explanation, not with evidence about nothing.
 func TestBackupEvidenceRefusesAMachineThatIsNotAStratumHost(t *testing.T) {
 	notStratumHost(t)
 	_, _, err := BackupEvidenceHandler()(context.Background(), nil, BackupEvidenceIn{})
@@ -235,9 +198,6 @@ func TestBackupEvidenceRefusesAMachineThatIsNotAStratumHost(t *testing.T) {
 	}
 }
 
-// The call's context is handed to the evidence surface unchanged, so the
-// read's cancellation — the client's disconnect — ends the underlying local
-// and remote I/O.
 func TestBackupEvidenceHandsTheCallContextToTheSurface(t *testing.T) {
 	fakeStratumHost(t)
 	var gotCtx context.Context
@@ -256,9 +216,6 @@ func TestBackupEvidenceHandsTheCallContextToTheSurface(t *testing.T) {
 	}
 }
 
-// A server built without the CLI's wiring says so, rather than serving
-// invented evidence: the engine's MCP package cannot reach the supported
-// surface on its own.
 func TestBackupEvidenceWithoutAWiredReaderSaysSo(t *testing.T) {
 	fakeStratumHost(t)
 	useBackupEvidenceRead(t, nil)

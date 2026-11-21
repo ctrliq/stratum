@@ -13,7 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// kubelet.conf carries the configured domain, not the constant.
 func TestKubeletConfigFollowsTheClusterDomain(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })
@@ -36,10 +35,7 @@ func TestKubeletConfigFollowsTheClusterDomain(t *testing.T) {
 	}
 }
 
-// A cluster domain that validates as a DNS name can still be a YAML scalar of
-// another type when written bare: `on` and `yes` are booleans, `1e3` a number,
-// `null` null. The kubelet would then read a different domain than the one
-// configured, so kubelet.conf quotes it and a parse gives back the literal string.
+// A bare domain can parse as a YAML bool or number, so kubelet.conf must quote it.
 func TestKubeletConfigClusterDomainIsALiteralString(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })

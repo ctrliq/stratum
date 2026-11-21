@@ -9,8 +9,6 @@ import (
 	"testing"
 )
 
-// The unit file and the other files written atomically are labelled for their
-// path while still under the temp name.
 func TestWriteFileAtomicallyLabelsBeforeTheRename(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stratum.service")

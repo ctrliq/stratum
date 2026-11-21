@@ -25,12 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// captureRealStdout captures what reaches the process's stdout while fn
-// runs, installing a pipe as os.Stdout for the duration. It returns what was
-// written and the *os.File that os.Stdout held while fn ran, so a pin can
-// tell a plain capture from a redirect underneath it: code that swaps
-// os.Stdout again while fn runs (the stdout guard's shape) leaves
-// the code under test observing the redirector's own pipe, not this one.
+// Returns also the *os.File os.Stdout held while fn ran, to tell a plain capture from a redirect.
 func captureRealStdout(t *testing.T, fn func()) (string, *os.File) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -53,8 +48,7 @@ func captureRealStdout(t *testing.T, fn func()) (string, *os.File) {
 	return buf.String(), w
 }
 
-// captureStderrDiscard silences stderr without needing a *testing.T, for
-// use inside a stdout capture.
+// Silences stderr without needing a *testing.T, for use inside a stdout capture.
 func captureStderrDiscard(fn func()) string {
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -74,7 +68,6 @@ func captureStderrDiscard(fn func()) string {
 	return buf.String()
 }
 
-// The minted token must never appear in the log stream.
 func TestTokenCreateDoesNotLogTheToken(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -85,8 +78,6 @@ func TestTokenCreateDoesNotLogTheToken(t *testing.T) {
 
 	deps := tokenDeps{
 		create: func(w io.Writer, serverURL string, ttl time.Duration, _ bool, confirm func(context.Context) error) (string, string, *metav1.OwnerReference, error) {
-			// Real token.Create prints progress while it waits for cluster-info to be
-			// signed; this stub writes it through the writer it is handed.
 			fmt.Fprintln(w, "  waiting for the control plane to sign cluster-info (attempt 1)...")
 			return secret, "sha256:" + strings.Repeat("a", 64), nil, nil
 		},
@@ -120,7 +111,6 @@ func TestTokenCreateDoesNotLogTheToken(t *testing.T) {
 		t.Errorf("a credential reached the real stdout: %q", onStdout)
 	}
 
-	// It must still be returned — once, in the result.
 	if out.Token != secret {
 		t.Errorf("token = %q, want it returned in the result", out.Token)
 	}
@@ -135,10 +125,7 @@ func TestTokenCreateDoesNotLogTheToken(t *testing.T) {
 	}
 }
 
-// An omitted ttl must not mean "never expires". The CLI spells that
-// --ttl=0, but an absent JSON field and a zero one are indistinguishable,
-// so a model that simply did not think about lifetime would otherwise mint
-// a permanent cluster credential.
+// An absent JSON field and a zero one are indistinguishable; omitted must not mean never expires.
 func TestTokenCreateTTLDefaults(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -185,10 +172,6 @@ func TestTokenCreateTTLDefaults(t *testing.T) {
 		}
 	})
 
-	// An hours value that overflows time.Duration wraps NEGATIVE, and a
-	// non-positive ttl means "never expires" -- so without a bound the
-	// caller asking for the longest possible life gets a permanent
-	// credential instead. The exact opposite of the request.
 	t.Run("an overflowing ttl is rejected, not silently made permanent", func(t *testing.T) {
 		gotTTL = 0
 		var err error
@@ -222,13 +205,9 @@ func TestTokenCreateTTLDefaults(t *testing.T) {
 	})
 }
 
-// The default server URL is derived from this node's IP, not taken from a
-// caller-supplied string, when none is given.
 func TestTokenCreateDerivesServerURL(t *testing.T) {
 	fakeStratumHost(t)
-	// A test host whose real node.yaml records a VIP would answer the VIP. The
-	// state saved here has none, and with it the join flags recover the
-	// network from this state rather than from the host's own PKI.
+	// The saved state has no VIP, so join flags recover the network from it, not the host's PKI.
 	joinFlagDirs(t)
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller"}); err != nil {
 		t.Fatal(err)
@@ -257,8 +236,7 @@ func TestTokenCreateDerivesServerURL(t *testing.T) {
 	}
 }
 
-// control_plane must reach the mint: only a control-plane token is in the
-// group allowed to read the shared certs the handler uploads.
+// Only a control-plane token may read the shared certs the handler uploads.
 func TestTokenCreateMintsTheShapeItWasAskedFor(t *testing.T) {
 	fakeStratumHost(t)
 	for _, cp := range []bool{false, true} {
@@ -301,8 +279,7 @@ func TestDefaultTokenDepsUsesRecordedNodeIP(t *testing.T) {
 	}
 }
 
-// keep=0 would delete every snapshot the node has. Rejecting it is what
-// lets this tool sit at the write tier instead of the destructive one.
+// Rejecting keep=0 is what lets this tool sit at the write tier, not the destructive one.
 func TestSnapshotPruneRejectsKeepZero(t *testing.T) {
 	fakeStratumHost(t)
 	handler := SnapshotPruneHandler()
@@ -362,12 +339,7 @@ func TestStratumWriteToolsRequireAStratumHost(t *testing.T) {
 	}
 }
 
-// TestApplyScheduleCannotRepointTheStore.
-//
-// An etcd snapshot is the whole cluster, so where it is sent is a total
-// exfiltration primitive -- and the endpoint carries the operator's object
-// store credentials to whatever host it names. The tool sets retention and
-// nothing else; the destination stays where the operator put it.
+// The tool sets retention only: the snapshot destination is an exfiltration primitive.
 func TestApplyScheduleCannotRepointTheStore(t *testing.T) {
 	existing := etcdsnap.Config{
 		Retain: 7,
@@ -395,10 +367,7 @@ func TestApplyScheduleCannotRepointTheStore(t *testing.T) {
 	})
 }
 
-// TestSnapshotNameMustBeABareFileName. etcdsnap.Save does
-// filepath.Join(dir, name), which cleans but does not confine, and this
-// server usually runs as root on a node — so an unchecked name turns a
-// write-tier tool into an arbitrary-file-write primitive.
+// etcdsnap.Save joins but does not confine, and this server usually runs as root.
 func TestSnapshotNameMustBeABareFileName(t *testing.T) {
 	for _, bad := range []string{
 		"../../etc/cron.d/pwn",
@@ -421,8 +390,7 @@ func TestSnapshotNameMustBeABareFileName(t *testing.T) {
 		}
 	}
 
-	// And the handler has to actually call it. Testing the predicate alone
-	// leaves the call site uncovered, which is the half that matters.
+	// The predicate alone leaves the call site uncovered, which is the half that matters.
 	t.Run("the handler refuses a name that is not a .db file", func(t *testing.T) {
 		fakeStratumHost(t)
 		dir := stubSnapshotDir(t)
@@ -454,14 +422,7 @@ func TestSnapshotNameMustBeABareFileName(t *testing.T) {
 	})
 }
 
-// TestTokenCreateRevokesTheTokenWhenALaterStepFails.
-//
-// With control_plane set, the token is minted before the cert key is
-// generated and the shared certs uploaded. A failure in either returns an
-// error to the caller and hands back no token — so without a rollback a live
-// join credential is left in kube-system that nobody saw and nobody can name
-// to revoke. token.RevokeOnFailure exists for this and `stratum token create`
-// already uses it; this pins that the MCP handler does too.
+// Without a rollback a failed upload leaves a live join credential nobody can name to revoke.
 func TestTokenCreateRevokesTheTokenWhenALaterStepFails(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -550,12 +511,7 @@ func TestTokenCreateRevokesTheTokenWhenALaterStepFails(t *testing.T) {
 	})
 }
 
-// TestTokenCreate_MintFailureRevokesNothing mirrors the CLI's
-// TestCreateTokenMintFailureHasNothingToRevoke (pkg/cli/token_test.go) for the
-// MCP front end. When the mint itself fails, no token exists, so revoking would
-// call back a credential that was never created — and now that both front ends
-// share one token.Issue, a single deferred revoke that also fires on a failed
-// mint would run token.Create's own rollback twice.
+// A shared token.Issue makes a revoke on a failed mint double token.Create's own rollback.
 func TestTokenCreate_MintFailureRevokesNothing(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -599,17 +555,7 @@ func TestTokenCreate_MintFailureRevokesNothing(t *testing.T) {
 	}
 }
 
-// TestTokenCreateControlPlaneRefusesMidRotation is the MCP twin of
-// the CLI's TestTokenCreateControlPlaneRefusesMidRotation
-// (pkg/cli/certs_test.go): token_create with control_plane set mints a new
-// certificate-key and re-encrypts stratum-certs, so it consults the same
-// re-key entry point and refuses while a CA rotation is staged or mid-phase —
-// the two front ends must answer the request the same way. The refusal
-// precedes the mint and its cluster-info publication, so no credential or
-// trust publication is changed. A worker token re-keys nothing, but its mint
-// still republishes cluster-info and the kubelet client CA from local PKI,
-// so it consults the guard too: a worker mint from a controller the rotation
-// has not reached would replace the published old‖new trust with old-only.
+// A worker mint republishes trust too, so it consults the guard a control-plane mint answers to.
 func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 	fakeStratumHost(t)
 	refusal := errors.New("a cluster-wide CA rotation or etcd-CA migration is staging shared material (the stratum-carotate Secret exists)")
@@ -648,13 +594,6 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 		}
 	})
 
-	// Replaces the landed pin "a worker token never consults the guard",
-	// whose premise — a worker mint publishes no trust — is false:
-	// token.Create republishes cluster-info and the kubelet client CA from
-	// local PKI for a worker token too, so a worker mint from a controller
-	// the rotation has not reached would roll the published old‖new trust
-	// back to old-only. The guard refuses before the mint and before any
-	// credential exists, so nothing is revoked.
 	t.Run("a worker token consults the guard too", func(t *testing.T) {
 		var revoked string
 		var out TokenCreateOut
@@ -689,8 +628,7 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 		}
 	})
 
-	// A worker mint whose guard passes still mints: the guard is a refusal
-	// gate, not a worker prohibition.
+	// The guard is a refusal gate, not a worker prohibition.
 	t.Run("a worker token mints when the guard passes", func(t *testing.T) {
 		var out TokenCreateOut
 		var err error
@@ -724,10 +662,7 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 	})
 }
 
-// TestTokenCreateDerivesTheJoinURL. The URL is published in cluster-info, so
-// it is where a joiner sends the bootstrap credential. A caller-supplied one
-// lets a model point the next node at a host it controls, and the victim is
-// whoever follows the join instructions — so the tool does not accept it.
+// A caller-supplied join URL lets a model point the next node at a host it controls.
 func TestTokenCreateDerivesTheJoinURL(t *testing.T) {
 	for _, tc := range []struct{ ip, want string }{
 		{"10.0.0.7", "https://10.0.0.7:6443"},
@@ -736,12 +671,7 @@ func TestTokenCreateDerivesTheJoinURL(t *testing.T) {
 	} {
 		t.Run(tc.ip, func(t *testing.T) {
 			fakeStratumHost(t)
-			// The join URL reads node state, so a test host whose real
-			// node.yaml records a VIP would answer the VIP in every case; and
-			// the join flags derived before it read the netconfig, or with
-			// no netconfig the host's PKI, which a non-root run cannot open
-			// on an installed host. The state saved here has no VIP, and the
-			// flags recover the network from it.
+			// The saved state has no VIP, so join flags recover the network from it, not the host's PKI.
 			joinFlagDirs(t)
 			if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller"}); err != nil {
 				t.Fatal(err)
@@ -777,15 +707,7 @@ func TestTokenCreateDerivesTheJoinURL(t *testing.T) {
 	}
 }
 
-// TestTokenCreateNamesTheVIP is the MCP twin of the CLI's pin
-// (pkg/cli TestTokenCreateNamesTheVIP): on a cluster with a VIP, token_create's
-// server names the VIP, the same line `stratum token create` prints, because
-// the URL is what a joiner dials and the VIP is the one address that survives
-// the controller that minted the token going away.
-//
-// The refusal of a caller-supplied URL is the input's shape and stays that
-// way: TokenCreateIn carries no server field, so the URL can only come from
-// this node's recorded facts — which is what this pin checks the mint saw.
+// The URL is what a joiner dials; the VIP survives the minting controller going away.
 func TestTokenCreateNamesTheVIP(t *testing.T) {
 	fakeStratumHost(t)
 	orig := version.K8sConfDir
@@ -822,9 +744,7 @@ func TestTokenCreateNamesTheVIP(t *testing.T) {
 	}
 }
 
-// TestCertsRotateCAListsOnlyRemainingPhases. Re-running a completed CA phase
-// is not a no-op, so guidance that names the whole sequence after the first
-// phase is an instruction to repeat a destructive step.
+// Re-running a completed CA phase is destructive, so guidance names only the phases after it.
 func TestCertsRotateCAListsOnlyRemainingPhases(t *testing.T) {
 	for _, tc := range []struct {
 		current string
@@ -849,8 +769,6 @@ func TestCertsRotateCAListsOnlyRemainingPhases(t *testing.T) {
 	}
 }
 
-// The guidance an operator actually reads must never name the phase that
-// just completed.
 func TestCertsRotateCAGuidanceNeverRepeatsThePhase(t *testing.T) {
 	for _, phase := range caPhases {
 		msg := caRotationNext(phase)
@@ -887,8 +805,6 @@ func TestApplyScheduleKeepsSeededS3Target(t *testing.T) {
 	}
 }
 
-// TestSnapshotSaveHonoursSnapshotDir pins that snapshot_save's name error and
-// its write target both follow spec.snapshots.dir.
 func TestSnapshotSaveHonoursSnapshotDir(t *testing.T) {
 	fakeStratumHost(t)
 	dir := stubSnapshotDir(t)
@@ -903,9 +819,7 @@ func TestSnapshotSaveHonoursSnapshotDir(t *testing.T) {
 		}
 	})
 
-	// etcdsnap.Snapshot creates the target's directory before it runs etcdctl,
-	// which is absent here (BinDir is an empty temp dir): the directory appearing is the evidence of where
-	// the write was aimed.
+	// etcdctl is absent here; the created directory is the evidence of where the write was aimed.
 	t.Run("the write targets the dir", func(t *testing.T) {
 		// Keep the host's real etcdctl out of the test.
 		origBin := version.BinDir
@@ -949,15 +863,7 @@ func TestSnapshotPruneHonoursSnapshotDir(t *testing.T) {
 	}
 }
 
-// TestSnapshotTools_ReportAReturnedPruneFailure pins that the snapshot tools
-// learn of a failed prune from the errors PruneScheduled returns, never by
-// matching the text WARN in the captured output. The failures below
-// deliberately contain no "WARN", so a tool that still reads the captured
-// text reports nothing and fails here.
-//
-// The seam is part of the pin: the stubs below cannot compile against a
-// PruneScheduled that returns nothing, and a snapshot_save that never
-// looks at the prune fails the save subtest.
+// Failures travel as returned errors, never by matching WARN in the captured output.
 func TestSnapshotTools_ReportAReturnedPruneFailure(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -993,10 +899,7 @@ func TestSnapshotTools_ReportAReturnedPruneFailure(t *testing.T) {
 		savedPath := filepath.Join(resolved, "etcd-snapshot-cp1-20261014-000000.db")
 		snapshotPrune = func(string, string, int, *objstore.Target) []error { return nil }
 		snapshotSave = func(_ context.Context, w io.Writer, o etcdsnap.SaveOptions) (string, error) {
-			// The save reports its prune failures as data while it prints
-			// them, so a stub that reports one exercises the result
-			// assembly. A handler that never asks for the failures leaves
-			// PruneWarn nil and this result carries no warning.
+			// A handler that never asks for the failures leaves PruneWarn nil and this carries no warning.
 			if o.Retain != 2 {
 				t.Errorf("save was sent Retain %d, want 2", o.Retain)
 			}
@@ -1023,11 +926,7 @@ func TestSnapshotTools_ReportAReturnedPruneFailure(t *testing.T) {
 	})
 }
 
-// TestSnapshotTools_CarryThePruneFailuresAsWarnings pins that the prune
-// failures PruneScheduled returns travel as data in the snapshot tools'
-// Warnings, beside the note that names them in prose — sourced from the
-// operation's returned errors, never from text found in the captured output,
-// and absent when the prune cleaned up everything.
+// Prune failures travel as data in Warnings, from returned errors, never from captured text.
 func TestSnapshotTools_CarryThePruneFailuresAsWarnings(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -1105,16 +1004,7 @@ func TestSnapshotTools_CarryThePruneFailuresAsWarnings(t *testing.T) {
 	})
 }
 
-// TestSnapshotTools_UseTheConfiguredDir pins where every snapshot tool
-// reads and writes:
-// spec.snapshots.dir decides where snapshots live, and the scheduled loop owns
-// that directory. A snapshot_list that reads anywhere else reports names
-// snapshot_restore cannot resolve, a snapshot_save that writes anywhere else
-// hides the backup from `stratum snapshot list`, and a snapshot_prune that
-// prunes anywhere else removes nothing (or the wrong copies). All three tools
-// must take the directory from the resolved snapshot settings — the
-// loadSnapshotConfig seam (stratumdestructive.go) — and never from a
-// directory read of their own, and an invalid request must reach no effect.
+// Every tool must take the dir from the resolved snapshot settings, never its own directory read.
 func TestSnapshotTools_UseTheConfiguredDir(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -1126,12 +1016,10 @@ func TestSnapshotTools_UseTheConfiguredDir(t *testing.T) {
 		snapshotList, snapshotSave, snapshotPrune = oldList, oldSave, oldPrune
 	})
 	loadSnapshotConfig = func() (etcdsnap.Config, error) { return etcdsnap.Config{Retain: 5, Dir: resolved}, nil }
-	// A tool that bypasses the resolved settings and reads a directory of its
-	// own lands here instead, and every assertion below fails.
+	// A tool reading a directory of its own lands here instead, and every assertion below fails.
 	snapshotDir = func() string { return filepath.Join(resolved, "unread") }
 
-	// The list, save and prune effects are injected separately, so each
-	// subtest names the directory that one tool actually used.
+	// Effects are injected separately, so each subtest names the directory its tool used.
 	var listDirs []string
 	snapshotList = func(dir string, _ *objstore.Target) ([]etcdsnap.SnapItem, error) {
 		listDirs = append(listDirs, dir)
@@ -1194,8 +1082,6 @@ func TestSnapshotTools_UseTheConfiguredDir(t *testing.T) {
 		if len(pruneDirs) != 1 || pruneDirs[0] != resolved {
 			t.Errorf("prune ran against %v, want the configured %q", pruneDirs, resolved)
 		}
-		// The before and after inventories must list the same directory the
-		// prune ran in, or the counts count the wrong place.
 		for _, dir := range listDirs {
 			if dir != resolved {
 				t.Errorf("the prune inventory listed %q, want the configured %q", dir, resolved)
@@ -1228,10 +1114,7 @@ func TestSnapshotTools_UseTheConfiguredDir(t *testing.T) {
 	})
 }
 
-// joinFlagDirs points the join-flag inputs at the test's own directories: the
-// persisted network config (version.NetConfigPath) and the node state
-// (version.K8sConfDir). The handler must derive the flags from the same
-// persisted state the CLI does, so a test redirects the same paths.
+// Redirects the persisted paths the join flags are derived from, the same state the CLI reads.
 func joinFlagDirs(t *testing.T) {
 	t.Helper()
 	oldConf, oldNet := version.K8sConfDir, version.NetConfigPath
@@ -1240,8 +1123,6 @@ func joinFlagDirs(t *testing.T) {
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")
 }
 
-// okTokenDeps returns tokenDeps whose every step succeeds and which records
-// any revoke, so a test can assert that a delivered grant was not revoked.
 func okTokenDeps(revoked *[]string) tokenDeps {
 	return tokenDeps{
 		create: func(_ io.Writer, _ string, _ time.Duration, _ bool, confirm func(context.Context) error) (string, string, *metav1.OwnerReference, error) {
@@ -1257,14 +1138,7 @@ func okTokenDeps(revoked *[]string) tokenDeps {
 	}
 }
 
-// TestTokenCreate_ReturnsTheJoinFlags pins that token_create's result
-// carries the join flags the CLI derives (token.LoadJoinFlags), so a node
-// joined through the MCP server runs the cluster's real ranges, domain and
-// CIS profile instead of silently falling back to the defaults — a worker
-// learns both only from its join line, and the MCP result is that line's
-// only source. The flags travel as data next to the token and the CA pin,
-// and the outcome records that credential bytes were delivered, because a
-// delivered grant must not be revoked behind the caller's back.
+// A worker learns the join flags only from its join line, so the result must carry them as data.
 func TestTokenCreate_ReturnsTheJoinFlags(t *testing.T) {
 	registerProfiles(t, profiletest.Profile())
 	fakeStratumHost(t)
@@ -1301,8 +1175,7 @@ func TestTokenCreate_ReturnsTheJoinFlags(t *testing.T) {
 		}
 	}
 
-	// A default cluster leaves the flags empty rather than rendering the
-	// defaults into the result.
+	// A default cluster leaves the flags empty rather than rendering the defaults into the result.
 	t.Run("a default cluster carries no flags", func(t *testing.T) {
 		joinFlagDirs(t)
 		if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller"}); err != nil {
@@ -1323,15 +1196,7 @@ func TestTokenCreate_ReturnsTheJoinFlags(t *testing.T) {
 	})
 }
 
-// TestTokenCreate_DerivesTheJoinFlagsBeforeMinting pins the ordering the CLI
-// applies (`stratum token create` derives its join extras before the
-// mint, so a failure here mints nothing to revoke): the flags describe the
-// cluster the joiner is about to join, so a cluster whose network
-// configuration cannot be read must fail token creation before a token
-// exists — not mint a credential for a join that would point the joining
-// node's kubelet at the wrong ranges and domain. A handler that never
-// reads the network configuration mints happily on a malformed one: that
-// is the failure this test observes.
+// A malformed network config must fail before a mint; a handler that skips the read mints on it.
 func TestTokenCreate_DerivesTheJoinFlagsBeforeMinting(t *testing.T) {
 	fakeStratumHost(t)
 	joinFlagDirs(t)
@@ -1371,8 +1236,6 @@ func TestTokenCreate_DerivesTheJoinFlagsBeforeMinting(t *testing.T) {
 	}
 }
 
-// registerProfiles makes ps the binary's registered profiles for the test
-// and puts back the registry it replaced.
 func registerProfiles(t *testing.T, ps ...profile.Profile) {
 	t.Helper()
 	prev := profile.All()
@@ -1382,11 +1245,7 @@ func registerProfiles(t *testing.T, ps ...profile.Profile) {
 	t.Cleanup(func() { _ = profile.SetRegistered(prev) })
 }
 
-// TestTokenCreate_RefusesAProfileThisBinaryDoesNotRegister: token_create on
-// a cis control plane run by an engine binary returned a grant whose join
-// flags said --profile cis over a bundle without the at-rest encryption key.
-// The handler derives the flags before it mints, so nothing is minted,
-// uploaded or revoked, and the refusal carries the cis note.
+// A profile the binary does not register would join without the at-rest encryption key.
 func TestTokenCreate_RefusesAProfileThisBinaryDoesNotRegister(t *testing.T) {
 	registerProfiles(t)
 	fakeStratumHost(t)

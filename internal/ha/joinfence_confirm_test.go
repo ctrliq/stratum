@@ -20,9 +20,7 @@ import (
 	"github.com/ctrliq/stratum/internal/maintlease"
 )
 
-// takeThenRefuse takes the production join fence on cs and then refuses the
-// next n lease calls with a refused dial, as the VIP does while the previous
-// control plane settles.
+// a refused dial, as the VIP does while the previous control plane settles
 func takeThenRefuse(cs *fake.Clientset, n int) func() (*k8sutil.MaintenanceLease, error) {
 	return func() (*k8sutil.MaintenanceLease, error) {
 		lease, err := takeJoinMaintenanceFence()
@@ -48,9 +46,7 @@ func shortJoinFenceConfirm(t *testing.T) {
 	joinFenceConfirmWait = 30 * time.Second
 }
 
-// The join confirms its fence through the VIP before the member-add. A VIP
-// that refuses a connection for a moment is waited out, and the member-add
-// runs once a same-holder renewal succeeds.
+// the fence is confirmed through the VIP before the member-add; a refusal is waited out
 func TestControlPlaneJoinWaitsOutARefusedFenceConfirm(t *testing.T) {
 	joinFixture(t)
 	shortJoinFenceConfirm(t)
@@ -67,8 +63,7 @@ func TestControlPlaneJoinWaitsOutARefusedFenceConfirm(t *testing.T) {
 	}
 }
 
-// Waiting never stands in for ownership: a fence another run took while the
-// VIP was refusing stops the join before the member-add, at once.
+// waiting never stands in for ownership: a fence another run took must refuse at once
 func TestControlPlaneJoinStillRefusesAFenceTakenOver(t *testing.T) {
 	joinFixture(t)
 	shortJoinFenceConfirm(t)
@@ -107,7 +102,6 @@ func TestControlPlaneJoinStillRefusesAFenceTakenOver(t *testing.T) {
 	}
 }
 
-// A nil capability, the join that needs no fence, confirms at once.
 func TestNilMaintenanceLeaseConfirmsWithin(t *testing.T) {
 	var lease *k8sutil.MaintenanceLease
 	if err := lease.ConfirmWithin(context.Background(), time.Minute); err != nil {

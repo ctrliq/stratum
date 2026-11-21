@@ -11,8 +11,6 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 )
 
-// stubLearner points PromoteLearner's etcd seams at status and promote, and
-// returns the voters each promote was sent through.
 func stubLearner(t *testing.T, status localEtcdStatus, statusErr, promoteErr error) *[][]string {
 	t.Helper()
 	oldStatus, oldPromote := learnerLocalStatus, learnerPromote
@@ -31,10 +29,6 @@ func stubLearner(t *testing.T, status localEtcdStatus, statusErr, promoteErr err
 
 const threeMembers = "cp1=https://10.0.0.1:2380,cp2=https://10.0.0.2:2380,cp3=https://10.0.0.3:2380"
 
-// TestPromoteLearnerPromotesOnlyACaughtUpLearner pins what the controller's
-// start does with this node's etcd member: a voter is left alone, a learner
-// is promoted through the other members once its etcd answers and knows a
-// leader, and a promote etcd can still accept later waits instead of failing.
 func TestPromoteLearnerPromotesOnlyACaughtUpLearner(t *testing.T) {
 	learner := localEtcdStatus{MemberID: 0xc2, Leader: 0xa1, IsLearner: true}
 	for _, tc := range []struct {
@@ -83,9 +77,7 @@ func TestPromoteLearnerPromotesOnlyACaughtUpLearner(t *testing.T) {
 	}
 }
 
-// TestPromoteLearnerRefusesWithNoOtherMember: a learner must be promoted
-// through another member, so node state that names none is an error, not a
-// promote sent to the learner itself.
+// a promote must go through another member; promoting at the learner itself is an error
 func TestPromoteLearnerRefusesWithNoOtherMember(t *testing.T) {
 	calls := stubLearner(t, localEtcdStatus{MemberID: 0xc2, Leader: 0xa1, IsLearner: true}, nil, nil)
 	got, err := PromoteLearner("10.0.0.2", "cp2=https://10.0.0.2:2380")
@@ -113,9 +105,7 @@ func TestOtherMemberHosts(t *testing.T) {
 	}
 }
 
-// TestJoinRecordsItsLearnerForPromotion: the join adds its member as a
-// learner, and the controller's start promotes only what node state records
-// pending, so the saved state must record it.
+// the controller's start promotes only what node state records pending
 func TestJoinRecordsItsLearnerForPromotion(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers()}
@@ -133,8 +123,7 @@ func TestIsTooManyLearnersIsARefusal(t *testing.T) {
 	}
 }
 
-// TestConfirmVoterAcceptsOnlyAVoterThatAnswers pins the check the controller
-// makes before it records a promote: this node's etcd must answer, as a voter.
+// the controller checks this before it records a promote done
 func TestConfirmVoterAcceptsOnlyAVoterThatAnswers(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

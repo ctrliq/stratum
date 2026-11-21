@@ -8,10 +8,7 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// pflag takes the first back-quoted word in a flag's usage as the name of its
-// value, so `--help` printed "--service-cidr stratum token create" for a
-// string flag. A value name is one word; a space in one means prose
-// was quoted by accident.
+// pflag takes the first back-quoted word in a usage string as the value's name.
 func TestNoFlagUsageQuotesProseAsItsValueName(t *testing.T) {
 	var walk func(*cobra.Command)
 	walk = func(c *cobra.Command) {

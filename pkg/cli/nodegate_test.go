@@ -17,8 +17,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// stubNodeGate points `stratum node` at a fake clientset holding one tainted
-// node, at a fixed time, and counts the clientset requests.
 func stubNodeGate(t *testing.T) (cs *fake.Clientset, dials *int) {
 	t.Helper()
 	cs = fake.NewClientset(&corev1.Node{
@@ -74,8 +72,6 @@ func TestNodeHoldThenRelease(t *testing.T) {
 	}
 }
 
-// A node drained during its hold stays cordoned after the release, which
-// removes only the taint, so release says so instead of promising workloads.
 func TestNodeReleaseOfACordonedNodeSaysToUncordonIt(t *testing.T) {
 	cs, _ := stubNodeGate(t)
 	n, _ := cs.CoreV1().Nodes().Get(context.Background(), "gpu1", metav1.GetOptions{})
@@ -95,9 +91,7 @@ func TestNodeReleaseOfACordonedNodeSaysToUncordonIt(t *testing.T) {
 	}
 }
 
-// release reports what it did, removing the startup taint, and never that
-// workloads can schedule: another taint or a cordon may still keep them off.
-// A forced release of an untainted node reports that it removed nothing.
+// another taint or a cordon may still keep workloads off, so never claim they can schedule.
 func TestNodeReleaseReportsOnlyTheTaintItRemoved(t *testing.T) {
 	stubNodeGate(t)
 	out, err := runNode(t, "release", "gpu1", "--by", "alice")
@@ -117,7 +111,6 @@ func TestNodeReleaseReportsOnlyTheTaintItRemoved(t *testing.T) {
 	}
 }
 
-// Usage errors refuse before the command reaches the API server.
 func TestNodeGateRefusesBadInvocationsBeforeConnecting(t *testing.T) {
 	_, dials := stubNodeGate(t)
 	for name, c := range map[string]struct {

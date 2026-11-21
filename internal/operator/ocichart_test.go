@@ -15,9 +15,6 @@ import (
 	"time"
 )
 
-// ociChartRegistry serves one Helm chart the way an OCI registry does, over
-// TLS: the manifest by tag and by digest, and its config and chart layer as
-// blobs, under repository (e.g. "charts/widget").
 func ociChartRegistry(t *testing.T, repository, name, version string, tgz []byte) *httptest.Server {
 	t.Helper()
 	digest := func(b []byte) string { return fmt.Sprintf("sha256:%x", sha256.Sum256(b)) }
@@ -59,10 +56,6 @@ func ociChartRegistry(t *testing.T, repository, name, version string, tgz []byte
 	return srv
 }
 
-// TestLoadChartFromAnOCIRegistry: every oci:// chart failed with "missing
-// registry client", because the chart lookup was handed none. A chart is
-// pulled from a TLS registry, verified either by repoCA or skipped with
-// insecureSkipTLSVerify, and loads.
 func TestLoadChartFromAnOCIRegistry(t *testing.T) {
 	srv := ociChartRegistry(t, "charts/widget", "widget", "1.2.3", makeChartTGZ(t, "widget", "1.2.3"))
 	ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}))

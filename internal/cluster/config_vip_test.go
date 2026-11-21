@@ -10,11 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestServerURLIsTheVIPElseTheLocalAPIServer: serverURL is the endpoint every
-// controller path's kubeconfigs target — the VIP when one is configured (one
-// address for in-cluster and external clients), the local apiserver otherwise.
-// serverURL is a pure function, so this needs no seam and can fail before any
-// kubeconfig is regenerated.
 func TestServerURLIsTheVIPElseTheLocalAPIServer(t *testing.T) {
 	withVIP := &NodeState{VIP: VIP{Address: "10.0.0.10"}}
 	if got := serverURL(withVIP); got != fmt.Sprintf("https://10.0.0.10:%d", version.APIServerPort) {
@@ -25,8 +20,6 @@ func TestServerURLIsTheVIPElseTheLocalAPIServer(t *testing.T) {
 	}
 }
 
-// A spec.vip.address that is not an IP is a config error, reported like any
-// other, not a panic: a panic there crash-loops the unit on it.
 func TestLoadConfigRejectsAVIPThatIsNotAnIP(t *testing.T) {
 	for _, addr := range []string{"10.0.0.10/24", "vip.example.com", "10.0.0"} {
 		path := filepath.Join(t.TempDir(), "config.yaml")
@@ -61,8 +54,7 @@ func TestLoadConfigAcceptsAVIP(t *testing.T) {
 	}
 }
 
-// spec.network.clusterDomain is validated, since it is written into
-// kubelet.conf, apiserver flags and the Corefile.
+// Written into kubelet.conf, apiserver flags and the Corefile.
 func TestLoadConfigValidatesTheClusterDomain(t *testing.T) {
 	load := func(domain string) (*ClusterConfig, error) {
 		path := filepath.Join(t.TempDir(), "config.yaml")
@@ -74,8 +66,7 @@ func TestLoadConfigValidatesTheClusterDomain(t *testing.T) {
 	if c, err := load("fuzz.internal"); err != nil || c.Spec.Network.ClusterDomain != "fuzz.internal" {
 		t.Errorf("fuzz.internal: %v, %v", c, err)
 	}
-	// Unset is not defaulted: PrepareController needs "not set" to tell a
-	// restart that keeps the persisted domain from an explicit cluster.local.
+	// Unset is not defaulted: a restart keeps the persisted domain.
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("spec: {}\n"), 0o600); err != nil {
 		t.Fatal(err)

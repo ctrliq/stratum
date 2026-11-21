@@ -16,8 +16,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// kubeletTrustHost writes a root bundle and a kubelet client-CA bundle that is
-// split from it or a copy of it.
 func kubeletTrustHost(t *testing.T, split bool) {
 	t.Helper()
 	old := version.PKIDir
@@ -41,9 +39,7 @@ func kubeletTrustHost(t *testing.T, split bool) {
 	}
 }
 
-// A split cluster publishes its kubelets' client-CA bundle for joining workers,
-// and keeps it current; one that predates the split publishes nothing, so its
-// workers keep trusting the root.
+// A pre-split cluster publishes nothing, so its workers keep trusting the root.
 func TestPublishKubeletClientCA(t *testing.T) {
 	t.Run("split", func(t *testing.T) {
 		kubeletTrustHost(t, true)
@@ -120,9 +116,7 @@ func (f *fakeRoles) Update(_ context.Context, r *rbacv1.Role, _ metav1.UpdateOpt
 	return r, nil
 }
 
-// The Role that lets a joining node read cluster-info anonymously also covers
-// the kubelet client-CA ConfigMap, including on a cluster whose Role an earlier
-// release created with cluster-info alone.
+// The Role also covers the kubelet client-CA ConfigMap on a Role from an earlier release.
 func TestEnsureClusterInfoRoleCoversTheKubeletClientCA(t *testing.T) {
 	for name, f := range map[string]*fakeRoles{
 		"absent": {},

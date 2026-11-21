@@ -10,13 +10,12 @@ import (
 	"testing"
 )
 
-// appendZip builds a fake stratum executable: some leading bytes standing in for
-// the ELF, then a concatenated zip. Exercises the real Stage path.
 func appendZip(t *testing.T, members map[string]string) string {
 	t.Helper()
 
 	var buf bytes.Buffer
-	buf.WriteString("#!/bin/sh\nexit 0\n") // stands in for the ELF payload
+	// Stands in for the ELF payload.
+	buf.WriteString("#!/bin/sh\nexit 0\n")
 	zw := zip.NewWriter(&buf)
 	for name, body := range members {
 		w, err := zw.Create(name)
@@ -62,7 +61,6 @@ func TestStage(t *testing.T) {
 		t.Errorf("etcd contents = %q", got)
 	}
 
-	// Binaries must be executable; images must not be.
 	for _, tc := range []struct {
 		rel  string
 		mode os.FileMode
@@ -88,9 +86,6 @@ func TestStage(t *testing.T) {
 	}
 }
 
-// A second start must not rewrite the payload — that is the fast-restart
-// property, and it matters: the payload includes ~315MB of
-// container images. Detected by making the staged dirs read-only.
 func TestStageSkipsWhenUpToDate(t *testing.T) {
 	exe := appendZip(t, map[string]string{
 		"bin/etcd":                  "etcd-binary-contents",
@@ -118,7 +113,6 @@ func TestStageSkipsWhenUpToDate(t *testing.T) {
 	}
 }
 
-// A changed executable must re-stage even though the name and size match.
 func TestStageRewritesOnMtimeChange(t *testing.T) {
 	exe := appendZip(t, map[string]string{"bin/etcd": "aaaa"})
 	root := t.TempDir()
@@ -150,8 +144,6 @@ func TestStageNoPayload(t *testing.T) {
 	}
 }
 
-// Members outside the known payload directories are dropped, which is also what
-// makes traversal impossible.
 func TestStageRejectsUnknownAndEscapingMembers(t *testing.T) {
 	exe := appendZip(t, map[string]string{
 		"bin/etcd":            "ok",

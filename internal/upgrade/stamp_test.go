@@ -16,24 +16,20 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// The supervisor that survives `stratum upgrade` is the old process,
-// whose callbacks predate the kubelet-start restamp, so nothing it does can
-// refresh the annotations. The upgrade itself must, on a controller.
+// The surviving supervisor is the old process, whose callbacks predate the restamp.
 func TestStampUpgradedStampsControllerWithoutSupervisorHelp(t *testing.T) {
 	var stamped []string
 	old := stampNode
 	stampNode = func(_ context.Context, node string) error { stamped = append(stamped, node); return nil }
 	t.Cleanup(func() { stampNode = old })
 
-	// The persisted name, which is what the supervisor stamps and the node
-	// registered under, not whatever the OS hostname says.
 	stampUpgraded(io.Discard, &nodestate.NodeState{Role: "controller", Hostname: "cp-1.registered"})
 	if len(stamped) != 1 || stamped[0] != "cp-1.registered" {
 		t.Errorf("controller stamped %v, want [cp-1.registered]", stamped)
 	}
 
 	stamped = nil
-	stampUpgraded(io.Discard, &nodestate.NodeState{Role: "worker", Hostname: "w-1"}) // a worker has no admin.conf; --cluster stamps it
+	stampUpgraded(io.Discard, &nodestate.NodeState{Role: "worker", Hostname: "w-1"})
 	if len(stamped) != 0 {
 		t.Errorf("worker stamped %v, want none", stamped)
 	}
@@ -56,8 +52,6 @@ func TestStampUpgradedFailureIsNonFatalButVisible(t *testing.T) {
 	}
 }
 
-// An orchestrator that cannot name the staged release must not
-// overwrite a node's stratum version with its own.
 func TestStampVersionLeavesStratumVersionWhenUnknown(t *testing.T) {
 	ctx := context.Background()
 	cs := fake.NewSimpleClientset(&corev1.Node{ObjectMeta: metav1.ObjectMeta{

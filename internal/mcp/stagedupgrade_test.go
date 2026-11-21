@@ -10,8 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// stageDir points version.UpgradeStageDir at a fresh directory owned by the
-// test's user, which stands in for root.
+// stageDir's fresh directory is owned by the test's user, which stands in for root.
 func stageDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "upgrade")
@@ -48,8 +47,7 @@ func TestStagedUpgradeBinaryAcceptsAStagedBinary(t *testing.T) {
 	}
 }
 
-// Anything the operator did not stage in the directory, or could have been
-// changed by someone other than root, is refused.
+// Anything not staged there, or changeable by someone other than root, is refused.
 func TestStagedUpgradeBinaryRefusesWhatWasNotStaged(t *testing.T) {
 	dir := stageDir(t)
 	stage(t, dir, "stratum", 0o755)
@@ -93,8 +91,7 @@ func TestStagedUpgradeBinaryRefusesWhatWasNotStaged(t *testing.T) {
 	}
 }
 
-// upgrade_apply refuses a cluster upgrade from an unstaged binary before it
-// runs anything.
+// upgrade_apply refuses an unstaged cluster binary before it runs anything.
 func TestUpgradeApplyClusterRefusesAnUnstagedBinary(t *testing.T) {
 	stageDir(t)
 	_, _, err := UpgradeApplyHandler(nil)(context.Background(), nil, UpgradeApplyIn{Scope: "cluster", From: "/tmp/anything"})

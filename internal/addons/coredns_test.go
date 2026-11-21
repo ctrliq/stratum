@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestCoreDNSSurvivesLosingANode pins the node-loss shape: two replicas,
-// hostname anti-affinity that is preferred rather than required, and 30 s
-// not-ready/unreachable tolerations.
 func TestCoreDNSSurvivesLosingANode(t *testing.T) {
 	dep := coreDNSDeployment(t)
 
@@ -59,10 +56,7 @@ func TestCoreDNSSurvivesLosingANode(t *testing.T) {
 	}
 }
 
-// TestCoreDNSResistsDiskPressureEviction pins the disk-pressure shape: critical
-// priority, which makes the kubelet refuse to evict it, and a positive
-// ephemeral-storage request sized for retained logs. There is deliberately no
-// disk-pressure toleration, so the pod is never placed onto a pressured node.
+// Deliberately no disk-pressure toleration, so the pod is never placed onto a pressured node.
 func TestCoreDNSResistsDiskPressureEviction(t *testing.T) {
 	dep := coreDNSDeployment(t)
 
@@ -98,8 +92,7 @@ func TestCoreDNSResistsDiskPressureEviction(t *testing.T) {
 	}
 }
 
-// TestCoreDNSHasNoDisruptionBudget pins a deliberate absence: a PDB would fail
-// every single-node upgrade, where both replicas share the cordoned node.
+// A PDB would fail a single-node upgrade, where both replicas share the cordoned node.
 func TestCoreDNSHasNoDisruptionBudget(t *testing.T) {
 	for _, o := range decodeAll(t, RenderCoreDNS()) {
 		if o.GetKind() == "PodDisruptionBudget" {
@@ -119,10 +112,6 @@ func coreDNSDeployment(t *testing.T) *unstructured.Unstructured {
 	return nil
 }
 
-// TestCoreDNSForwardsToTheNodesResolvers: CoreDNS forwards through
-// the copy its init container makes of the node's chosen upstream, mounted
-// from version.CoreDNSUpstreamDir, and nothing else in the pod changes how it
-// resolves.
 func TestCoreDNSForwardsToTheNodesResolvers(t *testing.T) {
 	var corefile string
 	for _, o := range decodeAll(t, RenderCoreDNS()) {
@@ -205,15 +194,7 @@ func TestCoreDNSForwardsToTheNodesResolvers(t *testing.T) {
 	}
 }
 
-// TestCoreDNSUpstreamScript runs the init container's script against stand-in
-// paths. The node's file wins when it names a nameserver. Without one (a node
-// not yet upgraded, or racing its first start) the script makes the node's
-// choice itself, by internal/runtime.chooseCoreDNSUpstream's rules: the pod's
-// resolv.conf with the nameservers a pod cannot reach left out, else the
-// node's systemd-resolved upstream file, else the public pair, keeping the
-// chosen file's search, domain and options lines. A loopback resolver is never
-// copied through: from inside the pod it is CoreDNS itself, and the loop
-// plugin would stop CoreDNS on every node that had not written its choice.
+// A loopback resolver is never copied through: inside the pod it is CoreDNS itself.
 func TestCoreDNSUpstreamScript(t *testing.T) {
 	ics, _, _ := unstructured.NestedSlice(coreDNSDeployment(t).Object, "spec", "template", "spec", "initContainers")
 	cmd, _, _ := unstructured.NestedStringSlice(ics[0].(map[string]any), "command")
@@ -320,9 +301,6 @@ func TestCoreDNSUpstreamScript(t *testing.T) {
 	}
 }
 
-// The Corefile's served zone is the cluster-domain sentinel: the staging does
-// not bake a domain in (the cluster's domain is an apply-time input), and no
-// literal zone survives the render.
 func TestCoreDNSServesTheClusterDomainSentinel(t *testing.T) {
 	m := string(RenderCoreDNS())
 	if !strings.Contains(m, "kubernetes "+ClusterDomainSentinel+" in-addr.arpa ip6.arpa {") {

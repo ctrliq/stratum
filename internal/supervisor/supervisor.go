@@ -1,10 +1,4 @@
-// Package supervisor runs and restarts the host processes that make up a SKE
-// node: containerd, kubelet, and the operator. (The control plane itself is
-// kubelet-managed static pods, owned by internal/staticpod.)
-// Start, restart with backoff, stop everything on shutdown — plus a control
-// socket (/run/stratum/stratum.sock) so separate invocations (`stratum certs
-// rotate`, HA join) can restart or stop individual components the way
-// systemctl does for systemd units.
+// Package supervisor runs and restarts the host processes that make up a SKE node.
 package supervisor
 
 import (
@@ -22,28 +16,18 @@ import (
 	"time"
 )
 
-// Process is one supervised component.
 type Process struct {
 	Name string
 	Path string
 	Args []string
-	// ArgsFn, when set, is evaluated on every (re)start instead of Args — for
-	// components whose flags must re-render after external surgery (etcd
-	// membership after `stratum snapshot rejoin`).
+	// Evaluated on each (re)start instead of Args; etcd membership may change between starts.
 	ArgsFn func() []string
 	Env    []string
-	// WaitFor gates each start. Without it, every apiserver client crash-loops
-	// through the seconds before the apiserver has bootstrapped its RBAC — the
-	// supervisor recovers, but a control plane that always logs a crash on boot
-	// trains people to ignore crash logs.
+	// Gates each start; without it the apiserver crash-loops through RBAC bootstrap.
 	WaitFor func(context.Context) error
-	// Socket, when set, is the unix socket this component serves. If the
-	// component exits while that socket is still live, someone else owns it
-	// (an orphan from an earlier run): the component is reported Foreign
-	// instead of silently retrying forever.
+	// If the component exits while this socket is live, an orphan owns it: report Foreign.
 	Socket string
-	// ExecLabel, when set, is the SELinux context the component is exec'd in,
-	// rather than the one it would inherit from this process.
+	// SELinux context to exec in, instead of the one inherited from this process.
 	ExecLabel string
 }
 
@@ -52,14 +36,11 @@ type Options struct {
 	LogDir     string
 	MinBackoff time.Duration
 	MaxBackoff time.Duration
-	// ControlSocket, when set, serves the restart/stop/start/status protocol
-	// that internal/comps speaks (the supervisor's systemctl equivalent).
+	// Serves the control protocol internal/comps speaks.
 	ControlSocket string
-	// OnStart is called after each successful start, with the pid.
+	// Called after each successful start.
 	OnStart func(name string, pid int)
-	// ReExec, when set, is the command line a "reexec" request replaces this
-	// process with once every component has stopped; ReExec[0] is the binary.
-	// Without it the request is refused.
+	// Command a "reexec" request replaces this process with; without it the request is refused.
 	ReExec []string
 }
 
@@ -72,11 +53,7 @@ func (o *Options) defaults() {
 	}
 }
 
-// Run starts every process and supervises them until ctx is cancelled.
-//
-// A component that exits is restarted with exponential backoff: a control plane
-// where the scheduler died and stayed dead is worse than one that is visibly
-// flapping, because only the second is obvious.
+// Starts every process and supervises them until ctx is cancelled; exits restart with backoff.
 func Run(ctx context.Context, procs []Process, opts Options) error {
 	opts.defaults()
 	if opts.LogDir != "" {
@@ -121,8 +98,7 @@ func Run(ctx context.Context, procs []Process, opts Options) error {
 	return ctx.Err()
 }
 
-// execProcess is syscall.Exec, indirected so a test can see the re-exec
-// without replacing the test binary.
+// Indirected so a test can stub the re-exec without replacing the test binary.
 var execProcess = syscall.Exec
 
 // Supervisor tracks the running components for the control socket.
@@ -134,11 +110,7 @@ type Supervisor struct {
 	reexecRequested atomic.Bool
 }
 
-// requestReExec checks that the re-exec target can be run, calls accepted,
-// then stops every component: Run execs it once they have all exited. Checked
-// first, because a node whose components were stopped for a re-exec that then
-// cannot happen is left down. accepted runs before anything stops, so the
-// caller hears the request was taken before the exec can close its connection.
+// Validates the re-exec target and acknowledges the caller before anything stops.
 func (s *Supervisor) requestReExec(accepted func()) error {
 	if len(s.reexecArgv) == 0 {
 		return errors.New("re-exec is not configured for this supervisor")
@@ -168,19 +140,13 @@ type state struct {
 	foreign     bool               // last exit left Process.Socket served by another process
 }
 
-// foreignSettle is how long a restarted component must stay up before a
-// foreign-socket finding is cleared. A heuristic: it does not prove the child
-// holds the socket, only that it did not exit the way it does when another
-// process owns it (within a second or so). A foreign owner that outlives the
-// child's start would be missed until the next exit re-checks the socket. A var
-// so tests can shorten it.
+// Time up before a foreign-socket finding clears; a var so tests can shorten it.
 var foreignSettle = 5 * time.Second
 
 func supervise(ctx context.Context, st *state, opts Options) {
 	backoff := opts.MinBackoff
 	for ctx.Err() == nil {
 		if !st.stillWanted() {
-			// Deliberately stopped via the control socket: wait for a start.
 			select {
 			case <-ctx.Done():
 				return
@@ -196,8 +162,7 @@ func supervise(ctx context.Context, st *state, opts Options) {
 		if !st.stillWanted() {
 			continue // the exit was a socket-requested stop, not a crash
 		}
-		// A process that stayed up a while and then died is a fresh failure,
-		// not part of a crash loop; reset its backoff.
+		// A long-lived process that died is a fresh failure; reset the backoff.
 		if time.Since(start) > 30*time.Second {
 			backoff = opts.MinBackoff
 		}
@@ -214,11 +179,7 @@ func supervise(ctx context.Context, st *state, opts Options) {
 	}
 }
 
-// noteForeignSocket is the live-socket check, applied on a restart:
-// the child just exited, so a socket it should own that still has a listener
-// belongs to another process. Say so once, loudly, and flag the component so
-// the node is not reported healthy; the retry loop carries on and clears the
-// flag once a child holds the socket itself.
+// On restart, a socket the exited child should own but that is still live belongs to an orphan.
 func noteForeignSocket(st *state) {
 	stMu.Lock()
 	sock, name, was := st.proc.Socket, st.proc.Name, st.foreign
@@ -235,9 +196,7 @@ func noteForeignSocket(st *state) {
 	}
 }
 
-// foreignSocketMessage is the one loud line. The remedy is to stop only the
-// process owning the socket: `stratum uninstall` would also delete node state
-// (etcd data, PKI, binaries), which is no recovery from an orphan.
+// Uninstall would delete node state; the remedy is stopping the orphan's owner only.
 func foreignSocketMessage(name, sock string) string {
 	return fmt.Sprintf("supervisor: %s exited but %s is still served by another process — an orphan from an earlier run. "+
 		"This node is NOT healthy: the %s serving it is not the one stratum installed. "+
@@ -260,10 +219,7 @@ func runOnce(ctx context.Context, st *state, opts Options) error {
 		return context.Canceled
 	}
 	st.cancelStart = cancel
-	// Snapshot the exec definition under stMu: reload rewrites st.proc.Path/Args/
-	// Env under the same lock (control.go), so reading it here unlocked would be a
-	// data race. p is a value copy and reload swaps the slice headers rather than
-	// mutating backing arrays, so using p.Args/Env outside the lock below is safe.
+	// st.proc is swapped, never mutated, so p's slices are safe to use outside the lock.
 	p := st.proc
 	stMu.Unlock()
 	defer func() {
@@ -285,9 +241,7 @@ func runOnce(ctx context.Context, st *state, opts Options) error {
 	cmd.Env = append(os.Environ(), p.Env...)
 	// Own process group, so a stop signals the component's children too.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Serialize the final permission check, filesystem setup, start and PID
-	// publication with stop. A stopped attempt cannot start after acknowledgement,
-	// even if its dependency gate ignores cancellation or a later start is issued.
+	// Serialize start and PID publication with stop; a stopped attempt must not start.
 	stMu.Lock()
 	if !st.wanted || startCtx.Err() != nil {
 		stMu.Unlock()
@@ -343,7 +297,6 @@ func runOnce(ctx context.Context, st *state, opts Options) error {
 	}
 }
 
-// stop asks the process group to terminate, then kills it if it will not.
 func stop(cmd *exec.Cmd) {
 	pgid := -cmd.Process.Pid
 	_ = syscall.Kill(pgid, syscall.SIGTERM)
@@ -357,17 +310,12 @@ func stop(cmd *exec.Cmd) {
 	}
 }
 
-// ErrNotSupervised is returned when a caller asks about an unknown component.
 var ErrNotSupervised = errors.New("not a supervised component")
 
-// threadExecAttr is the calling thread's SELinux exec context; a var so a test
-// can make setting it fail.
+// The calling thread's SELinux exec context; a var so a test can force a failure.
 var threadExecAttr = "/proc/thread-self/attr/exec"
 
-// startLabelled starts cmd in the SELinux context label. The exec context is
-// per thread, so it is set on a locked thread that is never unlocked and so
-// exits with its goroutine, taking the context with it. A context the kernel
-// refuses leaves the component starting as it would have, with a warning.
+// The exec context is per thread: set it on a locked thread that exits with the goroutine.
 func startLabelled(cmd *exec.Cmd, label string) error {
 	if label == "" {
 		return cmd.Start()

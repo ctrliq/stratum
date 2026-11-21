@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// runSleeper runs a supervisor with one long-running component and returns its
-// control socket, the component's pid, and Run's result channel.
 func runSleeper(t *testing.T, ctx context.Context, reexec []string) (string, int, chan error) {
 	t.Helper()
 	sock := filepath.Join(shortSockDir(t), "s.sock")
@@ -47,9 +45,7 @@ func executable(t *testing.T, mode os.FileMode) string {
 	return p
 }
 
-// TestReExecStopsEveryComponentFirst: the supervisor execs its re-exec command
-// only once every component has exited, so the new process does not start
-// over components the old one still runs.
+// The supervisor execs its re-exec command only once every component has exited.
 func TestReExecStopsEveryComponentFirst(t *testing.T) {
 	target := executable(t, 0o755)
 	argv := []string{target, "up", "--worker"}
@@ -85,8 +81,7 @@ func TestReExecStopsEveryComponentFirst(t *testing.T) {
 	}
 }
 
-// TestReExecRefusedLeavesComponentsRunning: a request the supervisor cannot
-// carry out is refused before anything stops.
+// A request the supervisor cannot carry out is refused before anything stops.
 func TestReExecRefusedLeavesComponentsRunning(t *testing.T) {
 	saved := execProcess
 	t.Cleanup(func() { execProcess = saved })
@@ -116,8 +111,7 @@ func TestReExecRefusedLeavesComponentsRunning(t *testing.T) {
 	}
 }
 
-// TestDialReExecRecognisesAnOlderSupervisor: a supervisor that predates the
-// request answers "unknown op"; the caller must be able to tell that apart.
+// A supervisor that predates the request answers "unknown op"; callers must tell it apart.
 func TestDialReExecRecognisesAnOlderSupervisor(t *testing.T) {
 	sock := filepath.Join(shortSockDir(t), "old.sock")
 	l, err := net.Listen("unix", sock)
@@ -139,9 +133,7 @@ func TestDialReExecRecognisesAnOlderSupervisor(t *testing.T) {
 	}
 }
 
-// TestReExecAcceptsBeforeStopping: the request is acknowledged before any
-// component stops, so a supervisor with nothing left to wait for cannot exec,
-// and close the requester's connection, before the reply is written.
+// The request is acknowledged before any component stops.
 func TestReExecAcceptsBeforeStopping(t *testing.T) {
 	accepted := false
 	s := &Supervisor{
@@ -160,8 +152,7 @@ func TestReExecAcceptsBeforeStopping(t *testing.T) {
 	}
 }
 
-// TestReExecNotDoneWhileShuttingDown: a supervisor told to shut down while a
-// re-exec is pending stops, and does not start a new stratum up.
+// A supervisor told to shut down with a re-exec pending stops and does not re-exec.
 func TestReExecNotDoneWhileShuttingDown(t *testing.T) {
 	saved := execProcess
 	t.Cleanup(func() { execProcess = saved })

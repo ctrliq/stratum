@@ -9,7 +9,6 @@ import (
 	"testing"
 )
 
-// fakeProcSys points procSys at a directory holding the given live values.
 func fakeProcSys(t *testing.T, live map[string]string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -27,9 +26,6 @@ func fakeProcSys(t *testing.T, live map[string]string) {
 	t.Cleanup(func() { procSys = old })
 }
 
-// The EL default of 128 instances ran out on one hyperconverged node:
-// the rendered file raises both inotify limits to their floors, and keeps the
-// networking sysctls it always set.
 func TestRenderSysctlsRaisesTheInotifyLimits(t *testing.T) {
 	fakeProcSys(t, map[string]string{
 		"fs.inotify.max_user_instances": "128",
@@ -48,8 +44,6 @@ func TestRenderSysctlsRaisesTheInotifyLimits(t *testing.T) {
 	}
 }
 
-// A host tuned higher than the floor keeps its value: 99-stratum.conf sorts
-// late, so writing the floor would lower it.
 func TestRenderSysctlsNeverLowersATunedHost(t *testing.T) {
 	fakeProcSys(t, map[string]string{
 		"fs.inotify.max_user_instances": "65536",
@@ -63,8 +57,6 @@ func TestRenderSysctlsNeverLowersATunedHost(t *testing.T) {
 	}
 }
 
-// With nothing readable (no /proc/sys, a kernel without the key, garbage),
-// the floor is written.
 func TestRenderSysctlsWritesTheFloorWhenTheLiveValueIsUnreadable(t *testing.T) {
 	fakeProcSys(t, map[string]string{"fs.inotify.max_user_watches": "not-a-number"})
 	got := renderSysctls()
@@ -75,8 +67,6 @@ func TestRenderSysctlsWritesTheFloorWhenTheLiveValueIsUnreadable(t *testing.T) {
 	}
 }
 
-// fakeSysctl stands in for the sysctl binary: each call is recorded, and
-// answer decides its output and error.
 func fakeSysctl(t *testing.T, answer func(args []string) (string, error)) *[]string {
 	t.Helper()
 	var calls []string
@@ -89,9 +79,6 @@ func fakeSysctl(t *testing.T, answer func(args []string) (string, error)) *[]str
 	return &calls
 }
 
-// BusyBox's sysctl has no --system: stratum's own files are loaded
-// directly instead, so the settings still reach the kernel. The output is
-// BusyBox's own.
 func TestApplySysctlsFallsBackWhenSystemIsUnsupported(t *testing.T) {
 	calls := fakeSysctl(t, func(args []string) (string, error) {
 		if args[0] == "--system" {
@@ -108,9 +95,6 @@ func TestApplySysctlsFallsBackWhenSystemIsUnsupported(t *testing.T) {
 	}
 }
 
-// procps exits non-zero when one key fails, having still applied every file
-// in order. Loading stratum's file again would beat an operator's later one,
-// so it is reported, with sysctl's own words, and nothing else runs.
 func TestApplySysctlsDoesNotFallBackOnOtherFailures(t *testing.T) {
 	calls := fakeSysctl(t, func([]string) (string, error) {
 		return "sysctl: cannot stat /proc/sys/net/bridge/bridge-nf-call-iptables: No such file or directory", errors.New("exit status 1")
@@ -124,7 +108,6 @@ func TestApplySysctlsDoesNotFallBackOnOtherFailures(t *testing.T) {
 	}
 }
 
-// With --system working, nothing else runs: an operator's later file must win.
 func TestApplySysctlsUsesSystemWhenItWorks(t *testing.T) {
 	calls := fakeSysctl(t, func([]string) (string, error) { return "", nil })
 	if err := applySysctls(""); err != nil || !slices.Equal(*calls, []string{"--system"}) {
@@ -132,7 +115,6 @@ func TestApplySysctlsUsesSystemWhenItWorks(t *testing.T) {
 	}
 }
 
-// The fallback failing too names the file and carries its diagnostic.
 func TestApplySysctlsReportsAFailedFallback(t *testing.T) {
 	fakeSysctl(t, func(args []string) (string, error) {
 		if args[0] == "--system" {
@@ -146,8 +128,6 @@ func TestApplySysctlsReportsAFailedFallback(t *testing.T) {
 	}
 }
 
-// The real binary's stderr reaches the error: a failing process, not a fake
-// error value, which is what hid the lost diagnostics before.
 func TestRunSysctlKeepsTheProcessStderr(t *testing.T) {
 	dir := t.TempDir()
 	script := "#!/bin/sh\necho 'sysctl: permission denied on key fs.inotify.max_user_instances' >&2\nexit 255\n"

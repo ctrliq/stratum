@@ -28,14 +28,9 @@ import (
 	"github.com/ctrliq/stratum/internal/selinux"
 )
 
-// The generic Kubernetes write toolset.
-
-// FieldManager is the field-manager name every apply from this server uses.
 const FieldManager = "stratum-mcp"
 
-// deniedWrites are resources this server will not create, modify or delete
-// at any tier: identity, RBAC, admission and credential objects. This list is
-// not a security boundary; Kubernetes RBAC is.
+// Not a security boundary; Kubernetes RBAC is.
 var deniedWrites = map[schema.GroupResource]string{
 	{Group: "rbac.authorization.k8s.io", Resource: "roles"}:               "RBAC: writing it can escalate privilege",
 	{Group: "rbac.authorization.k8s.io", Resource: "rolebindings"}:        "RBAC: writing it can escalate privilege",
@@ -61,8 +56,6 @@ var deniedWrites = map[schema.GroupResource]string{
 	{Group: "stratum.ciq.com", Resource: "helmchartconfigs"}: "the operator merges it into the HelmChart of the same name, and in a privileged namespace installs the result with its own cluster-admin identity",
 }
 
-// deniedMutations are resources this server will not create or modify,
-// though deleting one may still be possible at the right tier.
 var deniedMutations = map[schema.GroupResource]string{
 	{Group: "", Resource: "persistentvolumes"}:      "storage can expose host files through a claim",
 	{Group: "", Resource: "persistentvolumeclaims"}: "storage can expose host files through a volume",
@@ -71,8 +64,6 @@ var deniedMutations = map[schema.GroupResource]string{
 	{Group: "storage.k8s.io", Resource: "storageclasses"}: "a storage class tells a provisioner where on the node to make volumes, and local-path can be told to make them anywhere",
 }
 
-// destructiveDeletes are resources whose deletion needs
-// --allow-destructive, over and above --allow-write.
 var destructiveDeletes = map[schema.GroupResource]string{
 	{Group: "", Resource: "namespaces"}:             "deleting a namespace cascades to everything in it",
 	{Group: "", Resource: "persistentvolumeclaims"}: "deleting a claim can destroy the data in its volume",
@@ -82,23 +73,18 @@ var destructiveDeletes = map[schema.GroupResource]string{
 	{Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions"}: "deleting a definition deletes every custom resource of that kind, cluster-wide",
 }
 
-// destructiveMutations are resources whose creation or change needs
-// --allow-destructive, over and above --allow-write: an apply to one can be as
-// hard to undo as deleting it.
+// An apply to one can be as hard to undo as deleting it.
 var destructiveMutations = map[schema.GroupResource]string{
 	{Group: "", Resource: "namespaces"}: "rewriting a namespace's finalizers or labels can wedge its deletion or change the policy every workload in it runs under",
 
 	{Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions"}: "rewriting a definition's schema or versions changes how every custom resource of that kind is stored and served, cluster-wide",
 }
 
-// WritePolicy is what the write tools are allowed to do. It is built from
-// the server's flags, never from a tool argument.
+// Built from the server's flags, never from a tool argument.
 type WritePolicy struct {
-	// AllowDestructive mirrors --allow-destructive.
 	AllowDestructive bool
 }
 
-// check reports why a write to gvr is refused, or nil.
 func (p WritePolicy) check(gvr schema.GroupVersionResource, deleting bool) error {
 	gr := schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}
 
@@ -134,11 +120,6 @@ func (p WritePolicy) check(gvr schema.GroupVersionResource, deleting bool) error
 	return nil
 }
 
-// checkEngineConfigMap refuses the kube-system ConfigMaps the operator acts
-// on with its own cluster-admin identity, at every tier: an inventory entry is
-// a list of objects the operator deletes, and a node-client claim holds a node
-// name against reuse by a later join. The names are internal/operator's
-// inventoryConfigMapName and nodeClientClaimName.
 func checkEngineConfigMap(gvr schema.GroupVersionResource, ns, name string) error {
 	if gvr.Group != "" || gvr.Resource != "configmaps" || ns != metav1.NamespaceSystem {
 		return nil
@@ -151,16 +132,8 @@ func checkEngineConfigMap(gvr schema.GroupVersionResource, ns, name string) erro
 		"This is a fixed policy, not a permission that can be granted by a flag", ns, name)
 }
 
-// localPathNamespace is where the bundled local-path provisioner runs.
 const localPathNamespace = "local-path-storage"
 
-// checkLocalPathNamespace refuses every write to an object in the local-path
-// provisioner's namespace, at every tier. For each volume it makes or removes,
-// the provisioner starts a helper pod on the node with a node directory
-// mounted, and that pod never passes this server's checks. The ConfigMap there
-// holds the helper's pod spec, its script and the directories it may use, and
-// the Deployment chooses which ConfigMap and image it runs, so writing either
-// runs a client's pod on the node.
 func checkLocalPathNamespace(namespaced bool, ns string) error {
 	if !namespaced || ns != localPathNamespace {
 		return nil
@@ -171,20 +144,12 @@ func checkLocalPathNamespace(namespaced bool, ns string) error {
 		"granted by a flag: make the change with kubectl", ns)
 }
 
-// checkPodTemplate refuses the pod-spec fields that turn "can create a
-// pod" into "can read the node".
 func checkPodTemplate(obj map[string]any) error {
 	return forEachPodSpec(obj, checkPodSpec)
 }
 
-// podSpecSearchDepth bounds how deep forEachPodSpec looks for an embedded pod
-// spec. A manifest nested deeper is refused rather than left unchecked.
 const podSpecSearchDepth = 64
 
-// forEachPodSpec calls fn for each pod spec in obj: a Pod's spec, a
-// workload's template, a CronJob's template's template, and any other map
-// that carries a containers list, wherever it is nested, such as a
-// PodTemplate's template or a pod spec inside a custom resource.
 func forEachPodSpec(obj map[string]any, fn func(map[string]any) error) error {
 	seen := map[uintptr]bool{}
 	for _, path := range [][]string{
@@ -205,8 +170,6 @@ func forEachPodSpec(obj map[string]any, fn func(map[string]any) error) error {
 	return walkPodSpecs(obj, 0, seen, fn)
 }
 
-// walkPodSpecs calls fn on every map under v that carries a containers list
-// and is not already in seen.
 func walkPodSpecs(v any, depth int, seen map[uintptr]bool, fn func(map[string]any) error) error {
 	if depth > podSpecSearchDepth {
 		return fmt.Errorf("this server will not apply a manifest nested more than %d levels deep: "+
@@ -235,7 +198,6 @@ func walkPodSpecs(v any, depth int, seen map[uintptr]bool, fn func(map[string]an
 	return nil
 }
 
-// claimNames collects the PersistentVolumeClaims a pod spec mounts.
 func claimNames(spec map[string]any) []string {
 	volumes, found, err := unstructured.NestedSlice(spec, "volumes")
 	if err != nil || !found {
@@ -254,15 +216,7 @@ func claimNames(spec map[string]any) []string {
 	return out
 }
 
-// checkClaimedVolumes refuses a pod spec that mounts, or could come to mount,
-// a node-path PersistentVolume: through a claim bound to one, a pending claim
-// that could bind one, or a claim template that could.
-//
-// This server cannot write PersistentVolumes or claims (deniedMutations), but
-// it can mount ones an operator left behind, which reaches the node's
-// filesystem with no hostPath in the pod spec. An absent claim is allowed:
-// nothing can be created for it through this server. A claim that cannot be
-// read is refused.
+// Mounts of PVs an operator left behind can reach the node's filesystem with no hostPath.
 func checkClaimedVolumes(ctx context.Context, typed kubernetes.Interface, obj map[string]any, ns string) error {
 	if ns == "" {
 		ns = metav1.NamespaceDefault
@@ -292,16 +246,11 @@ func checkClaimedVolumes(ctx context.Context, typed kubernetes.Interface, obj ma
 	return checkUnboundClaims(ctx, typed, obj, ns, pending)
 }
 
-// annDynamicallyProvisioned is set by a provisioner on every PV it creates.
 const annDynamicallyProvisioned = "pv.kubernetes.io/provisioned-by"
 
-// localPathProvisioner is the bundled local-path class's provisioner.
 const localPathProvisioner = "rancher.io/local-path"
 
-// nodePathSource returns "hostPath" or "local" for a PV backed by a node path,
-// else "". The one node path allowed is a directory the bundled local-path
-// provisioner made for the PV's claim (madeByLocalPath): every claim on the
-// default class gets one, and it reaches nothing but itself.
+// The only node path allowed is the directory local-path made for the PV's claim.
 func nodePathSource(pv *corev1.PersistentVolume) string {
 	switch {
 	case pv.Spec.HostPath != nil:
@@ -319,12 +268,7 @@ func nodePathSource(pv *corev1.PersistentVolume) string {
 	}
 }
 
-// madeByLocalPath reports whether dir is the directory local-path makes for
-// the claim pv is reserved for: <LocalPathDir>/<pv>_<namespace>_<claim>, on a
-// PV that names local-path as its provisioner. The annotation alone is not
-// enough: it says which provisioner made a PV, not what its path reaches, and
-// other provisioners (the static local-volume provisioner among them) set it
-// on PVs over disks and directories an operator chose.
+// The annotation alone is not enough: other provisioners set it on operator-chosen paths.
 func madeByLocalPath(pv *corev1.PersistentVolume, dir string) bool {
 	ref := pv.Spec.ClaimRef
 	if pv.Annotations[annDynamicallyProvisioned] != localPathProvisioner || ref == nil {
@@ -333,9 +277,7 @@ func madeByLocalPath(pv *corev1.PersistentVolume, dir string) bool {
 	return dir == path.Join(selinux.LocalPathDir, pv.Name+"_"+ref.Namespace+"_"+ref.Name)
 }
 
-// errNodePathVolume is the single copy of the node-path refusal text. binds
-// carries the pronoun and verb so they can agree with what (a set's claims are
-// many, a bound or ephemeral claim is one).
+// binds carries the pronoun and verb, agreeing with what.
 func errNodePathVolume(what, binds, volume, source string) error {
 	return fmt.Errorf("this server will not apply a pod spec that mounts %s: %s "+
 		"PersistentVolume %q, whose %s source is a path on the node, so mounting it reaches the "+
@@ -343,7 +285,6 @@ func errNodePathVolume(what, binds, volume, source string) error {
 		"a flag", what, binds, volume, source)
 }
 
-// checkBackingVolume refuses a PersistentVolume backed by a node path.
 func checkBackingVolume(ctx context.Context, typed kubernetes.Interface, volume, claim string) error {
 	pv, err := typed.CoreV1().PersistentVolumes().Get(ctx, volume, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -355,7 +296,6 @@ func checkBackingVolume(ctx context.Context, typed kubernetes.Interface, volume,
 	return refuseNodePathBacking(pv, claim)
 }
 
-// refuseNodePathBacking refuses a claim bound to a node-path pv.
 func refuseNodePathBacking(pv *corev1.PersistentVolume, claim string) error {
 	source := nodePathSource(pv)
 	if source == "" {
@@ -364,24 +304,19 @@ func refuseNodePathBacking(pv *corev1.PersistentVolume, claim string) error {
 	return errNodePathVolume(fmt.Sprintf("claim %q", claim), "it is bound to", pv.Name, source)
 }
 
-// claimTemplate is a claim that is not bound yet: one the cluster will create
-// from a StatefulSet's volumeClaimTemplates entry or an ephemeral volume, or an
-// existing pending claim. The check is on what it could bind to now.
+// The check is on what an unbound claim could bind to now.
 type claimTemplate struct {
 	what       string
 	volumeName string
 	class      *string
 	couldName  func(string) bool
-	binds      string    // refusal's pronoun+verb, agreeing with what
-	uid        types.UID // set only for an existing claim
+	binds      string
+	uid        types.UID
 }
 
-// maxGeneratedNamePrefix is how much of a generateName the API server keeps
-// before it appends 5 random characters (63 minus 5).
+// How much of a generateName the API server keeps (63 minus the 5 random characters).
 const maxGeneratedNamePrefix = 58
 
-// isOrdinal reports whether s is a StatefulSet ordinal as the controller
-// writes it: a non-negative decimal with no leading zero.
 func isOrdinal(s string) bool {
 	if s == "" || (len(s) > 1 && s[0] == '0') {
 		return false
@@ -394,12 +329,6 @@ func isOrdinal(s string) bool {
 	return true
 }
 
-// couldNamePod returns whether a pod of the kind and name could be named pod:
-// exactly name for a Pod, <set>-<ordinal> for a StatefulSet, and a name the
-// API server generates from <name>- for the controllers that generate them
-// (a Deployment's ReplicaSet and a CronJob's Job add more after it, and the
-// prefix is cut at maxGeneratedNamePrefix). Any other kind, or no name, can
-// be any pod name.
 func couldNamePod(kind, name string) func(pod string) bool {
 	if name == "" {
 		return func(string) bool { return true }
@@ -423,10 +352,6 @@ func couldNamePod(kind, name string) func(pod string) bool {
 	}
 }
 
-// claimTemplates collects every claim template in obj. couldName covers every
-// name the claim can get: <template>-<set>-<ordinal> for a StatefulSet's
-// template, and <pod>-<volume> for an ephemeral volume, with <pod> any name
-// the workload's pods can get (couldNamePod).
 func claimTemplates(obj map[string]any) []claimTemplate {
 	var out []claimTemplate
 	setName, _, _ := unstructured.NestedString(obj, "metadata", "name")
@@ -455,9 +380,7 @@ func claimTemplates(obj map[string]any) []claimTemplate {
 			})
 		}
 	}
-	// The ephemeral walk is its own collector here, not a clause in
-	// checkPodSpec: checkPodSpec judges what a pod runs, this judges what
-	// the cluster will create around it, and the two change on their own.
+	// Judged here, not in checkPodSpec: this is what the cluster will create, not what the pod runs.
 	_ = forEachPodSpec(obj, func(spec map[string]any) error {
 		volumes, found, err := unstructured.NestedSlice(spec, "volumes")
 		if err != nil || !found {
@@ -491,11 +414,7 @@ func claimTemplates(obj map[string]any) []claimTemplate {
 	return out
 }
 
-// couldBind reports whether the PV controller could bind t to pv (pvClass is
-// pv's class, beta annotation first). A volumeName pin binds only that PV. A
-// reserved PV takes only the reserved name in ns, and, if the reservation has
-// a uid, only the existing claim with that uid. Otherwise the class must
-// match; a claim with no class may end up with any class.
+// Mirrors how the PV controller binds: a volumeName pin, a claimRef reservation, then class.
 func (t claimTemplate) couldBind(pv *corev1.PersistentVolume, pvClass, ns string) bool {
 	if t.volumeName != "" {
 		return t.volumeName == pv.Name
@@ -506,7 +425,6 @@ func (t claimTemplate) couldBind(pv *corev1.PersistentVolume, pvClass, ns string
 	return t.class == nil || pvClass == *t.class
 }
 
-// pendingClaim describes an existing unbound claim by its own spec.
 func pendingClaim(claim *corev1.PersistentVolumeClaim) claimTemplate {
 	class := claim.Spec.StorageClassName
 	if ann, ok := claim.Annotations[corev1.BetaStorageClassAnnotation]; ok {
@@ -521,15 +439,12 @@ func pendingClaim(claim *corev1.PersistentVolumeClaim) claimTemplate {
 	}
 }
 
-// templateVolumeName reads the template's pin to a specific PV, if it has one.
 func templateVolumeName(template map[string]any) string {
 	name, _, _ := unstructured.NestedString(template, "spec", "volumeName")
 	return name
 }
 
-// claimTemplateClass reads a claim's class as the PV controller does: the beta
-// annotation, else spec.storageClassName. nil means neither is set; such a
-// claim can get the default class at admission or later, so it matches any.
+// Reads a claim's class as the PV controller does; nil matches any class.
 func claimTemplateClass(template map[string]any) *string {
 	if ann, found, _ := unstructured.NestedString(template, "metadata", "annotations", corev1.BetaStorageClassAnnotation); found {
 		return &ann
@@ -540,11 +455,7 @@ func claimTemplateClass(template map[string]any) *string {
 	return nil
 }
 
-// checkUnboundClaims refuses when a claim that is not bound yet could bind a
-// node-path PV that exists now: a claim template in obj, a pending claim the
-// pod mounts by name (pending), or an existing claim a template's set would
-// reuse by name (<template>-<set>-<ordinal>), which is checked by the PV it
-// names or, while pending, by its own spec. A failed list is refused.
+// Covers claim templates, pending claims and claims a template's set would reuse by name.
 func checkUnboundClaims(ctx context.Context, typed kubernetes.Interface, obj map[string]any, ns string, pending []*corev1.PersistentVolumeClaim) error {
 	templates := claimTemplates(obj)
 	if len(templates) == 0 && len(pending) == 0 {
@@ -658,17 +569,12 @@ func checkPodSpec(spec map[string]any) error {
 		}
 	}
 
-	// imagePullSecrets is pod-level, so it sits outside the container
-	// loop below. The kubelet presents the named Secret to whatever
-	// registry the image string points at, so an attacker-chosen
-	// registry receives it -- the Secret leaves the cluster without any
-	// container reading it.
+	// The kubelet hands the named Secret to whatever registry the image string names.
 	if refs, found, err := unstructured.NestedSlice(spec, "imagePullSecrets"); err == nil && found && len(refs) > 0 {
 		return errSecretInPodSpec("an imagePullSecrets reference")
 	}
 
-	// Ephemeral containers cannot be set through apply, but they cost
-	// nothing to check and the list is the obvious place to forget one.
+	// Ephemeral containers cannot be set through apply, but this is the obvious place to forget one.
 	for _, list := range []string{"containers", "initContainers", "ephemeralContainers"} {
 		containers, found, err := unstructured.NestedSlice(spec, list)
 		if err != nil || !found {
@@ -695,9 +601,6 @@ func checkPodSpec(spec map[string]any) error {
 	return nil
 }
 
-// checkContainerPrivilege refuses the two ways a container reaches the
-// host without setting privileged: added capabilities and an unmasked
-// procMount.
 func checkContainerPrivilege(container map[string]any) error {
 	if adds, found, err := unstructured.NestedStringSlice(container, "securityContext", "capabilities", "add"); err == nil && found && len(adds) > 0 {
 		return fmt.Errorf("this server will not apply a pod spec that adds Linux capabilities (%v): "+
@@ -713,8 +616,6 @@ func checkContainerPrivilege(container map[string]any) error {
 	return nil
 }
 
-// checkContainerSecrets refuses the two ways a container reads a Secret
-// through its environment.
 func checkContainerSecrets(container map[string]any) error {
 	if vars, found, err := unstructured.NestedSlice(container, "env"); err == nil && found {
 		for _, v := range vars {
@@ -741,11 +642,7 @@ func checkContainerSecrets(container map[string]any) error {
 	return nil
 }
 
-// volumeSecretRefs are the volume sources whose Secret the kubelet reads
-// and hands to a volume plugin or driver rather than to the container.
-// iscsi is live at the pinned kubelet; csi and flexVolume reach node-local
-// drivers; the rest name in-tree plugins the kubelet no longer has, and are
-// refused so that a kubelet which brings one back cannot reopen the leak.
+// iscsi is live at the pinned kubelet; the rest are refused so a restored plugin reopens no leak.
 var volumeSecretRefs = []struct{ source, field string }{
 	{"iscsi", "secretRef"},
 	{"csi", "nodePublishSecretRef"},
@@ -758,8 +655,6 @@ var volumeSecretRefs = []struct{ source, field string }{
 	{"azureFile", "secretName"},
 }
 
-// volumeSecretRef names the first Secret reference vol carries for the
-// kubelet to deliver, or returns "" when it carries none.
 func volumeSecretRef(vol map[string]any) string {
 	for _, ref := range volumeSecretRefs {
 		if _, found, _ := unstructured.NestedFieldNoCopy(vol, ref.source, ref.field); found {
@@ -769,10 +664,7 @@ func volumeSecretRef(vol map[string]any) string {
 	return ""
 }
 
-// errSecretSentByKubelet refuses a pod spec that has the kubelet send a
-// Secret's values to an endpoint the pod spec chooses. No container reads
-// the Secret, so the pod_logs reasoning does not apply: the values leave
-// the cluster on the kubelet's own connection.
+// No container reads the Secret, so the pod_logs reasoning does not apply.
 func errSecretSentByKubelet(what string) error {
 	return fmt.Errorf("this server will not apply a pod spec with %s: the kubelet reads that Secret "+
 		"and hands its values to the volume plugin, which presents them to the endpoint the pod spec "+
@@ -780,34 +672,20 @@ func errSecretSentByKubelet(what string) error {
 		"container reading it. This is a fixed policy, not a permission that can be granted by a flag", what)
 }
 
-// errSecretInPodSpec refuses a pod spec that puts a Secret where the
-// container -- and so pod_logs -- can read it.
 func errSecretInPodSpec(what string) error {
 	return fmt.Errorf("this server will not apply a pod spec with %s: the container could print "+
 		"the value and pod_logs would return it, which is the read resource_get refuses at every "+
 		"tier. This is a fixed policy, not a permission that can be granted by a flag", what)
 }
 
-// checkServiceAccountTokens refuses a pod spec that would have a service
-// account token mounted when a role binding grants that account anything:
-// the container could print the token, and pod_logs would return it. A token
-// is mounted unless the pod spec sets automountServiceAccountToken: false, or
-// leaves it unset and the account itself sets it false. An account that does
-// not exist yet is still checked by name, since a binding can name it first.
-// This server cannot write service accounts or bindings (deniedWrites).
-//
-// It runs only on the object an apply would store (checkApplyResult): a
-// manifest may leave the account to the existing object, and the existing
-// object is about to be replaced, so only the merged result says which token
-// the pods will get.
+// Runs on the object an apply would store: only the merged result says which token the pods get.
 func checkServiceAccountTokens(ctx context.Context, typed kubernetes.Interface, obj map[string]any, ns string) error {
 	if ns == "" {
 		ns = metav1.NamespaceDefault
 	}
 	var bindings *accountBindings
 	return forEachPodSpec(obj, func(spec map[string]any) error {
-		// forEachPodSpec also hands over a workload's own spec, or a
-		// Service's; only a map with containers is a pod spec.
+		// Only a map with containers is a pod spec; forEachPodSpec also hands over other maps.
 		if _, isPodSpec := spec["containers"].([]any); !isPodSpec {
 			return nil
 		}
@@ -846,9 +724,6 @@ func checkServiceAccountTokens(ctx context.Context, typed kubernetes.Interface, 
 	})
 }
 
-// podServiceAccount returns the account a pod spec runs as: serviceAccountName,
-// else the deprecated serviceAccount the API server copies into it, else the
-// namespace's default account.
 func podServiceAccount(spec map[string]any) (string, error) {
 	for _, field := range []string{"serviceAccountName", "serviceAccount"} {
 		name, _, err := unstructured.NestedString(spec, field)
@@ -862,14 +737,12 @@ func podServiceAccount(spec map[string]any) (string, error) {
 	return "default", nil
 }
 
-// accountBindings are the cluster's role bindings, listed once per check.
 type accountBindings struct {
 	roleBindings        []rbacv1.RoleBinding
 	clusterRoleBindings []rbacv1.ClusterRoleBinding
 }
 
-// listAccountBindings lists every RoleBinding, in every namespace since one
-// can name an account in another, and every ClusterRoleBinding.
+// RoleBindings are listed in every namespace, since one can name an account in another.
 func listAccountBindings(ctx context.Context, typed kubernetes.Interface) (*accountBindings, error) {
 	rbs, err := typed.RbacV1().RoleBindings(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -882,8 +755,6 @@ func listAccountBindings(ctx context.Context, typed kubernetes.Interface) (*acco
 	return &accountBindings{roleBindings: rbs.Items, clusterRoleBindings: crbs.Items}, nil
 }
 
-// bindingFor names the first binding that grants account in ns anything, or
-// "" when none does.
 func (b *accountBindings) bindingFor(ns, account string) string {
 	for _, rb := range b.roleBindings {
 		if namesAccount(rb.Subjects, rb.Namespace, ns, account) {
@@ -898,12 +769,7 @@ func (b *accountBindings) bindingFor(ns, account string) string {
 	return ""
 }
 
-// namesAccount reports whether subjects reach account in ns the way the RBAC
-// authorizer matches them: as a ServiceAccount (whose namespace defaults to
-// the binding's), as the account's user name, or through the group of every
-// account in ns. The groups of every account and every authenticated identity
-// are not counted: the stock bindings to them (discovery, the issuer's keys)
-// reach every pod in the cluster, so counting them would refuse every pod.
+// The every-account and authenticated groups are not counted: the stock bindings reach every pod.
 func namesAccount(subjects []rbacv1.Subject, bindingNS, ns, account string) bool {
 	for _, s := range subjects {
 		switch s.Kind {
@@ -928,8 +794,6 @@ func namesAccount(subjects []rbacv1.Subject, bindingNS, ns, account string) bool
 	return false
 }
 
-// checkConversionWebhook refuses a CustomResourceDefinition that routes
-// conversion through a webhook.
 func checkConversionWebhook(gvr schema.GroupVersionResource, obj map[string]any) error {
 	if gvr.Group != "apiextensions.k8s.io" || gvr.Resource != "customresourcedefinitions" {
 		return nil
@@ -951,9 +815,7 @@ func describe(gr schema.GroupResource) string {
 	return gr.Resource + "." + gr.Group
 }
 
-// DeniedWriteResources lists the denied resources for the test that pins
-// them, which lives in pkg/cli and so needs them across the package
-// boundary.
+// For the pin in pkg/cli, which needs them across the package boundary.
 func DeniedWriteResources() []string {
 	out := make([]string, 0, len(deniedWrites))
 	for gr := range deniedWrites {
@@ -963,8 +825,6 @@ func DeniedWriteResources() []string {
 	return out
 }
 
-// DestructiveDeleteResources lists the resources whose deletion needs
-// --allow-destructive. Pinned by the same test, for the same reason.
 func DestructiveDeleteResources() []string {
 	out := make([]string, 0, len(destructiveDeletes))
 	for gr := range destructiveDeletes {
@@ -974,8 +834,6 @@ func DestructiveDeleteResources() []string {
 	return out
 }
 
-// DestructiveMutationResources lists the resources whose creation or change
-// needs --allow-destructive. Pinned by the same test, for the same reason.
 func DestructiveMutationResources() []string {
 	out := make([]string, 0, len(destructiveMutations))
 	for gr := range destructiveMutations {
@@ -985,13 +843,9 @@ func DestructiveMutationResources() []string {
 	return out
 }
 
-// ------------------------------------------------------------------ apply
-
-// ResourceApplyIn is resource_apply's input.
 type ResourceApplyIn struct {
 	Context string `json:"context,omitempty" jsonschema:"kubeconfig context to address; omit for the current one"`
 
-	// Manifest is a Kubernetes object.
 	Manifest map[string]any `json:"manifest" jsonschema:"the complete object to apply, including apiVersion, kind and metadata.name"`
 
 	Namespace string `json:"namespace,omitempty" jsonschema:"namespace to apply into; defaults to the manifest's own, then default"`
@@ -999,7 +853,6 @@ type ResourceApplyIn struct {
 	Force     bool   `json:"force,omitempty" jsonschema:"take ownership of fields currently owned by another field manager; without it a conflict is an error"`
 }
 
-// ResourceApplyOut is resource_apply's result.
 type ResourceApplyOut struct {
 	Resource   string `json:"resource"`
 	Name       string `json:"name"`
@@ -1009,7 +862,6 @@ type ResourceApplyOut struct {
 	Note       string `json:"note,omitempty"`
 }
 
-// ResourceApplyHandler server-side applies a manifest.
 func ResourceApplyHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHandlerFor[ResourceApplyIn, ResourceApplyOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in ResourceApplyIn) (*sdk.CallToolResult, ResourceApplyOut, error) {
 		obj := &unstructured.Unstructured{Object: in.Manifest}
@@ -1028,9 +880,7 @@ func ResourceApplyHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 			return nil, ResourceApplyOut{}, err
 		}
 
-		// Resolve from the manifest's own apiVersion and kind through the
-		// RESTMapper, so the resource is whatever this cluster serves for that GVK —
-		// including a CRD's.
+		// Resolved from the manifest's GVK through the RESTMapper, so a CRD's own resource works.
 		gv, err := schema.ParseGroupVersion(apiVersion)
 		if err != nil {
 			return nil, ResourceApplyOut{}, fmt.Errorf("manifest apiVersion %q: %w", apiVersion, err)
@@ -1051,11 +901,7 @@ func ResourceApplyHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 			return nil, ResourceApplyOut{}, err
 		}
 
-		// A manifest that names its own namespace and a namespace argument that
-		// disagrees is refused rather than silently resolved. kubectl refuses the
-		// same combination, and for the same reason: quietly relocating an object
-		// the caller explicitly placed is how a workload ends up running somewhere
-		// nobody intended.
+		// kubectl refuses the same disagreement: silently relocating a placed object misplaces it.
 		ns := in.Namespace
 		if mns := obj.GetNamespace(); mns != "" && ns != "" && mns != ns {
 			return nil, ResourceApplyOut{}, fmt.Errorf(
@@ -1093,12 +939,7 @@ func ResourceApplyHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 			return nil, ResourceApplyOut{}, err
 		}
 
-		// SSA merges per field manager, so the object that results is not
-		// the manifest: a field this manifest omits stays as another
-		// manager left it. The guards above therefore have to run against
-		// the object already there as well, or a caller can change a
-		// container's command while a Secret volume it never mentioned is
-		// retained -- and then read it with pod_logs.
+		// SSA merges per field manager: a field the manifest omits stays as another manager left it.
 		var got *unstructured.Unstructured
 		for attempt := 1; ; attempt++ {
 			existing, err := applier.Get(ctx, obj.GetName(), metav1.GetOptions{})
@@ -1168,8 +1009,6 @@ func ResourceApplyHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 	}
 }
 
-// checkApplyResult runs the manifest guards on the object an apply would
-// produce, and says so in the refusal.
 func checkApplyResult(ctx context.Context, cs kubernetes.Interface, gvr schema.GroupVersionResource, obj map[string]any, ns string) error {
 	for _, check := range []func() error{
 		func() error { return checkConversionWebhook(gvr, obj) },
@@ -1185,25 +1024,16 @@ func checkApplyResult(ctx context.Context, cs kubernetes.Interface, gvr schema.G
 	return nil
 }
 
-// afterApplyPreview runs between resource_apply's checked dry run and its
-// real apply, indirected for tests.
 var afterApplyPreview = func() {}
 
-// SetAfterApplyPreviewForTest makes resource_apply call f between its checked
-// dry run and its real apply, so a test can change the object in that window.
-// It returns a func that restores the previous hook.
 func SetAfterApplyPreviewForTest(f func()) (restore func()) {
 	prev := afterApplyPreview
 	afterApplyPreview = f
 	return func() { afterApplyPreview = prev }
 }
 
-// applyAttempts bounds how often resource_apply re-checks and retries when the
-// object changes between its dry run and the real apply.
 const applyAttempts = 3
 
-// applyError explains a field-ownership conflict, which is the failure a
-// caller is most likely to hit and least likely to understand.
 func applyError(err error, forced bool) error {
 	if forced || !apierrors.HasStatusCause(err, metav1.CauseTypeFieldManagerConflict) {
 		return err
@@ -1213,16 +1043,12 @@ func applyError(err error, forced bool) error {
 		"manages them — forcing a field away from a controller means the controller will set it back", err)
 }
 
-// ----------------------------------------------------------------- delete
-
-// ResourceDeleteIn is resource_delete's input.
 type ResourceDeleteIn struct {
 	ObjectRef
 	Resource string `json:"resource" jsonschema:"resource to delete: a plural name (pods), singular (pod), short name (po), Kind (Pod), or group-qualified (deployments.apps)"`
 	DryRun   bool   `json:"dry_run,omitempty" jsonschema:"report what would be deleted without deleting it"`
 }
 
-// ResourceDeleteOut is resource_delete's result.
 type ResourceDeleteOut struct {
 	Resource  string `json:"resource"`
 	Name      string `json:"name"`
@@ -1231,7 +1057,6 @@ type ResourceDeleteOut struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// ResourceDeleteHandler deletes one object.
 func ResourceDeleteHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHandlerFor[ResourceDeleteIn, ResourceDeleteOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in ResourceDeleteIn) (*sdk.CallToolResult, ResourceDeleteOut, error) {
 		if in.Name == "" {
@@ -1250,7 +1075,6 @@ func ResourceDeleteHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHan
 			return nil, ResourceDeleteOut{}, err
 		}
 
-		// Only namespaced targets get a namespace, in the request and in the result.
 		ns := ""
 		if namespaced {
 			ns = cmp.Or(in.Namespace, metav1.NamespaceDefault)
@@ -1284,16 +1108,12 @@ func ResourceDeleteHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHan
 	}
 }
 
-// ------------------------------------------------------------------ scale
-
-// ResourceScaleIn is resource_scale's input.
 type ResourceScaleIn struct {
 	ObjectRef
 	Resource string `json:"resource" jsonschema:"workload to scale: deployments, statefulsets or replicasets, or anything else serving a scale subresource"`
 	Replicas int32  `json:"replicas" jsonschema:"the desired replica count; zero scales the workload down to nothing"`
 }
 
-// ResourceScaleOut is resource_scale's result.
 type ResourceScaleOut struct {
 	Resource  string `json:"resource"`
 	Name      string `json:"name"`
@@ -1302,7 +1122,6 @@ type ResourceScaleOut struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// ResourceScaleHandler sets a workload's replica count.
 func ResourceScaleHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHandlerFor[ResourceScaleIn, ResourceScaleOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in ResourceScaleIn) (*sdk.CallToolResult, ResourceScaleOut, error) {
 		if in.Name == "" {
@@ -1351,14 +1170,11 @@ func ResourceScaleHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 			Namespace: ns,
 			Replicas:  in.Replicas,
 		}
-		// Replicas starts as what was asked for.
 		replicas, found, _ := unstructured.NestedInt64(got.Object, "spec", "replicas")
 		switch {
 		case found:
 			out.Replicas = int32(replicas)
 		default:
-			// No spec.replicas came back, so Replicas is still the
-			// request under a schema that says otherwise.
 			out.Note = "The scale was accepted, but the replica count could not be read back from the " +
 				"response; the count reported here is the one requested, not one the server confirmed."
 		}
@@ -1371,9 +1187,7 @@ func ResourceScaleHandler(conn *kube.Connector, policy WritePolicy) sdk.ToolHand
 	}
 }
 
-// scaleError says the useful thing when a resource has no scale
-// subresource, which the API server reports only as a 404 on a path the
-// caller never typed.
+// A missing scale subresource surfaces only as a 404 on a path the caller never typed.
 func scaleError(err error, what string) error {
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) || !apierrors.IsNotFound(err) {

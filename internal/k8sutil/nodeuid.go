@@ -13,9 +13,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-// The evidence reader constructs a fresh client for each read, including the
-// kubelet's current rotated certificate, without leaving client-go any deferred
-// credential-file reads outside the request's metadata bounds.
+// Fresh credentials per read: no deferred client-go file reads outside the ctx bounds.
 func kubeletClientsetContext(ctx context.Context) (kubernetes.Interface, error) {
 	path := filepath.Join(version.KubeconfigDir, "kubelet.kubeconfig")
 	b, err := boundedfile.Read(ctx, path)
@@ -53,8 +51,7 @@ func kubeletClientsetContext(ctx context.Context) (kubernetes.Interface, error) 
 			}
 		}
 		if user := raw.AuthInfos[current.AuthInfo]; user != nil {
-			// Engine-written kubelet credentials are certificates or tokens.
-			// Auth plugins can perform I/O with a separate lifecycle.
+			// Engine credentials are files; auth plugins perform I/O with a separate lifecycle.
 			if user.Exec != nil || user.AuthProvider != nil {
 				return nil, errors.New("node identity requires kubelet file credentials")
 			}
@@ -69,8 +66,7 @@ func kubeletClientsetContext(ctx context.Context) (kubernetes.Interface, error) 
 				if err != nil && (user.Token == "" || ctx.Err() != nil) {
 					return nil, err
 				}
-				// Like client-go's file token source, prefer a usable file
-				// token and fall back to the inline token on read failure.
+				// Like client-go's file token source: prefer the file token, fall back to the inline one.
 				if token := strings.TrimSpace(string(b)); err == nil && token != "" {
 					user.Token = token
 				}

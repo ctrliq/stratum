@@ -10,9 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestSnapshotPruneRestoresListsBeforeItRemoves: without --yes the
-// command only lists the copies; a pre-restore copy can be the only copy of the
-// data from before a restore, so removing one takes --yes.
 func TestSnapshotPruneRestoresListsBeforeItRemoves(t *testing.T) {
 	oldData, oldEtcd := version.DataDir, version.EtcdDataDir
 	t.Cleanup(func() { version.DataDir, version.EtcdDataDir = oldData, oldEtcd })

@@ -17,30 +17,23 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// fakeRejoin stands in for the seed, this node's etcd and the clock, and
-// records every step RejoinEtcd takes in the order it takes them. The time
-// is fake so a test can wait thirty minutes in microseconds.
 type fakeRejoin struct {
 	calls   []string
 	start   time.Time
 	now     time.Time
-	started time.Time // when etcd's manifest was (re)written; zero until then
+	started time.Time
 	saved   *nodestate.NodeState
-	// local is this node's etcd, as a function of how long it has been
-	// running (negative: not started by this run).
 	local   func(sinceStart time.Duration) (localEtcdStatus, error)
 	promote func(sinceStart time.Duration) error
 	running func() bool
 	data    func(sinceStart time.Duration) etcdDataMark
-	// seed is the seed's membership, with the learner this run adds.
-	seed etcdMembership
+	seed    etcdMembership
 }
 
 const (
 	fakeCluster = 0xc1
 	selfPeer    = "https://10.0.0.2:2380"
-	// addedID is the member a learner add creates: not 2, the ID of the stale
-	// member a replace removes, so a test catches a wait on the wrong one.
+	// not the stale member's ID 2, so a wait on the wrong member is caught
 	addedID = 4
 )
 
@@ -100,7 +93,6 @@ func newFakeRejoin(t *testing.T, seed etcdMembership, st *nodestate.NodeState) *
 
 func (f *fakeRejoin) elapsed() time.Duration { return f.now.Sub(f.start) }
 
-// since is how long this run has had etcd running; negative before it starts it.
 func (f *fakeRejoin) since() time.Duration {
 	if f.started.IsZero() {
 		return -1
@@ -108,8 +100,7 @@ func (f *fakeRejoin) since() time.Duration {
 	return f.now.Sub(f.started)
 }
 
-// steps is the call log without the repeated promote attempts, which are
-// polling rather than steps.
+// repeated promote attempts are polling, not steps
 func (f *fakeRejoin) steps() string {
 	var out []string
 	for _, c := range f.calls {
@@ -121,8 +112,6 @@ func (f *fakeRejoin) steps() string {
 	return strings.Join(out, ", ")
 }
 
-// servingAfter is this node's etcd answering as member id once this run has
-// had it running for d (refused before this run starts it), with an applied index that grows every poll.
 func servingAfter(d time.Duration, id uint64, learner bool) func(time.Duration) (localEtcdStatus, error) {
 	var applied uint64
 	return func(since time.Duration) (localEtcdStatus, error) {
@@ -134,7 +123,6 @@ func servingAfter(d time.Duration, id uint64, learner bool) func(time.Duration) 
 	}
 }
 
-// catchingUp answers nothing until d, and until then only its data dir changes.
 func catchingUp(d time.Duration, id uint64, learner bool) (func(time.Duration) (localEtcdStatus, error), func(time.Duration) etcdDataMark) {
 	local := servingAfter(d, id, learner)
 	data := func(since time.Duration) etcdDataMark {
@@ -146,7 +134,6 @@ func catchingUp(d time.Duration, id uint64, learner bool) (func(time.Duration) (
 	return local, data
 }
 
-// leaderAfter is a member that answers at once but knows no leader until d.
 func leaderAfter(d time.Duration, id uint64, learner bool) func(time.Duration) (localEtcdStatus, error) {
 	var applied uint64
 	return func(since time.Duration) (localEtcdStatus, error) {
@@ -164,9 +151,6 @@ func controller() *nodestate.NodeState {
 		EtcdInitialCluster: "cp2=https://10.0.0.2:2380"}
 }
 
-// rejoinHealthFrom answers the health probe the way a real cluster would: an
-// endpoint that is up reports the member it actually is, in the cluster it
-// actually serves.
 func rejoinHealthFrom(seed etcdMembership, up map[string]bool) func(string) (localEtcdStatus, bool) {
 	byIP := map[string]uint64{}
 	for _, m := range seed.Members {
@@ -185,10 +169,7 @@ func seedWith(ms ...etcdMember) etcdMembership {
 	return etcdMembership{ClusterID: fakeCluster, Quorum: true, Members: append([]etcdMember{seedMember}, ms...)}
 }
 
-// TestRejoinAddsALearnerAndPromotesIt: the add is a learner, never
-// a voter. A voting add turns the one-member seed into a two-member cluster
-// with a quorum of two before this node has started, which is the state the
-// re-run then could not undo.
+// a voting add would make the seed's quorum two before this node has started
 func TestRejoinAddsALearnerAndPromotesIt(t *testing.T) {
 	f := newFakeRejoin(t, seedWith(), controller())
 	f.local = servingAfter(10*time.Second, addedID, true)
@@ -216,8 +197,6 @@ func TestRejoinAddsALearnerAndPromotesIt(t *testing.T) {
 	}
 }
 
-// TestRejoinWaitFollowsProgress: the wait gives up only on a member
-// that shows no progress, so a slow but converging member still rejoins.
 func TestRejoinWaitFollowsProgress(t *testing.T) {
 	t.Run("a member slower than a flat 90s still rejoins", func(t *testing.T) {
 		f := newFakeRejoin(t, seedWith(), controller())
@@ -427,9 +406,6 @@ func TestRejoinWaitFollowsProgress(t *testing.T) {
 	})
 }
 
-// TestRejoinRerunAfterAPartialRun is every state a first run can
-// stop in, and what the re-run must do there. The bricking re-run wiped this
-// node and re-added it while the cluster was waiting on its vote.
 func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 	learner := etcdMember{ID: 2, Name: "cp2", PeerURLs: []string{selfPeer},
 		ClientURLs: []string{"https://10.0.0.2:2379"}, IsLearner: true}
@@ -485,18 +461,11 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 		want    string
 	}{
 		{
-			// The flat 90-second timeout: the learner came up on its own after the
-			// first run gave up. Nothing is wiped, removed, added or even
-			// re-saved -- rewriting the state would restart the member.
 			name: "learner serving as itself", seed: seedWith(learner), st: recorded(),
 			local: runningAs(2, true),
 			want:  "start etcd, promote, start kube-apiserver",
 		},
 		{
-			// A later control plane joined after this one did, so the recorded
-			// initial cluster has fallen behind. The member is serving, so it
-			// reads its membership from its own WAL: rewriting the state here
-			// would restart a healthy voter for nothing.
 			name: "voter serving as itself after another member joined",
 			seed: seedWith(voter, cp3), st: recorded(),
 			local:   runningAs(2, false),
@@ -504,8 +473,6 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			want:    "start etcd, start kube-apiserver",
 		},
 		{
-			// Interrupted between the add and etcd starting. A learner has no
-			// vote, so replacing it can cost nothing.
 			name: "learner added but never started", seed: seedWith(unstartedLearner), st: controller(),
 			local: servingAfter(0, addedID, true),
 			want:  "remove 2, wipe, add-learner, save, start etcd, promote, start kube-apiserver",
@@ -526,10 +493,6 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			want:  "start etcd, start kube-apiserver",
 		},
 		{
-			// What the old voting add left behind on a timeout: a two-voter
-			// cluster that cannot commit until this member starts. Removing it
-			// cannot commit and wiping it throws away the vote; the only way
-			// out is to start it, with whatever data it has.
 			name: "unstarted voter the seed needs", seed: seedWith(unstartedVoter), st: controller(),
 			local: servingAfter(2*time.Minute, 2, false), healthy: map[string]bool{"10.0.0.1": true},
 			want: "save, start etcd, start kube-apiserver",
@@ -540,35 +503,22 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			want:  "start etcd, start kube-apiserver",
 		},
 		{
-			// The documented "this member's data is gone, the cluster is
-			// healthy" use: the other two voters are a quorum without it.
 			name: "voter not serving, the others have quorum", seed: seedWith(voter, cp3), st: recorded(),
 			local: servingAfter(0, addedID, true), healthy: map[string]bool{"10.0.0.1": true, "10.0.0.3": true},
 			want: "remove 2, wipe, add-learner, save, start etcd, promote, start kube-apiserver",
 		},
 		{
-			// The same three voters with one of the others down: this member's
-			// vote is needed, so it is kept.
 			name: "voter not serving, the others lack quorum", seed: seedWith(voter, cp3), st: recorded(),
 			local: servingAfter(time.Minute, 2, false), healthy: map[string]bool{"10.0.0.1": true},
 			want: "save, start etcd, start kube-apiserver",
 		},
 		{
-			// This node's etcd is up and healthy but still serving the OLD
-			// cluster, so it is not this member. Counting it among the healthy
-			// others would make a two-voter cluster look like it has a quorum
-			// without this node, and wipe the vote it is waiting on.
 			name: "voter answering as the pre-restore cluster", seed: seedWith(voter), st: staleRecord(),
 			local:   oldClusterUntilStarted(2, 2, false),
 			healthy: map[string]bool{"10.0.0.1": true, "10.0.0.2": true},
 			want:    "save, start etcd, start kube-apiserver",
 		},
 		{
-			// A healthy LEARNER among the others is not a vote. Counting it
-			// turns this two-voter cluster into an apparent three, and the
-			// removal it authorises can never commit -- how the restore was bricked.
-			// etcd allows one learner at a time, so a serial rejoin passes
-			// through exactly this shape.
 			name: "voter not serving, the only other healthy member is a learner",
 			seed: seedWith(voter, cp3Learner), st: recorded(),
 			local:   servingAfter(time.Minute, 2, false),
@@ -576,10 +526,6 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 			want:    "save, start etcd, start kube-apiserver",
 		},
 		{
-			// A join's learner the controller had not promoted yet: the
-			// rejoin promotes it and only then clears the pending record.
-			// The save changes no field etcd's manifest is rendered from, so
-			// the serving member is not restarted.
 			name: "a joined learner still pending, serving as itself", seed: seedWith(learner), st: joinedPending(),
 			local: runningAs(2, true),
 			want:  "start etcd, promote, save, start kube-apiserver",
@@ -617,9 +563,6 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 		})
 	}
 
-	// A rejoin that stops before its own promote lands must leave the join's
-	// pending promote recorded, so the controller's start still promotes the
-	// learner.
 	for name, tc := range map[string]struct {
 		seed  etcdMembership
 		local func(time.Duration) (localEtcdStatus, error)
@@ -659,7 +602,6 @@ func TestRejoinRerunAfterAPartialRun(t *testing.T) {
 	})
 }
 
-// TestRejoinRefusesWhenTheSeedIsThisNode: the seed reached under an address this node does not record.
 func TestRejoinRefusesWhenTheSeedIsThisNode(t *testing.T) {
 	self := etcdMember{ID: 2, Name: "cp2", PeerURLs: []string{selfPeer}, ClientURLs: []string{"https://10.0.0.2:2379"}}
 	seed := etcdMembership{ClusterID: fakeCluster, Responder: 2, Quorum: true, Members: []etcdMember{self}}
@@ -680,12 +622,6 @@ func TestRejoinRefusesWhenTheSeedIsThisNode(t *testing.T) {
 	}
 }
 
-// TestRejoinGuardsOnlyAWipeWithDataToLose: the wipe guards (proof that this
-// node's own cluster lost quorum, or --force) stand before every wipe that could
-// discard data this node may still be serving from, and nowhere else. A first
-// run, and a replacement, over member data are guarded; either over a data dir
-// an earlier run already emptied, and a resume, are not, so re-running after a
-// partial run does not need --force.
 func TestRejoinGuardsOnlyAWipeWithDataToLose(t *testing.T) {
 	unstartedLearner := etcdMember{ID: 2, PeerURLs: []string{selfPeer}, IsLearner: true}
 	learner := etcdMember{ID: 2, Name: "cp2", PeerURLs: []string{selfPeer},

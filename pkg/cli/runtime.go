@@ -14,8 +14,6 @@ func newRuntimeCommand() *cobra.Command {
 		newRuntimeApplyCommand(), newRuntimeCheckCommand(), newRuntimeRestartCommand())
 }
 
-// newRuntimeApplyCommand saves this node's runtime handlers and writes
-// containerd's drop-in for them, restarting containerd when it changed.
 func newRuntimeApplyCommand() *cobra.Command {
 	var handlers []string
 	var clear bool
@@ -59,9 +57,6 @@ func newRuntimeApplyCommand() *cobra.Command {
 	return cmd
 }
 
-// newRuntimeCheckCommand reports whether containerd will run this node's
-// runtime handlers, and runc under its AppArmor profile, and exits 1 when it
-// will not.
 func newRuntimeCheckCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "check",
@@ -84,8 +79,6 @@ func newRuntimeCheckCommand() *cobra.Command {
 	}
 }
 
-// newRuntimeRestartCommand restarts the supervisor's containerd and relabels
-// the node for the runtime handlers it loaded.
 func newRuntimeRestartCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "restart",

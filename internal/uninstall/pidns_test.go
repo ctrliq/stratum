@@ -127,9 +127,7 @@ func TestRunKeepsTheCNIDirWhenItCannotCheckForAnotherRuntime(t *testing.T) {
 	}
 }
 
-// A runtime that keeps /etc/cni/net.d may bind-mount its configuration there.
-// The unmount phase runs before the delete loop, so it must leave that mount
-// alone too, and detach the run's own mounts as before.
+// a runtime may bind-mount its config into /etc/cni/net.d; that mount stays too.
 func TestRunLeavesMountsUnderAKeptCNIDirMounted(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.foreignRuntimesFn = func() ([]string, []string, error) { return []string{"k3s-server (pid 42)"}, nil, nil }

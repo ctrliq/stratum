@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// An untouched replacement initiator has none of the run's original staged
-// roots. Manual progress on another node must not make it generate new ones.
+// manual progress on another node must not make an untouched initiator generate new roots.
 func TestClusterResumeRefusesUntouchedInitiatorBeforeFirstCheckpoint(t *testing.T) {
 	for _, history := range []string{"first rotation", "after completed rotation"} {
 		t.Run(history, func(t *testing.T) {

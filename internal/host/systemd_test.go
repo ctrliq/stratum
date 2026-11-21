@@ -14,25 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// fakeSystemd points SystemdAvailable at a temp marker (present) and puts a
-// scriptable systemctl stub on PATH, so these tests exercise the real
-// install/disable/stop logic without a real systemd or root. Returns the path
-// to a log of every verb the stub was invoked with, one per line, for tests
-// that need to prove a call actually happened rather than just its result.
-//
-// The stub reads these env vars, all empty/unset by default:
-//   - FAKE_SYSTEMCTL_ENABLED=0    makes "show -p UnitFileState" report
-//     "disabled" instead of "enabled" when the fake unit file exists
-//   - FAKE_SYSTEMCTL_FAIL="v1 v2" makes those systemctl verbs fail
-//   - FAKE_SYSTEMCTL_LOAD_STATE / FAKE_SYSTEMCTL_ACTIVE_STATE override "show
-//     -p LoadState,ActiveState"'s answer; unset, it reports loaded/active
-//     when the fake unit file exists on disk and not-found/inactive when it
-//     doesn't — real systemd only if that file existence tracked its own
-//     state, which is exactly the gap unitPresent() covers, so a test for
-//     that gap sets these explicitly instead of just deleting the file.
-//   - FAKE_SYSTEMCTL_UNIT_FILE_STATE overrides "show -p UnitFileState"'s
-//     answer outright, for a test that needs a state other than
-//     enabled/disabled/not-found (static, masked, ...).
+// The stub script below reads FAKE_SYSTEMCTL_* env vars, all unset by default.
 func fakeSystemd(t *testing.T) (callLog string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -106,8 +88,7 @@ exit 0
 	systemdDropInPath = dropIn
 	t.Cleanup(func() { systemdDropInPath = oldDropIn })
 
-	// UnitArgv's drop-in search, kept off the host's /run and vendor trees:
-	// the unit's own beside it, and stand-ins for /run's and a shared one.
+	// UnitArgv's drop-in search, kept off the host's /run and vendor trees.
 	oldDirs := unitDropInDirs
 	unitDropInDirs = func() []string {
 		return []string{unit + ".d", filepath.Join(dir, "run", "stratum.service.d"), filepath.Join(dir, "lib", "service.d")}
@@ -117,7 +98,6 @@ exit 0
 	return callLog
 }
 
-// callCount returns how many times verb appears in a fakeSystemd call log.
 func callCount(t *testing.T, callLog, verb string) int {
 	t.Helper()
 	b, err := os.ReadFile(callLog)
@@ -136,8 +116,6 @@ func callCount(t *testing.T, callLog, verb string) int {
 	return n
 }
 
-// TestInstallUnitNoopWithoutSystemd is the out-of-scope contract for
-// non-systemd hosts: no marker, no unit file, no error.
 func TestInstallUnitNoopWithoutSystemd(t *testing.T) {
 	dir := t.TempDir()
 	old := systemdMarkerPath
@@ -157,10 +135,6 @@ func TestInstallUnitNoopWithoutSystemd(t *testing.T) {
 	}
 }
 
-// TestInstallUnitRendersRestartExecStart is a regression test: the
-// unit's ExecStart must be the steady-state restart command, not whatever
-// one-shot join flags first brought the node up — FAILS if a caller ever
-// passes --join/--token straight through instead of the resolved argv.
 func TestInstallUnitRendersRestartExecStart(t *testing.T) {
 	fakeSystemd(t)
 
@@ -183,26 +157,12 @@ func TestInstallUnitRendersRestartExecStart(t *testing.T) {
 	if !strings.Contains(string(got), "Restart=always") {
 		t.Errorf("unit does not restart the node process on crash/reboot:\n%s", got)
 	}
-	// KillMode=process, not mixed: mixed would SIGKILL containerd's shims on
-	// every ordinary restart too (Delegate=yes puts them in this same
-	// cgroup), breaking "containers survive a supervisor stop". A crash
-	// without a reboot still just gets refused by pkg/cli's
-	// preflightNoRunningNode and asks for a human; reaping those
-	// orphans is out of scope here (a reboot leaves none) and is a
-	// follow-up.
 	if !strings.Contains(string(got), "KillMode=process") {
 		t.Errorf("unit must not use KillMode=mixed/control-group: that would kill containerd's shims"+
 			" (and the containers they hold) on every restart, not just a crash:\n%s", got)
 	}
 }
 
-// TestInstallUnitRendersAnOptionalEnvironmentFile is a regression test: the
-// generated unit's near-empty environment silently drops any environment-only
-// S3 credentials a scheduled etcd snapshot upload needs once systemd, not an
-// operator's login shell, is what restarts `stratum up`.
-// EnvironmentFile=-/etc/stratum/stratum.env gives an operator a place to put
-// them back; the leading `-` is load-bearing — without it, an operator who has
-// never created the file would have this unit refuse to start at all.
 func TestInstallUnitRendersAnOptionalEnvironmentFile(t *testing.T) {
 	fakeSystemd(t)
 
@@ -219,16 +179,6 @@ func TestInstallUnitRendersAnOptionalEnvironmentFile(t *testing.T) {
 	}
 }
 
-// TestEscapeSystemdArg is the regression test for ExecStart= escaping:
-// unescaped, `%` starts a specifier and `$` starts a variable reference in
-// systemd's command-line grammar, so an operator-supplied --config path
-// containing either would be silently reinterpreted or truncated rather than
-// passed through — a value would change with no error anywhere. Backslash is
-// escaped too, since it is systemd's own C-style escape lead-in. A bare `'`
-// is the same kind of gap: unquoted, it starts a quoted
-// span of its own in systemd's grammar, same as an unquoted `"` — so a path
-// containing one but no space/tab/`"` must not go through unquoted, or
-// systemd, not this function, decides where the "quoted" span ended.
 func TestEscapeSystemdArg(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"/etc/stratum/config.yaml", "/etc/stratum/config.yaml"},
@@ -251,12 +201,6 @@ func TestEscapeSystemdArg(t *testing.T) {
 	}
 }
 
-// TestEscapeSystemdArgRefusesCRAndLF is a regression test:
-// systemd's command-line grammar has no way to express a literal CR/LF
-// inside a double-quoted argument (only a line continuation), so passing one
-// through would corrupt ExecStart= into extra directive lines rather than
-// carry the character — an error is the honest answer, not silent mangling.
-// A --config path is never legitimately going to contain one.
 func TestEscapeSystemdArgRefusesCRAndLF(t *testing.T) {
 	for _, in := range []string{
 		"/etc/stratum/config\n.yaml",
@@ -269,17 +213,6 @@ func TestEscapeSystemdArgRefusesCRAndLF(t *testing.T) {
 	}
 }
 
-// TestInstallUnitIdempotent guards the early-return: re-installing the same
-// argv when the unit is ALREADY enabled must not re-run enable (a caller
-// that did that on every restart, forever, would just be noise — and in a
-// container with no real systemd, an error). It still checks enablement
-// every time (TestInstallUnitRetriesEnableAfterAFailure is what that buys),
-// so only enable is asserted skipped here, not systemctl entirely.
-//
-// daemon-reload is different: removeStaleRestartOverride
-// now reloads systemd on every InstallUnit call, unconditionally, whether or
-// not the unit itself changed — so this test asserts that call still
-// happens, not that it is skipped.
 func TestInstallUnitIdempotent(t *testing.T) {
 	callLog := fakeSystemd(t)
 	argv := []string{"/opt/stratum/stratum", "up", "--worker"}
@@ -298,12 +231,6 @@ func TestInstallUnitIdempotent(t *testing.T) {
 	}
 }
 
-// TestInstallUnitRetriesEnableAfterAFailure is a regression
-// test: matching unit bytes alone must never be trusted as proof of
-// enablement. Fails if a first `systemctl enable` that failed
-// (permissions, a wedged dbus) is accepted forever because the file
-// on disk already matched, leaving the node unarmed for its next reboot with
-// no further sign anything was wrong.
 func TestInstallUnitRetriesEnableAfterAFailure(t *testing.T) {
 	fakeSystemd(t)
 	argv := []string{"/opt/stratum/stratum", "up"}
@@ -313,9 +240,7 @@ func TestInstallUnitRetriesEnableAfterAFailure(t *testing.T) {
 		t.Fatal("InstallUnit swallowed a systemctl enable failure")
 	}
 
-	// The unit file was written before the failing enable call, so a naive
-	// content-match check would now treat this as "already installed" even
-	// though it was never actually enabled.
+	// The file was written before the failing enable, so a content match is not proof.
 	t.Setenv("FAKE_SYSTEMCTL_ENABLED", "0")
 	t.Setenv("FAKE_SYSTEMCTL_FAIL", "")
 	if err := InstallUnit(argv); err != nil {
@@ -323,16 +248,6 @@ func TestInstallUnitRetriesEnableAfterAFailure(t *testing.T) {
 	}
 }
 
-// TestInstallUnitReturnsTheQueryErrorWhenContentAlreadyMatches is a
-// regression test for InstallUnit's other caller: when the
-// unit file on disk already matches what this call would write, a query
-// failure from unitEnabled is not a reason to rewrite and re-enable a unit
-// that has nothing wrong with its content — InstallUnit returns the query
-// error itself (which runUp turns into a warning), rather than paying for a
-// reinstall that answers a question the query never got to ask.
-// Fails if a query failure is treated as "not proof of enablement"
-// unconditionally and always falls through to reinstall, even when the
-// content already matched.
 func TestInstallUnitReturnsTheQueryErrorWhenContentAlreadyMatches(t *testing.T) {
 	callLog := fakeSystemd(t)
 	argv := []string{"/opt/stratum/stratum", "up"}
@@ -351,15 +266,6 @@ func TestInstallUnitReturnsTheQueryErrorWhenContentAlreadyMatches(t *testing.T) 
 	}
 }
 
-// TestInstallUnitRefusesWhenShowFailsEvenForStaleContent is the other half:
-// a `show` failure blocks InstallUnit before it ever gets to
-// compare content, because unitMasked (which runs first, to catch a mask
-// before anything is written) cannot tell a query failure apart from an
-// actual mask, and fails closed the same way unitPresent and unitEnabled do
-// elsewhere in this file. Delaying a routine reinstall by one cycle is the
-// acceptable cost of never risking a write over a mask this call could not
-// rule out. FAILS if InstallUnit ever goes back to swallowing this error and
-// reinstalling regardless.
 func TestInstallUnitRefusesWhenShowFailsEvenForStaleContent(t *testing.T) {
 	callLog := fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up", "--worker"}); err != nil {
@@ -377,16 +283,6 @@ func TestInstallUnitRefusesWhenShowFailsEvenForStaleContent(t *testing.T) {
 	}
 }
 
-// TestInstallUnitFailedWriteLeavesOldUnitIntact is a regression test for the
-// atomic write: a write interrupted partway through (disk full,
-// the process killed) must not leave a truncated or corrupt unit file where a
-// working one was — the exact node that most needs its
-// reboot-persistence unit intact, one that just failed a reinstall.
-// WriteFileAtomically's temp-file-then-rename means a failure before the rename
-// never touches the file already at path. Fails with a direct
-// os.WriteFile, which has already truncated the destination by the time
-// CreateTemp's equivalent failure would occur, so the old content is gone even
-// though the write as a whole failed.
 func TestInstallUnitFailedWriteLeavesOldUnitIntact(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses the directory permissions this test relies on")
@@ -398,17 +294,13 @@ func TestInstallUnitFailedWriteLeavesOldUnitIntact(t *testing.T) {
 	}
 
 	dir := filepath.Dir(version.SystemdUnitPath)
-	// Readable and searchable but not writable: CreateTemp in this directory
-	// is denied, simulating a write failure without needing to actually fill
-	// the disk.
+	// Readable but not writable: CreateTemp is denied without filling the disk.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o755) })
 
-	// Different argv, so the content comparison fails and InstallUnit must
-	// try to write — the unitEnabled/content-matches short-circuit is not
-	// what is under test here.
+	// Different argv, so the content comparison fails and InstallUnit must write.
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up", "--worker"}); err == nil {
 		t.Fatal("InstallUnit succeeded despite an unwritable directory")
 	}
@@ -425,14 +317,6 @@ func TestInstallUnitFailedWriteLeavesOldUnitIntact(t *testing.T) {
 	}
 }
 
-// TestInstallUnitSkipsAMaskedUnit is a regression test: a
-// persistent `systemctl mask` replaces the unit file with a symlink to
-// /dev/null; InstallUnit must detect that symlink BEFORE writing anything
-// and refuse, rather than silently clobbering the mask with a fresh,
-// newly-enabled unit — which is exactly what renaming a new file into that
-// path would otherwise do. Fails if the symlink is read through (an empty
-// read from /dev/null) and the content mismatch answered by writing,
-// reloading, and enabling a brand new unit over the mask.
 func TestInstallUnitSkipsAMaskedUnit(t *testing.T) {
 	callLog := fakeSystemd(t)
 	if err := os.Symlink(os.DevNull, version.SystemdUnitPath); err != nil {
@@ -460,9 +344,6 @@ func TestInstallUnitSkipsAMaskedUnit(t *testing.T) {
 	}
 }
 
-// TestInstallUnitSkipsWhenSystemctlReportsMasked is the other half: even
-// without a local symlink InstallUnit can Lstat, systemctl's own
-// UnitFileState=masked answer must be enough on its own to refuse.
 func TestInstallUnitSkipsWhenSystemctlReportsMasked(t *testing.T) {
 	callLog := fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_UNIT_FILE_STATE", "masked")
@@ -475,13 +356,6 @@ func TestInstallUnitSkipsWhenSystemctlReportsMasked(t *testing.T) {
 	}
 }
 
-// TestInstallUnitSkipsWhenSystemctlReportsMaskedRuntime is a
-// regression test: masked-runtime (a /run-only mask, no symlink at
-// version.SystemdUnitPath for Lstat to see at all) must count as masked for
-// InstallUnit's write-protection the same as a persistent mask does —
-// unitMasked's job is "may this call write here", not "is the unit file
-// enabled" (that distinction belongs to unitEnabled, which still treats
-// masked-runtime as an error via TestUnitEnabledMaskedRuntimeIsStillAnError).
 func TestInstallUnitSkipsWhenSystemctlReportsMaskedRuntime(t *testing.T) {
 	callLog := fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_UNIT_FILE_STATE", "masked-runtime")
@@ -503,15 +377,12 @@ func TestDisableAndStopUnitNoopWithoutSystemd(t *testing.T) {
 	systemdMarkerPath = filepath.Join(dir, "absent")
 	defer func() { systemdMarkerPath = old }()
 
-	// Must not panic or shell out to a systemctl that doesn't exist.
 	if err := DisableUnit(); err != nil {
 		t.Fatalf("DisableUnit without systemd: %v", err)
 	}
 	if err := StopUnit(); err != nil {
 		t.Fatalf("StopUnit without systemd: %v", err)
 	}
-	// UnitEnabled must fail closed to "not enabled, no error" here — never
-	// shell out to a systemctl this host may not even have.
 	if enabled, err := UnitEnabled(); err != nil || enabled {
 		t.Fatalf("UnitEnabled = %v, err=%v without systemd", enabled, err)
 	}
@@ -529,10 +400,6 @@ func TestDisableAndStopUnitNoopWithoutSystemd(t *testing.T) {
 	}
 }
 
-// TestUnitEnabledAndEnableUnitRoundTrip is a regression
-// test for uninstall's rollback: DisableUnit followed by EnableUnit must put
-// enablement back exactly where UnitEnabled found it, so a failed teardown's
-// abort can restore what it saw before touching anything.
 func TestUnitEnabledAndEnableUnitRoundTrip(t *testing.T) {
 	fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up"}); err != nil {
@@ -559,12 +426,6 @@ func TestUnitEnabledAndEnableUnitRoundTrip(t *testing.T) {
 	}
 }
 
-// TestUnitEnabledReturnsErrorWhenQueryFails is a regression
-// test: unitEnabled must distinguish a clean non-zero exit (systemctl ran and
-// reported not-enabled — a real, deterministic answer) from an invocation
-// that never ran at all (systemctl missing from PATH, here) — the latter
-// must surface as an error, not get folded into "disabled". Fails if
-// unitEnabled returns false, nil for any non-nil error, including this one.
 func TestUnitEnabledReturnsErrorWhenQueryFails(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "run-systemd-system")
@@ -575,8 +436,7 @@ func TestUnitEnabledReturnsErrorWhenQueryFails(t *testing.T) {
 	systemdMarkerPath = marker
 	t.Cleanup(func() { systemdMarkerPath = old })
 
-	// Systemd present (so the SystemdAvailable guard does not short-circuit
-	// first), but no systemctl anywhere in toolPath to run it with.
+	// Systemd present, but no systemctl anywhere in toolPath.
 	oldPath := toolPath
 	toolPath = t.TempDir()
 	t.Cleanup(func() { toolPath = oldPath })
@@ -585,10 +445,6 @@ func TestUnitEnabledReturnsErrorWhenQueryFails(t *testing.T) {
 	}
 }
 
-// TestUnitEnabledUnexpectedUnitFileStateIsAnError is a regression test for
-// unitEnabled's other error path: a UnitFileState this function does not
-// recognize (static, masked, ...) needs a human, not a silent "go ahead and
-// enable it anyway".
 func TestUnitEnabledUnexpectedUnitFileStateIsAnError(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_UNIT_FILE_STATE", "static")
@@ -597,14 +453,6 @@ func TestUnitEnabledUnexpectedUnitFileStateIsAnError(t *testing.T) {
 	}
 }
 
-// TestUnitEnabledMaskedCountsAsDisabled is a regression
-// test: an operator's own `systemctl mask` reports UnitFileState=masked,
-// which must count as "not boot-enabled" (false, nil) — the same as
-// disabled/not-found — rather than an error. A masked unit still refuses
-// `systemctl enable` on its own, so unitEnabled does not need to duplicate
-// that refusal; treating it as an error here would only block uninstall's
-// unitWasEnabled capture (and InstallUnit's retry path) on a node an
-// operator deliberately masked.
 func TestUnitEnabledMaskedCountsAsDisabled(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_UNIT_FILE_STATE", "masked")
@@ -613,10 +461,6 @@ func TestUnitEnabledMaskedCountsAsDisabled(t *testing.T) {
 	}
 }
 
-// TestUnitEnabledMaskedRuntimeIsStillAnError is the other half: unlike a
-// persistent mask, a /run-only mask on this unit would be unusual (nothing
-// in this codebase writes one), so it stays in the error bucket rather than
-// being silently folded into "disabled" alongside its persistent sibling.
 func TestUnitEnabledMaskedRuntimeIsStillAnError(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_UNIT_FILE_STATE", "masked-runtime")
@@ -625,10 +469,6 @@ func TestUnitEnabledMaskedRuntimeIsStillAnError(t *testing.T) {
 	}
 }
 
-// TestReloadSystemdSurfacesRealFailures is a regression
-// test: a real daemon-reload failure must be returned so uninstall
-// (which folds it into firstErr) does not report success while systemd still
-// serves a just-deleted unit's last-loaded definition.
 func TestReloadSystemdSurfacesRealFailures(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_FAIL", "daemon-reload")
@@ -637,10 +477,6 @@ func TestReloadSystemdSurfacesRealFailures(t *testing.T) {
 	}
 }
 
-// TestEnableUnitAcceptsAbsentUnitButSurfacesRealFailures mirrors
-// TestDisableAndStopUnitAcceptAbsentUnit/SurfaceRealFailures for EnableUnit:
-// rollback calls it unconditionally, so a node that was never installed must
-// not error, but a genuine systemctl failure must not be swallowed.
 func TestEnableUnitAcceptsAbsentUnitButSurfacesRealFailures(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_FAIL", "enable")
@@ -658,11 +494,6 @@ func TestEnableUnitAcceptsAbsentUnitButSurfacesRealFailures(t *testing.T) {
 	}
 }
 
-// TestSuppressRestartWritesADropInAllowRestartRemovesIt is a
-// regression test for the restart race: `systemctl disable` alone does not
-// stop Restart=always from firing on the ACTIVE unit, so uninstall needs a
-// separate mechanism — a runtime drop-in — to disarm it for the teardown
-// window, and a way to put it back.
 func TestSuppressRestartWritesADropInAllowRestartRemovesIt(t *testing.T) {
 	fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up"}); err != nil {
@@ -706,13 +537,6 @@ func TestSuppressAndAllowRestartSurfaceRealFailures(t *testing.T) {
 	}
 }
 
-// TestAllowRestartRetriesReloadWhenFileAlreadyAbsent is a regression
-// test: a call that removes the drop-in and then fails its own daemon-reload
-// leaves the file gone but systemd's LIVE config still holding the old
-// Restart=no — a retry must still reload, not treat "no file to remove" as
-// "nothing to do". Fails if the second call sees the drop-in
-// already absent and returns success without ever invoking daemon-reload
-// again.
 func TestAllowRestartRetriesReloadWhenFileAlreadyAbsent(t *testing.T) {
 	callLog := fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up"}); err != nil {
@@ -741,23 +565,13 @@ func TestAllowRestartRetriesReloadWhenFileAlreadyAbsent(t *testing.T) {
 	}
 }
 
-// TestReinstallAfterUninstallLeavesNoRestartOverride is a
-// regression test for a same-boot reinstall: uninstall's teardown sequence
-// (SuppressRestart, then — on success — StopUnit followed by AllowRestart)
-// must leave no Restart=no override behind for the NEXT InstallUnit to
-// inherit. Fails when AllowRestart is missing from the success
-// path: the drop-in survives the uninstall, and a `stratum up` run before
-// the next real reboot clears /run on its own installs a fresh unit that is
-// silently unable to recover from a crash until then.
 func TestReinstallAfterUninstallLeavesNoRestartOverride(t *testing.T) {
 	fakeSystemd(t)
 	argv := []string{"/opt/stratum/stratum", "up"}
 
-	// stratum up.
 	if err := InstallUnit(argv); err != nil {
 		t.Fatalf("InstallUnit: %v", err)
 	}
-	// stratum uninstall's teardown sequence, success path.
 	if err := SuppressRestart(); err != nil {
 		t.Fatalf("SuppressRestart: %v", err)
 	}
@@ -771,7 +585,6 @@ func TestReinstallAfterUninstallLeavesNoRestartOverride(t *testing.T) {
 		t.Fatalf("drop-in still present after a successful uninstall: err=%v", err)
 	}
 
-	// stratum up again, same boot — no reboot in between to clear /run.
 	if err := InstallUnit(argv); err != nil {
 		t.Fatalf("reinstall InstallUnit: %v", err)
 	}
@@ -780,14 +593,6 @@ func TestReinstallAfterUninstallLeavesNoRestartOverride(t *testing.T) {
 	}
 }
 
-// TestUnitPresentFromSystemdStateSurvivesFileDeletion is a regression test:
-// systemd only re-reads unit files on daemon-reload, so a unit file removed by
-// hand (or a teardown step that got this far and then failed before
-// ReloadSystemd) does not by itself unload or stop a unit systemd already has
-// in memory. Fails if DisableUnit, StopUnit and SuppressRestart
-// decide "nothing to do" purely from os.Stat on the unit file, silently
-// skipping a still-loaded, still ACTIVE unit the moment its file is
-// gone, whether or not systemd has actually forgotten it.
 func TestUnitPresentFromSystemdStateSurvivesFileDeletion(t *testing.T) {
 	callLog := fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up"}); err != nil {
@@ -796,8 +601,7 @@ func TestUnitPresentFromSystemdStateSurvivesFileDeletion(t *testing.T) {
 	if err := os.Remove(version.SystemdUnitPath); err != nil {
 		t.Fatalf("remove unit file: %v", err)
 	}
-	// The file is gone, but tell the fake systemctl what a real one would
-	// still say without a daemon-reload: the unit is still loaded and active.
+	// What a real systemctl would say without a daemon-reload: still loaded, active.
 	t.Setenv("FAKE_SYSTEMCTL_LOAD_STATE", "loaded")
 	t.Setenv("FAKE_SYSTEMCTL_ACTIVE_STATE", "active")
 
@@ -815,10 +619,6 @@ func TestUnitPresentFromSystemdStateSurvivesFileDeletion(t *testing.T) {
 	}
 }
 
-// TestUnitPresentFromSystemdStateNoopWhenSystemdAlsoForgotIt is the other
-// half: a unit gone from both the unit file AND systemd's own state
-// (LoadState=not-found) is genuinely absent, matching
-// TestDisableAndStopUnitAcceptAbsentUnit's file-based contract.
 func TestUnitPresentFromSystemdStateNoopWhenSystemdAlsoForgotIt(t *testing.T) {
 	callLog := fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_LOAD_STATE", "not-found")
@@ -836,11 +636,6 @@ func TestUnitPresentFromSystemdStateNoopWhenSystemdAlsoForgotIt(t *testing.T) {
 	}
 }
 
-// TestUnitPresentReturnsErrorWhenShowFails is a regression
-// test: a systemctl show failure (dbus wedged, systemctl missing) must be
-// returned as an error, not swallowed into "absent" — the exact fail-open bug
-// unitPresent's callers (DisableUnit/StopUnit/SuppressRestart/EnableUnit)
-// cannot afford. Fails if unitPresent returns false, nil.
 func TestUnitPresentReturnsErrorWhenShowFails(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_FAIL", "show")
@@ -849,14 +644,6 @@ func TestUnitPresentReturnsErrorWhenShowFails(t *testing.T) {
 	}
 }
 
-// TestUnitPresentNotFoundActiveCountsAsPresent and
-// TestUnitPresentNotFoundInactiveCountsAsAbsent pin the two edges of
-// unitPresent's decision, straight from systemctl's own field names: an
-// odd-looking not-found/active combination (a unit systemd still has an
-// active instance of, even once its LoadState no longer resolves — a rare
-// but real transition state) must still count as present, while
-// not-found/inactive — genuinely gone — must count as absent, matching
-// TestDisableAndStopUnitAcceptAbsentUnit's contract.
 func TestUnitPresentNotFoundActiveCountsAsPresent(t *testing.T) {
 	fakeSystemd(t)
 	t.Setenv("FAKE_SYSTEMCTL_LOAD_STATE", "not-found")
@@ -883,17 +670,6 @@ func TestUnitPresentNotFoundInactiveCountsAsAbsent(t *testing.T) {
 	}
 }
 
-// TestUnitActionsFailClosedWhenShowFails is a regression
-// test for the caller side of the same fix: DisableUnit, StopUnit and
-// SuppressRestart (and EnableUnit, for the same reason) must surface a
-// systemctl show failure as their own error rather than silently treating an
-// unknowable unit as absent and reporting success — uninstall's whole point
-// in checking is to not proceed while it cannot tell whether the unit is
-// still armed. EnableUnit is included here too even though only the
-// other three were reported: it shares the exact same unitPresent() guard,
-// and abort() already tolerates an EnableUnit failure (folds it into its
-// "failed" account rather than panicking), so there is no reason to leave it
-// fail-open while its three siblings fail closed.
 func TestUnitActionsFailClosedWhenShowFails(t *testing.T) {
 	fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up"}); err != nil {
@@ -915,13 +691,6 @@ func TestUnitActionsFailClosedWhenShowFails(t *testing.T) {
 	}
 }
 
-// TestInstallUnitRemovesLeftoverRestartOverride is a regression test for the
-// other half of the same-boot reinstall: when uninstall's own AllowRestart
-// cannot clean up the Restart=no override (a warning, not an abort, once
-// StopUnit has already succeeded — see internal/uninstall.Run), the next
-// InstallUnit must still strip it, so a `stratum up` before the next real
-// reboot clears /run never silently inherits Restart=no. Fails if
-// InstallUnit does not look at systemdDropInPath at all.
 func TestInstallUnitRemovesLeftoverRestartOverride(t *testing.T) {
 	fakeSystemd(t)
 	if err := os.MkdirAll(filepath.Dir(systemdDropInPath), 0o755); err != nil {
@@ -939,15 +708,6 @@ func TestInstallUnitRemovesLeftoverRestartOverride(t *testing.T) {
 	}
 }
 
-// TestInstallUnitRetriesRemoveStaleOverrideReloadWhenFileAlreadyAbsent is a
-// regression test, in the same style as
-// TestAllowRestartRetriesReloadWhenFileAlreadyAbsent: removeStaleRestartOverride
-// must reload systemd every time it runs, not only when it actually removed a
-// file. A call that removes the drop-in and then fails its OWN daemon-reload
-// leaves the file gone but systemd's LIVE config still holding the old
-// Restart=no; the next `stratum up` must still reload even though there is
-// nothing left to remove. Fails if the retry sees the drop-in
-// already absent and skips daemon-reload entirely.
 func TestInstallUnitRetriesRemoveStaleOverrideReloadWhenFileAlreadyAbsent(t *testing.T) {
 	callLog := fakeSystemd(t)
 	argv := []string{"/opt/stratum/stratum", "up"}
@@ -977,13 +737,8 @@ func TestInstallUnitRetriesRemoveStaleOverrideReloadWhenFileAlreadyAbsent(t *tes
 	}
 }
 
-// TestDisableAndStopUnitAcceptAbsentUnit is a contract:
-// uninstall runs on every node, including one where the unit was never
-// installed (e.g. it was always non-systemd, or InstallUnit never got that
-// far) — that must not be an error, only a REAL systemctl failure should be.
 func TestDisableAndStopUnitAcceptAbsentUnit(t *testing.T) {
 	fakeSystemd(t)
-	// No InstallUnit call: version.SystemdUnitPath does not exist on disk.
 	t.Setenv("FAKE_SYSTEMCTL_FAIL", "disable stop")
 	if err := DisableUnit(); err != nil {
 		t.Fatalf("DisableUnit on an absent unit: %v", err)
@@ -993,9 +748,6 @@ func TestDisableAndStopUnitAcceptAbsentUnit(t *testing.T) {
 	}
 }
 
-// TestDisableAndStopUnitSurfaceRealFailures is the other half of that
-// contract: uninstall must not paper over a genuine stop/disable
-// failure and proceed to delete state while the unit could still be armed.
 func TestDisableAndStopUnitSurfaceRealFailures(t *testing.T) {
 	fakeSystemd(t)
 	if err := InstallUnit([]string{"/opt/stratum/stratum", "up"}); err != nil {
@@ -1010,10 +762,6 @@ func TestDisableAndStopUnitSurfaceRealFailures(t *testing.T) {
 	}
 }
 
-// TestWriteFileAtomicallySyncsTheDirectoryAfterTheRename: the
-// rename is durable only once the directory holding it is synced, so the sync
-// has to happen, on that directory, after the file is in place -- and a failed
-// sync is a failed write, since the caller cannot know the rename will last.
 func TestWriteFileAtomicallySyncsTheDirectoryAfterTheRename(t *testing.T) {
 	saved := syncDir
 	t.Cleanup(func() { syncDir = saved })
@@ -1045,9 +793,6 @@ func TestWriteFileAtomicallySyncsTheDirectoryAfterTheRename(t *testing.T) {
 	}
 }
 
-// TestWriteFileAtomicallyFailureBeforeTheRename: the file at path is left
-// byte for byte, the temp file is removed, and a temp file that cannot be
-// removed is named in the error.
 func TestWriteFileAtomicallyFailureBeforeTheRename(t *testing.T) {
 	savedSync, savedRemove := syncFile, removeTempName
 	t.Cleanup(func() { syncFile, removeTempName = savedSync, savedRemove })
@@ -1082,8 +827,6 @@ func TestWriteFileAtomicallyFailureBeforeTheRename(t *testing.T) {
 	}
 }
 
-// TestSyncDirReportsAnUnopenableDirectory: the real sync, not the seam, fails
-// on a directory it cannot open rather than reporting a sync that never ran.
 func TestSyncDirReportsAnUnopenableDirectory(t *testing.T) {
 	if err := syncDir(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("syncDir reported success for a directory that does not exist")
@@ -1093,10 +836,7 @@ func TestSyncDirReportsAnUnopenableDirectory(t *testing.T) {
 	}
 }
 
-// TestAtomicWritesSetTheModeBeforeTheSync: a mode changed
-// after the fsync is not covered by it, so a crash could leave a write that
-// reported success at the temp file's 0600. Both writers must have the final
-// mode on the file when it is synced.
+// A mode changed after the fsync is not covered by it.
 func TestAtomicWritesSetTheModeBeforeTheSync(t *testing.T) {
 	saved := syncFile
 	t.Cleanup(func() { syncFile = saved })
@@ -1121,9 +861,6 @@ func TestAtomicWritesSetTheModeBeforeTheSync(t *testing.T) {
 	}
 }
 
-// TestCreateFileExclusively: the at-rest key is minted on an
-// earlier look at its path, so the write must never replace a file that
-// appeared since; and no temp file is left behind unreported.
 func TestCreateFileExclusively(t *testing.T) {
 	savedSync := syncDir
 	t.Cleanup(func() { syncDir = savedSync })
@@ -1150,8 +887,7 @@ func TestCreateFileExclusively(t *testing.T) {
 			if _, err := os.Stat(path); err != nil {
 				t.Errorf("directory synced before the file was linked in: %v", err)
 			}
-			// The temp name is gone before the sync, so the
-			// sync covers its removal too.
+			// The temp name is gone before the sync, so the sync covers its removal too.
 			if entries, _ := os.ReadDir(d); len(entries) != 1 {
 				t.Errorf("directory synced with %d entries, want only the file (temp name still there?)", len(entries))
 			}
@@ -1267,10 +1003,6 @@ func TestExecStartPath(t *testing.T) {
 	}
 }
 
-// TestUnitArgvReadsBackWhatInstallUnitWrote: the upgrade's missing-config
-// guard reads the --config a restart of the unit will run from the unit file,
-// so the reader must give back exactly the argv the writer was handed —
-// including the paths escapeSystemdArg quotes or escapes.
 func TestUnitArgvReadsBackWhatInstallUnitWrote(t *testing.T) {
 	fakeSystemd(t)
 	for _, cfg := range []string{
@@ -1301,9 +1033,6 @@ func TestUnitArgvWithNoUnit(t *testing.T) {
 	}
 }
 
-// TestExecStartArgvRefusesWhatItCannotRead: anything outside the grammar the
-// writer uses, or a unit systemd would not run as written, is an error, never
-// a guessed argv.
 func TestExecStartArgvRefusesWhatItCannotRead(t *testing.T) {
 	for _, unit := range []string{
 		"[Service]\nType=simple\n",
@@ -1333,10 +1062,6 @@ func TestExecStartArgvRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
-// TestUnitArgvRefusesADropInExecStart: systemd runs a drop-in's ExecStart=,
-// which UnitArgv does not read, so it says it cannot tell instead of
-// answering with the unit file's — from any drop-in directory, however the
-// assignment is spaced.
 func TestUnitArgvRefusesADropInExecStart(t *testing.T) {
 	fakeSystemd(t)
 	if err := InstallUnit([]string{"/usr/local/bin/stratum", "up", "--config", "/etc/stratum/config.yaml"}); err != nil {
@@ -1370,9 +1095,6 @@ func TestUnitArgvRefusesADropInExecStart(t *testing.T) {
 	}
 }
 
-// TestUnitDropInDirs pins where systemd looks for the unit's drop-ins on a
-// real host: the unit's own directory under /etc, /run and the vendor trees,
-// and the directory every service shares beside each.
 func TestUnitDropInDirs(t *testing.T) {
 	got := unitDropInDirs()
 	for _, want := range []string{
@@ -1387,9 +1109,6 @@ func TestUnitDropInDirs(t *testing.T) {
 	}
 }
 
-// TestUnitArgvTreatsAMaskAsNoUnit: a masked unit is a symlink to /dev/null,
-// which reads as an empty file. systemd never starts it and InstallUnit keeps
-// the mask, so it is reported as absent, not as a unit with no ExecStart=.
 func TestUnitArgvTreatsAMaskAsNoUnit(t *testing.T) {
 	fakeSystemd(t)
 	if err := os.Symlink(os.DevNull, version.SystemdUnitPath); err != nil {
@@ -1400,9 +1119,6 @@ func TestUnitArgvTreatsAMaskAsNoUnit(t *testing.T) {
 	}
 }
 
-// TestUnitArgvSkipsAVanishedDropIn: systemd skips a drop-in it cannot open
-// because it is gone, and runs the unit's ExecStart=. A dangling drop-in must
-// not read as fs.ErrNotExist, which callers take to mean there is no unit.
 func TestUnitArgvSkipsAVanishedDropIn(t *testing.T) {
 	fakeSystemd(t)
 	argv := []string{"/usr/local/bin/stratum", "up", "--config", "/etc/stratum/config.yaml"}
@@ -1421,8 +1137,7 @@ func TestUnitArgvSkipsAVanishedDropIn(t *testing.T) {
 	}
 }
 
-// The tools run as root, so a variable that loads code (XTABLES_LIBDIR,
-// TC_LIB_DIR) in the caller's environment must not reach them.
+// Tools run as root: caller-set variables that load code must not reach them.
 func TestHostCmdEnvIsExplicit(t *testing.T) {
 	t.Setenv("XTABLES_LIBDIR", "/evil")
 	t.Setenv("TC_LIB_DIR", "/evil")
@@ -1433,8 +1148,6 @@ func TestHostCmdEnvIsExplicit(t *testing.T) {
 	}
 }
 
-// A shim of systemctl first on the caller's PATH must not be what runs: the
-// tool is looked up in toolPath.
 func TestHostCmdIgnoresTheCallersPath(t *testing.T) {
 	shim, real := t.TempDir(), t.TempDir()
 	for _, d := range []string{shim, real} {

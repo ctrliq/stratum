@@ -12,8 +12,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// File writes nested under upgrade and rollback may report a missing SELinux
-// policy. Those reports belong to the operation, including backups and markers.
 func TestUpgradeFileProgressUsesOperationWriter(t *testing.T) {
 	for _, which := range []string{"install and backup", "rollback", "marker"} {
 		t.Run(which, func(t *testing.T) {

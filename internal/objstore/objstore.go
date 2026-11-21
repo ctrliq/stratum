@@ -1,8 +1,4 @@
-// Package objstore is a thin S3 client (AWS SDK for Go v2) for offloading etcd
-// snapshots to an S3-compatible object store — AWS S3, MinIO, Ceph RGW, etc. A
-// custom BaseEndpoint + path-style addressing makes the non-AWS stores work.
-// Credentials are passed in a Target (loaded from /etc/stratum/snapshot.conf or the
-// environment) — never on the command line.
+// Package objstore offloads etcd snapshots to S3-compatible object stores.
 package objstore
 
 import (
@@ -30,15 +26,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Target describes an S3-compatible destination for snapshots.
 type Target struct {
-	Endpoint  string // custom endpoint for S3-compatible stores; empty = real AWS
-	Region    string // default "us-east-1"
+	Endpoint  string
+	Region    string
 	Bucket    string
-	Prefix    string // key prefix (folder within the bucket)
+	Prefix    string
 	AccessKey string
 	SecretKey string
-	PathStyle bool // true for MinIO/Ceph and most non-AWS endpoints
+	PathStyle bool
 }
 
 // Enabled reports whether an S3 target is configured (a bucket is set).
@@ -97,12 +92,7 @@ func (t *Target) Upload(ctx context.Context, localPath, name string) error {
 	return nil
 }
 
-// Download fetches object `name` into root (multipart), as a file called name.
-// The file is written 0600 to a temp file beside it and renamed into place once
-// complete, so a failed download leaves an existing file untouched, and a
-// symlink at that name is replaced, never followed. root is a directory handle,
-// not a path, so the directory that was checked is the one written even if its
-// name is swapped meanwhile.
+// Download writes name into root 0600, atomically: a symlink at name is replaced, never followed.
 func (t *Target) Download(ctx context.Context, root *os.Root, name string) error {
 	cli, err := t.client(ctx)
 	if err != nil {
@@ -120,13 +110,10 @@ func (t *Target) Download(ctx context.Context, root *os.Root, name string) error
 	})
 }
 
-// tempName is the name of a temp file writeAtomic makes for name:
-// ".<name>.<uint32 in decimal>".
 func tempName(name string) string {
 	return "." + name + "." + strconv.FormatUint(uint64(rand.Uint32()), 10)
 }
 
-// isTempName reports whether file is a temp file writeAtomic could have made for name.
 func isTempName(file, name string) bool {
 	digits, ok := strings.CutPrefix(file, "."+name+".")
 	if !ok {
@@ -137,9 +124,7 @@ func isTempName(file, name string) bool {
 	return err == nil && strconv.FormatUint(n, 10) == digits
 }
 
-// writeAtomic runs fill on a new 0600 file in root (O_EXCL, so never a
-// pre-planted path), syncs it and renames it to name. The temp file is removed
-// on any error.
+// O_EXCL: a pre-planted temp name can never win.
 func writeAtomic(root *os.Root, name string, fill func(*os.File) error) (err error) {
 	var f *os.File
 	var tmp string
@@ -171,10 +156,7 @@ func writeAtomic(root *os.Root, name string, fill func(*os.File) error) (err err
 	return root.Rename(tmp, name)
 }
 
-// RemoveStaleTemps removes from root the regular files named like the temp
-// files Download makes for name (".<name>.<digits>") that were last written more
-// than olderThan ago: what a SIGKILL or power loss mid-download leaves, a
-// partial copy of a snapshot. Younger ones may be a concurrent download's.
+// RemoveStaleTemps removes Download's stale temp files: what a SIGKILL mid-download leaves.
 func RemoveStaleTemps(root *os.Root, name string, olderThan time.Duration) error {
 	d, err := root.Open(".")
 	if err != nil {
@@ -202,12 +184,10 @@ func RemoveStaleTemps(root *os.Root, name string, olderThan time.Duration) error
 	return errors.Join(errs...)
 }
 
-// Object is one item in the store.
 type Object struct {
-	// Key preserves trailing slashes for consumers distinguishing prefix markers.
-	// It is excluded from native machine-readable snapshot list output.
+	// Key keeps trailing slashes, for consumers separating prefix markers.
 	Key      string `json:"-"`
-	Name     string // base name (prefix stripped)
+	Name     string
 	Size     int64
 	Modified time.Time
 }
@@ -244,80 +224,43 @@ func (t *Target) List(ctx context.Context) ([]Object, error) {
 	return out, nil
 }
 
-// ListEnd classifies how a bounded listing ended. Only ListEndedComplete
-// says the objects are the store's exact total; every other end stopped the
-// listing before the end, so the objects returned are a floor and the
-// store's total is unknown — never zero.
+// ListEnd classifies how a bounded listing ended.
 type ListEnd string
 
 const (
-	// ListEndedComplete: every page was listed to the end.
 	ListEndedComplete ListEnd = "complete"
-	// ListEndedCapped: a page or byte cap stopped the listing before the end.
-	ListEndedCapped ListEnd = "capped"
-	// ListEndedDenied: the store refused the listing (403) — access denied
-	// on the bucket, a wrong key, a policy — distinct from an ordinary
-	// failure because it is the store's answer, not a broken request.
-	ListEndedDenied ListEnd = "denied"
-	// ListEndedTimeout: the listing's time bound ran out mid-listing.
-	ListEndedTimeout ListEnd = "timeout"
-	// ListEndedCancelled: the caller cancelled the listing mid-listing.
+	ListEndedCapped   ListEnd = "capped"
+	// ListEndedDenied is the store's refusal, not a broken request.
+	ListEndedDenied    ListEnd = "denied"
+	ListEndedTimeout   ListEnd = "timeout"
 	ListEndedCancelled ListEnd = "cancelled"
-	// ListEndedFailed: the listing failed any other way.
-	ListEndedFailed ListEnd = "failed"
+	ListEndedFailed    ListEnd = "failed"
 )
 
-// The built-in bounds of a bounded listing: a caller that passes no cap gets
-// these, never an unbounded listing.
+// A caller passing no cap gets these, never an unbounded listing.
 const (
-	// ListKeysPerPage is the keys the S3 ListObjectsV2 API serves one page:
-	// the most a single page carries, and the grain every page cap below
-	// is counted in.
-	ListKeysPerPage = 1000
-	// DefaultListMaxPages is the page cap. At ListKeysPerPage keys a page
-	// it bounds a listing at a million objects.
+	// ListKeysPerPage is the most keys one ListObjectsV2 page carries.
+	ListKeysPerPage     = 1000
 	DefaultListMaxPages = 1000
-	// DefaultListMaxBytes is the byte cap: how many object bytes one
-	// listing may account for.
 	DefaultListMaxBytes = int64(1) << 40
-	// DefaultListMaxTime is the time cap: how long one listing may take,
-	// however patient the caller's context is.
-	DefaultListMaxTime = 30 * time.Second
+	DefaultListMaxTime  = 30 * time.Second
 )
 
-// ListOptions carries the finite bounds of a bounded listing. A zero or
-// negative cap means the built-in default, never an unbounded listing.
+// ListOptions bounds a listing; a zero or negative cap means the default, never unbounded.
 type ListOptions struct {
-	// MaxPages caps how many pages the listing may request (the page cap).
 	MaxPages int
-	// MaxBytes caps how many object bytes the listing may account for.
 	MaxBytes int64
-	// MaxTime caps how long the listing may take, on top of whatever
-	// deadline the caller's context already carries (the shorter bound
-	// wins).
-	MaxTime time.Duration
+	MaxTime  time.Duration
 }
 
-// ListResult is a bounded listing's objects and how the listing ended. The
-// end classification is safe by construction: it names the condition —
-// denied, timeout, cancellation, a cap — and never carries the store's raw
-// error text.
+// ListResult is a listing's objects and its end; End never carries the store's raw error text.
 type ListResult struct {
-	// Objects are the objects listed, sorted by name. They are the store's
-	// exact total only when End is ListEndedComplete; otherwise they are a
-	// floor.
+	// Objects are the exact total only when End is ListEndedComplete; otherwise a floor.
 	Objects []Object
-	// End says how the listing ended.
-	End ListEnd
+	End     ListEnd
 }
 
-// ListBounded lists the objects under the target's prefix under finite page,
-// byte and time bounds, ending complete when it reached the end and
-// classified — denied, timeout, cancelled, capped, failed — when it stopped
-// short. The caller's context is propagated into the S3 calls, so a hung or
-// denied store returns when the bound or the caller ends it, not when the
-// store does. A key the store lists again on a later page is one object: a
-// duplicate across pages is the same object, listed once.
+// ListBounded lists the store's objects under the target's prefix with finite bounds.
 func (t *Target) ListBounded(ctx context.Context, o ListOptions) ListResult {
 	if o.MaxPages <= 0 {
 		o.MaxPages = DefaultListMaxPages
@@ -328,9 +271,6 @@ func (t *Target) ListBounded(ctx context.Context, o ListOptions) ListResult {
 	if o.MaxTime <= 0 {
 		o.MaxTime = DefaultListMaxTime
 	}
-	// The time cap on top of the caller's own deadline: whichever bound is
-	// shorter ends the listing, so it is finite however patient the caller
-	// is — and however silent the store is.
 	ctx, cancel := context.WithTimeout(ctx, o.MaxTime)
 	defer cancel()
 
@@ -365,10 +305,6 @@ list:
 		}
 		page, err := p.NextPage(ctx)
 		if err != nil {
-			// What the pages so far listed stands as a floor; the
-			// classification names what stopped the rest. The floor
-			// leaves through the same exit as every other end, so it
-			// keeps the sorted-by-name contract the result documents.
 			end = listEnd(err)
 			break list
 		}
@@ -377,8 +313,6 @@ list:
 			key := aws.ToString(ob.Key)
 			name := path.Base(key)
 			if seen[key] {
-				// The store listed this key again on a later page:
-				// the same object, not a second one.
 				continue
 			}
 			seen[key] = true
@@ -402,9 +336,7 @@ list:
 	return res
 }
 
-// listEnd classifies how a listing error ended the listing. It is safe by
-// construction: it names the condition — a denial, a timeout, a cancellation,
-// a failure — and never carries the store's raw error text.
+// listEnd names a condition; it never carries the store's raw error text.
 func listEnd(err error) ListEnd {
 	switch {
 	case err == nil:
@@ -425,9 +357,7 @@ func listEnd(err error) ListEnd {
 	return ListEndedFailed
 }
 
-// Prune deletes objects whose base name owned accepts, keeping the newest
-// `keep` by LastModified with the name breaking ties, and tries every older
-// one even when a delete fails. keep <= 0 is a no-op (never prune-all).
+// Prune deletes the owned objects older than the newest keep; keep <= 0 is a no-op.
 func (t *Target) Prune(ctx context.Context, owned func(name string) bool, keep int) error {
 	if keep <= 0 {
 		return nil

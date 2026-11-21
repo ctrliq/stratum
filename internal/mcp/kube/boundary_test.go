@@ -10,9 +10,7 @@ import (
 	"testing"
 )
 
-// TestNoMCPSDKImport enforces the split this package exists for: it is a
-// Kubernetes client library, and it must stay testable against a real
-// apiserver with no protocol harness in the way.
+// The package must stay a plain Kubernetes client library, testable without the SDK.
 func TestNoMCPSDKImport(t *testing.T) {
 	const forbidden = "modelcontextprotocol"
 
@@ -54,8 +52,6 @@ func TestNoMCPSDKImport(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 
-	// A walk that found nothing would pass silently, which is the one way
-	// this test could stop meaning anything.
 	if checked == 0 {
 		t.Fatal("no Go files walked; the guard is not actually checking anything")
 	}

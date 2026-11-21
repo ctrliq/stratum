@@ -14,8 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Exercise the real client protocol: acknowledging reload is not evidence that
-// the old process has exited, let alone that the replacement is running.
 func TestReloadWaitsForReplacement(t *testing.T) {
 	for _, mode := range []string{"delayed restart", "old supervisor", "baseline status error", "other rejection", "stopped component"} {
 		t.Run(mode, func(t *testing.T) {

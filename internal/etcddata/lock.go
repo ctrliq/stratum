@@ -1,5 +1,4 @@
-// Package etcddata coordinates Stratum operations that create, replace, or
-// restore the local etcd data directory.
+// Package etcddata coordinates etcd data-directory create, replace and restore operations.
 package etcddata
 
 import (
@@ -11,8 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// lockPath lives outside the data directory. The production lock also lives
-// outside version.DataDir, which uninstall removes in its entirety.
+// The production lock lives outside version.DataDir, which uninstall removes in its entirety.
 func lockPath(dir string) string {
 	if dir == version.EtcdDataDir {
 		return version.DataDir + "-etcd.lock"
@@ -40,13 +38,7 @@ func Lock(dir string) (release func(), err error) {
 	}, nil
 }
 
-// StartLockHeld reports whether a `stratum up` holds the node-start lock.
-// `stratum up` holds it for its whole run, so on its own this means "a node is
-// starting or running"; RefuseStartInProgress pairs it with the supervisor
-// probe to tell the two apart.
-//
-// The probe takes the lock itself for an instant; AcquireStartLock retries
-// briefly so a start that lands in that instant is not refused.
+// The probe takes the lock for an instant, so AcquireStartLock retries briefly around it.
 func StartLockHeld() (bool, error) { return startLockHeldAt(version.StartLockPath) }
 
 func startLockHeldAt(path string) (bool, error) {
@@ -65,21 +57,7 @@ func startLockHeldAt(path string) (bool, error) {
 	return false, nil
 }
 
-// RefuseStartInProgress refuses a data-replacing operation while a node start is
-// between preparation and a visible supervisor.
-//
-// `stratum up` holds this package's data lock only while it prepares node state
-// (PrepareController), then releases it before RunController renders manifests
-// and brings the supervisor up. In that gap the data lock is free, so an
-// operation that took only the data lock could replace the etcd data dir under a
-// start that is about to run with state prepared against the old one. The start
-// lock closes the gap: it is held from before preparation until the process
-// exits, so "start lock held, no supervisor visible" is exactly that window.
-// Once the supervisor is visible the start is complete and the operation is
-// acting on a running node, which is what it was written for.
-//
-// Call it with the data lock already held. A start that begins after this check
-// then fails on the data lock, so there is no window after the check either.
+// Call with the data lock held: it closes the gap between a start's preparation and its supervisor.
 func RefuseStartInProgress(op, doing string, supervisorRunning func() bool, startLockHeld func() (bool, error)) error {
 	if supervisorRunning() {
 		return nil

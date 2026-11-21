@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// TestPeerPIDIsTheListener: the pid read from a unix socket is the process
-// that listens on it.
 func TestPeerPIDIsTheListener(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "s.sock")
 	l, err := net.Listen("unix", sock)

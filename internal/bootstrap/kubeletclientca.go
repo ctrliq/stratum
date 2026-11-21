@@ -16,9 +16,7 @@ import (
 
 const kubeletClientCAPath = "/api/v1/namespaces/kube-public/configmaps/" + clusterinfo.KubeletClientCAConfigMap
 
-// FetchKubeletClientCA anonymously fetches the kubelet client-CA bundle a split
-// cluster publishes, over TLS verified against roots. found is false on a 404 or
-// 403; the caller may treat that as legacy only when signed cluster-info says so.
+// FetchKubeletClientCA fetches a split cluster's kubelet client-CA bundle over verified TLS.
 func FetchKubeletClientCA(server string, roots []byte) (bundle []byte, found bool, err error) {
 	u, err := url.Parse(server)
 	if err != nil {

@@ -1,32 +1,3 @@
-// Worker CA-trust refresh: the fetch → validate → stage → commit prefix of
-// workerRefreshTrust, kept out of carotate.go so it can be exercised without a
-// live supervisor. Nothing here mutates a live file until commit is called.
-//
-// The refresh rewrites ca-bundle.crt and, with the same bytes, the kubelet's
-// clientCAFile (kubelet-client-ca-bundle.crt) — any CA in that file can present
-// an O=system:masters client cert to the kubelet's :10250.
-// Four layers guard that write, and only the first defends against an on-path
-// attacker:
-//
-//	L1 transport   the fetch runs over TLS verified against the on-disk bundle
-//	               (bootstrap.FetchClusterCAVerified). THIS is the anti-MITM control.
-//	L4 structure   every block must be a parseable CA certificate.
-//	L3 containment the transition must match the caller's intent (widen / narrow).
-//	L2 self-check  the fetched bundle must validate the serving cert of the
-//	               connection it arrived on — never adopt trust that would not
-//	               have permitted the connection you just made.
-//
-// They are numbered by how much each assumes and applied L4 → L3 → L2, the order
-// that yields the most actionable message when more than one would fire.
-//
-// L2-L4 bound what a LEGITIMATE BUT WRONG peer can do — a stale cluster-info
-// republish, a half-orchestrated rotation, a control plane that published the
-// wrong bundle. None is an anti-MITM control and none should ever be described as
-// one: the cluster CA certificate is public data served to anonymous callers, so
-// an attacker who defeats L1 simply appends their own CA to a bundle that also
-// contains the genuine one and satisfies every containment predicate that can be
-// written. L1 stops the attack; L2-L4 stop the accidents.
-
 package certs
 
 import (
@@ -46,27 +17,11 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// trustIntent is the direction a caller is allowed to move this node's trust
-// store. It is passed explicitly rather than derived from CARotateOptions.Phase:
-// `certs rotate-ca --rollback --phase=finalize` is accepted by the CLI (main.go
-// evaluates the rollback case first and never rejects --phase), so a
-// Phase-derived intent would apply finalize's narrow-only rule to a rollback that
-// legitimately re-widens.
 type trustIntent int
 
 const (
-	// trustWiden (phase trust-new) — the cluster is adding a CA. Trust may grow by
-	// the one staged CA and must not shrink.
 	trustWiden trustIntent = iota
-	// trustNarrow (phase finalize) — the cluster is dropping the old CA. Trust may
-	// only fall back to anchors already held; nothing new may be introduced by a
-	// phase whose entire job is removal.
 	trustNarrow
-	// trustEither (RollbackCA) — a rollback legitimately narrows or re-widens
-	// depending on how far the rotation got, and the worker has no phase context to
-	// tell which. It may do one or the other, never both at once: no rotation state
-	// both adds and drops an anchor, and forbidding it keeps commit's partial-apply
-	// argument true on this path too.
 	trustEither
 )
 
@@ -83,13 +38,13 @@ func (i trustIntent) String() string {
 	}
 }
 
-// trustPaths are the five files a trust refresh rewrites, in commit order.
 type trustPaths struct {
-	caBundle            string // the cluster trust bundle
-	kubeletClientCA     string // kubelet clientCAFile — inbound trust
-	caCert              string // read by other tooling; kept in step with the bundle
-	kubeletKubeconfig   string // outbound trust: how kubelet verifies the apiserver
-	bootstrapKubeconfig string // outbound trust: the join's CA, kept in step with kubelet.kubeconfig
+	caBundle        string
+	kubeletClientCA string
+	// read by other tooling; kept in step with the bundle
+	caCert              string
+	kubeletKubeconfig   string
+	bootstrapKubeconfig string
 }
 
 func workerTrustPaths() trustPaths {
@@ -102,11 +57,6 @@ func workerTrustPaths() trustPaths {
 	}
 }
 
-// planTrustRefresh fetches the cluster-info bundle over verified TLS, runs L2-L4,
-// and stages every resulting file next to its destination. It performs NO
-// mutation of a live file — every rejection above leaves the node byte-identical,
-// which is what makes a refused refresh a clean abort rather than a half-applied
-// one. Call commit to apply, or abort to discard.
 func planTrustRefresh(server string, intent trustIntent, p trustPaths) (_ *trustUpdate, err error) {
 	onDiskPEM, source, onDisk, err := readRefreshAnchor(p)
 	if err != nil {
@@ -121,9 +71,7 @@ func planTrustRefresh(server string, intent trustIntent, p trustPaths) (_ *trust
 	if err != nil {
 		return nil, err
 	}
-	// Containment runs before the peer check purely for the error an operator sees:
-	// a wholesale pivot fails both, and "shares no certificate with your bundle" is
-	// the actionable message where "does not validate the peer" is a symptom.
+	// Containment runs before the peer check purely for the more actionable operator-facing error.
 	added, dropped, err := checkTrustTransition(onDisk, fetched, intent)
 	if err != nil {
 		return nil, err
@@ -142,8 +90,6 @@ func planTrustRefresh(server string, intent trustIntent, p trustPaths) (_ *trust
 			err = errors.Join(err, fmt.Errorf("staged temp files could not be removed and remain on disk: %w", cerr))
 		}
 	}()
-	// ca-bundle.crt, the kubelet's clientCAFile (unless split) and ca.crt carry
-	// the fetched bundle verbatim.
 	split, err := checkKubeletRefreshInputs(p, onDiskPEM, source)
 	if err != nil {
 		return nil, err
@@ -170,8 +116,6 @@ func planTrustRefresh(server string, intent trustIntent, p trustPaths) (_ *trust
 		}
 		u.staged = append(u.staged, s)
 	}
-	// The kubeconfigs embed the CA as data. Absent ones are skipped, not created —
-	// a worker may have no bootstrap-kubeconfig.
 	for _, kc := range refreshKubeconfigs(p) {
 		data, err := refreshKubeconfig(kc, fetchedPEM)
 		if err != nil {
@@ -187,7 +131,6 @@ func planTrustRefresh(server string, intent trustIntent, p trustPaths) (_ *trust
 	return u, nil
 }
 
-// refreshServer is the endpoint a worker refresh fetches cluster-info from.
 func refreshServer(p trustPaths) (string, error) {
 	server, err := kubeconfig.CurrentServer(p.kubeletKubeconfig)
 	if err != nil {
@@ -196,8 +139,6 @@ func refreshServer(p trustPaths) (string, error) {
 	return server, nil
 }
 
-// refreshKubeconfigs are the kubeconfigs a refresh rewrites: absent ones are
-// skipped, not created, since a worker may have no bootstrap-kubeconfig.
 func refreshKubeconfigs(p trustPaths) []string {
 	var out []string
 	for _, kc := range []string{p.kubeletKubeconfig, p.bootstrapKubeconfig} {
@@ -208,7 +149,6 @@ func refreshKubeconfigs(p trustPaths) []string {
 	return out
 }
 
-// refreshKubeconfig is kc with its embedded CA replaced by ca.
 func refreshKubeconfig(kc string, ca []byte) ([]byte, error) {
 	data, err := kubeconfig.ReadWithClusterCA(kc, ca)
 	if err != nil {
@@ -217,7 +157,6 @@ func refreshKubeconfig(kc string, ca []byte) ([]byte, error) {
 	return data, nil
 }
 
-// readRefreshAnchor reads and parses the on-disk trust a refresh starts from.
 func readRefreshAnchor(p trustPaths) ([]byte, string, []*x509.Certificate, error) {
 	onDiskPEM, source, err := readTrustAnchor(p)
 	if err != nil {
@@ -230,11 +169,6 @@ func readRefreshAnchor(p trustPaths) ([]byte, string, []*x509.Certificate, error
 	return onDiskPEM, source, onDisk, nil
 }
 
-// checkKubeletRefreshInputs makes a refresh's local checks of the kubelet
-// client-CA bundle and reports whether it is split from the root. A missing
-// bundle cannot tell whether this worker joined a split cluster, and recreating
-// it from the root would grant root-signed clients access to the kubelet, so
-// the operator must restore the original.
 func checkKubeletRefreshInputs(p trustPaths, onDiskPEM []byte, source string) (bool, error) {
 	if _, err := os.Stat(p.kubeletClientCA); err != nil {
 		return false, fmt.Errorf("cannot refresh root trust: restore the original kubelet client-CA bundle %s before retrying: %w", p.kubeletClientCA, err)
@@ -263,12 +197,6 @@ func checkKubeletRefreshInputs(p trustPaths, onDiskPEM []byte, source string) (b
 	return split, nil
 }
 
-// readTrustAnchor returns the node's existing trust material through pki's one
-// "trust the bundle, else ca.crt" reader — the same order kubeconfig.Write and
-// token.ensureClusterInfo embed, over the files pki's manifest classifies. The
-// fallback is what keeps a node that only ever had ca.crt written refreshable.
-// The refresh's own paths name the files it rewrites; they live in one PKI
-// directory, and the anchor read goes through that directory.
 func readTrustAnchor(p trustPaths) ([]byte, string, error) {
 	b, source, err := pki.ReadRootTrustFrom(filepath.Dir(p.caBundle))
 	if err != nil {
@@ -277,16 +205,6 @@ func readTrustAnchor(p trustPaths) ([]byte, string, error) {
 	return b, source, nil
 }
 
-// parseTrustBundle decodes a CA trust bundle under pki.KubeletPolicy, the
-// kubelet-verbatim policy. caFromClusterInfo returns the ConfigMap's
-// certificate-authority-data on len(...) > 0 alone — never PEM-decoded, never
-// parsed, as does its initial-join twin fetchClusterCA — so without this,
-// arbitrary bytes reach the kubelet's clientCAFile. The policy is the strict
-// one on purpose: the fetched bytes are written verbatim, so every byte must
-// be a CERTIFICATE block that client-go's cert.ParseCertsPEM — the parser the
-// kubelet loads clientCAFile with — will honour. The rule each refusal
-// enforces is declared (and its etcd counterpart documented) at
-// pki.KubeletPolicy and pki.DecodePEMBundle, which does the decoding.
 func parseTrustBundle(what string, pemBytes []byte) ([]*x509.Certificate, error) {
 	certs, err := pki.DecodePEMBundle(pemBytes, pki.KubeletPolicy)
 	if err != nil {
@@ -295,13 +213,6 @@ func parseTrustBundle(what string, pemBytes []byte) ([]*x509.Certificate, error)
 	return certs, nil
 }
 
-// bundleCoversPeer (L2) requires the fetched bundle to validate the serving
-// certificate of the connection it arrived on. It deliberately does not re-check
-// the hostname: the TLS handshake already did that against the on-disk anchor
-// (L1), and repeating it would only re-verify what L1 established. This is what
-// catches a stale or regressed cluster-info republish — the case containment
-// alone passes, because a narrower bundle intersects the on-disk one perfectly
-// well.
 func bundleCoversPeer(fetched, peer []*x509.Certificate) error {
 	if len(peer) == 0 {
 		return fmt.Errorf("refusing to apply the fetched trust bundle: the connection presented no certificate to check it against")
@@ -325,18 +236,13 @@ func bundleCoversPeer(fetched, peer []*x509.Certificate) error {
 	return nil
 }
 
-// checkTrustTransition (L3) bounds how far a single refresh may move this node's
-// trust store, per the caller's intent, and returns what the accepted transition
-// adds and drops so the caller can report it. See the trustIntent constants for
-// the rule each phase gets and why intent is a parameter, not a phase lookup.
+// checkTrustTransition bounds how far one refresh may move this node's trust store, per intent.
 func checkTrustTransition(onDisk, fetched []*x509.Certificate, intent trustIntent) (added, dropped []*x509.Certificate, err error) {
 	have := fingerprints(onDisk)
 	want := fingerprints(fetched)
 	added = dedupe(notIn(fetched, have))
 	dropped = dedupe(notIn(onDisk, want))
 
-	// Disjoint is a wholesale pivot in any phase, and is the one refusal whose
-	// cause an operator cannot infer from the fact that the phase halted.
 	if len(notIn(fetched, have)) == len(fetched) {
 		return nil, nil, fmt.Errorf("refusing to apply the fetched trust bundle: it shares no certificate with this node's on-disk bundle (%s), which is a wholesale trust pivot rather than a rotation: every rotation, --force included, keeps the old root in the bundle until finalize, so do not trust this bundle. If the cluster's control planes were rebuilt on a new root, remove this node (`sudo %s uninstall --yes`) and join it again with a token from `stratum token create` on a control plane", describe(onDisk), version.StratumInstallPath)
 	}
@@ -371,11 +277,6 @@ func checkTrustTransition(onDisk, fetched []*x509.Certificate, intent trustInten
 	return added, dropped, nil
 }
 
-// fingerprints keys certificates by SHA-256 over the full DER. "Already trusted"
-// means this exact certificate, so full DER is the comparison unit; subject+SKI
-// is forgeable outright and SPKI would accept a re-issued look-alike. Note
-// bootstrap.verifyCAHash pins SPKI instead, correctly — a discovery pin is over a key, not a
-// certificate. The two are not interchangeable and are deliberately not unified.
 func fingerprints(certs []*x509.Certificate) map[[sha256.Size]byte]struct{} {
 	m := make(map[[sha256.Size]byte]struct{}, len(certs))
 	for _, c := range certs {
@@ -394,8 +295,7 @@ func notIn(certs []*x509.Certificate, set map[[sha256.Size]byte]struct{}) []*x50
 	return out
 }
 
-// dedupe collapses repeated certificates so a bundle that lists the same CA twice
-// is not counted as two additions and refused.
+// dedupe collapses repeats so a bundle listing one CA twice is not refused as two additions.
 func dedupe(certs []*x509.Certificate) []*x509.Certificate {
 	seen := make(map[[sha256.Size]byte]struct{}, len(certs))
 	var out []*x509.Certificate
@@ -410,11 +310,6 @@ func dedupe(certs []*x509.Certificate) []*x509.Certificate {
 	return out
 }
 
-// describe names CAs for an operator. The CommonName alone does not identify one:
-// pki mints both the live root and the rotation root as "stratum-ca", so a refusal
-// that said only that would leave the reader unable to tell which anchor moved.
-// The pin is the same "sha256:<hex>" over SubjectPublicKeyInfo that token.CACertHash
-// prints in every join command, so it can be compared directly against those.
 func describe(certs []*x509.Certificate) string {
 	out := make([]string, 0, len(certs))
 	for _, c := range certs {
@@ -425,21 +320,17 @@ func describe(certs []*x509.Certificate) string {
 	return strings.Join(out, "; ")
 }
 
-// stagedFile is a fully-written temp file waiting to be renamed over final.
 type stagedFile struct {
 	tmp   string
 	final string
 }
 
-// trustUpdate is a staged, not-yet-applied trust refresh, plus what applying it
-// would change.
 type trustUpdate struct {
 	added   []*x509.Certificate
 	dropped []*x509.Certificate
 	staged  []stagedFile
 }
 
-// summary describes the pending change for an operator.
 func (u *trustUpdate) summary() string {
 	switch {
 	case len(u.added) == 0 && len(u.dropped) == 0:
@@ -453,11 +344,6 @@ func (u *trustUpdate) summary() string {
 	}
 }
 
-// stageFile writes data to a temp file in final's own directory (so the later
-// rename stays within one filesystem and is therefore atomic), sets its mode, and
-// only then fsyncs — so the flush covers the data AND the mode, and a crash
-// cannot leave a zero-length file that a successful WriteFile appeared to have
-// written, nor a correct file still at CreateTemp's 0600.
 func stageFile(final string, data []byte, mode os.FileMode) (stagedFile, error) {
 	f, err := os.CreateTemp(filepath.Dir(final), "."+filepath.Base(final)+".tmp-*")
 	if err != nil {
@@ -472,8 +358,7 @@ func stageFile(final string, data []byte, mode os.FileMode) (stagedFile, error) 
 	if _, err := f.Write(data); err != nil {
 		return fail(err)
 	}
-	// Chmod before Sync: fsync flushes the inode too, so doing it in this order is
-	// what makes the mode durable alongside the bytes.
+	// Chmod before Sync: fsync flushes the inode too, so the mode is durable with the bytes.
 	if err := f.Chmod(mode); err != nil {
 		return fail(err)
 	}
@@ -487,18 +372,6 @@ func stageFile(final string, data []byte, mode os.FileMode) (stagedFile, error) 
 	return stagedFile{tmp: tmp, final: final}, nil
 }
 
-// commit renames every staged file into place, back to back with no intervening
-// I/O.
-//
-// This is NOT cross-file atomic and does not pretend to be: five files are five
-// renames, and a crash between two leaves some files refreshed and some not. Two
-// things make that residue survivable. Each file is individually complete and
-// valid, because renaming a fully-written temp file cannot produce a truncated
-// one. And a refresh only ever moves every file the same direction — a superset
-// under trustWiden, a subset under trustNarrow, and one or the other but never
-// both under trustEither (checkTrustTransition enforces exactly that) — so a
-// partial application leaves the node in a state the phase already passed
-// through, and re-running the phase converges.
 func (u *trustUpdate) commit() error {
 	for i, s := range u.staged {
 		if err := os.Rename(s.tmp, s.final); err != nil {
@@ -515,13 +388,6 @@ func (u *trustUpdate) commit() error {
 	return syncDirs(renamed)
 }
 
-// abort discards anything still staged and reports what it could not remove.
-// Safe to call after commit, and safe to call twice.
-//
-// The failure is worth surfacing rather than swallowing: two of the five staged
-// files are kubeconfigs, and bootstrap-kubeconfig carries the join's bootstrap
-// token, a credential until it expires. A silent failure here would report a clean abort while leaving
-// that behind, so the error is returned rather than swallowed.
 func (u *trustUpdate) abort() error {
 	var errs []error
 	for _, s := range u.staged {
@@ -533,10 +399,6 @@ func (u *trustUpdate) abort() error {
 	return errors.Join(errs...)
 }
 
-// syncDirs fsyncs each directory a rename landed in, so the rename itself is
-// durable and not just the file contents. A failure here means every file WAS
-// replaced and the refresh is in effect — only its survival of a power loss is
-// unconfirmed.
 func syncDirs(files []stagedFile) error {
 	seen := make(map[string]struct{}, len(files))
 	for _, s := range files {
@@ -566,13 +428,9 @@ func describeFinals(files []stagedFile) string {
 	return strings.Join(names, ", ")
 }
 
-// fetchKubeletClientCA is bootstrap.FetchKubeletClientCA, a var so a test can
-// stand in for the control planes.
+// fetchKubeletClientCA is a var so a test can stand in for the control planes.
 var fetchKubeletClientCA = bootstrap.FetchKubeletClientCA
 
-// planKubeletClientRefresh fetches a split cluster's published kubelet
-// client-CA bundle over TLS verified by roots and holds it to the same
-// containment rules for intent as the cluster trust bundle.
 func planKubeletClientRefresh(server string, roots []byte, intent trustIntent, p trustPaths) ([]byte, error) {
 	fetched, found, err := fetchKubeletClientCA(server, roots)
 	if err != nil {

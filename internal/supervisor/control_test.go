@@ -16,9 +16,7 @@ import (
 	"time"
 )
 
-// shortSockDir returns a temp dir with a short absolute path. A unix socket path
-// has a ~104-char limit (sun_path), which t.TempDir() under /var/folders on macOS
-// can exceed; /tmp keeps it well under. Cleaned up automatically.
+// t.TempDir() paths on macOS can exceed the ~104-char unix socket limit; /tmp is short.
 func shortSockDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "sup")
@@ -32,11 +30,7 @@ func shortSockDir(t *testing.T) string {
 	return dir
 }
 
-// TestServeControlRefusesLiveSocket pins a defense in depth: a second
-// supervisor must NOT remove-and-rebind a control socket that a running
-// supervisor is still serving (which would leave two supervisors racing the same
-// host processes). A stale socket from a crashed run has no listener, so it is
-// still rebindable.
+// A second supervisor must not remove-and-rebind a live control socket.
 func TestServeControlRefusesLiveSocket(t *testing.T) {
 	path := filepath.Join(shortSockDir(t), "stratum.sock")
 
@@ -48,7 +42,6 @@ func TestServeControlRefusesLiveSocket(t *testing.T) {
 		t.Fatalf("first serveControl: %v", err)
 	}
 
-	// Second supervisor over the live socket: refuse, don't steal.
 	s2 := &Supervisor{procs: map[string]*state{}}
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	defer cancel2()
@@ -73,11 +66,9 @@ func TestServeControlRefusesLiveSocket(t *testing.T) {
 	stop3()
 }
 
-// TestServeControlRebindsStaleSocket: a leftover socket FILE with no listener
-// (a crashed prior run) is not "live", so serveControl removes and rebinds it.
+// A leftover socket file with no listener is not live, so serveControl rebinds it.
 func TestServeControlRebindsStaleSocket(t *testing.T) {
 	path := filepath.Join(shortSockDir(t), "stratum.sock")
-	// Leave an actual stale Unix socket as a crashed process would.
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -137,8 +128,7 @@ func TestServeControlConcurrentRecovery(t *testing.T) {
 	}
 }
 
-// Older supervisors do not hold the coordination lock, so the socket probe must
-// still refuse to replace an existing listener.
+// Older supervisors do not hold the coordination lock; the socket probe must still refuse.
 func TestServeControlRefusesLegacyListener(t *testing.T) {
 	path := filepath.Join(shortSockDir(t), "stratum.sock")
 	l, err := net.Listen("unix", path)
@@ -165,14 +155,7 @@ func TestServeControlRefusesLegacyListener(t *testing.T) {
 	stop()
 }
 
-// TestControlSocketWireFormatIsReadableAcrossReleases pins the wire contract
-// itself, not the Go types either side compiles: every request and reply
-// crosses two releases during an in-place upgrade, so a renamed key or a
-// changed framing breaks an older peer that this package's own structs would
-// still read (Go's decoding matches field names case-insensitively). The fake
-// listener decodes each request into a plain map and answers with literal JSON
-// lines — a status reply captured from this release, and the refusal a
-// supervisor that predates the reload op sends.
+// Pins the wire contract itself: every request and reply crosses two releases in an upgrade.
 func TestControlSocketWireFormatIsReadableAcrossReleases(t *testing.T) {
 	dir := shortSockDir(t)
 	socket := filepath.Join(dir, "control.sock")
@@ -211,8 +194,7 @@ func TestControlSocketWireFormatIsReadableAcrossReleases(t *testing.T) {
 			if _, err := conn.Write([]byte(replies[idx] + "\n")); err != nil {
 				t.Errorf("write the reply: %v", err)
 			}
-			// One request per connection: nothing else may ride it before the
-			// caller, holding its reply, closes.
+			// One request per connection: nothing else may ride it.
 			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 			if extra, _ := r.ReadBytes('\n'); len(extra) > 0 {
 				t.Errorf("a second request rode one connection: %q", extra)
@@ -274,9 +256,7 @@ func TestControlSocketWireFormatIsReadableAcrossReleases(t *testing.T) {
 	}
 }
 
-// The client-side pin above cannot detect changes to what this release's
-// server emits. Drive the real handler with released JSON, and inspect its
-// reply without using the package's wire structs on the peer side.
+// Drive the real handler with released JSON and inspect the reply without the wire structs.
 func TestControlSocketServerKeepsReleasedWireFormat(t *testing.T) {
 	for _, tc := range []struct {
 		name, request, reply string

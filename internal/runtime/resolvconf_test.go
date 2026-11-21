@@ -14,8 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// upstreamFixture points the resolver paths and version dirs at temp dirs and
-// returns a writer for the two node files ("" leaves one absent).
 func upstreamFixture(t *testing.T) func(host, systemd string) {
 	t.Helper()
 	oldHost, oldSystemd := hostResolvConf, systemdResolvConf
@@ -189,10 +187,7 @@ func TestChooseCoreDNSUpstream(t *testing.T) {
 	})
 }
 
-// TestKubeletKeepsTheNodesResolvConf: the kubelet hands every pod
-// with dnsPolicy Default, host-network ones included, the node's own
-// resolv.conf. Only CoreDNS forwards through a chosen upstream, so kubelet.conf
-// names no resolvConf, and one written by an earlier release is dropped on the next render.
+// Only CoreDNS forwards through a chosen upstream, so kubelet.conf names no resolvConf.
 func TestKubeletKeepsTheNodesResolvConf(t *testing.T) {
 	setup := upstreamFixture(t)
 	setup("nameserver 127.0.0.53\n", "")
@@ -297,15 +292,7 @@ func TestPodReachableNameservers(t *testing.T) {
 	}
 }
 
-// TestWriteUpstreamGoesThroughTheSharedAtomicWriter: resolv.conf is a node
-// file the owning-package record (internal/version) keys to internal/runtime,
-// and the record's rule is that its owner writes it through the shared atomic
-// writer. writeUpstream's own private CreateTemp-and-rename writer replaced
-// the file whole but never fsynced it or the directory, so a power loss could
-// still undo the rename or drop the contents after a "successful" write —
-// and the raw-write guard (tools/nodefilewrites) cannot see it, because it
-// looks for os.WriteFile. This test parses writeUpstream's body, so a revert
-// to a private writer fails here instead of only in the record's claim.
+// Parses writeUpstream's body; the raw-write guard cannot see a private writer.
 func TestWriteUpstreamGoesThroughTheSharedAtomicWriter(t *testing.T) {
 	src, err := os.ReadFile("corednsupstream.go")
 	if err != nil {

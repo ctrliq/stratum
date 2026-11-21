@@ -7,13 +7,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// TestCoreDNSServiceIPIsStagedAsASentinel pins the staging render's split:
-// the mirror registry and the pinned helper image resolve at render, but the
-// kube-dns Service's clusterIP and the Corefile's zone are per-cluster inputs
-// that stay as the __STRATUM_DNS_IP__ and __STRATUM_CLUSTER_DOMAIN__
-// sentinels — every control plane stages the same bytes, and the deployer
-// fills both at apply time from the cluster-inputs record the staging writes
-// beside the prune inventory.
 func TestCoreDNSServiceIPIsStagedAsASentinel(t *testing.T) {
 	m := RenderCoreDNS()
 	if got := bytes.Count(m, []byte(DNSAddressSentinel)); got != 1 {
@@ -22,7 +15,6 @@ func TestCoreDNSServiceIPIsStagedAsASentinel(t *testing.T) {
 	if !bytes.Contains(m, []byte(ClusterDomainSentinel)) {
 		t.Error("the staged render does not carry the cluster-domain sentinel, as the Corefile's zone")
 	}
-	// The mirror, version and helper-image pins still fill at render.
 	for _, filled := range []string{registrySentinel, busyboxImageSentinel, "__STRATUM_COREDNS_VERSION__"} {
 		if bytes.Contains(m, []byte(filled)) {
 			t.Errorf("the staged render still carries %s; the registry, version and busybox sentinels fill at render", filled)

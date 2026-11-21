@@ -1,47 +1,6 @@
 package main
 
-// These tests are the spec for the node-file write guard (make lint's check
-// that no package sneaks a raw write past a node file's owning package); the
-// tool itself does not exist yet. The contract under test:
-//
-//   run(args []string, stdout, stderr io.Writer) int
-//
-//       argv names files, directories, or directory/... package patterns,
-//       resolved relative to the working directory — the repository root in
-//       every real invocation. Exit 0 when every guarded package is clean,
-//       1 when a raw node-file write was found, 2 when the check cannot run
-//       (a bad argument, an unreadable file, a file that does not parse): a
-//       file the guard cannot read must fail the check, never pass it
-//       silently.
-//
-//   var guarded map[string]bool
-//
-//       The packages that write node files, derived from the owning-package
-//       record in internal/version — the record that puts each node file's
-//       owning package beside its path, so the guard and the rule cannot
-//       drift apart. A scanned file belongs to a guarded package when its
-//       directory is that package or ends in /<package>, compared with "/"
-//       separators and on directory boundaries.
-//
-//   var allowlist map[string]allowEntry
-//
-//       Deliberate exceptions, keyed by the file's path relative to the
-//       working directory (internal/pki/pki.go). Each entry states the
-//       reason the writer in that file is not start-critical and the exact
-//       number of raw writes the reason covers; the guard scans allowlisted
-//       files like any other and fails when the file's raw writes no longer
-//       match the entry, so the stated exception and the enforced one
-//       cannot drift apart.
-//
-// A violation is a call to os.WriteFile or clientcmd.WriteToFile, in any
-// import spelling, in a non-test .go file of a guarded package. Each finding
-// carries the file:line of the call and states the owning-package rule: node
-// files are owned by the package the record names and are written through
-// the shared atomic writer, so the next writer finds the rule instead of
-// rediscovering it.
-//
-// The fixtures below are parsed, not compiled: they need valid Go syntax,
-// not resolvable imports.
+// Fixtures are parsed, not compiled: they need valid Go syntax, not resolvable imports.
 
 import (
 	"fmt"
@@ -50,9 +9,6 @@ import (
 	"strings"
 	"testing"
 )
-
-// Fixtures. Each raw write sits on a known line so the tests can pin the
-// file:line the finding must carry.
 
 const rawWriteFile = `package pki
 
@@ -63,7 +19,6 @@ func save(data []byte) error {
 }
 `
 
-// The os.WriteFile call is on line 6 of rawWriteFile.
 const rawWriteFileLine = 6
 
 const rawKubeconfigWrite = `package kubeconfig
@@ -77,7 +32,6 @@ func write(cfg clientcmdapi.Config, path string) error {
 }
 `
 
-// The clientcmd.WriteToFile call is on line 8 of rawKubeconfigWrite.
 const rawKubeconfigWriteLine = 8
 
 const aliasedWrite = `package pki
@@ -115,13 +69,8 @@ func save(data []byte) error {
 }
 `
 
-// unparseable is a .go file the parser rejects: the guard cannot vouch for
-// it, so it must be a tool error rather than a silent pass.
 const unparseable = "package pki\n\nfunc {"
 
-// writeTree writes files (relative path to contents) into a fresh directory
-// and makes it the working directory, the way the guard is invoked from the
-// repository root.
 func writeTree(t *testing.T, files map[string]string) {
 	t.Helper()
 	root := t.TempDir()
@@ -137,7 +86,6 @@ func writeTree(t *testing.T, files map[string]string) {
 	t.Chdir(root)
 }
 
-// withGuarded scopes the guarded packages to dirs for one test.
 func withGuarded(t *testing.T, dirs ...string) {
 	t.Helper()
 	old := guarded
@@ -148,7 +96,6 @@ func withGuarded(t *testing.T, dirs ...string) {
 	t.Cleanup(func() { guarded = old })
 }
 
-// withAllowlist scopes the allowlist to entries for one test.
 func withAllowlist(t *testing.T, entries map[string]allowEntry) {
 	t.Helper()
 	old := allowlist
@@ -156,8 +103,6 @@ func withAllowlist(t *testing.T, entries map[string]allowEntry) {
 	t.Cleanup(func() { allowlist = old })
 }
 
-// captured collects what run writes, keeping the streams apart so tests can
-// assert on findings and tool errors without pinning the exact split.
 type captured struct {
 	stdout strings.Builder
 	stderr strings.Builder
@@ -165,15 +110,9 @@ type captured struct {
 
 func (c *captured) all() string { return c.stdout.String() + c.stderr.String() }
 
-// TestPlainWriteFileInWriterPackageFailsLint pins the core rule: a plain
-// os.WriteFile in a package that writes node files is a violation, reported
-// with the call's file:line and the owning-package rule, and the run exits
-// non-zero so make lint fails.
 func TestPlainWriteFileInWriterPackageFailsLint(t *testing.T) {
 	withGuarded(t, "internal/pki")
-	// A synthetic fixture name, not internal/pki/pki.go: that real file
-	// carries a deliberately-left allowlist entry for the CA-rotation
-	// scratch, and the allowlist is per file.
+	// writer.go, not pki.go: the real pki.go is in the package-level allowlist.
 	writeTree(t, map[string]string{"internal/pki/writer.go": rawWriteFile})
 
 	var out captured
@@ -192,15 +131,9 @@ func TestPlainWriteFileInWriterPackageFailsLint(t *testing.T) {
 	}
 }
 
-// TestClientcmdWriteToFileFailsLint pins the kubeconfig half of the rule:
-// clientcmd.WriteToFile is a plain os.WriteFile underneath (no temp file, no
-// fsync), so it is rejected in a writer package exactly like os.WriteFile.
 func TestClientcmdWriteToFileFailsLint(t *testing.T) {
 	withGuarded(t, "internal/kubeconfig")
-	// A synthetic fixture name, not internal/kubeconfig/kubeconfig.go: that
-	// real file writes every kubeconfig — admin.conf's copy included —
-	// through the shared atomic writer and carries no allowlist entry, so a
-	// fixture of its name must stay clean.
+	// writer.go, not kubeconfig.go: a fixture at that real path must stay clean.
 	writeTree(t, map[string]string{"internal/kubeconfig/writer.go": rawKubeconfigWrite})
 
 	var out captured
@@ -219,11 +152,6 @@ func TestClientcmdWriteToFileFailsLint(t *testing.T) {
 	}
 }
 
-// TestEveryNodeFileWriterPackageIsGuarded pins the guard's coverage: a plain
-// os.WriteFile in each package the task names — pki, kubeconfig, profilefiles,
-// certs, nodestate, staticpod, upgrade — fails the run. The guarded set
-// comes from the owning-package record, so a red here means the record does
-// not yet own a node file in that package.
 func TestEveryNodeFileWriterPackageIsGuarded(t *testing.T) {
 	writerPkgs := []string{
 		"internal/pki",
@@ -263,14 +191,9 @@ func save(data []byte) error {
 	}
 }
 
-// TestAtomicWriterAndReadsAreNotViolations pins the rule's replacement: the
-// shared atomic writer (internal/atomicfile) is how a guarded package writes
-// a node file, and reads never were writes. A clean guarded package passes
-// with exit 0.
 func TestAtomicWriterAndReadsAreNotViolations(t *testing.T) {
 	withGuarded(t, "internal/pki")
-	// No allowlist: the fixture sits at the real allowlisted path pki.go,
-	// and this test is about the scan, not the exceptions.
+	// pki.go is a real allowlisted path, so drop the allowlist for this test.
 	withAllowlist(t, nil)
 	writeTree(t, map[string]string{"internal/pki/pki.go": atomicWrite})
 
@@ -280,11 +203,6 @@ func TestAtomicWriterAndReadsAreNotViolations(t *testing.T) {
 	}
 }
 
-// TestWritesOutsideTheWriterPackagesPass pins the guard's scope: it runs on
-// the whole repo, but only the writer packages are enforced — a package that
-// owns no node file writes freely, and a name that merely CONTAINS a guarded
-// package's path (internal/pkia against internal/pki) is not matched, so the
-// directory rule matches on boundaries.
 func TestWritesOutsideTheWriterPackagesPass(t *testing.T) {
 	withGuarded(t, "internal/pki")
 	writeTree(t, map[string]string{
@@ -298,23 +216,18 @@ func TestWritesOutsideTheWriterPackagesPass(t *testing.T) {
 	}
 }
 
-// TestTestFilesAndTestDataAreExempt pins what the rule governs: production
-// writers. Test files write fixtures on purpose, and testdata is invisible
-// to the go tool, so a raw write in either never fails the guard — otherwise
-// the whole-repo run could never pass.
 func TestTestFilesAndTestDataAreExempt(t *testing.T) {
 	withGuarded(t, "internal/pki")
-	// No allowlist: the fixture sits at the real allowlisted path pki.go,
-	// and this test is about the exemptions, not the exceptions.
+	// pki.go is a real allowlisted path, so drop the allowlist for this test.
 	withAllowlist(t, nil)
 	writeTree(t, map[string]string{
 		"internal/pki/pki.go":            atomicWrite,
 		"internal/pki/pki_test.go":       rawWriteFile,
 		"internal/pki/testdata/x.go":     rawWriteFile,
-		"internal/pki/fixture/x.go":      rawWriteFile, // a plain directory is NOT exempt
-		"internal/pki/vendor/v/x.go":     rawWriteFile, // vendored code is not ours to judge
-		"internal/pki/.hidden/x.go":      rawWriteFile, // .git and friends
-		"internal/pki/node_modules/x.go": rawWriteFile, // a dependency tree is not ours to guard either
+		"internal/pki/fixture/x.go":      rawWriteFile,
+		"internal/pki/vendor/v/x.go":     rawWriteFile,
+		"internal/pki/.hidden/x.go":      rawWriteFile,
+		"internal/pki/node_modules/x.go": rawWriteFile,
 	})
 
 	var out captured
@@ -329,10 +242,6 @@ func TestTestFilesAndTestDataAreExempt(t *testing.T) {
 	}
 }
 
-// TestRenamedImportDoesNotDodgeTheGuard pins the call detection: the guard
-// resolves the selector through the file's imports, so importing os or
-// clientcmd under another name and writing through it is still a violation.
-// A rule you dodge with an alias is not a rule.
 func TestRenamedImportDoesNotDodgeTheGuard(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -355,10 +264,6 @@ func TestRenamedImportDoesNotDodgeTheGuard(t *testing.T) {
 	}
 }
 
-// TestAllowlistedWriterPasses pins the exception mechanism: a file whose
-// path carries an allowlist entry passes even though it writes raw, and a
-// file whose path does not, does not. Keys are per file, so an exception is
-// one deliberate writer, never a package.
 func TestAllowlistedWriterPasses(t *testing.T) {
 	withGuarded(t, "internal/pki")
 	writeTree(t, map[string]string{
@@ -394,16 +299,8 @@ func TestAllowlistedWriterPasses(t *testing.T) {
 	})
 }
 
-// TestAllowlistedFileWithANewRawWriteFails pins the exception's verification:
-// an allowlist entry covers an exact number of raw writes — the ones its
-// reason names — so a NEW raw write in an allowlisted file fails the lint and
-// the entry has to be re-justified in the same change. A whole-file exemption
-// would let a new live-path writer hide behind an entry written for a
-// different write, which is exactly the drift the rule exists to stop.
 func TestAllowlistedFileWithANewRawWriteFails(t *testing.T) {
 	withGuarded(t, "internal/pki")
-	// rawWriteFile with a second raw write appended: the entry below covers
-	// exactly one write (line 6), so the write on line 10 is uncovered.
 	writeTree(t, map[string]string{"internal/pki/pki.go": `package pki
 
 import "os"
@@ -436,11 +333,6 @@ func extra(data []byte) error {
 	}
 }
 
-// TestStaleAllowlistEntryFails pins the other direction of the same check:
-// when the file's raw writes drop below the number the entry covers — a
-// write moved onto the atomic writer — the entry no longer states an
-// exception that exists, so the lint fails until the entry is shrunk in the
-// same change.
 func TestStaleAllowlistEntryFails(t *testing.T) {
 	withGuarded(t, "internal/pki")
 	writeTree(t, map[string]string{"internal/pki/pki.go": rawWriteFile})
@@ -464,11 +356,6 @@ func TestStaleAllowlistEntryFails(t *testing.T) {
 	}
 }
 
-// TestEveryAllowlistEntryStatesItsReason pins the exception discipline: an
-// allowlist entry exists to record WHY this writer is deliberately not
-// start-critical and WHICH writes the reason covers, so an entry without a
-// stated reason, or one that covers no write at all, is a bug in the guard
-// itself.
 func TestEveryAllowlistEntryStatesItsReason(t *testing.T) {
 	for file, entry := range allowlist {
 		if strings.TrimSpace(entry.reason) == "" {
@@ -480,15 +367,6 @@ func TestEveryAllowlistEntryStatesItsReason(t *testing.T) {
 	}
 }
 
-// TestTheNewWriterPackagesAreGuardedByTheDerivedSet pins the two writer
-// packages this task adds — internal/host (the modules-load file and both
-// sysctl files) and internal/cluster (the Cilium settings record and the
-// component .args files) — against the guard's REAL derived set: no
-// withGuarded override, so the finding appears only when the owning-package
-// record in internal/version names a node file in each package. A package
-// missing from the record writes outside the rule, and its raw writes pass
-// make lint unseen — exactly how internal/host's and internal/cluster's raw
-// writes passed before the record covered them.
 func TestTheNewWriterPackagesAreGuardedByTheDerivedSet(t *testing.T) {
 	writeTree(t, map[string]string{
 		"internal/host/writer.go":    strings.Replace(rawWriteFile, "package pki", "package host", 1),
@@ -506,16 +384,6 @@ func TestTheNewWriterPackagesAreGuardedByTheDerivedSet(t *testing.T) {
 	}
 }
 
-// TestTheStampMarkerIsAllowlistedAndTheBootCriticalWritesAreNot pins the
-// exception discipline for the two packages this task adds. run.go's import
-// stamp marker (`_ = os.WriteFile` in writeStamp) is best-effort by design —
-// it only makes the next kubelet restart's import check cheap, and its writer
-// already discards the error — so it is the one raw write run.go may keep,
-// covered by an entry stating exactly that reason and covering exactly its
-// one write. host.go's sysctl and modules-load writes are the opposite:
-// boot-critical, so host.go gets no entry at all and the writes must move
-// onto the shared atomic writer — an allowlist there would turn the
-// boot-critical rule into an option.
 func TestTheStampMarkerIsAllowlistedAndTheBootCriticalWritesAreNot(t *testing.T) {
 	entry, ok := allowlist["internal/cluster/run.go"]
 	if !ok {
@@ -534,11 +402,6 @@ func TestTheStampMarkerIsAllowlistedAndTheBootCriticalWritesAreNot(t *testing.T)
 	}
 }
 
-// TestWholeRepoIsCleanAtHead pins the run the guard exists for: pointed at
-// the whole repository — the way make lint runs it — the guard passes at
-// HEAD. A red here means a raw os.WriteFile or clientcmd.WriteToFile landed
-// in a guarded package: move the write to the shared atomic writer, or
-// allowlist the file with the stated reason it is not start-critical.
 func TestWholeRepoIsCleanAtHead(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
 
@@ -548,8 +411,6 @@ func TestWholeRepoIsCleanAtHead(t *testing.T) {
 	}
 }
 
-// TestLintTargetRunsTheGuard pins the wiring: make lint invokes the guard,
-// so the next writer meets the rule at lint time, not at incident time.
 func TestLintTargetRunsTheGuard(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 	if err != nil {
@@ -564,8 +425,6 @@ func TestLintTargetRunsTheGuard(t *testing.T) {
 	}
 }
 
-// lintRecipe returns the recipe lines of the `lint:` target: everything from
-// its declaration to the first line that is not recipe (not tab-indented).
 func lintRecipe(makefile string) (string, bool) {
 	lines := strings.Split(makefile, "\n")
 	start := -1
@@ -588,8 +447,6 @@ func lintRecipe(makefile string) (string, bool) {
 	return strings.Join(recipe, "\n"), true
 }
 
-// TestArgvForms pins the interface: the guard takes files, directories, and
-// directory/... package patterns, and one violating file fails every form.
 func TestArgvForms(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -603,9 +460,7 @@ func TestArgvForms(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			withGuarded(t, "internal/pki")
-			// Synthetic fixture names, not internal/pki/pki.go: that real
-			// file carries a deliberately-left allowlist entry for the
-			// CA-rotation scratch, and the allowlist is per file.
+			// writer.go, not pki.go: the real pki.go is in the package-level allowlist.
 			writeTree(t, map[string]string{
 				"internal/pki/writer.go": rawWriteFile,
 				"internal/pki/clean.go":  atomicWrite,
@@ -622,10 +477,6 @@ func TestArgvForms(t *testing.T) {
 	}
 }
 
-// TestToolErrorsAreExitTwo pins the failure mode of the check itself: a bad
-// argument, a non-Go file, or a file that does not parse is exit 2 with a
-// message on stderr — never a silent pass, which would drop a file out of
-// the check.
 func TestToolErrorsAreExitTwo(t *testing.T) {
 	testCases := []struct {
 		name  string

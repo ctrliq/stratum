@@ -20,21 +20,18 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// StackContext is the cluster an importer's stacks are rendered for.
 type StackContext struct {
 	ClusterDomain string
 	ServiceCIDR   string
 }
 
-// ImporterStacks, when set, returns an importer's stacks as "stack/file.yaml"
-// to contents; writeBundles stages them beside the bundled add-ons. Unset, a
-// start removes the files an earlier start staged for an importer.
+// ImporterStacks, when set, returns an importer's stacks as "stack/file.yaml" to contents.
 var ImporterStacks func(StackContext) (map[string][]byte, error)
 
 // bundledStacks are the stack names writeBundles can stage itself.
 var bundledStacks = []string{"crds", "node-mark", "cilium", "coredns", "local-path", "dashboard", addons.RuntimeClassStack}
 
-// importerIndex records the files importer stacks staged, so a later start can remove the ones no longer returned.
+// Records the files importer stacks staged, so a later start removes those no longer returned.
 const importerIndex = ".importer-stacks.json"
 
 func renderImporterStacks(st *NodeState) (map[string][]byte, error) {
@@ -72,8 +69,6 @@ func checkImporterPath(rel string) error {
 	return nil
 }
 
-// removeStaleImporterFiles deletes files an earlier start staged for an
-// importer and this one did not, then records the current set.
 func removeStaleImporterFiles(current map[string][]byte) error {
 	idx := filepath.Join(version.ManifestsDir, importerIndex)
 	var prev []string

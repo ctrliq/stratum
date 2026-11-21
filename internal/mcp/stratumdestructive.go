@@ -32,48 +32,20 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The Stratum destructive toolset. Registered only with
-// --allow-destructive.
+// Registered only with --allow-destructive.
 
-// destructiveOut is the shared result shape.
 type destructiveOut struct {
-	Action   string `json:"action"`
-	Done     bool   `json:"done"`
-	Progress string `json:"progress,omitempty" jsonschema:"output from the subsystem that performed the work"`
-	Next     string `json:"next,omitempty" jsonschema:"what the operator must do next, when the procedure is not self-completing"`
-	// Warnings are the steps the operation named as not completed while the
-	// operation itself succeeded. They travel as data beside the progress —
-	// which still carries whatever the operation printed — because a result
-	// that reports done over a step that only warned hid the partial
-	// outcome from the caller.
+	Action   string   `json:"action"`
+	Done     bool     `json:"done"`
+	Progress string   `json:"progress,omitempty" jsonschema:"output from the subsystem that performed the work"`
+	Next     string   `json:"next,omitempty" jsonschema:"what the operator must do next, when the procedure is not self-completing"`
 	Warnings []string `json:"warnings,omitempty" jsonschema:"steps that did not complete while the work itself succeeded; a result carrying them is partial, so done is false"`
 }
 
-// opMu is the explicit operation lock. The destructive tools' operations
-// rewrite the same host state — etcd data, PKI, kubeconfigs, the container
-// runtime, the supervisor — so no two of them may run at once: upgrade_apply,
-// rollback, certs_rotate, certs_rotate_ca, certs_migrate_etcd_ca,
-// snapshot_restore, snapshot_rejoin, ha_repoint
-// and uninstall. run holds it around every call. The exclusion is this
-// lock's own contract — nothing else provides it, so changing how the
-// operations report their output must not retire the exclusion with it.
-// Uninstall's reset and discovery state sits before the etcd flock that only
-// covers the host teardown; internal/uninstall seeds it per run, and this
-// lock keeps the MCP serialization baseline on top.
+// Operations rewrite the same host state, so no two may run at once; opMu is their sole exclusion.
 var opMu sync.Mutex
 
-// run is the common body: host check, operation lock, shared result. The
-// operation writes its progress through the writer run hands it — a buffer
-// under the handlers, whose trimmed text becomes the result's Progress — and
-// returns its warnings beside its error: a warning names a step that did not
-// complete while the operation as a whole succeeded, and any warning makes
-// the reported result partial — done stays false — while a failure keeps
-// answering with its error. run swaps no stdout — the operation
-// writes the buffer run hands it — and nothing redirects os.Stdout around
-// the call: every operation the deps wire takes the writer itself,
-// so what it prints lands in the buffer, never on the process's stdout, which
-// on the stdio transport is the JSON-RPC stream. opMu is the destructive
-// tools' sole exclusion.
+// run holds opMu and buffers progress; on the stdio transport os.Stdout is the JSON-RPC stream.
 func run(action string, fn func(io.Writer) ([]string, error)) (destructiveOut, error) {
 	if err := requireStratumHost(); err != nil {
 		return destructiveOut{}, err
@@ -86,14 +58,9 @@ func run(action string, fn func(io.Writer) ([]string, error)) (destructiveOut, e
 	out := destructiveOut{Action: action, Progress: strings.TrimSpace(buf.String()), Warnings: warnings}
 	switch {
 	case err != nil:
-		// The progress is returned alongside the error, because a
-		// half-finished destructive procedure is exactly when the operator
-		// needs to know how far it got.
+		// A half-finished destructive procedure is when the operator most needs the progress.
 		return out, fmt.Errorf("%s failed after the following output:\n%s\n\n%w", action, out.Progress, err)
 	case len(out.Warnings) > 0:
-		// The operation succeeded but named steps that did not complete: a
-		// partial result, so the caller sees done false with the warnings
-		// as data, not a success that folded them away.
 		out.Done = false
 	default:
 		out.Done = true
@@ -104,19 +71,12 @@ func run(action string, fn func(io.Writer) ([]string, error)) (destructiveOut, e
 // DestructiveOut is the result shape every destructive tool returns.
 type DestructiveOut = destructiveOut
 
-// RunExclusive runs fn as a destructive operation: the Stratum host check, the operation lock every destructive tool holds, and the shared result.
+// RunExclusive runs fn as a destructive operation: host check, operation lock, shared result.
 func RunExclusive(action string, fn func(io.Writer) ([]string, error)) (DestructiveOut, error) {
 	return run(action, fn)
 }
 
-// invalidateConnectors is how the operations that may rewrite this node's
-// credentials or endpoints end. Both the configurable and node connectors
-// can cache the kubeconfigs these operations rewrite, so each operation
-// drops the cache when it ends — done, failed partway, or cancelled, because
-// an operation that stopped early cannot say what it managed to rewrite and
-// only re-resolution can. A nil connector has nothing to invalidate: a
-// handler built without the server's connector runs the same operation and
-// just skips this.
+// Operations may rewrite kubeconfigs the connectors cache, so drop the cache however the run ends.
 func invalidateConnectors(connectors ...*kube.Connector) {
 	for _, conn := range connectors {
 		if conn != nil {
@@ -125,30 +85,17 @@ func invalidateConnectors(connectors ...*kube.Connector) {
 	}
 }
 
-// destructiveDeps is the one struct of operation functions the destructive
-// handlers run their node work through, the way tokenDeps serves token_create:
-// every operation a destructive handler can call is a field, so a test can
-// record or replace each one and pin the argument-to-operation mapping
-// without a node. The handlers call no operation except through it.
-//
-// Every field reports its progress through an io.Writer — its first
-// argument, or the one after its context — and writes that progress there,
-// never to os.Stdout, which on the stdio transport is the JSON-RPC stream.
-// A new field follows the same convention. removeRestoreCopies is the one
-// exception: it prints nothing and takes no writer.
+// Handlers call no operation except through it; each writes progress to its io.Writer, not stdout.
 type destructiveDeps struct {
-	upgradeNode          func(io.Writer, upgrade.NodeOptions) error
-	upgradeCluster       func(io.Writer, upgrade.ClusterOptions) error
-	rollbackNode         func(io.Writer, upgrade.RollbackOptions) error
-	certsRotate          func(context.Context, io.Writer, certs.Options) (bool, error)
-	rotateCA             func(io.Writer, certs.CARotateOptions) error
-	rotateCACluster      func(context.Context, io.Writer, certs.CARotateOptions) error
-	migrateEtcdCA        func(io.Writer, certs.EtcdCAOptions) error
-	migrateEtcdCACluster func(context.Context, io.Writer, certs.EtcdCAOptions) error
-	migrateKubeletCA     func(io.Writer, certs.KubeletCAOptions) error
-	// migrateKubeletCACluster is nil-safe: certs_migrate_kubelet_client_ca
-	// refuses a cluster run before it, and the flag validator owns that
-	// refusal, so no handler path reaches a nil field.
+	upgradeNode             func(io.Writer, upgrade.NodeOptions) error
+	upgradeCluster          func(io.Writer, upgrade.ClusterOptions) error
+	rollbackNode            func(io.Writer, upgrade.RollbackOptions) error
+	certsRotate             func(context.Context, io.Writer, certs.Options) (bool, error)
+	rotateCA                func(io.Writer, certs.CARotateOptions) error
+	rotateCACluster         func(context.Context, io.Writer, certs.CARotateOptions) error
+	migrateEtcdCA           func(io.Writer, certs.EtcdCAOptions) error
+	migrateEtcdCACluster    func(context.Context, io.Writer, certs.EtcdCAOptions) error
+	migrateKubeletCA        func(io.Writer, certs.KubeletCAOptions) error
 	migrateKubeletCACluster func(context.Context, io.Writer, certs.KubeletCAOptions) error
 	restoreLocalSeed        func(io.Writer, string) error
 	removeRestoreCopies     func([]etcdsnap.RestoreCopy) ([]etcdsnap.RestoreCopy, error)
@@ -158,11 +105,7 @@ type destructiveDeps struct {
 	uninstallRun            func(io.Writer, bool) error
 }
 
-// nodeClientBuilder captures one server's node connector. Each resolution
-// reloads from disk because a CA orchestrator reissues the embedded credentials
-// between phases; replacing this server's cached client also refreshes tools
-// holding the same connector. Direct handler callers get the node credential
-// without relying on another server's registration.
+// Reloads per resolution: a CA rotation reissues the embedded credentials between phases.
 func nodeClientBuilder(conn *kube.Connector) func() (kubernetes.Interface, error) {
 	if conn == nil {
 		conn = kube.NewConnector(kube.Options{KubeconfigPath: k8sutil.InternalAdminConf})
@@ -176,11 +119,6 @@ func nodeClientBuilder(conn *kube.Connector) func() (kubernetes.Interface, error
 	}
 }
 
-// defaultDestructiveDeps wires every field to the real operation. Each
-// operation takes the handler's writer itself, so the wiring is a
-// straight pass-through: the progress in the result is what the operation
-// wrote through the buffer run handed it, and no print is captured off a
-// redirected stdout.
 func defaultDestructiveDeps() destructiveDeps {
 	return destructiveDepsFor(nodeClientBuilder(nil))
 }
@@ -200,9 +138,7 @@ func destructiveDepsFor(buildClient func() (kubernetes.Interface, error)) destru
 			return certs.RotateContext(ctx, w, o)
 		},
 		rotateCA: certs.RotateCA,
-		// The cluster orchestrators acquire their API client through a client
-		// builder; the tools hand them the node connector's builder —
-		// admin.conf — not the server's configurable connector.
+		// Cluster orchestrators get the node connector's builder (admin.conf), not the server's connector.
 		rotateCACluster: func(ctx context.Context, w io.Writer, o certs.CARotateOptions) error {
 			return certs.RotateCAClusterContext(ctx, w, o, buildClient)
 		},
@@ -231,11 +167,8 @@ func destructiveDepsFor(buildClient func() (kubernetes.Interface, error)) destru
 	}
 }
 
-// destructiveOps is the deps the handlers read, a package variable so a test
-// installs recording or failing operations for the length of a call.
+// Package var so a test can install recording or failing operations for a call's length.
 var destructiveOps = defaultDestructiveDeps()
-
-// ------------------------------------------------------------ upgrade_apply
 
 // UpgradeApplyIn is upgrade_apply's input.
 type UpgradeApplyIn struct {
@@ -247,9 +180,7 @@ type UpgradeApplyIn struct {
 	SkipSnapshot          bool   `json:"skip_snapshot,omitempty" jsonschema:"skip the pre-upgrade etcd snapshot; strongly discouraged"`
 }
 
-// UpgradeApplyHandler performs a real upgrade. A cluster rollout runs on the
-// credential conn resolves, so its RBAC bounds the drains, Jobs and lease; a
-// node upgrade is host work on this node and uses its own credentials.
+// UpgradeApplyHandler: a cluster rollout runs on conn's credential, whose RBAC bounds it.
 func UpgradeApplyHandler(conn *kube.Connector) sdk.ToolHandlerFor[UpgradeApplyIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in UpgradeApplyIn) (*sdk.CallToolResult, destructiveOut, error) {
 		switch in.Scope {
@@ -309,8 +240,7 @@ func UpgradeApplyHandler(conn *kube.Connector) sdk.ToolHandlerFor[UpgradeApplyIn
 	}
 }
 
-// thisNodeName is the Kubernetes name this node registered under, a var for
-// tests. The kubelet lowercases the hostname it registers, so this does too.
+// thisNodeName is a var for tests; the kubelet registers a lowercased hostname, so lowercase here.
 var thisNodeName = func() (string, error) {
 	st, err := nodestate.LoadState()
 	if err != nil {
@@ -322,9 +252,7 @@ var thisNodeName = func() (string, error) {
 	return strings.ToLower(st.Hostname), nil
 }
 
-// localCluster is this node's own cluster, through its super-admin.conf, with the
-// address it serves on: the reference the server's credential is checked
-// against. A var for tests.
+// localCluster is a var for tests; the reference the server's credential is checked against.
 var localCluster = func() (kubernetes.Interface, string, error) {
 	cfg, err := k8sutil.AdminRESTConfig()
 	if err != nil {
@@ -337,21 +265,13 @@ var localCluster = func() (kubernetes.Interface, string, error) {
 	return cs, cfg.Host, nil
 }
 
-// The advice a cluster-proof refusal gives for re-pointing the credential
-// depends on which connector the handler holds: the configurable one answers
-// to the operator's flags, while the node connector rides this node's
-// admin.conf, which those flags cannot move.
+// The refusal's remediation advice differs by which connector the handler holds.
 const (
 	repointByFlags        = "point --kubeconfig and --context at it"
 	repointNodeCredential = "the node credential is this node's admin.conf, which --kubeconfig and --context cannot move; check what /etc/kubernetes/admin.conf addresses"
 )
 
-// clusterOfThisNode is the typed client conn resolves for its default
-// context, after checking that the cluster it addresses is this node's own:
-// a cluster-wide operation started from this node must not land on another
-// cluster. remediation is the advice the refusal gives for re-pointing the
-// credential, which differs by connector (repointByFlags,
-// repointNodeCredential).
+// clusterOfThisNode checks the credential's cluster is this node's own before cluster-wide work.
 func clusterOfThisNode(ctx context.Context, conn *kube.Connector, remediation string) (kubernetes.Interface, error) {
 	cl, err := cluster(conn, "")
 	if err != nil {
@@ -367,11 +287,7 @@ func clusterOfThisNode(ctx context.Context, conn *kube.Connector, remediation st
 	return cl.Typed, nil
 }
 
-// requireThisNodeIn refuses the cluster cs addresses, at host, unless it is the
-// one local addresses at localHost: the same kube-system namespace, by UID,
-// and a Node registered as this node. A Node name alone is not proof, since
-// hostnames repeat across clusters. remediation names how the caller's
-// credential can be re-pointed, which differs by connector.
+// Refuses unless cs's cluster is local's; a matching node name alone is not proof.
 func requireThisNodeIn(ctx context.Context, cs kubernetes.Interface, host string, local kubernetes.Interface, localHost string, remediation string) error {
 	name, err := thisNodeName()
 	if err != nil {
@@ -412,16 +328,10 @@ func redactHost(host string) string {
 	return u.String()
 }
 
-// upgradeStageOwner is the owner a staged upgrade binary and its directory
-// must have, a var for tests.
+// upgradeStageOwner is the owner a staged binary must have, a var for tests.
 var upgradeStageOwner uint32
 
-// stagedUpgradeBinary is the path of the upgrade binary from names, which must
-// be a regular file directly in version.UpgradeStageDir, owned by root and
-// writable by no one else, in a directory that is the same. from is the
-// file's name or its full path there. The model chooses among binaries an
-// operator staged; it cannot name another program for every node to run as
-// root.
+// The model may only run a binary an operator staged, never name another program to run as root.
 func stagedUpgradeBinary(from string) (string, error) {
 	dir := filepath.Clean(version.UpgradeStageDir)
 	path := from
@@ -443,8 +353,7 @@ func stagedUpgradeBinary(from string) (string, error) {
 	return path, nil
 }
 
-// checkStaged refuses path unless it is a directory (dir) or regular file,
-// not a symlink, owned by upgradeStageOwner, with no group or other write.
+// checkStaged refuses a symlink, group or other write, or a non-root owner.
 func checkStaged(path string, dir bool) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -466,17 +375,13 @@ func checkStaged(path string, dir bool) error {
 	return nil
 }
 
-// ----------------------------------------------------------------- rollback
-
 // RollbackIn is rollback's input.
 type RollbackIn struct {
 	SoakSeconds  int    `json:"soak_seconds,omitempty" jsonschema:"seconds to hold the node healthy before declaring the rollback good; defaults to 15, and 0 means the default rather than no soak"`
 	EtcdSnapshot string `json:"etcd_snapshot,omitempty" jsonschema:"also restore etcd from this snapshot; a name as snapshot_list reports it, or an absolute path. Single control plane only, and it discards every change since the snapshot"`
 }
 
-// RollbackHandler reverts this node to its previous version. It is host work
-// on this node, and its API calls use this node's super-admin.conf, not the
-// server's credential: RBAC neither enables nor limits it.
+// RollbackHandler uses this node's super-admin.conf: RBAC neither enables nor limits it.
 func RollbackHandler() sdk.ToolHandlerFor[RollbackIn, destructiveOut] {
 	return func(_ context.Context, _ *sdk.CallToolRequest, in RollbackIn) (*sdk.CallToolResult, destructiveOut, error) {
 		snapshot := in.EtcdSnapshot
@@ -503,26 +408,17 @@ func RollbackHandler() sdk.ToolHandlerFor[RollbackIn, destructiveOut] {
 	}
 }
 
-// ------------------------------------------------------------- certs_rotate
-
 // CertsRotateIn is certs_rotate's input.
 type CertsRotateIn struct {
 	IfExpiringDays int `json:"if_expiring_days,omitempty" jsonschema:"only rotate when a leaf is within this many days of expiry; omit to rotate regardless"`
 }
 
-// CertsRotateHandler renews this node's leaf certificates. It rewrites PKI on
-// this node and uses this node's super-admin.conf for its API calls, not the
-// server's credential: RBAC neither enables nor limits it.
+// CertsRotateHandler rewrites PKI on this node using its own super-admin.conf credentials.
 func CertsRotateHandler(conn ...*kube.Connector) sdk.ToolHandlerFor[CertsRotateIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in CertsRotateIn) (*sdk.CallToolResult, destructiveOut, error) {
-		// The rotation regenerates this node's kubeconfigs, which the
-		// server's connectors fingerprint and cache: however the run ends,
-		// both caches are dropped on the way out.
+		// Rotation rewrites kubeconfigs the server's connectors cache, so drop the cache however it ends.
 		defer invalidateConnectors(conn...)
-		// Not Quiet: Rotate's output is the only thing separating a real
-		// rotation from a no-op, and the wiring files what it printed through
-		// the writer run handed the operation. The request's context bounds
-		// the rotation at its step boundaries.
+		// Not Quiet: the printed output is the only proof a real rotation happened.
 		out, err := run("rotate leaf certificates", func(w io.Writer) ([]string, error) {
 			_, err := destructiveOps.certsRotate(ctx, w, certs.Options{IfExpiringDays: in.IfExpiringDays})
 			return nil, err
@@ -537,8 +433,6 @@ func CertsRotateHandler(conn ...*kube.Connector) sdk.ToolHandlerFor[CertsRotateI
 	}
 }
 
-// ---------------------------------------------------------- certs_rotate_ca
-
 // CertsRotateCAIn is certs_rotate_ca's input.
 type CertsRotateCAIn struct {
 	Phase   string `json:"phase,omitempty" jsonschema:"one node: trust-new, sign-new or finalize — the phases run in that order and each must complete cluster-wide before the next; leave empty with cluster"`
@@ -550,34 +444,22 @@ type CertsRotateCAIn struct {
 	SkipTokenCheck    bool `json:"skip_token_check,omitempty" jsonschema:"finalize without checking that no mounted ServiceAccount token is still signed by the old key, which gets 401 once the old key is dropped; for compromise recovery, so it needs force"`
 }
 
-// caPhases is the CA-rotation phase list, shared with the CLI through the
-// internal/certs export; the MCP server keeps no list of its own to drift.
+// caPhases is shared with the CLI via internal/certs so the two cannot drift.
 var caPhases = certs.CARotatePhases
 
-// CertsRotateCAHandler runs one phase of a CA rotation. Every phase rewrites
-// PKI on this node, and the cluster rotation drives the other nodes through
-// this node's super-admin.conf, not the server's credential: RBAC neither enables
-// nor limits it.
-//
-// Supplied connectors are invalidated after every phase, including failures
-// and cancellations, because the phase may rewrite their kubeconfig inputs.
+// Connectors are invalidated after every phase; a phase may rewrite their kubeconfig inputs.
 func CertsRotateCAHandler(conn ...*kube.Connector) sdk.ToolHandlerFor[CertsRotateCAIn, destructiveOut] {
 	return certsRotateCAWith(destructiveOps, conn...)
 }
 
 func certsRotateCAWith(deps destructiveDeps, conn ...*kube.Connector) sdk.ToolHandlerFor[CertsRotateCAIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in CertsRotateCAIn) (*sdk.CallToolResult, destructiveOut, error) {
-		// Request cancellation is honored before anything, argument validation
-		// included: the cluster operation's first check is the caller's context,
-		// and a canceled request must not come back as a refusal instead of its
-		// cause.
+		// Cancellation is checked before validation, so a canceled request fails with its cause.
 		if err := ctx.Err(); err != nil {
 			invalidateConnectors(conn...)
 			return nil, destructiveOut{}, err
 		}
-		// As the CLI: --cluster drives every phase, --phase runs one on this
-		// node. The rules and their wording are the CLI validator's, spelled
-		// with the CLI's flag names.
+		// The rules and their wording are the CLI validator's, in the CLI's flag names.
 		f := certs.CARotateFlags{
 			Phase: in.Phase, Cluster: in.Cluster, Force: in.Force,
 			RestartWorkloads: in.RestartWorkloads, SkipWorkloadCheck: in.SkipWorkloadCheck,
@@ -595,9 +477,7 @@ func certsRotateCAWith(deps destructiveDeps, conn ...*kube.Connector) sdk.ToolHa
 		if in.Cluster {
 			action = "rotate CA across the cluster"
 		}
-		// From here the phase may rewrite this node's PKI: however it ends,
-		// the connectors' caches are dropped on the way out. The refusals above
-		// run the phase never, so they skip it.
+		// From here the phase may rewrite PKI, so drop the connector caches however it ends.
 		defer invalidateConnectors(conn...)
 		out, err := run(action, func(w io.Writer) ([]string, error) {
 			if in.Cluster {
@@ -606,8 +486,6 @@ func certsRotateCAWith(deps destructiveDeps, conn ...*kube.Connector) sdk.ToolHa
 			return nil, deps.rotateCA(w, opts)
 		})
 		if err == nil {
-			// The x509 window around sign-new, the same text the CLI prints,
-			// then what remains of the rotation for a --phase run.
 			if in.Cluster {
 				out.Next = certs.CARotateClusterWarning
 			} else {
@@ -618,8 +496,6 @@ func certsRotateCAWith(deps destructiveDeps, conn ...*kube.Connector) sdk.ToolHa
 	}
 }
 
-// --------------------------------------------------- certs_migrate_etcd_ca
-
 // CertsMigrateEtcdCAIn is certs_migrate_etcd_ca's input.
 type CertsMigrateEtcdCAIn struct {
 	Phase   string `json:"phase" jsonschema:"one node: trust-both, then issue-new, then drop-root, in that order; rollback is not a fourth step but the way back, un-migrating a node instead of advancing it; leave empty with cluster"`
@@ -628,27 +504,18 @@ type CertsMigrateEtcdCAIn struct {
 	Force   bool   `json:"force,omitempty" jsonschema:"rollback only: un-migrate a node that already completed drop-root"`
 }
 
-// CertsMigrateEtcdCAHandler moves etcd onto its own CA, one phase at a time.
-// It rewrites etcd PKI on this node, and the cluster migration drives the
-// other nodes through this node's super-admin.conf, not the server's credential:
-// RBAC neither enables nor limits it.
+// CertsMigrateEtcdCAHandler rewrites etcd PKI on this node using its own super-admin.conf.
 func CertsMigrateEtcdCAHandler() sdk.ToolHandlerFor[CertsMigrateEtcdCAIn, destructiveOut] {
 	return certsMigrateEtcdCAWith(destructiveOps)
 }
 
 func certsMigrateEtcdCAWith(deps destructiveDeps) sdk.ToolHandlerFor[CertsMigrateEtcdCAIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in CertsMigrateEtcdCAIn) (*sdk.CallToolResult, destructiveOut, error) {
-		// Request cancellation is honored before anything, argument validation
-		// included: the cluster operation's first check is the caller's context,
-		// and a canceled request must not come back as a refusal instead of its
-		// cause.
+		// Cancellation is checked before validation, so a canceled request fails with its cause.
 		if err := ctx.Err(); err != nil {
 			return nil, destructiveOut{}, err
 		}
-		// As the CLI: --cluster (no phase) drives every phase across every
-		// control plane, --phase runs one on this node. The validator owns every
-		// rule — the missing phase, an unknown phase, cluster with a phase — in
-		// the CLI's words.
+		// The validator owns every rule, in the CLI's words.
 		f := certs.EtcdCAFlags{Cluster: in.Cluster, Phase: in.Phase, Resume: in.Resume, Force: in.Force}
 		if err := f.Validate(); err != nil {
 			return nil, destructiveOut{}, err
@@ -665,8 +532,7 @@ func certsMigrateEtcdCAWith(deps destructiveDeps) sdk.ToolHandlerFor[CertsMigrat
 			}
 			return nil, deps.migrateEtcdCA(w, opts)
 		})
-		// A cluster run finishes the migration itself, as the CLI's --cluster
-		// does; only a single-node forward phase leaves phases to run.
+		// Only a single-node forward phase leaves phases to run.
 		if err == nil && !in.Cluster && in.Phase != "drop-root" && in.Phase != "rollback" {
 			out.Next = "The migration is not finished. Run the remaining phases in order on every " +
 				"control plane; etcd restarts at each one."
@@ -674,8 +540,6 @@ func certsMigrateEtcdCAWith(deps destructiveDeps) sdk.ToolHandlerFor[CertsMigrat
 		return nil, out, err
 	}
 }
-
-// --------------------------------------- certs_migrate_kubelet_client_ca
 
 // CertsMigrateKubeletClientCAIn is certs_migrate_kubelet_client_ca's input.
 type CertsMigrateKubeletClientCAIn struct {
@@ -685,18 +549,14 @@ type CertsMigrateKubeletClientCAIn struct {
 	Force    bool   `json:"force,omitempty" jsonschema:"rollback only: re-add the cluster root to kubelets that completed drop-root"`
 }
 
-// CertsMigrateKubeletClientCAHandler moves the kubelets' client trust onto
-// its own CA, or back to the cluster root. Like certs_migrate_etcd_ca it acts
-// through this node's super-admin.conf, not the server's credential.
+// CertsMigrateKubeletClientCAHandler moves kubelet client trust via this node's super-admin.conf.
 func CertsMigrateKubeletClientCAHandler() sdk.ToolHandlerFor[CertsMigrateKubeletClientCAIn, destructiveOut] {
 	return certsMigrateKubeletCAWith(destructiveOps)
 }
 
 func certsMigrateKubeletCAWith(deps destructiveDeps) sdk.ToolHandlerFor[CertsMigrateKubeletClientCAIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in CertsMigrateKubeletClientCAIn) (*sdk.CallToolResult, destructiveOut, error) {
-		// As the CLI: --cluster (no phase) drives every phase across every
-		// node, --phase runs one on this node. The validator owns every rule,
-		// in the CLI's words.
+		// The validator owns every rule, in the CLI's words.
 		f := certs.KubeletCAFlags{Cluster: in.Cluster, Phase: in.Phase, Rollback: in.Rollback, Force: in.Force}
 		if err := f.Validate(); err != nil {
 			return nil, destructiveOut{}, err
@@ -713,8 +573,7 @@ func certsMigrateKubeletCAWith(deps destructiveDeps) sdk.ToolHandlerFor[CertsMig
 			}
 			return nil, deps.migrateKubeletCA(w, opts)
 		})
-		// A cluster run finishes the migration itself, as the CLI's --cluster
-		// does; only a single-node forward phase leaves phases to run.
+		// Only a single-node forward phase leaves phases to run.
 		if err == nil && !in.Cluster && in.Phase != "drop-root" && in.Phase != "remove-ca" {
 			out.Next = "The migration is not finished. Run the remaining phases in order on every node, " +
 				"control planes first, or run it with cluster."
@@ -722,8 +581,6 @@ func certsMigrateKubeletCAWith(deps destructiveDeps) sdk.ToolHandlerFor[CertsMig
 		return nil, out, err
 	}
 }
-
-// ---------------------------------------------------------- snapshot_restore
 
 // SnapshotRestoreIn is snapshot_restore's input.
 type SnapshotRestoreIn struct {
@@ -733,25 +590,16 @@ type SnapshotRestoreIn struct {
 // restoreRestartSet is etcdsnap.RestoreRestartSet, indirected for tests.
 var restoreRestartSet = etcdsnap.RestoreRestartSet
 
-// snapshotRejoinNext is what the other control planes need after a restore. They
-// still hold the old cluster, which normally still has quorum, so a rejoin without
-// --force is refused; snapshot_rejoin has no way to pass it (SnapshotRejoinHandler
-// calls ha.RejoinEtcd with force=false), so the next step is the CLI's, run on each
-// of those nodes.
+// snapshot_rejoin cannot pass --force, so the other control planes must run the CLI instead.
 const snapshotRejoinNext = "Every other control plane still holds the OLD etcd data, so the cluster is split until each one is brought " +
 	"back. On each of them, run the CLI: `stratum snapshot rejoin --server https://<this-node-ip>:6443 " +
 	"--yes --force`. The snapshot_rejoin tool cannot do this: it never overrides the quorum check, and " +
 	"a node whose old cluster still has quorum, which is the usual case here, is refused."
 
-// snapshotRestoreNext is what a successful restore tells the caller to do, with
-// nothing restarted to report.
 const snapshotRestoreNext = "This node is now a single-member cluster seeded from the snapshot. " + snapshotRejoinNext +
 	" Everything written after the snapshot is gone."
 
-// SnapshotRestoreHandler restores etcd on this node as a new single-member
-// cluster. It is host work on this node's etcd data, and its health checks use
-// this node's super-admin.conf, not the server's credential: RBAC neither enables nor
-// limits it.
+// SnapshotRestoreHandler is host work on this node's etcd data, via super-admin.conf.
 func SnapshotRestoreHandler() sdk.ToolHandlerFor[SnapshotRestoreIn, destructiveOut] {
 	return func(_ context.Context, _ *sdk.CallToolRequest, in SnapshotRestoreIn) (*sdk.CallToolResult, destructiveOut, error) {
 		if in.Snapshot == "" {
@@ -769,10 +617,6 @@ func SnapshotRestoreHandler() sdk.ToolHandlerFor[SnapshotRestoreIn, destructiveO
 		out, err := run("restore etcd from snapshot "+path, func(w io.Writer) ([]string, error) {
 			return nil, destructiveOps.restoreLocalSeed(w, path)
 		})
-		// otherNodes is what is left once the node's own data is restored, besides
-		// rejoining the other control planes (snapshotRejoinNext), rendered from the
-		// restore's restart set: the per-control-plane block, and the
-		// once-for-the-cluster block, the set carries.
 		set := restoreRestartSet()
 		otherNodes := "The kubelet on every other node also holds a pre-restore watch and must be restarted. " +
 			"If there are other control planes, repeat the restarts " +
@@ -788,8 +632,7 @@ func SnapshotRestoreHandler() sdk.ToolHandlerFor[SnapshotRestoreIn, destructiveO
 		case err == nil:
 			out.Next = snapshotRestoreNext + " " + set.RestartedProse() + " " + otherNodes
 		case errors.Is(err, etcdsnap.ErrWatchersNotRestarted):
-			// The data is restored; the operator still needs the rest, and must not
-			// run the restore again.
+			// The restore happened; the operator must not run it again.
 			err = fmt.Errorf("%w\n\nThe snapshot is restored on this node: do not run the restore again. "+
 				"Restart the components named above by hand; the in-cluster workloads on this node with `%s`. %s %s",
 				err, strings.Join(etcdsnap.SeedRolloutRestartCommands(), "`, `"), snapshotRejoinNext, otherNodes)
@@ -797,8 +640,6 @@ func SnapshotRestoreHandler() sdk.ToolHandlerFor[SnapshotRestoreIn, destructiveO
 		return nil, out, err
 	}
 }
-
-// --------------------------------------------------- snapshot_prune_restores
 
 // RestoreCopyRef names one copy as snapshot_restore_copies reported it.
 type RestoreCopyRef struct {
@@ -819,10 +660,7 @@ type SnapshotPruneRestoresOut struct {
 	Left    []string `json:"left,omitempty" jsonschema:"named copies that were not removed, because they changed or are gone since the listing, or are not restore copies"`
 }
 
-// SnapshotPruneRestoresHandler removes the named restore copies. It
-// has no "remove everything" form: the caller names each copy as it was
-// listed, and one that changed since is left, the same guarantee as
-// `stratum snapshot prune-restores --yes`.
+// SnapshotPruneRestoresHandler removes the named copies; there is no remove-everything form.
 func SnapshotPruneRestoresHandler() sdk.ToolHandlerFor[SnapshotPruneRestoresIn, SnapshotPruneRestoresOut] {
 	return func(_ context.Context, _ *sdk.CallToolRequest, in SnapshotPruneRestoresIn) (*sdk.CallToolResult, SnapshotPruneRestoresOut, error) {
 		if len(in.Copies) == 0 {
@@ -837,14 +675,11 @@ func SnapshotPruneRestoresHandler() sdk.ToolHandlerFor[SnapshotPruneRestoresIn, 
 		shown := make([]etcdsnap.RestoreCopy, 0, len(in.Copies))
 		named := map[string]bool{}
 		for _, c := range in.Copies {
-			// A malformed entry is refused, not quietly left: this request
-			// deletes etcd data, so it must name copies as the listing did.
 			if !etcdsnap.IsRestoreCopyPath(c.Path) {
 				return nil, SnapshotPruneRestoresOut{}, fmt.Errorf("copy %q is not a restore copy: pass "+
 					"each path exactly as snapshot_restore_copies reported it; nothing was removed", c.Path)
 			}
-			// Named twice, one entry could be removed on the other's
-			// timestamp, and the result would report the stale one removed.
+			// Named twice, one entry could be removed on the other's stale timestamp.
 			if named[c.Path] {
 				return nil, SnapshotPruneRestoresOut{}, fmt.Errorf("copy %s is named more than once: name "+
 					"each copy once; nothing was removed", c.Path)
@@ -877,18 +712,12 @@ func SnapshotPruneRestoresHandler() sdk.ToolHandlerFor[SnapshotPruneRestoresIn, 
 	}
 }
 
-// ----------------------------------------------------------- snapshot_rejoin
-
 // SnapshotRejoinIn is snapshot_rejoin's input.
 type SnapshotRejoinIn struct {
 	Server string `json:"server" jsonschema:"the restored seed control plane's URL, e.g. https://<seed-ip>:6443"`
 }
 
-// SnapshotRejoinHandler rejoins this node's etcd to the restored cluster. It
-// wipes the local etcd data and re-adds the member only when this node is not
-// yet a member of the restored cluster, or is a member that is not serving and
-// is safe to remove; a member that can be resumed keeps its data. Callers must
-// not rely on the wipe happening.
+// SnapshotRejoinHandler wipes and re-adds only when this node is not a resumable member.
 func SnapshotRejoinHandler() sdk.ToolHandlerFor[SnapshotRejoinIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in SnapshotRejoinIn) (*sdk.CallToolResult, destructiveOut, error) {
 		if in.Server == "" {
@@ -899,10 +728,6 @@ func SnapshotRejoinHandler() sdk.ToolHandlerFor[SnapshotRejoinIn, destructiveOut
 		if err != nil || u.Hostname() == "" {
 			return nil, destructiveOut{}, fmt.Errorf("invalid server %q: want a URL like https://<seed-ip>:6443", in.Server)
 		}
-		// Only the hostname is used, so anything else in the URL would be
-		// accepted and then ignored -- and a caller that spelled out a
-		// path or a different scheme is describing a target this tool
-		// will not actually contact.
 		if u.Scheme != "https" || u.User != nil || strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.Fragment != "" {
 			return nil, destructiveOut{}, fmt.Errorf(
 				"server %q must be exactly https://<seed-ip>:6443, with no credentials, path or query: "+
@@ -921,19 +746,13 @@ func SnapshotRejoinHandler() sdk.ToolHandlerFor[SnapshotRejoinIn, destructiveOut
 	}
 }
 
-// ---------------------------------------------------------------- ha_repoint
-
 // HARepointIn is ha_repoint's input.
 type HARepointIn struct {
 	VIP    string `json:"vip" jsonschema:"the cluster VIP address this node's clients should use"`
 	Cilium bool   `json:"cilium,omitempty" jsonschema:"re-point Cilium cluster-wide INSTEAD of this node's clients. This affects every node and is meant to be done exactly once for the whole cluster; this node's clients are left as they are"`
 }
 
-// HARepointHandler runs one of two repoints, never both: with Cilium unset it
-// moves this node's clients onto the cluster VIP, rewriting this node's
-// kubeconfigs with no API credential; with Cilium set it re-points Cilium
-// cluster-wide on the credential conn resolves and leaves this node's clients
-// alone.
+// HARepointHandler runs one of two repoints, never both.
 func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHandlerFor[HARepointIn, destructiveOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in HARepointIn) (*sdk.CallToolResult, destructiveOut, error) {
 		if in.VIP == "" {
@@ -947,11 +766,7 @@ func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHa
 		if in.Cilium {
 			action = "repoint Cilium cluster-wide at " + in.VIP
 		}
-		// The node repoint rewrites every kubeconfig on this node, admin.conf
-		// included — the files the server's connector caches. From here to
-		// the return the cache is dropped, however the operation ends: a
-		// repoint that failed partway has still earned a re-resolve. The
-		// refusals above run the operation never, so they skip it.
+		// The repoint rewrites the kubeconfigs the server's connector caches, so drop the cache.
 		defer invalidateConnectors(append([]*kube.Connector{conn}, other...)...)
 		var cs kubernetes.Interface
 		if in.Cilium {
@@ -972,10 +787,7 @@ func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHa
 		if err != nil {
 			return nil, out, err
 		}
-		// A rollout that did not finish comes back as a warning beside a nil
-		// error — the env change is already applied — and on the Cilium path
-		// that is the only warning the operation returns, so the guidance the
-		// old rollout sentinel carried keys off the list.
+		// On the Cilium path a warning is the only report an unfinished rollout gives.
 		if in.Cilium && len(out.Warnings) > 0 {
 			out.Next = "Cilium's env now names the VIP, but it did not finish rolling out: agents may be " +
 				"dialing a VIP some node cannot reach. Check `stratum kubectl -n kube-system rollout status " +
@@ -990,17 +802,10 @@ func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHa
 	}
 }
 
-// ---------------------------------------------------------------- uninstall
-
 // UninstallIn is uninstall's (empty) input.
 type UninstallIn struct{}
 
-// UninstallHandler removes Stratum from this node.
-//
-// uninstall.Run(false) prints a preview and removes nothing, so passing the
-// caller's own flag here made the tool a no-op that still reported success.
-// Starting the server with --allow-destructive is the confirmation; the
-// preview is uninstall_preview, which is a separate read-tier tool.
+// UninstallHandler removes Stratum; --allow-destructive is the confirmation, not a per-call flag.
 func UninstallHandler() sdk.ToolHandlerFor[UninstallIn, destructiveOut] {
 	return func(_ context.Context, _ *sdk.CallToolRequest, _ UninstallIn) (*sdk.CallToolResult, destructiveOut, error) {
 		out, err := run("uninstall Stratum from this node", func(w io.Writer) ([]string, error) {
@@ -1014,10 +819,7 @@ func UninstallHandler() sdk.ToolHandlerFor[UninstallIn, destructiveOut] {
 	}
 }
 
-// caRotationNext is the guidance after a phase completes, or "" when none
-// remains. It names only the phases still to run: listing the whole
-// sequence would tell an operator to repeat the phase that just finished,
-// and re-running a CA rotation phase is not a no-op.
+// Names only phases still to run: re-running a finished CA rotation phase is not a no-op.
 func caRotationNext(current string) string {
 	remaining := phasesAfter(caPhases, current)
 	if len(remaining) == 0 {
@@ -1037,27 +839,20 @@ func phasesAfter(phases []string, current string) []string {
 	return nil
 }
 
-// snapshotDir is the directory a bare name resolves in: spec.snapshots.dir, as
-// `stratum snapshot restore NAME` reads it. A seam for tests.
+// The directory a bare name resolves in; a seam for tests.
 var snapshotDir = clustercfg.LoadSnapshotDir
 
-// loadSnapshotConfig reads the snapshot config the list, save and prune tools
-// use: the resolved settings, which carry the directory (spec.snapshots.dir)
-// those tools act in. A seam for tests, which must not read the host's S3
-// target.
+// loadSnapshotConfig is a seam for tests, which must not read the host's S3 target.
 var loadSnapshotConfig = clustercfg.LoadSnapshotConfig
 
-// snapshotList, snapshotSave and snapshotPrune are the three snapshot effects
-// the list, save and prune tools drive, behind seams so a test can record the
-// directory each one acted in without touching etcd or the object store.
+// Seams so a test can record the directory each acted in without touching etcd or the object store.
 var (
 	snapshotList  = etcdsnap.List
 	snapshotSave  = etcdsnap.SaveContext
 	snapshotPrune = etcdsnap.PruneScheduled
 )
 
-// resolveSnapshotPath resolves a bare snapshot name inside the snapshot
-// directory, passes an absolute path through, and refuses a relative one.
+// resolveSnapshotPath resolves a bare name inside the snapshot directory, refusing relative paths.
 func resolveSnapshotPath(snapshot string) (string, error) {
 	if filepath.IsAbs(snapshot) {
 		return filepath.Clean(snapshot), nil
@@ -1075,9 +870,7 @@ func resolveSnapshotPath(snapshot string) (string, error) {
 	return filepath.Join(snapshotDir(), snapshot), nil
 }
 
-// checkVIP refuses anything that is not a bare IP address or hostname.
-// ha.NodeRepoint interpolates the value into https://<vip>:6443 and writes
-// that into every kubeconfig on the node.
+// checkVIP refuses anything but a bare IP or hostname: it is interpolated into a URL.
 func checkVIP(vip string) error {
 	if net.ParseIP(vip) != nil {
 		return nil

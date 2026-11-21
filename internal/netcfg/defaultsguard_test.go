@@ -19,10 +19,7 @@ import (
 	"github.com/ctrliq/stratum/internal/netcfg/netdefault"
 )
 
-// defaultCallers are the files outside netcfg that may call netcfg.Default,
-// each with the reason the bare default is right there. Default skips the
-// value a user gave and the one a node recorded, so a new caller fails the
-// guard until it is reviewed and listed here.
+// Each entry states its reason; a new caller fails the guard until reviewed and listed.
 var defaultCallers = map[string]string{
 	"internal/cluster/clusterdns.go":     "the DNS address the kubelet runs on when no service range or address is recorded, as runtime.ClusterDNSIP renders it",
 	"internal/cluster/importerstacks.go": "a fallback for node state that records no service range; a controller records its own",
@@ -33,8 +30,6 @@ var defaultCallers = map[string]string{
 	"internal/token/joinflags.go":        "compares the cluster's network with the default, so the join flags name only what differs",
 }
 
-// netcfgDefaultReads returns every reference in f to netcfg.Default, called or
-// not, matched through the name f gives netcfg.
 func netcfgDefaultReads(f *ast.File) []*ast.SelectorExpr {
 	const netcfgPath = "github.com/ctrliq/stratum/internal/netcfg"
 	name := ""
@@ -61,13 +56,6 @@ func netcfgDefaultReads(f *ast.File) []*ast.SelectorExpr {
 	return reads
 }
 
-// networkDefaultUses reports every way the file f, at file (slash-separated
-// and relative to the module root), reads a network default without asking
-// netcfg: an import of netdefault outside nodestate, a read of one of the
-// names that left internal/version, a call of netcfg.Default from a file
-// defaultCallers does not list, a string literal that spells a default value
-// or a name under the default domain, and, in internal/version itself, a
-// declaration of one of those names.
 func networkDefaultUses(fset *token.FileSet, file string, f *ast.File) []string {
 	const (
 		versionPath    = "github.com/ctrliq/stratum/internal/version"
@@ -80,9 +68,7 @@ func networkDefaultUses(fset *token.FileSet, file string, f *ast.File) []string 
 	}
 	var uses []string
 
-	// The name this file gives internal/version, so a read is matched by the
-	// package it names and never by a field that happens to share the name
-	// (netc.PodCIDR).
+	// Match a read by the package name this file gives, never a same-named field.
 	versionName := ""
 	for _, imp := range f.Imports {
 		importPath, err := strconv.Unquote(imp.Path.Value)
@@ -91,8 +77,7 @@ func networkDefaultUses(fset *token.FileSet, file string, f *ast.File) []string 
 		}
 		switch importPath {
 		case netdefaultPath:
-			// nodestate may: netcfg imports nodestate, so NodeState.Domain
-			// cannot ask netcfg for the default domain.
+			// netcfg imports nodestate, so NodeState.Domain cannot ask netcfg.
 			if dir != "internal/nodestate" {
 				uses = append(uses, fmt.Sprintf("%s: imports %s; ask netcfg (DomainOr, WithDefaults) instead", fset.Position(imp.Pos()), netdefaultPath))
 			}
@@ -161,10 +146,7 @@ func networkDefaultUses(fset *token.FileSet, file string, f *ast.File) []string 
 	return uses
 }
 
-// TestNetworkDefaultGuardFlagsABadFileAndPassesACleanOne: the walk below
-// passes both for a clean tree and for a detector that matches nothing, so
-// the detector is proven here on its own: each way of reading a default is
-// flagged, and the look-alikes a real package holds are not.
+// Each way of reading a default is flagged, and the look-alikes a real package holds are not.
 func TestNetworkDefaultGuardFlagsABadFileAndPassesACleanOne(t *testing.T) {
 	for _, tc := range []struct {
 		name, dir, src string
@@ -364,15 +346,7 @@ const (
 	}
 }
 
-// TestNoPackageOutsideNetcfgReadsANetworkDefault: netcfg decides a cluster's
-// network. A range or domain the user gives wins, then what the node recorded,
-// and only then the built-in default. A package that reads a default for
-// itself skips that order, and a custom range or domain loses to the default
-// without an error. So every package outside netcfg asks netcfg's resolver;
-// only nodestate, which netcfg imports, reads netdefault itself, only the
-// files defaultCallers lists, each for its stated reason, call netcfg.Default,
-// and internal/version declares no network defaults. Test
-// files are exempt: they pin the default values on purpose.
+// A package reading a default for itself skips the order: user value, node record, built-in.
 func TestNoPackageOutsideNetcfgReadsANetworkDefault(t *testing.T) {
 	root := filepath.Join("..", "..")
 	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
@@ -398,20 +372,13 @@ func TestNoPackageOutsideNetcfgReadsANetworkDefault(t *testing.T) {
 	}
 }
 
-// guardWalk is what walkForNetworkDefaults found: each way a file reads a
-// network default, the files it checked, and the files in defaultCallers
-// that call netcfg.Default. Paths are slash-separated and relative to the
-// module root.
 type guardWalk struct {
 	uses    []string
 	checked []string
 	callers map[string]bool
 }
 
-// walkForNetworkDefaults checks every non-test Go file of the module rooted at
-// root, under each top-level directory that holds Go code. Only netcfg's own
-// files and netdefault's are exempt; a package below them is checked like any
-// other. testdata, node_modules and nested modules are not this module's code.
+// Exempts only netcfg's and netdefault's own files; testdata and nested modules are not ours.
 func walkForNetworkDefaults(root string) (guardWalk, error) {
 	exempt := map[string]bool{"internal/netcfg": true, "internal/netcfg/netdefault": true}
 	w := guardWalk{callers: map[string]bool{}}
@@ -463,10 +430,7 @@ func walkForNetworkDefaults(root string) (guardWalk, error) {
 	return w, nil
 }
 
-// TestNetworkDefaultGuardWalksEveryPackageButNetcfgItself: the walk exempts
-// netcfg's own files and netdefault's and nothing below or beside them, so a
-// package added under internal/netcfg, or Go code outside internal, is
-// checked, while vendored JavaScript dependencies and testdata are not.
+// A package under internal/netcfg, or Go code outside internal, is still checked.
 func TestNetworkDefaultGuardWalksEveryPackageButNetcfgItself(t *testing.T) {
 	root := t.TempDir()
 	const bad = "package x\nimport \"github.com/ctrliq/stratum/internal/netcfg/netdefault\"\nvar d = netdefault.ClusterDomain\n"

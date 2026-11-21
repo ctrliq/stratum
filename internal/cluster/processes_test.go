@@ -49,10 +49,7 @@ func TestWorkerKubeletBootstrapFlagsSurviveRestart(t *testing.T) {
 	}
 }
 
-// TestKubeletServingCertDirFollowsTheLaunchFlags pins where the heal and
-// rotate-ca look for the kubelet's bootstrap-issued serving pair. A controller
-// launches with no --cert-dir, so its kubelet keeps the pair in the kubelet's
-// fixed default, which --root-dir does not move.
+// A controller launches with no --cert-dir: its kubelet keeps the kubelet default.
 func TestKubeletServingCertDirFollowsTheLaunchFlags(t *testing.T) {
 	dir := t.TempDir()
 	pki := func(name string) string { return filepath.Join(dir, "pki", name) }
@@ -69,13 +66,6 @@ func TestKubeletServingCertDirFollowsTheLaunchFlags(t *testing.T) {
 		t.Errorf("controller cert dir = %q, want the kubelet default /var/lib/kubelet/pki (args %v)", got, controller)
 	}
 }
-
-// The bootstrapsigner and etcd client-CA regression tests live in
-// internal/staticpod with the argv renderers, since the control plane is
-// static pods. What is left to pin here is the supervisor roster itself:
-// kubelet+containerd on every node, the operator only on controllers with the
-// operator switch on, and no control-plane component supervised as a host
-// process.
 
 func rosterNames(st *NodeState, operator bool) []string {
 	var names []string
@@ -101,13 +91,7 @@ func TestRosterIsHostProcessesOnly(t *testing.T) {
 	}
 }
 
-// TestSupervisorRosterIsTheUnits ties the roster to comps.Units, the canonical
-// component list uninstall and the upgrade derive from. TestRosterIsHostProcessesOnly
-// names the members in a hand-written literal, so a component added here but not
-// there — or the reverse — passes it while the rest of the tree never hears of
-// the change. The relation is the pin; a new component must land in both lists
-// at once to keep it green. The operator switch decides the operator on a
-// controller and nothing on a worker, which never runs it whatever the switch.
+// A new component must land in both lists at once to keep it green.
 func TestSupervisorRosterIsTheUnits(t *testing.T) {
 	withoutOperator := slices.DeleteFunc(slices.Clone(comps.Units), func(name string) bool { return name == "operator" })
 
@@ -129,11 +113,7 @@ func TestSupervisorRosterIsTheUnits(t *testing.T) {
 	}
 }
 
-// TestContainerdConfigArg pins the containerd process to stratum's own config
-// path. Selecting that path (away from the host's /etc/containerd/config.toml)
-// is the core behavior of the stratum-owned containerd config; without this
-// assertion the roster test above would stay green if the --config arg
-// regressed to the host path.
+// The roster test stays green if --config regresses to the host's config.toml.
 func TestContainerdConfigArg(t *testing.T) {
 	for _, role := range []string{"controller", "worker"} {
 		var containerd []string
@@ -155,9 +135,6 @@ func TestContainerdConfigArg(t *testing.T) {
 	}
 }
 
-// namedProcess finds one process in a rendered roster, failing the test when
-// the name is missing: a pin that silently skipped a missing process would
-// pass on the day the roster loses it.
 func namedProcess(t *testing.T, procs []supervisor.Process, name string) supervisor.Process {
 	t.Helper()
 	for _, p := range procs {
@@ -173,9 +150,6 @@ func namedProcess(t *testing.T, procs []supervisor.Process, name string) supervi
 	return supervisor.Process{}
 }
 
-// hostArgv is the argv the supervisor starts a process with: ArgsFn's fresh
-// render when the component has one, Args otherwise — the same choice
-// writeComponentArgs records.
 func hostArgv(p supervisor.Process) []string {
 	if p.ArgsFn != nil {
 		return p.ArgsFn()
@@ -183,16 +157,7 @@ func hostArgv(p supervisor.Process) []string {
 	return p.Args
 }
 
-// TestHostProcessArgvIgnoresTheOperatorSwitch: the roster reads no cluster
-// config, only the node state and the operator switch, and the upgrade's
-// reload and the worker start render the host processes with the switch off
-// while a controller start passes the config's own. That split rests on the
-// containerd and kubelet argv not depending on the switch. The assumption is
-// load-bearing: an upgraded node must run exactly the argv its saved node
-// state describes, so a switch that starts shaping either argv changes what
-// an upgraded node runs while every test that renders an argv with one switch
-// stays green. Building both rosters for the same node state — one with the
-// operator off, one with it on — makes the disagreement itself the failure.
+// An upgraded node runs the argv its saved state describes, rendered with the switch off.
 func TestHostProcessArgvIgnoresTheOperatorSwitch(t *testing.T) {
 	for _, st := range []*NodeState{
 		{Role: "controller", Hostname: "cp1", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11", VIP: VIP{Address: "10.0.0.10"}},
@@ -214,9 +179,7 @@ func TestHostProcessArgvIgnoresTheOperatorSwitch(t *testing.T) {
 	}
 }
 
-// TestOperatorKnowsTheVIP: the deployer points Cilium at the VIP when there is
-// one, and it can only know there is one from its argv. No VIP, no
-// flag, so a VIP-less roster is unchanged.
+// The deployer can only point Cilium at the VIP from the operator's argv.
 func TestOperatorKnowsTheVIP(t *testing.T) {
 	operatorArgs := func(st *NodeState) []string {
 		for _, p := range Processes(st, true) {
@@ -236,10 +199,7 @@ func TestOperatorKnowsTheVIP(t *testing.T) {
 	}
 }
 
-// TestOperatorArgvCarriesTheClusterDomain: the operator names the dashboard's
-// and the webhook's Services in their serving certs, and it can only know the
-// cluster's domain from its argv. A node state without a domain still passes
-// the default, so the operator never falls back on its own flag default.
+// The operator names Services in serving certs, knowing the domain only from argv.
 func TestOperatorArgvCarriesTheClusterDomain(t *testing.T) {
 	for _, tc := range []struct {
 		domain string
@@ -256,13 +216,7 @@ func TestOperatorArgvCarriesTheClusterDomain(t *testing.T) {
 	}
 }
 
-// TestOperatorArgvMatchesTheRestorePattern: the restore's guidance
-// restarts the operator with `pkill -f` and comps.OperatorCommandLinePattern, which
-// matches flags in the order assembled here. A reordering would make the printed
-// command miss a real operator, so the real argv, with and without a VIP and under
-// an artifact name, must match it and be accepted by the supervisor's own test.
-// A controller roster that holds no operator fails too: otherwise the match is
-// never attempted and the test passes having checked nothing.
+// The restore restarts the operator by comps.OperatorCommandLinePattern, so order is pinned.
 func TestOperatorArgvMatchesTheRestorePattern(t *testing.T) {
 	re := regexp.MustCompile(comps.OperatorCommandLinePattern())
 	for _, tc := range []struct {
@@ -293,15 +247,7 @@ func TestOperatorArgvMatchesTheRestorePattern(t *testing.T) {
 	}
 }
 
-// TestRunControllerRendersBeforeTheSupervisorStarts: upgrade, rollback and
-// rejoin treat an answering supervisor as proof that this node's renders
-// are done (ensureSupervisor skips every write once the control socket
-// answers), so RunController must write the static-pod manifests, the
-// add-on bundles and the .args records before it starts the supervisor. The
-// test stands where the supervisor stands — runSupervisor replaced by a
-// stub that inspects the disk and hands back the context error — so a start
-// sequence that reaches the supervisor before a render finishes fails here,
-// not on a node whose kubelet boots half-rendered state.
+// An answering supervisor counts as proof the renders are done, so they must precede it.
 func TestRunControllerRendersBeforeTheSupervisorStarts(t *testing.T) {
 	origConf, origManifests, origPKI, origKubeconfig := version.K8sConfDir, version.ManifestsDir, version.PKIDir, version.KubeconfigDir
 	t.Cleanup(func() {
@@ -331,9 +277,7 @@ func TestRunControllerRendersBeforeTheSupervisorStarts(t *testing.T) {
 			version.PKIDir = t.TempDir()
 			version.KubeconfigDir = t.TempDir()
 
-			// The recorder parks like a real loop: a stub that returns would
-			// have the run group restart it, and the shutdown join would
-			// wait out the restart backoff.
+			// A stub that returns would be restarted, and the join would wait out the backoff.
 			startEtcdGrowthRecorder = func(ctx context.Context) { <-ctx.Done() }
 
 			st := tc.st
@@ -372,9 +316,7 @@ func TestRunControllerRendersBeforeTheSupervisorStarts(t *testing.T) {
 	}
 }
 
-// TestBundlesAreTheSameOnEveryControlPlane pins leader-independent bundles at their source: the
-// operator applies the leader's staged copy, so any per-node byte in a bundle
-// becomes a re-apply, and for Cilium a rollout, every time the lease moves.
+// Any per-node bundle byte becomes a re-apply, and for Cilium a rollout, per lease move.
 func TestBundlesAreTheSameOnEveryControlPlane(t *testing.T) {
 	orig, origCilium := version.ManifestsDir, version.CiliumSettingsPath
 	version.CiliumSettingsPath = filepath.Join(t.TempDir(), "cilium.json")
@@ -395,8 +337,6 @@ func TestBundlesAreTheSameOnEveryControlPlane(t *testing.T) {
 	}
 }
 
-// stagedStacks lists every file writeBundles staged under dir, keyed by path
-// relative to it — the deployer's view of the manifests directory.
 func stagedStacks(t *testing.T, dir string) map[string][]byte {
 	t.Helper()
 	out := map[string][]byte{}
@@ -427,8 +367,6 @@ func stagedStacks(t *testing.T, dir string) map[string][]byte {
 	return out
 }
 
-// sortedStacks is stagedStacks' key set in order, for comparing the staged
-// set with the set a config asks for.
 func sortedStacks(files map[string][]byte) []string {
 	names := make([]string, 0, len(files))
 	for rel := range files {
@@ -438,16 +376,7 @@ func sortedStacks(files map[string][]byte) []string {
 	return names
 }
 
-// TestWriteBundlesStagesEveryStackTheConfigAsksFor: the deployer prunes
-// what a stack stops declaring, so the staged set IS the cluster's add-on
-// set — the CRDs, the node-mark policy, Cilium and CoreDNS always,
-// local-path only while the config asks for it. Nothing pinned the set, so
-// a render that drops a stack deletes its objects on the next pass with
-// every test green. CoreDNS must be the render for the node's own service
-// range and domain (10.43.0.10 is the tenth address of 10.43.0.0/16), and
-// an unchanged file must not be rewritten: the deployer re-applies on
-// change, so a start that touches every file rolls the add-ons on every
-// reboot.
+// The deployer prunes what a stack stops declaring: the staged set IS the add-on set.
 func TestWriteBundlesStagesEveryStackTheConfigAsksFor(t *testing.T) {
 	orig := version.ManifestsDir
 	t.Cleanup(func() { version.ManifestsDir = orig })
@@ -476,9 +405,6 @@ func TestWriteBundlesStagesEveryStackTheConfigAsksFor(t *testing.T) {
 		t.Error("coredns.yaml is not the staged render, whose per-cluster inputs stay as sentinels")
 	}
 
-	// Age every staged file back an hour so a rewrite cannot hide inside the
-	// filesystem's timestamp granularity: the deployer re-applies a changed
-	// file, so an idempotent second run must leave the aged times alone.
 	aged := time.Now().Add(-time.Hour)
 	for rel := range staged {
 		if err := os.Chtimes(filepath.Join(version.ManifestsDir, rel), aged, aged); err != nil {
@@ -501,9 +427,6 @@ func TestWriteBundlesStagesEveryStackTheConfigAsksFor(t *testing.T) {
 		}
 	}
 
-	// An unloaded ClusterConfig has no storage default (LoadConfig fills it
-	// in), so a render that consults one stages local-path for a cluster
-	// that never asked for it.
 	version.ManifestsDir = t.TempDir()
 	if err := writeBundles(&ClusterConfig{}, st); err != nil {
 		t.Fatal(err)
@@ -515,9 +438,6 @@ func TestWriteBundlesStagesEveryStackTheConfigAsksFor(t *testing.T) {
 	}
 }
 
-// decodeStack parses a staged multi-document YAML into unstructured objects —
-// the same decode path the operator's apply uses — so a pin can ask which
-// objects a stack declares.
 func decodeStack(t *testing.T, data []byte) []*unstructured.Unstructured {
 	t.Helper()
 	dec := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(data), 4096)
@@ -538,17 +458,7 @@ func decodeStack(t *testing.T, data []byte) []*unstructured.Unstructured {
 	return out
 }
 
-// TestWriteBundlesStagesTheSameStacksOnEveryControlPlane: the operator
-// applies the lease holder's staged copy, so two control planes on one
-// release staging different bytes or names re-apply and roll the add-ons on
-// every leader change. TestBundlesAreTheSameOnEveryControlPlane compares
-// Cilium only, for two node IPs; this pin compares the whole staged set for
-// node states that differ in hostname, node IP and kubelet node IP, and
-// holds the stack names the rest of the tree keys off: the CoreDNS spreader
-// restarts the Deployment it finds in the coredns stack, and the operator's
-// HelmChart controller needs its CRD in the crds stack. A stack renamed or
-// an object moved between them deletes the object on the next prune and
-// silently switches the spreading off.
+// Two control planes staging different bytes roll the add-ons on every leader change.
 func TestWriteBundlesStagesTheSameStacksOnEveryControlPlane(t *testing.T) {
 	orig := version.ManifestsDir
 	t.Cleanup(func() { version.ManifestsDir = orig })

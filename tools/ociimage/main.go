@@ -1,6 +1,4 @@
-// Command ociimage writes a single-binary OCI image archive for `ctr images
-// import`: one layer holding the binary at its root, no base image, and
-// byte-identical output for the same input.
+// Command ociimage writes a single-binary OCI image archive for `ctr images import`.
 package main
 
 import (
@@ -158,6 +156,7 @@ type entry struct {
 }
 
 func tarOf(entries []entry) ([]byte, error) {
+	// Fixed ModTime and PAX format keep the archive byte-identical for the same input.
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	dirs := map[string]bool{}

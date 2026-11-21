@@ -16,18 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Processes renders the supervised host-process roster for this node. Since
-// the control plane runs as kubelet-managed static pods
-// (internal/staticpod), so the supervisor's roster is down to what has to be a
-// host process: containerd, kubelet, and the operator on controllers.
-// Ordering/readiness is expressed with WaitFor gates rather than
-// After=/Requires=.
-//
-// operator is the cluster's spec.operator switch, the only cluster setting the
-// roster reads. It is a bool rather than the whole ClusterConfig because a nil
-// spec.operator means on: a caller that passed an empty config would have run
-// the operator on a cluster that turned it off. A worker never runs the
-// operator, whatever the switch.
+// The host processes a node's supervisor runs; the control plane is static pods.
 func Processes(st *NodeState, operator bool) []supervisor.Process {
 	bin := func(b string) string { return filepath.Join(version.BinDir, b) }
 	pki := func(f string) string { return filepath.Join(version.PKIDir, f) }
@@ -37,8 +26,7 @@ func Processes(st *NodeState, operator bool) []supervisor.Process {
 		{Name: "containerd", Path: bin("containerd"), Args: []string{
 			"--config", version.ContainerdConfig,
 		},
-			// The runc shim resolves "runc" from PATH; the payload's runc
-			// lives in BinDir, not on the host PATH.
+			// The runc shim resolves runc from PATH; the payload's runc is only in BinDir.
 			Env:       []string{"PATH=" + version.BinDir + ":" + os.Getenv("PATH")},
 			Socket:    strings.TrimPrefix(version.ContainerdSock, "unix://"),
 			ExecLabel: selinux.SystemExecLabel()},
@@ -46,9 +34,7 @@ func Processes(st *NodeState, operator bool) []supervisor.Process {
 	}
 
 	if st.Role == "controller" && operator {
-		// The HelmChart + manifest-deployer controller runs as a
-		// supervised host process — no operator image to pull, which keeps
-		// the airgap story one-artifact.
+		// A host process: no operator image to pull, keeping the airgap one-artifact.
 		procs = append(procs, supervisor.Process{Name: "operator", Path: selfExe(),
 			WaitFor: func(ctx context.Context) error { return waitAPIReady(ctx, 5*time.Minute) },
 			Args: []string{
@@ -57,11 +43,7 @@ func Processes(st *NodeState, operator bool) []supervisor.Process {
 				"--manifests-dir", version.ManifestsDir,
 				"--helm-cache", version.HelmCacheDir,
 				"--leader-elect",
-				// Serves the requester-stamping admission webhook and registers this
-				// node's endpoint so the apiserver can reach it.
-				// Disabling all instances requires the explicit cluster-wide
-				// webhook cleanup in docs/content/cluster-admin/hardening.md;
-				// ordinary shutdown must not disable admission enforcement.
+				// The apiserver reaches its admission webhook only through this endpoint.
 				"--node-ip", st.NodeIP,
 				"--cluster-domain", st.Domain(),
 			}})
@@ -78,27 +60,22 @@ func kubeletProcess(st *NodeState, pki, kc func(string) string) supervisor.Proce
 		"--config=" + filepath.Join(version.K8sConfDir, "kubelet.conf"),
 		"--node-ip=" + st.KubeletNodeIP,
 		"--hostname-override=" + st.Hostname,
-		// Kubelet state on the stratum data dir — a real filesystem wherever the
-		// supervisor runs (see the containerd root comment in runtime.go).
+		// Kubelet state needs a real filesystem wherever the supervisor runs.
 		"--root-dir=" + filepath.Join(version.DataDir, "kubelet"),
 	}
-	// Workers need the same bootstrap and cert-directory flags after their
-	// first bootstrap creates kubelet.kubeconfig, including after a host restart.
+	// A worker keeps the bootstrap flags even once kubelet.kubeconfig exists.
 	if _, err := os.Stat(kc("kubelet.kubeconfig")); st.Role != "worker" && err == nil {
 		args = append(args, "--kubeconfig="+kc("kubelet.kubeconfig"))
 	} else {
 		args = append(args,
-			"--kubeconfig="+kc("kubelet.kubeconfig"), // written by TLS bootstrap
+			"--kubeconfig="+kc("kubelet.kubeconfig"),
 			"--bootstrap-kubeconfig="+version.BootstrapKubeconfig,
 			"--cert-dir="+pki("kubelet"),
 		)
 	}
 	return supervisor.Process{
 		Name: "kubelet", Path: filepath.Join(version.BinDir, "kubelet"),
-		// Bootstrap order: containerd up, payload images imported,
-		// THEN kubelet — so the control-plane static pods it launches find
-		// their images locally rather than crash-looping on pulls that can
-		// never succeed on an airgapped node.
+		// Kubelet starts after containerd and the payload images, or airgapped pods crash-loop.
 		WaitFor: func(ctx context.Context) error {
 			if err := kubeletRuntimeReady(ctx); err != nil {
 				return err
@@ -110,9 +87,7 @@ func kubeletProcess(st *NodeState, pki, kc func(string) string) supervisor.Proce
 	}
 }
 
-// kubeletRuntimeReady is what the kubelet waits for before it starts:
-// containerd up and the payload images imported. A var so a test can run the
-// kubelet's WaitFor without them.
+// A var so a test can run the kubelet's WaitFor without them.
 var kubeletRuntimeReady = func(ctx context.Context) error {
 	if err := waitContainerd(ctx, 2*time.Minute); err != nil {
 		return err
@@ -120,9 +95,6 @@ var kubeletRuntimeReady = func(ctx context.Context) error {
 	return importPayloadImages(ctx)
 }
 
-// healKubeletServing moves aside a bootstrap-issued serving cert that no CA in
-// this node's ca-bundle.crt signed, so the kubelet requests a new one as it
-// starts (pki.HealKubeletServingCert). It never fails the start.
 func healKubeletServing(args []string) {
 	roots, err := stratumpki.KubeletServingRoots()
 	if err != nil {
@@ -137,10 +109,7 @@ func healKubeletServing(args []string) {
 	}
 }
 
-// waitAPIReady gates apiserver clients on real readiness — the bootstrap RBAC
-// configmap, not just /healthz (an apiserver answers /healthz before its
-// bootstrap controllers have run, and a controller-manager started in that
-// window exits immediately).
+// Gates on the bootstrap RBAC configmap; /healthz answers before bootstrap completes.
 func waitAPIReady(ctx context.Context, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var last error

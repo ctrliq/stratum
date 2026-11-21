@@ -8,10 +8,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The registries a running SKE cluster is not allowed to talk to. registry.k8s.io
-// is the one that matters most — an airgapped node cannot reach it, and a cluster
-// that silently pulls from it is one upstream outage away from not scheduling
-// pods. k8s.gcr.io is worse: it is frozen and must not appear anywhere at all.
+// An airgapped cluster must reach none of these; k8s.gcr.io is frozen.
 var forbiddenRegistries = []string{
 	"registry.k8s.io/",
 	"k8s.gcr.io/",
@@ -32,9 +29,6 @@ func manifests() map[string][]byte {
 	}
 }
 
-// The embedded manifests must not name an upstream registry even before
-// rendering: a sentinel that was missed is a literal that survives to the
-// cluster, and the render path has no way to fix it.
 func TestEmbeddedManifestsNameNoUpstreamRegistry(t *testing.T) {
 	for name, data := range manifests() {
 		for _, m := range imageLine.FindAllStringSubmatch(string(data), -1) {
@@ -48,13 +42,9 @@ func TestEmbeddedManifestsNameNoUpstreamRegistry(t *testing.T) {
 	}
 }
 
-// …and every rendered image must come from the mirror. This is the runtime half
-// of the airgap claim: `make images` registers the payload under exactly these
-// names, so a manifest that asks for anything else is an ImagePullBackOff on a
-// cluster with no registry.
+// make images registers the payload under these names; anything else is an ImagePullBackOff.
 func TestRenderedManifestsUseOnlyTheMirror(t *testing.T) {
-	// Stamped by the Makefile in a real build; set here so the test asserts the
-	// substitution happened rather than asserting the default.
+	// Stamped by the Makefile in a real build; set here so the test asserts the substitution.
 	ImageRegistry = "registry.example/ske"
 	CorednsVersion = "9.9.9"
 	LocalPathVersion = "9.9.9"
@@ -88,9 +78,7 @@ func TestRenderedManifestsUseOnlyTheMirror(t *testing.T) {
 	}
 }
 
-// The nsenter image runs on the node during CA rotation and cluster upgrade,
-// which happen on airgapped clusters by definition. It has to be a mirrored
-// name for the same reason the manifests do.
+// The nsenter image runs on the node during CA rotation and upgrades, on airgapped clusters.
 func TestNsenterImageIsMirrored(t *testing.T) {
 	for _, bad := range forbiddenRegistries {
 		if strings.Contains(version.NsenterImage, bad) {

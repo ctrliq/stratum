@@ -8,11 +8,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestRenewalReusesTheRecordedNodeIP pins the renewal rule. Re-deriving the
-// node IP from $NODE_IP or the default route would reissue, for a node pinned
-// through spec.network.nodeIP alone, its apiserver cert for whichever NIC held
-// the default route. Renewal must reproduce the address the node was brought
-// up with — even when $NODE_IP now says otherwise.
 func TestRenewalReusesTheRecordedNodeIP(t *testing.T) {
 	origConf, origNet := version.K8sConfDir, version.NetConfigPath
 	version.K8sConfDir = t.TempDir()

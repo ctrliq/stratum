@@ -1,30 +1,6 @@
 package upgrade
 
-// The cluster maintenance fence for `stratum upgrade --cluster`. The upgrade
-// already takes kube-system/stratum-cluster-upgrade, the lease identity a
-// released binary reads; it also takes a second, shared maintenance Lease
-// (kube-system/stratum-cluster-maintenance) that the upgrade, rotate-ca
-// --cluster and migrate-etcd-ca --cluster all hold, so those three cluster
-// orchestrators exclude one another whatever node each runs on. These tests
-// pin the upgrade side of that fence, all against the fake clientset the
-// lease and finish-fence tests use:
-//
-//   - the run takes BOTH leases, the released name first, and releases both
-//     on every exit, a refused or failing run included;
-//   - another run holding the shared lease refuses the run before any change
-//     (the finished-Job sweep, the first change, never runs), naming the
-//     holder, and leaves the other run's lease untouched;
-//   - the shared lease's guard is confirmed before each node's phase, so a
-//     successor that took the lease mid-run stops the run before the next
-//     node is touched — cordon included;
-//   - renewal rides through the run: the lease is renewed as the phases go,
-//     so a bounded gap between the API server and this process never expires
-//     it.
-//
-// The full run drives UpgradeCluster with the package's seams: runNodeJob,
-// runExitCode and waitAPIHealthz answer for the nodes, so no Job ever runs;
-// the staged binary is a real file for its hash and answered for by
-// readStagedBuild and readStagedVersion.
+// Pins the upgrade side of the shared maintenance-lease fence.
 
 import (
 	"io"
@@ -53,16 +29,12 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// The shared maintenance lease's released identity: pinned as literals, the
-// way lease_test.go pins stratum-cluster-upgrade. Production code owns the
-// real constant; these names are the test's own.
+// Pinned as literals, the way lease_test.go pins stratum-cluster-upgrade.
 const (
 	fenceTestMaintenanceNS    = "kube-system"
 	fenceTestMaintenanceLease = "stratum-cluster-maintenance"
 )
 
-// upgradeNodeFixture is one Ready node at v1.36.5, behind the v1.37.1 target,
-// so it takes the full per-node path under the seams.
 func upgradeNodeFixture(name string, cp bool, ip string) *corev1.Node {
 	n := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{}},
@@ -85,8 +57,6 @@ func upgradeNodesFixture() []runtime.Object {
 	}
 }
 
-// liveHeldLease is kube-system/name, held live by holder: renewed now, so it
-// is an hour from expiring.
 func liveHeldLease(name, holder string) *coordinationv1.Lease {
 	h := holder
 	now := metav1.NewMicroTime(leaseNow())
@@ -97,7 +67,6 @@ func liveHeldLease(name, holder string) *coordinationv1.Lease {
 	}
 }
 
-// upgradeJob returns a per-node upgrade Job labeled for node.
 func upgradeJob(name, node string, finished bool) *batchv1.Job {
 	j := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cuNamespace,
 		Labels: map[string]string{upgradeJobLabel: node}}}
@@ -107,7 +76,6 @@ func upgradeJob(name, node string, finished bool) *batchv1.Job {
 	return j
 }
 
-// leaseEvents records which leases a run created and deleted, in order.
 type leaseEvents struct {
 	creates, deletes []string
 }
@@ -132,11 +100,7 @@ func recordLeaseEvents(t *testing.T, cs *fake.Clientset) *leaseEvents {
 	return ev
 }
 
-// fastOrchestrator answers for the staged binary and for every node: the
-// image import succeeds, the build check says an upgrade is needed, the node
-// Job succeeds at once, the health gate passes. It counts the per-node upgrade
-// Jobs and hands each count to onJob as it dispatches, so a test can act (a
-// lease takeover, a clock jump) while the run is between nodes.
+// Counts per-node Jobs, handing each count to onJob so a test can act between nodes.
 func fastOrchestrator(t *testing.T, onJob func(n int)) *int {
 	t.Helper()
 	oldExit, oldJob, oldHealth := runExitCode, runNodeJob, waitAPIHealthz
@@ -165,8 +129,7 @@ func fastOrchestrator(t *testing.T, onJob func(n int)) *int {
 	return &jobs
 }
 
-// stagedBinary is the --from binary: a real file, since the orchestrator
-// hashes it before the rollout.
+// The orchestrator hashes it before the rollout.
 func stagedBinary(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "stratum-next")
@@ -176,14 +139,11 @@ func stagedBinary(t *testing.T) string {
 	return p
 }
 
-// runUpgrade is a two-node rollout (cp1 serial, then w1) on cs.
 func runUpgrade(t *testing.T, cs kubernetes.Interface) error {
 	t.Helper()
 	return UpgradeCluster(io.Discard, ClusterOptions{Target: "v1.37.1", From: stagedBinary(t), Client: cs})
 }
 
-// takeOverTheMaintenanceLease makes another run the holder of the shared
-// lease, freshly renewed, as a successor that took it over would.
 func takeOverTheMaintenanceLease(t *testing.T, cs *fake.Clientset, holder string) {
 	t.Helper()
 	gvr := coordinationv1.SchemeGroupVersion.WithResource("leases")
@@ -199,14 +159,7 @@ func takeOverTheMaintenanceLease(t *testing.T, cs *fake.Clientset, holder string
 	}
 }
 
-// TestUpgradeClusterTakesTheReleasedLeaseThenTheMaintenanceLease: the run
-// holds BOTH leases before it touches anything, the released name first — an
-// orchestrator on the previous release reads kube-system/stratum-cluster-upgrade
-// before it upgrades, so it must still be taken, and taken before the shared
-// lease — and both are released when the run stops, here on the sweep's
-// refusal of a still-running earlier Job. The sweep itself is the first
-// change a run makes (it deletes finished Jobs), so both leases must already
-// be held when it runs, and no per-node Job may exist when it refuses.
+// A previous-release orchestrator reads stratum-cluster-upgrade, so it is taken first.
 func TestUpgradeClusterTakesTheReleasedLeaseThenTheMaintenanceLease(t *testing.T) {
 	cs := fake.NewSimpleClientset(append(upgradeNodesFixture(),
 		upgradeJob("stratum-upgrade-old", "gone", false))...)
@@ -243,12 +196,6 @@ func containsOnce(xs []string, want string) bool {
 	return n == 1
 }
 
-// TestUpgradeClusterRefusesWhileTheMaintenanceLeaseIsHeld: rotate-ca,
-// migrate-etcd-ca or a second upgrade holding the shared lease means this run
-// refuses — naming the holder — before any change: the sweep's deletion of an
-// earlier run's finished Job is the first change a run makes, and it must
-// still be there afterwards. The other run's lease must survive the refusal
-// untouched: our release may never delete a successor's lease.
 func TestUpgradeClusterRefusesWhileTheMaintenanceLeaseIsHeld(t *testing.T) {
 	cs := fake.NewSimpleClientset(append(upgradeNodesFixture(),
 		upgradeJob("stratum-upgrade-gone", "gone", true),
@@ -273,10 +220,6 @@ func TestUpgradeClusterRefusesWhileTheMaintenanceLeaseIsHeld(t *testing.T) {
 	}
 }
 
-// TestUpgradeClusterStopsWhenTheMaintenanceLeaseIsLost: a successor that took
-// the shared lease mid-run stops the run before the next node's phase —
-// before its cordon, which is a change — and the run's exit leaves the
-// successor's lease alone.
 func TestUpgradeClusterStopsWhenTheMaintenanceLeaseIsLost(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	jobs := fastOrchestrator(t, func(n int) {
@@ -306,13 +249,6 @@ func TestUpgradeClusterStopsWhenTheMaintenanceLeaseIsLost(t *testing.T) {
 	}
 }
 
-// TestUpgradeClusterRenewsTheMaintenanceLeaseThroughTheRun: the shared lease
-// is renewed as the phases go, on the run's clock. The clock jumps 25 s
-// between the nodes — inside the lease's 60 s window, so nothing can have
-// taken it — and the guard is confirmed before w1's phase: that confirmation
-// is a renewal, so by the time w1's Job dispatches the lease's renew time
-// reads the run's clock. A run that never renewed the shared lease (its
-// renew time still at the acquisition moment) is what this refuses.
 func TestUpgradeClusterRenewsTheMaintenanceLeaseThroughTheRun(t *testing.T) {
 	t0 := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
 	now := fakeClock(t, t0)

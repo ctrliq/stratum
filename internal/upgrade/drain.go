@@ -12,14 +12,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// Drain PDB-aware-evicts pods on node (skipping DaemonSet/mirror/completed pods,
-// the upgrade controller, and the orchestrator's own per-node Job pod). Returns
-// the count of pods STILL needing to leave; drain is complete only at 0. Evicts
-// through the typed policy/v1 Eviction API.
+// Returns the count of pods still needing to leave; the drain is complete only at 0.
 func Drain(ctx context.Context, cs kubernetes.Interface, node, jobPrefix string, graceSec int64) (int, error) {
 	pods, err := cs.CoreV1().Pods("").List(ctx, metav1.ListOptions{FieldSelector: "spec.nodeName=" + node})
 	if err != nil {
-		return 1, err // list failed; the orchestrator halts the rollout on this error
+		return 1, err // the orchestrator halts the rollout on this error
 	}
 	remaining := 0
 	for i := range pods.Items {
@@ -28,7 +25,7 @@ func Drain(ctx context.Context, cs kubernetes.Interface, node, jobPrefix string,
 			continue
 		}
 		if p.DeletionTimestamp != nil {
-			remaining++ // already terminating -> wait
+			remaining++
 			continue
 		}
 		grace := graceSec
@@ -38,9 +35,9 @@ func Drain(ctx context.Context, cs kubernetes.Interface, node, jobPrefix string,
 		}
 		err := cs.PolicyV1().Evictions(p.Namespace).Evict(ctx, ev)
 		if apierrors.IsNotFound(err) {
-			continue // already gone
+			continue
 		}
-		remaining++ // accepted(->terminating), PDB-blocked(429), or transient -> wait/retry
+		remaining++ // an accepted eviction is only terminating; PDB-blocked and transient retry
 		if err != nil && !apierrors.IsTooManyRequests(err) {
 			log.Printf("drain: evict %s/%s: %v", p.Namespace, p.Name, err)
 		}
@@ -48,7 +45,6 @@ func Drain(ctx context.Context, cs kubernetes.Interface, node, jobPrefix string,
 	return remaining, nil
 }
 
-// shouldSkipPod reports whether a pod is exempt from a drain. Pure (unit-tested).
 func shouldSkipPod(p *corev1.Pod, jobPrefix string) bool {
 	for _, o := range p.OwnerReferences {
 		if o.Kind == "DaemonSet" {

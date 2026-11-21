@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// TestAcquireStartLock pins start serialization: while one node start holds
-// the lock, a second cannot take it and fails fast with a clear message; once the
-// first releases, a fresh start can take it again.
 func TestAcquireStartLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "start.lock")
 
@@ -21,16 +18,12 @@ func TestAcquireStartLock(t *testing.T) {
 		t.Fatalf("first acquire: %v", err)
 	}
 
-	// A second acquire while the first is held must fail fast — this is the race
-	// the lock exists to close (two `stratum up` both passing the read-only
-	// preflight and both reaching supervisor.Run).
 	if _, err := AcquireStartLock(path); err == nil {
 		t.Fatal("second acquire succeeded while the lock was held — concurrent starts are not serialized")
 	} else if !strings.Contains(err.Error(), "already starting or running") {
 		t.Errorf("second acquire error = %v, want the concurrent-start message", err)
 	}
 
-	// After release, a fresh acquire succeeds (the lock is not leaked).
 	rel()
 	rel2, err := AcquireStartLock(path)
 	if err != nil {
@@ -39,8 +32,6 @@ func TestAcquireStartLock(t *testing.T) {
 	rel2()
 }
 
-// TestAcquireStartLockCreatesParentDir: the /run/stratum dir may not exist yet on
-// a fresh node, so the lock acquire must create it rather than error.
 func TestAcquireStartLockCreatesParentDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "run", "start.lock")
 	rel, err := AcquireStartLock(path)
@@ -58,8 +49,6 @@ func TestAcquireStartLockCheckedReleasesOnPostLockFailure(t *testing.T) {
 		t.Fatalf("AcquireStartLockChecked error = %v, want %v", err, wantErr)
 	}
 
-	// The failed post-lock preflight must not leak the lock; a later clean start
-	// needs to acquire it immediately.
 	release, err := AcquireStartLock(path)
 	if err != nil {
 		t.Fatalf("lock leaked after failed post-lock preflight: %v", err)
@@ -67,10 +56,6 @@ func TestAcquireStartLockCheckedReleasesOnPostLockFailure(t *testing.T) {
 	release()
 }
 
-// TestAcquireStartLockWaitsOutABriefHolder pins the start lock's brief retry:
-// StartLockHeld probes by taking the lock for an instant, so a start that lands
-// in that instant must wait it out instead of reporting a concurrent start that
-// does not exist.
 func TestAcquireStartLockWaitsOutABriefHolder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "start.lock")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -97,8 +82,6 @@ func TestAcquireStartLockWaitsOutABriefHolder(t *testing.T) {
 	rel()
 }
 
-// TestStartLockProbeNeverRefusesAStart runs the real probe in a tight loop
-// against starts that acquire and release the lock; no start may be refused.
 func TestStartLockProbeNeverRefusesAStart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "start.lock")
 	stop := make(chan struct{})
@@ -128,8 +111,6 @@ func TestStartLockProbeNeverRefusesAStart(t *testing.T) {
 	}
 }
 
-// TestAcquireStartLockRefusesAWholeRunHolder: the retry only covers a probe's
-// instant; a start that keeps the lock is still refused once the window ends.
 func TestAcquireStartLockRefusesAWholeRunHolder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "start.lock")
 	rel, err := AcquireStartLock(path)

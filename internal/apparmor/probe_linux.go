@@ -10,9 +10,7 @@ import (
 	"syscall"
 )
 
-// probeRuncLabel starts Stratum's runc traced, so the kernel stops it right
-// after execve, before any of runc's code runs, with the label the exec gave
-// it; reads that label; and kills it.
+// Stops the child at execve, before any of runc's code runs, and reads its label.
 func probeRuncLabel() (string, error) {
 	// The tracer is the thread that started the child.
 	runtime.LockOSThread()

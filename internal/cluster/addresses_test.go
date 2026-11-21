@@ -13,21 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestBringUpAddressesFromNodeState pins the addresses a bring-up derives from
-// node state alone: the endpoint every kubeconfig targets (serverURL), and the
-// certificate inputs (the netconfig's apiserver SANs and domain over
-// pki.LeafSpecs). One table for the node
-// shapes that differ in address facts — a single-stack node without a VIP, one
-// with a VIP, a dual-stack node with that VIP, and a node on a custom range —
-// so a constructor that reorders or drops a SAN, moves the endpoint, or puts
-// the default service range's 10.96.0.1 in place of the node's own, fails for
-// the shape it breaks.
-// The apiserver IP SAN list is written out in the row rather than recomputed,
-// so a change in netcfg or pki shows as a disagreement, not as a tautology.
-// The subtests after the table pin which Server records ride across a restart:
-// only one the kubeconfig files on disk already target — a deliberate
-// ha-repoint's record, written with the files — and never the previous
-// release's join URL, whose clients never targeted it.
 func TestBringUpAddressesFromNodeState(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -62,8 +47,6 @@ func TestBringUpAddressesFromNodeState(t *testing.T) {
 				t.Errorf("serverURL() = %q, want %q", got, wantServer)
 			}
 
-			// The SAN composition the shared node assembly issues certificates
-			// with: the netconfig's apiserver SANs and cluster domain.
 			sans := &pki.APISANs{IPs: netc.APIServerSANs(tc.vip), Domain: netc.ClusterDomain}
 
 			var api *pki.CertSpec
@@ -82,10 +65,6 @@ func TestBringUpAddressesFromNodeState(t *testing.T) {
 		})
 	}
 
-	// The carry across a restart. prev is the saved state, st the state this
-	// start builds; the carry decides what prev.Server contributes to
-	// serverURL's recorded-endpoint rule. The kubeconfig paths are redirected
-	// so the fixtures below are the only kubeconfigs a run sees.
 	origKubeconfigDir, origAdminConf := version.KubeconfigDir, version.AdminConf
 	t.Cleanup(func() { version.KubeconfigDir, version.AdminConf = origKubeconfigDir, origAdminConf })
 	version.KubeconfigDir = t.TempDir()
@@ -170,9 +149,7 @@ users:
 	})
 
 	t.Run("a record with no kubeconfig on disk to back it is not carried", func(t *testing.T) {
-		// Its own empty directory: the subtests above leave kubeconfigs in the
-		// shared one, and a file naming another endpoint refuses the record
-		// before the no-file case is ever reached.
+		// The subtests above leave kubeconfigs behind that would refuse the record first.
 		shared, sharedAdmin := version.KubeconfigDir, version.AdminConf
 		t.Cleanup(func() { version.KubeconfigDir, version.AdminConf = shared, sharedAdmin })
 		version.KubeconfigDir = t.TempDir()

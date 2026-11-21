@@ -15,10 +15,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// nodeGateClientset is the client `stratum node` writes through: this control
-// plane's internal admin kubeconfig, super-admin.conf when it exists, else
-// admin.conf (NodeAdminClientset). The API server's audit log records that
-// shared identity, so the --by annotation is the record of who acted.
+// the audit log records this shared identity, so --by is the record of who acted.
 var nodeGateClientset = func() (kubernetes.Interface, error) {
 	cs, err := NodeAdminClientset()
 	if err != nil {
@@ -27,7 +24,6 @@ var nodeGateClientset = func() (kubernetes.Interface, error) {
 	return cs, nil
 }
 
-// nodeGateNow is the time a release or hold is recorded at.
 var nodeGateNow = time.Now
 
 func newNodeCommand() *cobra.Command {
@@ -35,8 +31,6 @@ func newNodeCommand() *cobra.Command {
 		newNodeReleaseCommand(), newNodeHoldCommand())
 }
 
-// oneNodeName takes exactly one node name and refuses an empty one, as an
-// unset shell variable gives, before the command connects.
 func oneNodeName(cmd *cobra.Command, args []string) error {
 	if err := cobra.ExactArgs(1)(cmd, args); err != nil {
 		return err
@@ -47,15 +41,11 @@ func oneNodeName(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// kubectlHint is the `stratum kubectl` command for a follow-up step, naming
-// this control plane's admin kubeconfig so a KUBECONFIG set for another
-// cluster does not take it there.
+// --kubeconfig pins this cluster, so a caller's KUBECONFIG for another one is not followed.
 func kubectlHint(args string) string {
 	return "stratum kubectl --kubeconfig " + version.AdminConf + " " + args
 }
 
-// defaultActor is who a release or hold is recorded as without --by: the
-// user who ran sudo, else the current user.
 func defaultActor() string {
 	if u := os.Getenv("SUDO_USER"); u != "" {
 		return u

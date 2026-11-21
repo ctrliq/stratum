@@ -15,8 +15,6 @@ func newUninstallCommand() *cobra.Command {
 		Short: "Remove Stratum from this node",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The CLI prints to the process's stdout, the writer
-			// RunWithOptions takes: same bytes, same stream.
 			return uninstall.RunWithOptions(os.Stdout, uninstall.Options{Force: yes, AssumeNoForeignRuntimes: assumeNoForeign})
 		},
 	}

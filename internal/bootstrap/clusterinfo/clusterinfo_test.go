@@ -65,8 +65,6 @@ func TestAuthenticatedKubeletClientCAMode(t *testing.T) {
 	}
 }
 
-// makeCA returns a self-signed CA cert (PEM) and its
-// "sha256:<hex of SubjectPublicKeyInfo>" pin.
 func makeCA(t *testing.T) (pemBytes []byte, pin string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -92,8 +90,6 @@ func makeCA(t *testing.T) (pemBytes []byte, pin string) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), PinFor(cert)
 }
 
-// testCert returns a parsed certificate plus its pin, for tests that need the
-// x509 value rather than the PEM makeCA hands back.
 func testCert(t *testing.T) (*x509.Certificate, string) {
 	t.Helper()
 	caPEM, pin := makeCA(t)
@@ -108,25 +104,18 @@ func testCert(t *testing.T) (*x509.Certificate, string) {
 	return c, pin
 }
 
-// kubeconfigWith builds a cluster-info kubeconfig carrying caPEM, shaped like the
-// one token.ensureClusterInfo publishes.
 func kubeconfigWith(caPEM []byte) string {
 	return "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: " +
 		base64.StdEncoding.EncodeToString(caPEM) +
 		"\n    server: https://10.0.0.1:6443\n  name: \"\"\ncontexts: null\ncurrent-context: \"\"\nkind: Config\nusers: null\n"
 }
 
-// clusterEntry is one cluster stanza of a cluster-info kubeconfig under test.
 type clusterEntry struct {
 	server string
 	caPEM  []byte
 }
 
-// kubeconfigWithEntries builds a cluster-info kubeconfig with one cluster entry
-// per entry, shaped like the one token.ensureClusterInfo publishes. It is
-// kubeconfigWith extended to a second entry, which is the only way to reach the
-// ambiguity Parse must refuse. An entry with a nil caPEM carries no
-// certificate-authority-data at all.
+// An entry with a nil caPEM carries no certificate-authority-data at all.
 func kubeconfigWithEntries(entries ...clusterEntry) string {
 	s := "apiVersion: v1\nclusters:\n"
 	for i, e := range entries {
@@ -148,8 +137,6 @@ func signed(kubeconfig, tokenID, tokenSecret string) map[string]string {
 	}
 }
 
-// mustToken builds a Token for tests. ParseToken is the only constructor, which
-// is the point of the type.
 func mustToken(t *testing.T, s string) Token {
 	t.Helper()
 	tok, err := ParseToken(s)
@@ -164,20 +151,7 @@ const (
 	testSecret = "0123456789abcdef"
 )
 
-// TestGoldenVectorMatchesUpstreamSigner is the interop contract with stock
-// kube-controller-manager output, and it is the reason this package can carry no
-// dependency.
-//
-// PROVENANCE — read before touching the constant. `want` was produced by
-// k8s.io/cluster-bootstrap/token/jws.ComputeDetachedSignature at v0.31.1, the
-// exact function the bootstrapsigner calls, run against the inputs below. It is
-// hardcoded on purpose. Regenerating it from computeDetachedSignature (this
-// package's own code) would make the test assert that our implementation equals
-// itself, which proves nothing at all and silently deletes the only evidence we
-// have that stratum and the Kubernetes bootstrapsigner agree on the wire format.
-//
-// If this ever fails, the wire format has drifted. Do not update the constant to
-// match — find out why.
+// 'want' is hardcoded upstream signer output; regenerating it from our code proves nothing.
 func TestGoldenVectorMatchesUpstreamSigner(t *testing.T) {
 	const (
 		content = "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: AAAA\n    server: https://10.0.0.1:6443\n  name: \"\"\nkind: Config\n"
@@ -188,9 +162,6 @@ func TestGoldenVectorMatchesUpstreamSigner(t *testing.T) {
 	}
 }
 
-// TestDetachedSignatureShape locks the RFC 7515 Appendix F encoding: three
-// dot-separated parts with an elided payload, and a protected header of exactly
-// {"alg":"HS256","kid":"<id>"}.
 func TestDetachedSignatureShape(t *testing.T) {
 	sig := computeDetachedSignature("content", testID, testSecret)
 	parts := strings.Split(sig, ".")
@@ -237,8 +208,6 @@ func TestParseToken(t *testing.T) {
 	}
 }
 
-// TestAuthenticate covers the verification failure paths. Each one must fail
-// closed: an unauthenticated payload never reaches TrustBundle.
 func TestAuthenticate(t *testing.T) {
 	caPEM, _ := makeCA(t)
 	kc := kubeconfigWith(caPEM)
@@ -285,12 +254,6 @@ func TestAuthenticate(t *testing.T) {
 	})
 
 	t.Run("alg swapped to none", func(t *testing.T) {
-		// REGRESSION GUARD, not a test of a defended risk. Under
-		// recompute-and-compare we never parse the received header, so alg
-		// confusion is structurally impossible and this fails as an ordinary
-		// byte mismatch. It starts doing real work the day someone switches the
-		// implementation to parse-the-received-header — which is exactly the
-		// change that must not be made silently.
 		parts := strings.Split(good[JWSSignatureKeyPrefix+testID], ".")
 		none := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","kid":"` + testID + `"}`))
 		forged := map[string]string{
@@ -309,10 +272,6 @@ func TestAuthenticate(t *testing.T) {
 	})
 }
 
-// TestAuthenticateRejectsZeroToken closes the input-side blind spot. An outside
-// package cannot build a populated Token, but it can write Token{} — and an
-// empty secret would key the HMAC with the empty string, which anyone can
-// compute, turning the whole control into a no-op for attacker-supplied bytes.
 func TestAuthenticateRejectsZeroToken(t *testing.T) {
 	kc := kubeconfigWith(func() []byte { p, _ := makeCA(t); return p }())
 	// A signature the attacker can forge without knowing any secret.
@@ -325,18 +284,12 @@ func TestAuthenticateRejectsZeroToken(t *testing.T) {
 	}
 }
 
-// TestTrustBundleZeroValueRejected is the compiler's blind spot: an outside
-// package cannot build a POPULATED Authenticated, but it can write
-// Authenticated{}. That zero value must fail closed rather than return an empty
-// trust bundle.
 func TestTrustBundleZeroValueRejected(t *testing.T) {
 	_, err := (Authenticated{}).TrustBundle("sha256:whatever")
 	if err == nil {
 		t.Fatal("TrustBundle on an unauthenticated zero value returned no error")
 	}
-	// Assert the SPECIFIC error: without this, deleting the guard still passes,
-	// because clientcmd.Load("") succeeds and execution falls through to
-	// "cluster-info has no CA" — a different branch entirely.
+	// Deleting the guard still passes: clientcmd.Load("") succeeds and fails elsewhere.
 	if !strings.Contains(err.Error(), "unauthenticated value") {
 		t.Errorf("got %v; want the explicit unauthenticated-value guard, not an incidental downstream error", err)
 	}
@@ -366,10 +319,7 @@ func TestTrustBundle(t *testing.T) {
 		}
 	})
 
-	// Staged CA rotation: cluster-info carries old‖new while the token pins only
-	// one of them. Both directions must be accepted, and BOTH certs must survive
-	// into the returned bundle — narrowing to the pinned one is what would break
-	// a rotating cluster, and this is the assertion that catches it.
+	// Both directions must be accepted, and both certs must survive into the bundle.
 	t.Run("rotation bundle keeps both certs, pinned either way", func(t *testing.T) {
 		bundle := append(append([]byte{}, caPEM...), otherPEM...)
 		for name, p := range map[string]string{"pinned to first": pin, "pinned to second": otherPin} {
@@ -392,8 +342,6 @@ func TestTrustBundle(t *testing.T) {
 		}
 	})
 
-	// A CERTIFICATE-typed block that does not parse is a hard error, not a
-	// skipped block.
 	t.Run("unparseable CERTIFICATE block is a hard error", func(t *testing.T) {
 		junk := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not a certificate")})
 		bundle := append(append([]byte{}, junk...), caPEM...)
@@ -402,10 +350,6 @@ func TestTrustBundle(t *testing.T) {
 		}
 	})
 
-	// An authenticated bundle with zero parseable certificates is an error.
-	// DiscoverCA must never return an empty trust bundle — an empty clientCAFile
-	// is not "trust nothing", it is a kubelet that fails to start or a trust
-	// store silently narrowed to nothing.
 	t.Run("zero parseable certificates is an error", func(t *testing.T) {
 		only := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("nope")})
 		out, err := authOf(t, only).TrustBundle(pin)
@@ -415,16 +359,12 @@ func TestTrustBundle(t *testing.T) {
 		if len(out) != 0 {
 			t.Errorf("returned %d bytes alongside an error", len(out))
 		}
-		// Pin the branch by name: checkPin also fails closed on an empty slice,
-		// so a bare err != nil check passes with the zero-cert guard deleted.
+		// checkPin also fails closed on an empty slice, so a bare err check passes without the guard.
 		if !strings.Contains(err.Error(), "carries no parseable certificate") {
 			t.Errorf("got %v; want the explicit zero-certificate guard", err)
 		}
 	})
 
-	// Canonical re-encoding: non-CERTIFICATE blocks and trailing bytes in the
-	// authenticated field are dropped rather than travelling on into
-	// ca-bundle.crt.
 	t.Run("drops non-CERTIFICATE blocks and trailing bytes", func(t *testing.T) {
 		noise := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte("ignored")})
 		bundle := append(append(append([]byte{}, noise...), caPEM...), []byte("trailing junk, not PEM\n")...)
@@ -468,12 +408,7 @@ func pinSet(t *testing.T, bundle []byte) map[string]bool {
 	}
 }
 
-// TestMalformedPinIsDiagnosedAsMalformed pins the DIAGNOSIS, not just the refusal.
-//
-// Every input below was already refused before this test existed — no cert can
-// match a malformed pin — but all of them were refused with "CA hash mismatch:
-// ... (possible MITM)", which sends an operator hunting an attacker over a
-// copy-paste error. The failure was closed; the message was wrong.
+// Pins the diagnosis, not just the refusal: a malformed pin must not read as an attack.
 func TestMalformedPinIsDiagnosedAsMalformed(t *testing.T) {
 	cert, good := testCert(t)
 	upper := "sha256:" + strings.ToUpper(strings.TrimPrefix(good, "sha256:"))
@@ -504,8 +439,7 @@ func TestMalformedPinIsDiagnosedAsMalformed(t *testing.T) {
 		})
 	}
 
-	// A well-formed pin that simply does not match MUST still read as a mismatch —
-	// that is the case where "possible MITM" is the right thing to say.
+	// A well-formed pin that matches nothing must still read as a mismatch.
 	other := strings.Repeat("a", 64)
 	err := checkPin([]*x509.Certificate{cert}, "sha256:"+other)
 	if err == nil {
@@ -516,13 +450,6 @@ func TestMalformedPinIsDiagnosedAsMalformed(t *testing.T) {
 	}
 }
 
-// TestParseRefusesAmbiguousClusterInfo pins the one reading rule for the
-// cluster-info kubeconfig. token.ensureClusterInfo writes the document with
-// exactly one cluster entry, but three readers decode it back — TrustBundle
-// on the joining node, the verified re-fetch in bootstrap, RepinCA on the
-// control plane — and a second entry, e.g. a VIP beside a node
-// address, must make them refuse together rather than each answer by Go map
-// order.
 func TestParseRefusesAmbiguousClusterInfo(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	otherPEM, _ := makeCA(t)
@@ -583,10 +510,6 @@ func TestParseRefusesAmbiguousClusterInfo(t *testing.T) {
 		}
 	})
 
-	// TrustBundle reads the same document on the join path, so the same
-	// ambiguity must be refused there too — and the refusal must come from the
-	// ambiguity guard, not from an incidental pin mismatch against whichever
-	// entry map order happened to visit first.
 	t.Run("TrustBundle refuses the differing-CA document", func(t *testing.T) {
 		kc := kubeconfigWithEntries(
 			clusterEntry{server: server, caPEM: caPEM},

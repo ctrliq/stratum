@@ -14,12 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/maintlease"
 )
 
-// TestJoinFencePolicyMatchesItsContract: the policy spells, as CEL literals,
-// facts other packages own — the control-plane bootstrap group the mint
-// grants the leases to, the lease duration every stratum run writes, and the
-// two maintenance lease names — and the mint and the join find the policy and
-// its denials by k8sutil.JoinFencePolicy. A drift in any of them would deny
-// the join its own fence or leave the grant unconstrained.
+// The policy spells facts other packages own as CEL literals; drift denies the join its fence.
 func TestJoinFencePolicyMatchesItsContract(t *testing.T) {
 	docs := bytes.Split(RenderJoinFencePolicy(), []byte("\n---\n"))
 	if len(docs) != 2 {

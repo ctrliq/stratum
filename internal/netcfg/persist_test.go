@@ -17,10 +17,7 @@ func useTempNetConfig(t *testing.T) string {
 	return version.NetConfigPath
 }
 
-// TestSaveReplacesTheFileAtomically: netconfig is authoritative after
-// first boot, so a crash mid-write must not leave a truncated file. Save writes a
-// temp file and renames it over the old one, which a hard link to the old file
-// shows: the link keeps the old bytes, where an in-place write would change them.
+// A hard link to the old file keeps its bytes; an in-place write would change them.
 func TestSaveReplacesTheFileAtomically(t *testing.T) {
 	path := useTempNetConfig(t)
 	if err := Save("10.42.0.0/16", "10.43.0.0/16", ""); err != nil {
@@ -63,9 +60,7 @@ func TestSaveFailureLeavesNoTempFile(t *testing.T) {
 	}
 }
 
-// A damaged netconfig stops the node (it is authoritative, so nothing guesses),
-// and the error names the file and says to restore it from another control
-// plane, not to remove it: only a controller start restores CIDRs without it.
+// A damaged netconfig stops the node: the error says to restore it, not remove it.
 func TestLoadDamagedFileNamesIt(t *testing.T) {
 	for name, content := range map[string]string{
 		"empty":          "",

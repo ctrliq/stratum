@@ -52,8 +52,6 @@ func TestPrepareControllerContextStopsBeforeLaterMutations(t *testing.T) {
 				if assemblyCtx != ctx {
 					t.Fatal("controller preparation did not pass its context to assembly")
 				}
-				// Simulate the atomic host writes while retaining the real shared
-				// assembly and controller's network/address/state preparation.
 				a.IssueCerts = func(string, string, *pki.APISANs) error { return step("certificates") }
 				a.WriteKubeconfigs = func(string, string, bool) error { return step("kubeconfigs") }
 				a.WriteRuntimeConfigs = func(*nodestate.NodeState) error { return step("runtime configs") }

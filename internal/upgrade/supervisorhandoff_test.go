@@ -21,9 +21,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// supervisorFixture stands in for the running supervisor: stale until it is
-// replaced (by a re-exec or a service restart), current after. calls records
-// the handoff's actions in order.
 type supervisorFixture struct {
 	stale     bool
 	pid       int
@@ -182,11 +179,6 @@ func TestHandOverSupervisor(t *testing.T) {
 	})
 }
 
-// TestHandOverSupervisorRecordsOnlyWhatItCannotReplace: the handoff records a
-// supervisor only when it predates restarting itself in place and systemd
-// does not run it, the one answer a rerun may trust without asking again.
-// Every other outcome drops a record left by an earlier run, so a supervisor
-// that has since been replaced, or answered differently, is asked again.
 func TestHandOverSupervisorRecordsOnlyWhatItCannotReplace(t *testing.T) {
 	unsupported := fmt.Errorf("%w: unknown op", supervisor.ErrReExecUnsupported)
 	for _, c := range []struct {
@@ -213,8 +205,6 @@ func TestHandOverSupervisorRecordsOnlyWhatItCannotReplace(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newSupervisorFixture(t)
 			c.setup(t, f)
-			// What an earlier run left: this supervisor, recorded as one
-			// the handoff cannot replace.
 			if err := writeUnreplaceable(f.pid); err != nil {
 				t.Fatal(err)
 			}
@@ -228,9 +218,6 @@ func TestHandOverSupervisorRecordsOnlyWhatItCannotReplace(t *testing.T) {
 	}
 }
 
-// TestUnreplaceableRecordNamesOneProcess: the record matches the process it
-// was written for, not a later one that reuses its pid, nor another pid; and
-// a record that cannot be written is a warning in a handoff that is done.
 func TestUnreplaceableRecordNamesOneProcess(t *testing.T) {
 	f := newSupervisorFixture(t)
 	f.reexecErr = fmt.Errorf("%w: unknown op", supervisor.ErrReExecUnsupported)
@@ -246,12 +233,10 @@ func TestUnreplaceableRecordNamesOneProcess(t *testing.T) {
 		t.Error("a process that reuses the recorded pid matches the record")
 	}
 	f.start--
-	// Another process that started in the same clock tick.
 	swap(t, &supervisorStarted, func(int) (uint64, bool, error) { return f.start, true, nil })
 	if knownUnreplaceable(comps.RunningSupervisor{PID: f.pid + 1}) {
 		t.Error("another pid matches the record")
 	}
-	// The recorded process, gone, with its start time read anyway.
 	swap(t, &supervisorStarted, func(int) (uint64, bool, error) { return f.start, false, nil })
 	if knownUnreplaceable(sup) {
 		t.Error("a process that is no longer running matches the record")
@@ -265,9 +250,6 @@ func TestUnreplaceableRecordNamesOneProcess(t *testing.T) {
 	}
 }
 
-// TestHandOverAndGateGatesOnlyAReplacedSupervisor: restarting the supervisor
-// restarts every component, so the node is gated again; a handoff that did
-// nothing needs no second gate.
 func TestHandOverAndGateGatesOnlyAReplacedSupervisor(t *testing.T) {
 	f := newSupervisorFixture(t)
 	gates := 0
@@ -287,9 +269,6 @@ func TestHandOverAndGateGatesOnlyAReplacedSupervisor(t *testing.T) {
 	}
 }
 
-// TestUpgradeNodeHandsOverTheSupervisorLast: the upgrade is verified and
-// stamped before the supervisor restarts every component, then the node is
-// gated again.
 func TestUpgradeNodeHandsOverTheSupervisorLast(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	f := newSupervisorFixture(t)
@@ -307,14 +286,8 @@ func TestUpgradeNodeHandsOverTheSupervisorLast(t *testing.T) {
 	}
 }
 
-// TestUpgradeAtTargetStillHandsOverAStaleSupervisor: a rerun after a handoff
-// that was interrupted, or that an older supervisor could not do, finds the
-// node at its target; it still restarts a supervisor running the old build.
 func TestUpgradeAtTargetStillHandsOverAStaleSupervisor(t *testing.T) {
-	// setRoots runs before resumeFixture: a SetRoots after it would recompute
-	// every derived path (BinDir, K8sConfDir, StageDir) from the new roots and
-	// step over the fixture's own per-var redirects, leaving the node state it
-	// staged where the test no longer reads it.
+	// setRoots recomputes every derived path, so it must run before resumeFixture.
 	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -356,10 +329,7 @@ func TestUpgradeAtTargetStillHandsOverAStaleSupervisor(t *testing.T) {
 		t.Errorf("--dry-run: calls %q, err %v; want the restart previewed and not done:\n%s", f.calls, err, out)
 	}
 
-	// The handoff restarts every component as an upgrade does, so a node that
-	// fails the SELinux prerequisites is refused before it, by --check too:
-	// otherwise the cluster preflight would pass it and its upgrade would
-	// restart it unconfined.
+	// The prerequisites must refuse before the handoff restarts every component unconfined.
 	oldPrereqs := checkNodePrereqs
 	checkNodePrereqs = func(io.Writer, bool) error {
 		return fmt.Errorf("%w: SELinux is enforcing and the container-selinux package is not installed", ErrPrereqMissing)
@@ -373,13 +343,6 @@ func TestUpgradeAtTargetStillHandsOverAStaleSupervisor(t *testing.T) {
 	}
 }
 
-// TestUpgradeAtTargetLeavesAnUnreplaceableSupervisorAlone: once a handoff
-// found the supervisor predates restarting itself in place and systemd does
-// not run it, a rerun at the target cannot do more than warn. --check answers
-// that the node is current, with the warning saying how to restart the
-// supervisor, so the cluster upgrade relays the warning and does not drain the
-// node; the run and the dry run warn and change nothing. A supervisor not
-// asked yet, or a different process, still gets the upgrade.
 func TestUpgradeAtTargetLeavesAnUnreplaceableSupervisorAlone(t *testing.T) {
 	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
 	resumeFixture(t)
@@ -390,7 +353,6 @@ func TestUpgradeAtTargetLeavesAnUnreplaceableSupervisorAlone(t *testing.T) {
 	f := newSupervisorFixture(t)
 	f.reexecErr = fmt.Errorf("%w: unknown op", supervisor.ErrReExecUnsupported)
 
-	// Not asked yet: it may restart itself in place, so it needs the upgrade.
 	if err := UpgradeNode(io.Discard, NodeOptions{Check: true}); !errors.Is(err, ErrUpgradeNeeded) {
 		t.Fatalf("--check before any handoff: %v, want ErrUpgradeNeeded", err)
 	}
@@ -414,7 +376,6 @@ func TestUpgradeAtTargetLeavesAnUnreplaceableSupervisorAlone(t *testing.T) {
 		}
 	}
 
-	// Nothing restarts, so the prerequisites do not decide.
 	oldPrereqs := checkNodePrereqs
 	swap(t, &checkNodePrereqs, func(io.Writer, bool) error { return fmt.Errorf("%w: no container-selinux", ErrPrereqMissing) })
 	err := UpgradeNode(io.Discard, NodeOptions{Check: true})
@@ -423,18 +384,12 @@ func TestUpgradeAtTargetLeavesAnUnreplaceableSupervisorAlone(t *testing.T) {
 		t.Errorf("--check with failing prerequisites: %v, want nil: nothing would restart", err)
 	}
 
-	// A new process at that pid is asked again.
 	f.start++
 	if err := UpgradeNode(io.Discard, NodeOptions{Check: true}); !errors.Is(err, ErrUpgradeNeeded) {
 		t.Errorf("--check for a new process at the recorded pid: %v, want ErrUpgradeNeeded", err)
 	}
 }
 
-// TestClusterRerunRelaysAnUnreplaceableSupervisorWithoutDrainingIt: the node's
-// own --check output, once a handoff found its supervisor cannot be replaced,
-// reaches the cluster upgrade's screen with the node named, and the rerun
-// leaves the node undrained and runs no upgrade Job on it. Every node is at
-// the target, as on a rerun after an upgrade that completed.
 func TestClusterRerunRelaysAnUnreplaceableSupervisorWithoutDrainingIt(t *testing.T) {
 	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
 	resumeFixture(t)
@@ -484,8 +439,6 @@ func TestClusterRerunRelaysAnUnreplaceableSupervisorWithoutDrainingIt(t *testing
 	}
 }
 
-// TestRollbackDryRunPreviewsTheSupervisorRestart: every rollback preview
-// covers the restart a real rollback ends with, and does not do it.
 func TestRollbackDryRunPreviewsTheSupervisorRestart(t *testing.T) {
 	rollbackRestartFixture(t, "")
 	f := newSupervisorFixture(t)
@@ -506,12 +459,6 @@ func TestRollbackDryRunPreviewsTheSupervisorRestart(t *testing.T) {
 	}
 }
 
-// TestPreviewSupervisorHandoffMirrorsTheRealRun: whether a supervisor can
-// restart itself in place is only learnt by asking it to, so the preview
-// cannot promise a restart that the real run's fallback for an older one
-// would not do: one systemd does not run is left running, and one systemd
-// runs onto another build ends the run with an error. It promises one only
-// where both outcomes restart it.
 func TestPreviewSupervisorHandoffMirrorsTheRealRun(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -574,8 +521,6 @@ func TestPreviewSupervisorHandoffMirrorsTheRealRun(t *testing.T) {
 		}
 	}
 
-	// A rollback that cannot find the supervisor now may not find it after the
-	// restore either, and the real run then only warns.
 	t.Run("a rollback that cannot tell which stratum the supervisor runs", func(t *testing.T) {
 		f := newSupervisorFixture(t)
 		swap(t, &runningSupervisor, func() (comps.RunningSupervisor, error) {
@@ -592,8 +537,6 @@ func TestPreviewSupervisorHandoffMirrorsTheRealRun(t *testing.T) {
 	})
 }
 
-// TestRollbackHandsOverTheSupervisorLast: a rollback restores the previous
-// stratum on disk, so the supervisor is restarted onto it too.
 func TestRollbackHandsOverTheSupervisorLast(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	f := newSupervisorFixture(t)
@@ -610,14 +553,10 @@ func TestRollbackHandsOverTheSupervisorLast(t *testing.T) {
 	}
 }
 
-// operatorHandoffCases are the ways a supervisor handoff can end, and whether
-// each restarts the operator with the supervisor: only a replaced supervisor
-// does, whether or not it then comes back. Every other ending leaves the
-// operator for the upgrade or rollback to restart, once, after the handoff.
 var operatorHandoffCases = []struct {
 	name  string
 	setup func(t *testing.T, f *supervisorFixture)
-	calls string // the handoff's calls, then the run's operator restart
+	calls string
 	fails bool
 }{
 	{"supervisor already on the installed build", func(t *testing.T, f *supervisorFixture) { f.stale = false },
@@ -657,9 +596,6 @@ var operatorHandoffCases = []struct {
 	}, "reexec", true},
 }
 
-// TestUpgradeRestartsTheOperatorOnce: a handoff that replaces the supervisor
-// restarts every component it runs, the operator included, so the upgrade
-// restarts the operator itself only when the handoff did not, and after it.
 func TestUpgradeRestartsTheOperatorOnce(t *testing.T) {
 	for _, tc := range operatorHandoffCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -684,9 +620,6 @@ func TestUpgradeRestartsTheOperatorOnce(t *testing.T) {
 	}
 }
 
-// TestUpgradeRestartsTheOperatorWhenItStopsShortOfTheHandoff: a failure
-// after the node gate and the host-config refresh still restarts the
-// operator onto the installed build, as it did before the handoff came last.
 func TestUpgradeRestartsTheOperatorWhenItStopsShortOfTheHandoff(t *testing.T) {
 	controllerUpgradeFixture(t, "v1.37.9", 3)
 	f := newSupervisorFixture(t)
@@ -706,9 +639,6 @@ func TestUpgradeRestartsTheOperatorWhenItStopsShortOfTheHandoff(t *testing.T) {
 	}
 }
 
-// TestRollbackRestartsTheOperatorOnce: as for an upgrade, a rollback leaves
-// the operator to the handoff that replaces the supervisor, and restarts it
-// itself, after the handoff, only when it did not.
 func TestRollbackRestartsTheOperatorOnce(t *testing.T) {
 	for _, tc := range operatorHandoffCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -716,8 +646,6 @@ func TestRollbackRestartsTheOperatorOnce(t *testing.T) {
 			f := newSupervisorFixture(t)
 			tc.setup(t, f)
 			swap(t, &unitExists, func(string) bool { return true })
-			// The operator's restarts join the handoff's calls, in the order
-			// they happen, so a restart before the handoff fails too.
 			hostRestart := restartUnit
 			swap(t, &restartUnit, func(u string) error {
 				if u == "operator" {
@@ -736,9 +664,6 @@ func TestRollbackRestartsTheOperatorOnce(t *testing.T) {
 	}
 }
 
-// TestRollbackRestartsTheOperatorWhenItStopsShortOfTheHandoff: a rollback
-// that restored and gated the node but fails before the handoff, here in
-// the etcd restore, still restarts the operator onto the restored build.
 func TestRollbackRestartsTheOperatorWhenItStopsShortOfTheHandoff(t *testing.T) {
 	restarted := rollbackRestartFixture(t, "")
 	f := newSupervisorFixture(t)

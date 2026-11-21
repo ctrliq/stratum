@@ -6,10 +6,6 @@ import (
 	"testing"
 )
 
-// The printed recovery steps: every command runs the --from binary (the node has
-// no kubectl on its PATH, and a bare stratum may be an older release), a missing
-// Job is explained, the uncordon is qualified, and a path that is not a plain
-// word is quoted.
 func TestRecoveryStepsRunTheFromBinary(t *testing.T) {
 	for _, from := range []string{"/var/lib/stratum/upgrade/stratum-v1.37.1", "/opt/my stratum/it's"} {
 		out := recoverySteps(Node{Name: "cp1", IsCP: true}, "stratum-upgrade-cp1", ClusterOptions{Target: "v1.37.1", From: from})
@@ -41,9 +37,6 @@ func TestRecoveryStepsRunTheFromBinary(t *testing.T) {
 	}
 }
 
-// A worker's Job never uncordons it, so a halted run leaves it cordoned. A
-// controller's Job uncordons it once its upgrade passes, so its cordon is not
-// stated as fact.
 func TestRecoveryStepsStateTheCordonOnlyOfAWorker(t *testing.T) {
 	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-v1.37.1"}
 	for _, c := range []struct {
@@ -59,10 +52,7 @@ func TestRecoveryStepsStateTheCordonOnlyOfAWorker(t *testing.T) {
 	}
 }
 
-// The Job's backstop warning names a command that runs on the node and under
-// sudo: the installed binary's absolute path (Rocky's secure_path has no
-// /usr/local/bin) and its bundled kubectl. It also says to uncordon only a
-// cordon the cluster upgrade made, since it runs when ownership could not be read.
+// The warning must run on the node under sudo; Rocky's secure_path has no /usr/local/bin.
 func TestUncordonWarningRunsAnAbsoluteBundledKubectl(t *testing.T) {
 	swap(t, &stratumInstallPath, "/usr/local/bin/stratum")
 	got := uncordonWarning("cp1", errors.New("connection refused"))

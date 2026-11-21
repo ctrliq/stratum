@@ -1,9 +1,4 @@
-// Package host_test pins host.Footprint: the one declaration of the host
-// paths bring-up writes outside stratum's three roots (version.DataDir,
-// version.ConfDir, version.RunDir), and its coupling to uninstall — every
-// path the footprint declares, uninstall must remove. It is an external test
-// package so it can import internal/uninstall, which itself imports host; an
-// in-package test file would be an import cycle.
+// Package host_test is external so it can import internal/uninstall, which imports host.
 package host_test
 
 import (
@@ -18,14 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// footprintWant is the complete set of paths bring-up writes outside the
-// three roots, and so the complete set host.Footprint() may declare: the
-// modules-load file, both sysctl files (99-stratum.conf always,
-// 99-stratum-cis.conf under --cis), the CNI dir, the kubelet dir, the audit
-// log dir, the systemd unit, and containerd's certs.d and registry conf.d
-// file. The paths version already declares are named through their variables,
-// so a path's two mentions cannot drift apart; the /etc and /var drop-ins
-// have no version variable and are pinned as literals.
+// Paths version declares are named via variables; the /etc and /var ones are literals.
 var footprintWant = []string{
 	"/etc/modules-load.d/k8s.conf",
 	"/etc/sysctl.d/99-stratum.conf",
@@ -38,9 +26,6 @@ var footprintWant = []string{
 	version.ContainerdConfD,
 }
 
-// coveredBy reports whether path is target itself or lies under a target
-// that is a directory root — the same covering rule
-// TestTargetsCoverTheEnvironmentFile applies.
 func coveredBy(path string, targets []string) bool {
 	for _, target := range targets {
 		if path == target || strings.HasPrefix(path, strings.TrimSuffix(target, "/")+"/") {
@@ -50,15 +35,6 @@ func coveredBy(path string, targets []string) bool {
 	return false
 }
 
-// TestFootprintDeclaresBringUpsPathsOutsideTheRoots pins the footprint to
-// exactly the paths bring-up writes outside the three roots. An entry missing
-// here leaves a file undeclared, and uninstall — which derives from the
-// footprint — leaves it on the node; an extra entry here becomes an
-// uninstall delete target for a path bring-up does not own, so the set is
-// exact, each path once. /opt/local-path-provisioner stays out on purpose:
-// SELinux only relabels that dir (spec.storage.localPathProvisioner), stratum
-// never writes it, so it is not part of the footprint and must not become a
-// delete target.
 func TestFootprintDeclaresBringUpsPathsOutsideTheRoots(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	got := host.Footprint()
@@ -81,18 +57,7 @@ func TestFootprintDeclaresBringUpsPathsOutsideTheRoots(t *testing.T) {
 	}
 }
 
-// TestUninstallTargetsCoverTheFootprint is the coupling that keeps uninstall
-// and bring-up honest: every path host.Footprint() declares must be covered by
-// uninstall, the same way the roots are — as a delete target, or, for the one
-// exception, by the teardown's guarded removal. When a footprint path is
-// missing here, a node keeps a file bring-up wrote after an uninstall that
-// claims to wipe it — the gap this closes for the CIS sysctl file, which
-// host.Prereqs writes under --cis and no target covered. The kubelet dir is
-// deliberately not a delete target: removeLegacyKubeletDir is its only
-// remover, keeping whatever is not Stratum's kubelet's (its stale sockets and
-// stratum-CA-signed cert pairs go), so a co-hosted kubelet's state survives
-// the wipe; the same decision lives in TestTargetsOutsideEveryRootAreListed's
-// footprintKept set.
+// The kubelet dir is excused: removeLegacyKubeletDir keeps non-stratum state.
 func TestUninstallTargetsCoverTheFootprint(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	targets := uninstall.Targets()
@@ -110,25 +75,7 @@ func TestUninstallTargetsCoverTheFootprint(t *testing.T) {
 	}
 }
 
-// TestPrereqsWritesTheBootCriticalFilesThroughTheAtomicWriter pins the
-// conversion of the three boot-critical writes in Prereqs — the modules-load
-// file and both sysctl files, whose torn state breaks pod networking or the
-// kubelet's protectKernelDefaults boot gate after a crash. A source pin,
-// because Prereqs runs its whole host stack (the cgroup-v2 floor check, the
-// SELinux mode probe, a real sysctl --system) before the writes, which no
-// external test can stand in for: it reads host.go the way
-// TestCertRenewJitterAddsNoLockOrLease reads run.go. Three properties:
-//
-//   - no raw write call in host.go: the shared atomic writer (the
-//     temp-file-then-rename with the file and directory fsyncs) is how the
-//     boot-critical files are written, so a crash can never leave a torn
-//     sysctl file where a working one was;
-//   - no second spelling of the three paths: they are declared once, beside
-//     version.SystemdUnitPath, and every mention here names the version
-//     variable — the writer, the sysctl loader and uninstall's delete list
-//     cannot drift apart;
-//   - Prereqs still writes all three: the write sites name the paths through
-//     the version variables, so a conversion that dropped a write fails here.
+// A source pin: no external test can stand in for Prereqs's whole host stack.
 func TestPrereqsWritesTheBootCriticalFilesThroughTheAtomicWriter(t *testing.T) {
 	src, err := os.ReadFile("host.go")
 	if err != nil {
@@ -157,10 +104,7 @@ func TestPrereqsWritesTheBootCriticalFilesThroughTheAtomicWriter(t *testing.T) {
 	}
 }
 
-// Prereqs gives runc its AppArmor profile only after sysctl --system, which
-// sets kernel.apparmor_restrict_unprivileged_unconfined from the host's own
-// sysctl.d files: decided before it, a start reads the value an operator set
-// by hand, and leaves runc without the profile the host's files require.
+// sysctl --system sets the AppArmor restriction sysctl that decides runc's profile.
 func TestPrereqsLoadsTheAppArmorProfileAfterTheSysctls(t *testing.T) {
 	src, err := os.ReadFile("host.go")
 	if err != nil {

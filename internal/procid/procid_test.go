@@ -14,10 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// writeProc creates one fake /proc entry: a directory named pid holding a
-// cmdline file built from args and, when exe is not empty, an exe symlink to
-// it. The symlink's target is only ever read, never followed, so a target
-// need not exist; a BuildInfo fixture must point at a real file.
 func writeProc(t *testing.T, root, pid, exe string, args ...string) {
 	t.Helper()
 	dir := filepath.Join(root, pid)
@@ -38,8 +34,6 @@ func writeProc(t *testing.T, root, pid, exe string, args ...string) {
 	}
 }
 
-// collect walks root and returns every Process the walk yields, failing the
-// test if the walk errors.
 func collect(t *testing.T, root string) []Process {
 	t.Helper()
 	var got []Process
@@ -52,10 +46,6 @@ func collect(t *testing.T, root string) []Process {
 	return got
 }
 
-// TestWalkYieldsLiveProcesses: one /proc walk yields pid, argv and the exe
-// target of every live process, in /proc order. Entries that are not
-// processes — non-numeric names, numeric names that are not directories,
-// kernel threads and zombies with an empty cmdline — never reach the caller.
 func TestWalkYieldsLiveProcesses(t *testing.T) {
 	root := t.TempDir()
 	writeProc(t, root, "123", "/tmp/stratum-linux-amd64", "/usr/local/bin/stratum", "up", "--worker")
@@ -84,11 +74,6 @@ func TestWalkYieldsLiveProcesses(t *testing.T) {
 	}
 }
 
-// TestWalkSkipsExitedProcesses: a process that exits between the /proc
-// listing and the cmdline read fails with ENOENT or ESRCH. It is gone, not an
-// unreadable process table, so the walk skips it. Any other read error fails
-// the walk: a caller deciding what is safe to stop must not read an
-// unreadable table as an empty one.
 func TestWalkSkipsExitedProcesses(t *testing.T) {
 	root := t.TempDir()
 	writeProc(t, root, "123", "", "/usr/bin/kubelet")
@@ -125,10 +110,6 @@ func TestWalkSkipsExitedProcesses(t *testing.T) {
 	}
 }
 
-// TestWalkStopsAndFailsOnVisitorRequest: a visitor's false stops the walk
-// after the process it accepted, and a visitor error fails the walk — a
-// scanner that cannot decide identity must abort rather than report a partial
-// scan as a complete one.
 func TestWalkStopsAndFailsOnVisitorRequest(t *testing.T) {
 	root := t.TempDir()
 	writeProc(t, root, "1", "", "/bin/a")
@@ -150,8 +131,6 @@ func TestWalkStopsAndFailsOnVisitorRequest(t *testing.T) {
 	}
 }
 
-// TestExited pins the skip-or-fail decision every scanner shares: ENOENT and
-// ESRCH mean the process is gone; every other error is unknown.
 func TestExited(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -172,10 +151,6 @@ func TestExited(t *testing.T) {
 	}
 }
 
-// TestBuildInfo: the build information of a process's executable tells the
-// legacy-supervisor check which module the binary was built from. A valid
-// non-Go ELF image is not an error — a native program may legitimately run an
-// `up` argument — but a malformed or unreadable image must fail closed.
 func TestBuildInfo(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
@@ -184,7 +159,6 @@ func TestBuildInfo(t *testing.T) {
 	if info, err := BuildInfo(self); err != nil || info == nil {
 		t.Fatalf("Go executable (this test binary): info=%v err=%v", info, err)
 	}
-	// A minimal valid native ELF image, without Go sections.
 	native := make([]byte, 64)
 	copy(native, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1})
 	binary.LittleEndian.PutUint16(native[16:], 2)  // ET_EXEC
@@ -209,11 +183,6 @@ func TestBuildInfo(t *testing.T) {
 	}
 }
 
-// TestIsStratumBuild: identity by build information is the stratum module —
-// as the main module, so a renamed binary keeps its identity, or as a
-// dependency, so a distribution CLI embedding stratum still hosts it.
-// Anything else, including a binary with no readable build information, is
-// not stratum.
 func TestIsStratumBuild(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -233,10 +202,6 @@ func TestIsStratumBuild(t *testing.T) {
 	}
 }
 
-// TestIsUpCommand follows Cobra root-command selection: leading flags consume
-// their values, and the first non-flag token must be `up`. A resource name or
-// flag value passed to another stratum command — `kubectl get pod up --watch`
-// — must never read as the up subcommand.
 func TestIsUpCommand(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -264,10 +229,6 @@ func TestIsUpCommand(t *testing.T) {
 	}
 }
 
-// TestHasPayloadPath: containerd and kubelet are identified by exact payload
-// path — argv[0] must be the staged binary under BinDir. A distribution-owned
-// binary with the same basename, or anything else under BinDir, is not the
-// component, and a caller deciding what to signal must refuse it.
 func TestHasPayloadPath(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -291,11 +252,6 @@ func TestHasPayloadPath(t *testing.T) {
 	}
 }
 
-// TestIsOperator: the operator is identified by its flag shape, not its
-// executable name, which may be a release artifact. Every Stratum-owned flag
-// must be present in any order; any program without the full shape — another
-// program's operator, another subcommand, or the pkill command itself — is
-// refused.
 func TestIsOperator(t *testing.T) {
 	operatorArgs := func(exe string) []string {
 		return []string{exe, "operator", "--kubeconfig", version.AdminConf, "--manifests-dir", version.ManifestsDir, "--helm-cache", version.HelmCacheDir, "--leader-elect"}
@@ -325,13 +281,6 @@ func TestIsOperator(t *testing.T) {
 	}
 }
 
-// TestIsStratumTopLevel: the top-level `stratum up` process is this exact
-// binary running the up subcommand — /proc/<pid>/exe equality with the
-// running executable, so the same program built elsewhere, or started with an
-// unrelated subcommand, never matches. The kernel's " (deleted)" marker — an
-// upgrade replaced the binary underneath a running up — is tolerated on both
-// sides, and an exe that cannot be resolved is not a match: better to leave a
-// process alone than to signal one this call could not confirm.
 func TestIsStratumTopLevel(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
@@ -359,18 +308,6 @@ func TestIsStratumTopLevel(t *testing.T) {
 	}
 }
 
-// TestStratumUpPredicatesAgree: two rules answer "is this the stratum up
-// process" — IsUpCommand for the legacy-supervisor handoff check, and
-// IsStratumTopLevel for uninstall — and both must decide the up subcommand
-// through one shared argv scan, so the two rules cannot drift. Over this
-// shared table of argv shapes (flags before and after up, the "--"
-// terminator, a missing up) the two answers must be identical, and the answer
-// itself is pinned to the flag-skipping scan IsUpCommand has always followed.
-// The rules' deliberate difference is not argv-shaped and each is pinned by
-// its own test: the legacy check accepts any stratum build's up, while
-// uninstall matches its own binary exactly — here every process's exe is this
-// test binary, the only file IsStratumTopLevel can confirm, so the table
-// answers purely the up question.
 func TestStratumUpPredicatesAgree(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
@@ -411,11 +348,6 @@ func TestStratumUpPredicatesAgree(t *testing.T) {
 	}
 }
 
-// TestIsRuntimeShim: runtime-v2 shims outlive containerd and are attributed
-// by the runtime socket they serve, not by their executable path, which a
-// distribution can install under the same name. A shim for another
-// containerd, a non-shim binary pointed at stratum's socket, and a shim with
-// no address at all must all be refused.
 func TestIsRuntimeShim(t *testing.T) {
 	sock := strings.TrimPrefix(version.ContainerdSock, "unix://")
 	for _, tc := range []struct {
@@ -438,10 +370,6 @@ func TestIsRuntimeShim(t *testing.T) {
 	}
 }
 
-// TestHasArgv0Basename: the static-pod scanners are deliberately loose — any
-// process whose argv[0] basename is the component name counts, whatever path
-// it runs from, because a distro-owned same-named binary is still that
-// component running on this node. A different basename is not.
 func TestHasArgv0Basename(t *testing.T) {
 	for _, tc := range []struct {
 		name string

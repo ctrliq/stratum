@@ -41,8 +41,6 @@ func TestSessionRoundTripsTheToken(t *testing.T) {
 	}
 }
 
-// The cookie is signed, and a signature is not confidentiality. The bearer
-// token must not be readable in it.
 func TestSessionCookieDoesNotCarryTheTokenInTheClear(t *testing.T) {
 	m := testSessions(t)
 	value, _, err := m.issue("someone", nil, goodToken)
@@ -52,7 +50,6 @@ func TestSessionCookieDoesNotCarryTheTokenInTheClear(t *testing.T) {
 	if strings.Contains(value, goodToken) {
 		t.Fatal("the cookie value contains the bearer token verbatim")
 	}
-	// Signed-not-sealed would leave it in the base64 payload.
 	payload, sig, _ := strings.Cut(value, ".")
 	decoded, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
@@ -66,8 +63,6 @@ func TestSessionCookieDoesNotCarryTheTokenInTheClear(t *testing.T) {
 	}
 }
 
-// Two sessions with the same token must not produce the same sealed bytes:
-// a reused GCM nonce loses confidentiality for both.
 func TestSealUsesAFreshNoncePerSession(t *testing.T) {
 	m := testSessions(t)
 	a, _, err := m.issue("someone", nil, goodToken)
@@ -110,7 +105,6 @@ func TestSessionRefusesTamperedAndExpiredCookies(t *testing.T) {
 		})
 	}
 
-	// Expiry is checked against the clock, not trusted from the payload.
 	expired := testSessions(t)
 	expired.now = func() time.Time { return time.Now().Add(-2 * time.Hour) }
 	old, _, err := expired.issue("someone", nil, goodToken)
@@ -122,8 +116,6 @@ func TestSessionRefusesTamperedAndExpiredCookies(t *testing.T) {
 	}
 }
 
-// A session with a signed envelope but an empty token must not pass: it would
-// otherwise reach the proxy and be forwarded with no Authorization at all.
 func TestSessionWithoutATokenIsRefused(t *testing.T) {
 	m := testSessions(t)
 	s := session{Subject: "someone", Nonce: "n", Expires: time.Now().Add(time.Hour).Unix()}
@@ -133,11 +125,7 @@ func TestSessionWithoutATokenIsRefused(t *testing.T) {
 	}
 }
 
-// The sealing key must not be the signing key. Asserted by trying to open a
-// real session's sealed token with the manager's own signing key: if the two
-// were the same secret this succeeds. Comparing derive("sign") to
-// derive("seal") would only restate the line it is meant to guard, and would
-// keep passing if newSessions stopped using them.
+// Asserted by opening with the signing key: comparing derive outputs would restate it.
 func TestTheSealingKeyIsNotTheSigningKey(t *testing.T) {
 	m := testSessions(t)
 	value, _, err := m.issue("someone", nil, goodToken)
@@ -168,8 +156,6 @@ func TestTheSealingKeyIsNotTheSigningKey(t *testing.T) {
 	}
 }
 
-// A cookie minted under one secret must be worthless under another: this is
-// what makes the ephemeral per-process secret a real session boundary.
 func TestSessionsFromAnotherSecretAreRefused(t *testing.T) {
 	a := testSessions(t)
 	b, err := newSessions([]byte("a completely different secret"), time.Hour, true)
@@ -218,15 +204,13 @@ func TestCookieAttributes(t *testing.T) {
 	if !c.Secure {
 		t.Error("the session cookie must be Secure when the server serves TLS")
 	}
-	if c.SameSite != 3 { // http.SameSiteStrictMode
+	if c.SameSite != 3 {
 		t.Errorf("SameSite = %v, want Strict", c.SameSite)
 	}
 	if cleared := m.cookie("v", true); cleared.Value != "" || cleared.MaxAge != -1 {
 		t.Errorf("clearing the cookie left value=%q maxAge=%d", cleared.Value, cleared.MaxAge)
 	}
 }
-
-// ---- helpers ---------------------------------------------------------------
 
 func forgePayload(t *testing.T, json string) string {
 	t.Helper()
