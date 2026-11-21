@@ -35,8 +35,8 @@ THIRD_PARTY_NOTICES.md instead.
 ### Allowed licenses
 
 The allowed licenses are MIT, BSD-2-Clause, BSD-3-Clause, Apache-2.0, ISC,
-0BSD, Zlib and BSL-1.0, written as SPDX ids (`tools/licensecheck/policy.go:15`)
-and compared case-insensitively (`canonical`, `policy.go:58-63`). OFL-1.1 is allowed only as a named
+0BSD, Zlib and BSL-1.0, written as SPDX ids (`tools/licensecheck/policy.go:12`)
+and compared case-insensitively (`canonical`, `policy.go:52-54`). OFL-1.1 is allowed only as a named
 exception for the vendored Inter font (see [the register](#inter-font-4001)).
 
 ### What fails, what warns
@@ -49,7 +49,7 @@ whose text matches no known license, or matches one only loosely (a changed
 license text), or an npm license field that does not parse as an SPDX
 expression. A license outside the allowlist that a recorded exception covers
 passes, and the check prints a `NOTE` line naming the decision
-(`tools/licensecheck/policy.go:34-57`).
+(`tools/licensecheck/policy.go:26-49`).
 
 When a package declares an SPDX license expression, `OR` is allowed when any
 alternative is, and `AND` only when every term is. Several license files for
@@ -63,13 +63,13 @@ one the check cannot read, which warns.
 ### How a package's license is decided
 
 The check classifies each package, not each module, because one module can
-mix licenses (`tools/licensecheck/gomode.go:261-339`):
+mix licenses (`tools/licensecheck/gomode.go:236-306`):
 
 1. When every compiled file of a Go package (its Go and assembly files, and
    the `.h` files assembly can include) opens with an
    `SPDX-License-Identifier` header that parses as a license expression and
    is not `NONE` or `NOASSERTION`, those headers are the package's license
-   (`tools/licensecheck/gomode.go:568-573`). A header is every such tag in the
+   (`tools/licensecheck/gomode.go:496-501`). A header is every such tag in the
    comments before the file's first code, and several tags combine with AND.
    A prebuilt `.syso` object, or a file embedded with `//go:embed`, counts as
    a file without one. When only some files have one, the license files below
@@ -95,14 +95,14 @@ mix licenses (`tools/licensecheck/gomode.go:261-339`):
 A Go package that fails to load (`go list` reports an error for it or for one
 of its dependencies) stops the check with exit status 2. It is never skipped,
 because a dropped package would pass silently
-(`tools/licensecheck/gomode.go:195-205`).
+(`tools/licensecheck/gomode.go:177-187`).
 
 An npm package's license is the SPDX expression in its `package.json`
 `license` field. An empty field, `NONE`, `NOASSERTION`, a value that does not
 parse as an SPDX expression (such as `SEE LICENSE IN LICENSE.md`,
 `Apache 2.0`, or `MIT OR NOASSERTION`, since `NONE` and `NOASSERTION` only
 stand alone), or the deprecated object and array forms all get a `WARN` line
-(`tools/licensecheck/npm.go:62-72`, `dash/bundled-packages.js:46-48`). A value
+(`tools/licensecheck/npm.go:57-67`, `dash/bundled-packages.js:46-48`). A value
 that parses fails when it needs an id outside the allowlist, whether or not
 SPDX defines that id: `BSD` and `UNLICENSED` both fail.
 
@@ -117,9 +117,9 @@ headed BSD-3-Clause and pass. Its `pathrs-lite` and `pathrs-lite/procfs`
 packages, the two that other modules can import, are headed MPL-2.0, so
 linking either fails. Two tests prove it: one against a fixture with the real
 module's headers and license files
-(`tools/licensecheck/securejoin_test.go:21-71`), and one against the
+(`tools/licensecheck/securejoin_test.go:12-62`), and one against the
 published v0.7.0 module for both architectures
-(`tools/licensecheck/securejoin_test.go:95-129`).
+(`tools/licensecheck/securejoin_test.go:81-115`).
 
 ## Running the check
 
@@ -194,7 +194,7 @@ npm one says `no license declared` or `unknown license`. Under
 and `NOTE` lines, as `::error`, `::warning` and `::notice` workflow commands
 titled `licensecheck`, such as
 `::error title=licensecheck::<package>: <reason>`. GitHub shows them as
-annotations (`tools/licensecheck/main.go:134-154`).
+annotations (`tools/licensecheck/main.go:93-113`).
 
 Each run that completes ends with a summary on stderr, such as
 `licensecheck: 1147 third-party packages linked for linux/amd64, linux/arm64: 0 fail, 0 warn`.
@@ -202,7 +202,7 @@ The gate's last line is `lint-licenses: ok`, or `lint-licenses: FAILED:`
 followed by the runs that failed, and then it exits 1. A run fails on a `FAIL`
 line (licensecheck exit status 1) or when licensecheck cannot check at all
 (exit status 2: a bad flag, unreadable input, or a package that does not load;
-`tools/licensecheck/main.go:45-50`). The npm run also fails when
+`tools/licensecheck/main.go:10-14`). The npm run also fails when
 `dash/.bundle/packages.json` is missing, because nothing bundled would be
 checked; build the dashboard (`make dash`) to write it.
 
@@ -228,7 +228,7 @@ so a human can review it.
 Only a human decision adds an exception. Each one is recorded in the register
 below with the decision text and its date. When the check scans the excepted
 package, the exception is also an entry in the `exceptions` map in
-`tools/licensecheck/policy.go:26-30`, keyed by Go import path or npm package
+`tools/licensecheck/policy.go:21-24`, keyed by Go import path or npm package
 name, listing the SPDX ids it allows and quoting the decision. An entry covers
 only the package it names, so other packages of the same module are still
 checked in full.
@@ -289,7 +289,7 @@ adopted.
   Helm v3 and still in v4. No documentation is compiled in.
 - **Disposition:** Exception decided by the human on 2026-10-08. Decision
   text: "Exception: docs license". The exception is the `exceptions` map entry
-  in `tools/licensecheck/policy.go:29`, and the check prints a `NOTE` line for
+  in `tools/licensecheck/policy.go:23`, and the check prints a `NOTE` line for
   it.
 
 ### lightningcss 1.33.0 (npm)

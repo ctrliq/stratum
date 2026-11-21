@@ -57,7 +57,7 @@ is only ever passed back to the five functions above.
 
 `node_ip` is the address **other cluster members use**: the join URL, `--node-ip`, cert SANs.
 On GCP that is the private IP, because the firewall permits intra-cluster traffic by network
-tag and a private address is in the apiserver cert SANs (`internal/pki/pki.go:239`) while the
+tag and a private address is in the apiserver cert SANs (`internal/pki/pki.go:427`) while the
 public one is not — a join pointed at a public IP fails TLS verification.
 
 ### State

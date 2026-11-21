@@ -98,7 +98,7 @@ backend_up() {
       # Only controller-0 publishes. Container IPs are not routable from macOS,
       # so this published port is how the runner reaches the apiserver — the
       # local equivalent of the gcp backend's SSH tunnel. 127.0.0.1 is in the
-      # apiserver cert SANs (internal/pki/pki.go:239), so TLS still verifies.
+      # apiserver cert SANs (internal/pki/pki.go:427), so TLS still verifies.
       pub=()
       [[ $role == controller && $idx == 0 ]] && pub=(-p "127.0.0.1:$LOCAL_API_PORT:6443")
 

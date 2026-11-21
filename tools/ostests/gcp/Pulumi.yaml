@@ -237,7 +237,7 @@ resources:
 #
 # Private IPs are what the cluster is built out of: join URLs, --node-ip, and
 # every intra-cluster hop, which allowInternal permits by tag. A private address
-# is in the node's apiserver cert SANs (internal/pki/pki.go:239) while the public
+# is in the node's apiserver cert SANs (internal/pki/pki.go:427) while the public
 # one is not, so a join pointed at a public IP fails TLS verification.
 #
 # backends/gcp.sh pairs these lists by index, so the ordering here is load-bearing.
