@@ -18,25 +18,34 @@ import (
 // registered profile for an applied one on a release whose notes do not say
 // the start reads it.
 type Profile struct {
-	// A DNS-1123 label, unique in the binary.
+	// Name selects the profile: a DNS-1123 label, unique in the binary.
 	Name string
-	// Spliced into the apiserver's argv on control planes, in order.
+	// APIServerFlags are spliced into the apiserver's argv on control planes,
+	// in order.
 	APIServerFlags []ProfileFlag
-	// Rendered into kubelet.conf on every node, in order.
+	// KubeletSettings are rendered into kubelet.conf on every node, in order.
 	KubeletSettings []ProfileSetting
-	// Written in the engine's config dir on control planes, restored first on a rollback.
+	// ConfigFiles are written under the engine's config directory on control
+	// planes before the apiserver renders, backed up across an upgrade and
+	// restored first on a rollback.
 	ConfigFiles []ProfileFile
-	// Minted once on the first control plane, carried in the join bundle, never regenerated.
+	// SharedSecrets are minted once, on a cluster's first control plane,
+	// carried to every later control plane in the join bundle, written 0600
+	// and never regenerated.
 	SharedSecrets []ProfileSecret
-	// A node that cannot apply these does not start.
+	// Sysctls are key=value lines written as a sysctl drop-in on every node.
+	// A node that cannot apply them does not start.
 	Sysctls []string
-	// Refuses a control plane with spec.operator: false.
+	// RequiresOperator refuses a control plane with spec.operator: false.
 	RequiresOperator bool
-	// Refuses spec.selinux: false and treats a missing SELinux policy as fatal.
+	// RequiresSELinux refuses spec.selinux: false and treats a missing
+	// SELinux policy as fatal.
 	RequiresSELinux bool
-	// Bootstraps the kubelet serving certificate through the CSR flow, control planes included.
+	// KubeletServerTLSBootstrap makes every node, control planes included,
+	// bootstrap its kubelet serving certificate through the CSR flow.
 	KubeletServerTLSBootstrap bool
-	// Turns the dashboard's privileged node shell off by default.
+	// DisableNodeShell turns the dashboard's privileged node shell off by
+	// default.
 	DisableNodeShell bool
 }
 
@@ -72,13 +81,14 @@ const (
 
 // ProfileContext is what a profile may read when it renders a file.
 type ProfileContext struct {
-	// The version the binary runs, vMAJOR.MINOR.PATCH with any stamp pre-release suffix.
+	// KubernetesVersion is the version the binary runs, as vMAJOR.MINOR.PATCH
+	// with any pre-release suffix the stamp carries.
 	KubernetesVersion string
 }
 
 // ProfileFlag is one apiserver flag.
 type ProfileFlag struct {
-	// Includes its leading --; the value goes in Value.
+	// Name is the flag with its leading --; the value goes in Value.
 	Name  string
 	Value string
 	From  ProfileSource
@@ -86,26 +96,29 @@ type ProfileFlag struct {
 
 // ProfileSetting is one kubelet.conf line.
 type ProfileSetting struct {
+	// Key is the kubelet.conf key.
 	Key string
-	// On one line.
+	// Value is the setting's value, on one line.
 	Value string
 	From  ProfileSource
 }
 
 // ProfileFile is a config file the engine writes for the profile.
 type ProfileFile struct {
-	// No directory, and not a file the engine keeps in its config dir, such as kubelet.conf.
-	Name   string
-	Kind   ProfileFileKind
+	// Name is the file name; no directory, and not the name of a file the
+	// engine keeps in its config directory, such as kubelet.conf.
+	Name string
+	Kind ProfileFileKind
+	// Render returns the file's bytes.
 	Render func(ProfileContext) ([]byte, error)
 }
 
 // ProfileSecret is a file the engine mints once and shares between control
 // planes.
 type ProfileSecret struct {
-	// No directory.
+	// Name is the file name; no directory.
 	Name string
-	// Returns the bytes a new cluster starts with.
+	// Mint returns the bytes a new cluster starts with.
 	Mint func() ([]byte, error)
 }
 

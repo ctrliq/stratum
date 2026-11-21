@@ -61,7 +61,8 @@ type ComponentVersions struct {
 	KubeVip    string
 	Cilium     string
 	CoreDNS    string
-	// Deprecated: konnectivity is not shipped; the field stays for released importers.
+	// Deprecated: konnectivity is not shipped, so nothing reads this. The
+	// field stays only because released importers compile against it.
 	Konnectivity string
 }
 

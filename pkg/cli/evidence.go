@@ -89,53 +89,68 @@ const BackupDigestUnknown = "unknown"
 // files; cluster-config edits may differ from the running controller's
 // loaded copy until it restarts. Snapshot.conf is reloaded on every tick.
 type BackupPolicy struct {
-	// What a consumer can rely on in the fields below.
+	// State says what a consumer can rely on in the fields below.
 	State BackupPolicyState
-	// How often the loop takes a snapshot; zero when the cluster config cannot be read.
+	// Interval is how often the scheduled loop takes a snapshot. Zero with
+	// unknown provenance when the cluster config cannot be read.
 	Interval     time.Duration
 	IntervalFrom BackupProvenance
-	// Snapshots pruning keeps; zero with unknown provenance is unknown, not keep-all.
+	// Retain is how many of this node's snapshots pruning keeps. Zero with
+	// unknown provenance means unknown, not keep-all.
 	Retain     int
 	RetainFrom BackupProvenance
-	// The copy requirement the effective S3 target imposes; empty when unknown.
+	// Copy is the copy requirement the effective S3 target imposes. Empty
+	// with unknown provenance when the target cannot be determined.
 	Copy     BackupCopyRequirement
 	CopyFrom BackupProvenance
-	// The local snapshot directory; empty when the cluster config cannot be read.
+	// Dir is the local snapshot directory, from the engine's own
+	// resolution. Empty with unknown provenance when the cluster config
+	// cannot be read.
 	Dir     string
 	DirFrom BackupProvenance
-	// The engine's WARN conditions that shaped the policy; no raw errors.
+	// Warnings carry the engine's WARN conditions that shaped this policy:
+	// an unreadable snapshot.conf, a cluster config that cannot be read.
+	// They describe the condition; they carry no raw errors.
 	Warnings []string
 }
 
 // BackupArtifact is one backup file the evidence enumerated — a local
 // snapshot in the snapshot directory or a remote copy on the S3 target.
 type BackupArtifact struct {
-	// Stable identity: the file name, shared by the local artifact and its remote copy.
+	// ID is the artifact's stable identity: its file name, shared by the
+	// local artifact and the remote copy of the same snapshot, so both count
+	// once in a deduplicated census.
 	ID string
-	// An opaque identity of the effective store; empty means unknown.
+	// LocationID is an opaque identity of the effective store; empty means unknown.
 	LocationID string
-	// Identifies this backup at that store; empty means unknown.
+	// CopyID identifies this backup at that store; empty means unknown.
 	CopyID string
-	// "local" or "remote": the store the artifact was enumerated in.
+	// Location is "local" or "remote": the store the artifact was enumerated
+	// in.
 	Location string
-	// The local file's modification time, or the remote object's last-modified time.
+	// Created is when the artifact came to be: the local file's modification
+	// time, the remote object's last-modified time.
 	Created time.Time
-	// The artifact's size in bytes.
+	// Size is the artifact's size in bytes.
 	Size int64
-	// A sha256 sidecar beside the local file, else BackupDigestUnknown.
+	// Digest is the artifact's digest when one is cheaply known — a valid
+	// sha256 sidecar beside the local file — else BackupDigestUnknown.
 	Digest string
 }
 
 // BackupLocalCatalog is the bounded local half of the evidence: the snapshot
 // files enumerated in the snapshot directory, within the read's bounds.
 type BackupLocalCatalog struct {
-	// Scopes every artifact's local location to this node.
+	// Node scopes every artifact's local location to this node.
 	Node string
-	// The enumerated snapshots, sorted by ID; the exact total only when Complete.
+	// Artifacts are the enumerated snapshots, sorted by ID. They are the
+	// store's exact total only when Complete is true.
 	Artifacts []BackupArtifact
-	// False means the walk stopped early and len(Artifacts) is a floor.
+	// Complete says the walk covered the whole directory within its bounds.
+	// False means it stopped early — a cap, a cancellation, an unreadable
+	// entry — and len(Artifacts) is a floor, never the store's total.
 	Complete bool
-	// The walk's WARN conditions as safe diagnostics.
+	// Warnings carry the walk's WARN conditions as safe diagnostics.
 	Warnings []string
 }
 
@@ -145,13 +160,19 @@ type BackupLocalCatalog struct {
 // own — so the copies span every controller, not only this node's: the
 // cluster's off-box inventory.
 type BackupRemoteCatalog struct {
-	// The enumerated remote copies, sorted by ID; the exact total only when Complete.
+	// Copies are the enumerated remote copies, sorted by ID, each carrying
+	// the remote location and an unknown digest. They are the remote
+	// store's exact total only when Complete is true. On a multi-controller
+	// cluster they include the other controllers' copies.
 	Copies []BackupArtifact
-	// Reserved for age diagnostics; empty under count retention.
+	// Old is reserved for age diagnostics. It is empty under count retention.
 	Old []BackupArtifact
-	// False means the listing stopped short and len(Copies) is a floor.
+	// Complete says the listing covered the whole store within its bounds.
+	// False means it stopped short — denied, timeout, a cancellation, a cap
+	// — and len(Copies) is a floor while the store's total is unknown.
 	Complete bool
-	// The listing's WARN conditions; they name the condition, never the address.
+	// Warnings carry the listing's WARN conditions as safe diagnostics: they
+	// name the condition, never the store's address or raw error.
 	Warnings []string
 }
 
@@ -159,12 +180,14 @@ type BackupRemoteCatalog struct {
 // deduplicated census: the local artifact, the remote copy, or both when the
 // same snapshot exists in both places.
 type BackupCensusEntry struct {
-	// Shared by the backup's local artifact and its remote copy.
+	// ID is the backup's stable identity, shared by its local artifact and
+	// its remote copy.
 	ID string
-	// Nil when that location does not hold the backup.
+	// Local and Remote are the ID's local artifact and remote copy, each
+	// nil when that location does not hold it.
 	Local  *BackupArtifact
 	Remote *BackupArtifact
-	// Reserved for age diagnostics; false under count retention.
+	// OldRemote is reserved for age diagnostics; false under count retention.
 	OldRemote bool
 }
 
@@ -174,15 +197,18 @@ type BackupCensusEntry struct {
 // total: the entries counted stand as a floor, and the true total is
 // unknown.
 type BackupCensus struct {
-	// Scopes the union's local half to the node whose store it is.
+	// Node scopes the union's local half to the node whose store it is.
 	Node string
-	// The distinct backups, sorted by ID; a remote-only entry can be another controller's.
+	// Entries are the distinct backups, sorted by ID. A remote-only entry
+	// can be another controller's snapshot: the remote half spans the
+	// cluster's shared store while the local half is this node's.
 	Entries []BackupCensusEntry
-	// True when both catalogs covered their stores, so the count is the exact total.
+	// Complete says both catalogs covered their stores within their bounds,
+	// so the entry count is the exact total of distinct backups.
 	Complete bool
-	// The union's WARN conditions as safe diagnostics.
+	// Warnings carry the union's WARN conditions as safe diagnostics.
 	Warnings []string
-	// Reserved for age diagnostics; empty under count retention.
+	// Retention is reserved for age diagnostics; empty under count retention.
 	Retention []string
 }
 
@@ -190,9 +216,9 @@ type BackupCensus struct {
 // when it ran and the typed outcome. A zero AttemptedAt means no attempt is
 // recorded; when BackupMaintenance.AttemptsKnown is false the history is unknown.
 type BackupAttempt struct {
-	// When the loop started the attempt.
+	// AttemptedAt is when the loop started the attempt.
 	AttemptedAt time.Time
-	// The typed safe result; empty when no attempt is recorded.
+	// Outcome is the typed safe result; empty when no attempt is recorded.
 	Outcome BackupAttemptOutcome
 }
 
@@ -202,16 +228,23 @@ type BackupAttempt struct {
 // retention warnings the loop's last tick ran with. The recorded line's own
 // text — which can carry the raw error the tick printed — is never echoed.
 type BackupMaintenance struct {
-	// A save that succeeded while pruning failed is a working backup with broken retention.
+	// Save, Upload and Prune are the latest recorded attempts. Prune is
+	// independent of Save and Upload: a save that succeeded while pruning
+	// failed is a working backup with broken retention.
 	Save   BackupAttempt
 	Upload BackupAttempt
 	Prune  BackupAttempt
-	// Separate from the latest attempts so a failure streak does not erase the last success.
+	// LastSaveSuccess and LastUploadSuccess are when the save and the
+	// upload last succeeded, kept separate from the latest attempts so a
+	// streak of failures does not erase when backups last worked.
 	LastSaveSuccess   time.Time
 	LastUploadSuccess time.Time
-	// The record's scheduling and retention warnings as typed safe reasons.
+	// Warnings state the record's scheduling and retention warnings as typed
+	// safe reasons.
 	Warnings []string
-	// False means the diagnostics are unknown, never that no attempt was made.
+	// AttemptsKnown says the record was read or does not exist. False means
+	// the diagnostics are unknown because the record is unreadable or the
+	// request ended — never that no attempt was made.
 	AttemptsKnown bool
 }
 
@@ -222,22 +255,28 @@ type BackupMaintenance struct {
 // every stage ran whole within the bounds — false means some stage's
 // evidence is a floor or unknown, never that it is zero.
 type BackupEvidenceResult struct {
-	// The effective backup policy the scheduled loop enforces.
+	// Policy is the effective backup policy the scheduled loop enforces.
 	Policy BackupPolicy
-	// The node whose store the local catalog read.
+	// Node scopes the local half: the node whose store the local catalog
+	// read.
 	Node string
-	// The immutable Kubernetes node identity; empty means unknown.
+	// NodeUID is the immutable Kubernetes node identity; empty means unknown.
 	NodeUID string
-	// Each catalog is exact only when its own Complete says so.
+	// Local is the bounded local catalog, and Remote the bounded remote
+	// catalog, each exact only when its own Complete says so.
 	Local  BackupLocalCatalog
 	Remote BackupRemoteCatalog
-	// The deduplicated census, exact only when both catalogs were complete.
+	// Backups is the deduplicated census: every stable backup ID once, with
+	// its local artifact and its remote copy, exact only when both catalogs
+	// were complete.
 	Backups BackupCensus
-	// The loop's durable maintenance state as safe diagnostics.
+	// Maintenance is the loop's durable maintenance state as safe
+	// diagnostics.
 	Maintenance BackupMaintenance
-	// True when the whole read ran whole within its bounds.
+	// Complete says the whole read ran whole within its bounds.
 	Complete bool
-	// Aggregates the policy's, catalogs', maintenance and read's own diagnostics.
+	// Warnings aggregate the policy's, the catalogs', the maintenance and
+	// the read's own safe diagnostics.
 	Warnings []string
 }
 
