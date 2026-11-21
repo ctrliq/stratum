@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// CoreDNS has no PDB by design; the gate stands in for one: one host drains at a time.
+// CoreDNS has no PDB: one replica host drains at a time, once a replica is Ready elsewhere.
 const dnsSelector = "k8s-app=kube-dns"
 
 // A var for tests.

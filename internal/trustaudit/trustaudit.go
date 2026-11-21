@@ -179,7 +179,7 @@ func subjects(cs []*x509.Certificate) string {
 
 var kubeletProbe = pki.ProbeKubeletClientAuth
 
-// KubeletsRefuseRoot reports whether every kubelet refuses a root-signed client certificate.
+// Every kubelet must refuse a root-signed client cert and accept apiserver-kubelet-client.
 func KubeletsRefuseRoot(ctx context.Context, cs kubernetes.Interface) Verdict {
 	root, err := pki.RootSignedClientCert()
 	if err != nil {
