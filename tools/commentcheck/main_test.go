@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,40 @@ func TestCheckFile(t *testing.T) {
 				line = line[:strings.Index(line, ":")] + ": " + f.msg
 				if !strings.HasPrefix(line, c.want[i]) {
 					t.Errorf("finding %d = %q, want prefix %q", i, line, c.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestPublicAPIExportedDocsMayRunSeveralLines(t *testing.T) {
+	cases := []struct {
+		name, path, src string
+		want            []string
+	}{
+		{"exported func", "pkg/cli/x.go", "package cli\n\n// F does one thing.\n// It also does another.\nfunc F() {}\n", nil},
+		{"exported type", "pkg/cli/x.go", "package cli\n\n// T is one thing.\n// And another.\ntype T int\n", nil},
+		{"exported var in a group", "pkg/cli/x.go", "package cli\n\nvar (\n\t// V is one.\n\t// And two.\n\tV int\n)\n", nil},
+		{"absolute root", "/r/pkg/cli/x.go", "package cli\n\n// F one.\n// F two.\nfunc F() {}\n", nil},
+		{"unexported func", "pkg/cli/x.go", "package cli\n\n// f one.\n// f two.\nfunc f() {}\n", []string{"3: comment is 2 lines"}},
+		{"comment in a body", "pkg/cli/x.go", "package cli\n\nfunc F() {\n\t// One.\n\t// Two.\n}\n", []string{"4: comment is 2 lines"}},
+		{"test file", "pkg/cli/x_test.go", "package cli\n\n// F one.\n// F two.\nfunc F() {}\n", []string{"3: comment is 2 lines"}},
+		{"other package", "internal/x/x.go", "package x\n\n// F one.\n// F two.\nfunc F() {}\n", []string{"3: comment is 2 lines"}},
+		{"subpackage", "pkg/cli/sub/x.go", "package sub\n\n// F one.\n// F two.\nfunc F() {}\n", []string{"3: comment is 2 lines"}},
+		{"banned phrase still fails", "pkg/cli/x.go", "package cli\n\n// F one.\n// See §2.\nfunc F() {}\n", []string{`4: spec section reference "§"`}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := checkFile(c.path, []byte(c.src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("got %d findings %v, want %d %v", len(got), got, len(c.want), c.want)
+			}
+			for i, w := range c.want {
+				if s := fmt.Sprintf("%d: %s", got[i].pos.Line, got[i].msg); !strings.HasPrefix(s, w) {
+					t.Errorf("finding %d = %q, want prefix %q", i, s, w)
 				}
 			}
 		})

@@ -111,14 +111,84 @@ func checkFile(path string, src []byte) ([]finding, error) {
 	if err != nil {
 		return nil, err
 	}
+	multiLine := map[*ast.CommentGroup]bool{}
+	if publicAPIFile(path) {
+		multiLine = exportedDocs(file)
+	}
 	var out []finding
 	for _, g := range file.Comments {
-		out = append(out, checkGroup(fset, g)...)
+		out = append(out, checkGroup(fset, g, multiLine[g])...)
 	}
 	return out, nil
 }
 
-func checkGroup(fset *token.FileSet, g *ast.CommentGroup) []finding {
+// Importers build against these packages and read their exported docs in full.
+var publicAPIDirs = []string{"pkg/cli"}
+
+func publicAPIFile(path string) bool {
+	p := filepath.ToSlash(filepath.Clean(path))
+	if strings.HasSuffix(p, "_test.go") {
+		return false
+	}
+	dir := filepath.ToSlash(filepath.Dir(p))
+	for _, d := range publicAPIDirs {
+		if dir == d || strings.HasSuffix(dir, "/"+d) {
+			return true
+		}
+	}
+	return false
+}
+
+func exportedDocs(file *ast.File) map[*ast.CommentGroup]bool {
+	docs := map[*ast.CommentGroup]bool{}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Doc != nil && d.Name.IsExported() {
+				docs[d.Doc] = true
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				if !specExported(spec) {
+					continue
+				}
+				if d.Doc != nil {
+					docs[d.Doc] = true
+				}
+				if doc := specDoc(spec); doc != nil {
+					docs[doc] = true
+				}
+			}
+		}
+	}
+	return docs
+}
+
+func specExported(spec ast.Spec) bool {
+	switch s := spec.(type) {
+	case *ast.TypeSpec:
+		return s.Name.IsExported()
+	case *ast.ValueSpec:
+		for _, n := range s.Names {
+			if n.IsExported() {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func specDoc(spec ast.Spec) *ast.CommentGroup {
+	switch s := spec.(type) {
+	case *ast.TypeSpec:
+		return s.Doc
+	case *ast.ValueSpec:
+		return s.Doc
+	}
+	return nil
+}
+
+func checkGroup(fset *token.FileSet, g *ast.CommentGroup, multiLine bool) []finding {
 	var out []finding
 	lines := 0
 	for _, c := range g.List {
@@ -140,7 +210,7 @@ func checkGroup(fset *token.FileSet, g *ast.CommentGroup) []finding {
 			}
 		}
 	}
-	if lines > 1 {
+	if lines > 1 && !multiLine {
 		out = append(out, finding{fset.Position(g.Pos()), fmt.Sprintf("comment is %d lines; the limit is one", lines)})
 	}
 	return out

@@ -25,6 +25,9 @@ then mislead the next reader, human or agent, so this repository keeps almost no
   "for now"), no first-person voice ("we"), no step-by-step walkthroughs ("Step 1:").
   Say what is true now and why. Do not cite spec sections (`§16`), ADR numbers or
   tracker ids.
+- One exception: `pkg/cli` is the public API importers build against, so the doc comment on
+  an exported name there may run several lines. State the contract an importer must meet;
+  every other rule still applies.
 - If a block needs a heading to be understood, extract a named function. If a test
   proves the behavior, the test is the documentation.
 - When you change code, delete or fix every comment the change makes untrue.
