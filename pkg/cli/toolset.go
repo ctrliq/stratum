@@ -15,12 +15,18 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 )
 
-// The tier gate is not a security boundary; Kubernetes RBAC is. See AddTool.
+// Tier is how much damage a tool can do. It decides whether the tool is
+// registered, not whether a call is allowed: see AddTool.
 type Tier int
 
 const (
+	// TierRead cannot change anything. Always registered.
 	TierRead Tier = iota
+	// TierWrite mutates recoverably — a snapshot, a token, a config. Needs
+	// --allow-write.
 	TierWrite
+	// TierDestructive can take a cluster down or lose data. Needs
+	// --allow-destructive.
 	TierDestructive
 )
 
@@ -36,12 +42,14 @@ func (t Tier) String() string {
 	return "unknown"
 }
 
-// Proves the guard is wired: the definition test would pass even without the call site.
+// A ToolSet is a named group of MCP tools. Register is called once, at
+// startup, and should call AddTool for each tool it contributes.
 type ToolSet interface {
 	Name() string
 	Register(*Registrar)
 }
 
+// Registrar admits tools by tier.
 type Registrar struct {
 	srv              *mcp.Server
 	allowWrite       bool
@@ -65,6 +73,7 @@ func newRegistrar(srv *mcp.Server, allowWrite, allowDestructive bool) *Registrar
 	return &Registrar{srv: srv, allowWrite: allowWrite, allowDestructive: allowDestructive}
 }
 
+// Allows reports whether tools at this tier will be registered.
 func (r *Registrar) Allows(t Tier) bool {
 	switch t {
 	case TierRead:
@@ -77,6 +86,7 @@ func (r *Registrar) Allows(t Tier) bool {
 	return false
 }
 
+// Registered returns the names of every admitted tool, in registration order.
 func (r *Registrar) Registered() []string {
 	out := make([]string, len(r.registered))
 	copy(out, r.registered)
@@ -90,7 +100,10 @@ func (r *Registrar) credentialSources() map[string]string {
 	return out
 }
 
-// Registers at the tier, or does nothing when the operator has not enabled it.
+// AddTool registers a typed tool at the given tier, or does nothing at all
+// when the operator has not enabled that tier. On a server built by the
+// internal MCP package's NewServer, the text of every result and error the
+// tool returns reaches the client fenced as untrusted data.
 func AddTool[In, Out any](r *Registrar, tier Tier, t *mcp.Tool, h mcp.ToolHandlerFor[In, Out]) {
 	addTool(r, tier, t, h)
 }
@@ -122,13 +135,15 @@ func addTool[In, Out any](r *Registrar, tier Tier, t *mcp.Tool, h mcp.ToolHandle
 	return true
 }
 
-// What a NodeOperation runs with: Out is progress output; Clientset uses the node connector.
+// NodeEnv is what a NodeOperation runs with: Out collects the progress the
+// operator reads, and Clientset is on the node connector.
 type NodeEnv struct {
 	Out       io.Writer
 	Clientset kubernetes.Interface
 }
 
-// What a NodeOperation reports; Next and Warnings reach the operator even on failure.
+// NodeResult is what a NodeOperation reports; Next and Warnings reach the
+// operator whether or not the operation fails.
 type NodeResult struct {
 	Next     string
 	Warnings []string
@@ -137,7 +152,8 @@ type NodeResult struct {
 // NodeOperation is a destructive operation on this node, run on the node connector's client.
 type NodeOperation[In any] func(ctx context.Context, env NodeEnv, in In) (NodeResult, error)
 
-// Registers op at the destructive tier, run like the engine's destructive tools.
+// AddDestructiveNodeTool registers op at the destructive tier, run like the
+// engine's destructive tools: on a Stratum node only, one at a time with them.
 func AddDestructiveNodeTool[In any](r *Registrar, t *mcp.Tool, op NodeOperation[In]) {
 	if r == nil || t == nil {
 		return
@@ -223,6 +239,7 @@ func (r *Registrar) err() error {
 	return fmt.Errorf("refusing to serve MCP: %w", errors.Join(r.mismatches...))
 }
 
+// ReadTool builds the annotations for a tool that changes nothing.
 func ReadTool(name, description string) *mcp.Tool {
 	return &mcp.Tool{
 		Name:        name,
@@ -231,6 +248,7 @@ func ReadTool(name, description string) *mcp.Tool {
 	}
 }
 
+// WriteTool builds the annotations for a tool that mutates recoverably.
 func WriteTool(name, description string) *mcp.Tool {
 	no := false
 	return &mcp.Tool{
@@ -240,6 +258,8 @@ func WriteTool(name, description string) *mcp.Tool {
 	}
 }
 
+// DestructiveTool builds the annotations for a tool that can take a cluster
+// down or lose data.
 func DestructiveTool(name, description string) *mcp.Tool {
 	yes := true
 	return &mcp.Tool{
@@ -249,7 +269,8 @@ func DestructiveTool(name, description string) *mcp.Tool {
 	}
 }
 
-// WithToolSets adds tool sets to `stratum mcp` after the engine's own tools.
+// WithToolSets contributes tool sets to `stratum mcp`. The engine's own
+// tools are always present; these are added after them.
 func WithToolSets(sets ...ToolSet) Option {
 	return func(c *rootConfig) {
 		c.toolSets = append(c.toolSets, sets...)

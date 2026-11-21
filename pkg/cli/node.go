@@ -15,6 +15,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
+// NodeLayout is where this node's Stratum files live.
 type NodeLayout struct {
 	ConfDir                      string
 	DataDir                      string
@@ -52,7 +53,8 @@ func Layout() NodeLayout {
 	}
 }
 
-// PKIRotationCopies returns the names a CA rotation keeps beside name, or nil if none.
+// PKIRotationCopies returns the staged and pre-rotation names a CA rotation
+// keeps beside the PKI file name, or nil when it keeps none.
 func PKIRotationCopies(name string) []string {
 	staged := pki.StagedTrustName(name)
 	if staged == "" {
@@ -61,17 +63,19 @@ func PKIRotationCopies(name string) []string {
 	return []string{staged, pki.PreRotationBackupName(name)}
 }
 
-// TLSCipherSuites returns the suites the apiserver and kubelet are rendered with.
+// TLSCipherSuites returns the strong TLS cipher suites the apiserver and kubelet are rendered with.
 func TLSCipherSuites() []string {
 	return strings.Split(version.TLSCipherSuites, ",")
 }
 
-// EngineAPIServerArgs returns the apiserver argv entries every control plane renders.
+// EngineAPIServerArgs returns the apiserver argv entries every control plane
+// renders whatever its profile.
 func EngineAPIServerArgs() []string {
 	return enginesettings.APIServerFlags(pkiFile)
 }
 
-// ProfileAPIServerArgs returns p's apiserver argv entries, as a control plane renders them.
+// ProfileAPIServerArgs returns the apiserver argv entries p contributes, as a
+// control plane renders them.
 func ProfileAPIServerArgs(p Profile) ([]string, error) {
 	pp := toProfile(p)
 	if err := pp.Validate(); err != nil {
@@ -82,7 +86,8 @@ func ProfileAPIServerArgs(p Profile) ([]string, error) {
 
 func pkiFile(name string) string { return filepath.Join(version.PKIDir, name) }
 
-// NodeAdminClientset returns a clientset on this node's admin kubeconfig (super-admin, else admin).
+// NodeAdminClientset returns a clientset on this node's internal admin
+// kubeconfig: super-admin.conf, else admin.conf.
 func NodeAdminClientset() (kubernetes.Interface, error) {
 	cs, err := k8sutil.AdminClientset()
 	if err != nil {

@@ -7,60 +7,87 @@ import (
 	"github.com/ctrliq/stratum/internal/backupevidence"
 )
 
-// BackupProvenance names the source a resolved backup policy value came from.
+// BackupProvenance names the source a resolved backup policy value came
+// from: the cluster config the controller was started with, the
+// operator-managed snapshot.conf that wins outright over it, the built-in
+// default, or unknown.
 type BackupProvenance string
 
 const (
-	// spec.snapshots in the cluster config the controller was started with.
+	// BackupFromClusterConfig: spec.snapshots in the cluster config file the
+	// controller was started with.
 	BackupFromClusterConfig BackupProvenance = "cluster-config"
-	// The operator-managed snapshot.conf, which wins outright over the cluster config.
+	// BackupFromSnapshotConf: the operator-managed snapshot.conf, which wins
+	// outright over the cluster config when it exists.
 	BackupFromSnapshotConf BackupProvenance = "snapshot-conf"
-	// The built-in default applied when nothing configures the value.
+	// BackupFromDefault: the built-in default the engine applies when
+	// nothing configures the value.
 	BackupFromDefault BackupProvenance = "default"
-	// The value cannot be determined; the paired value carries no information.
+	// BackupFromUnknown: the value cannot be determined; the value beside it
+	// carries no information, and no default is invented for it.
 	BackupFromUnknown BackupProvenance = "unknown"
 )
 
-// BackupPolicyState summarizes what a consumer can rely on in the resolved policy.
+// BackupPolicyState summarizes what a consumer can rely on in the resolved
+// backup policy.
 type BackupPolicyState string
 
 const (
-	// The scheduled loop runs with at least one operator-configured value.
+	// BackupPolicyConfigured: the scheduled snapshot loop runs with at least
+	// one operator-configured value.
 	BackupPolicyConfigured BackupPolicyState = "configured"
-	// The controller never starts the loop; the other fields still report the policy.
+	// BackupPolicyDisabled: the controller never starts the snapshot loop;
+	// the other fields still report the configured policy.
 	BackupPolicyDisabled BackupPolicyState = "disabled"
-	// Nothing configures snapshots anywhere; the loop runs on the defaults.
+	// BackupPolicyUnconfigured: nothing configures snapshots anywhere; the
+	// loop runs on the built-in defaults.
 	BackupPolicyUnconfigured BackupPolicyState = "unconfigured"
-	// The cluster config cannot be read, so the schedule is unknown.
+	// BackupPolicyUnknown: the cluster config the controller was started
+	// with cannot be read, so the schedule is unknown.
 	BackupPolicyUnknown BackupPolicyState = "unknown"
-	// snapshot.conf exists but cannot be read; the loop prunes nothing and uploads nothing.
+	// BackupPolicyUnreadable: snapshot.conf exists but cannot be read; the
+	// loop keeps every snapshot and uploads nothing, and no threshold is
+	// invented for what the file would have said.
 	BackupPolicyUnreadable BackupPolicyState = "unreadable"
 )
 
-// What the scheduled loop does with every snapshot beyond the local file.
+// BackupCopyRequirement is what the scheduled loop does with every snapshot
+// beyond the local file it writes.
 type BackupCopyRequirement string
 
 const (
-	// No S3 target is in force; snapshots stay in the snapshot directory.
+	// BackupCopyLocalOnly: no S3 target is in force; snapshots stay in the
+	// snapshot directory.
 	BackupCopyLocalOnly BackupCopyRequirement = "local-only"
-	// An S3 target is in force; every scheduled snapshot is also uploaded.
+	// BackupCopyRemoteRequired: an S3 target is in force; every scheduled
+	// snapshot is also uploaded to it.
 	BackupCopyRemoteRequired BackupCopyRequirement = "remote-required"
 )
 
-// A recorded attempt's typed safe result: what the attempt did, never the error text.
+// BackupAttemptOutcome is a recorded attempt's typed safe result: what the
+// attempt did, never the error text it failed with.
 type BackupAttemptOutcome string
 
 const (
-	// The attempt's record carries no failure.
+	// BackupAttemptSucceeded: the attempt's record carries no failure.
 	BackupAttemptSucceeded BackupAttemptOutcome = "succeeded"
-	// The record carries a failure; the warnings state its condition where they can.
+	// BackupAttemptFailed: the attempt's record carries a failure; the
+	// maintenance warnings state its condition where they can.
 	BackupAttemptFailed BackupAttemptOutcome = "failed"
 )
 
-// No sidecar records a digest and no listing exposes one; the read never hashes a snapshot.
+// BackupDigestUnknown is an artifact's digest value when nothing cheaply
+// knows one: no sidecar records it, and a remote listing exposes no digest.
+// The evidence never hashes a snapshot to guess one.
 const BackupDigestUnknown = "unknown"
 
-// The effective policy the scheduled snapshot loop enforces; every value carries its provenance.
+// BackupPolicy is the effective backup policy the scheduled snapshot loop
+// enforces, every resolved value paired with its provenance. The engine
+// resolves it from its own configuration — the cluster config the
+// controller was started with, snapshot.conf winning outright over it — so
+// a consumer never re-derives the resolution. The reader resolves current
+// files; cluster-config edits may differ from the running controller's
+// loaded copy until it restarts. Snapshot.conf is reloaded on every tick.
 type BackupPolicy struct {
 	// What a consumer can rely on in the fields below.
 	State BackupPolicyState
@@ -80,7 +107,8 @@ type BackupPolicy struct {
 	Warnings []string
 }
 
-// One backup file the evidence enumerated: local or remote.
+// BackupArtifact is one backup file the evidence enumerated — a local
+// snapshot in the snapshot directory or a remote copy on the S3 target.
 type BackupArtifact struct {
 	// Stable identity: the file name, shared by the local artifact and its remote copy.
 	ID string
@@ -98,7 +126,8 @@ type BackupArtifact struct {
 	Digest string
 }
 
-// The bounded local half of the evidence: snapshots in the snapshot directory.
+// BackupLocalCatalog is the bounded local half of the evidence: the snapshot
+// files enumerated in the snapshot directory, within the read's bounds.
 type BackupLocalCatalog struct {
 	// Scopes every artifact's local location to this node.
 	Node string
@@ -110,7 +139,11 @@ type BackupLocalCatalog struct {
 	Warnings []string
 }
 
-// The bounded remote half of the evidence; the shared S3 prefix spans every controller.
+// BackupRemoteCatalog is the bounded remote half of the evidence: the copies
+// enumerated on the S3 target. On a multi-controller cluster the target's
+// prefix is shared — every controller uploads under it and prunes only its
+// own — so the copies span every controller, not only this node's: the
+// cluster's off-box inventory.
 type BackupRemoteCatalog struct {
 	// The enumerated remote copies, sorted by ID; the exact total only when Complete.
 	Copies []BackupArtifact
@@ -122,7 +155,9 @@ type BackupRemoteCatalog struct {
 	Warnings []string
 }
 
-// One stable backup ID counted once in the census: local, remote, or both.
+// BackupCensusEntry is one stable backup ID counted exactly once in the
+// deduplicated census: the local artifact, the remote copy, or both when the
+// same snapshot exists in both places.
 type BackupCensusEntry struct {
 	// Shared by the backup's local artifact and its remote copy.
 	ID string
@@ -133,7 +168,11 @@ type BackupCensusEntry struct {
 	OldRemote bool
 }
 
-// The deduplicated union of the two catalogs; exact only when both were complete.
+// BackupCensus is the deduplicated union of the local and remote catalogs:
+// every stable backup ID counted once, with whether the union's total is
+// exact or unknown. A partial catalog on either side never yields an exact
+// total: the entries counted stand as a floor, and the true total is
+// unknown.
 type BackupCensus struct {
 	// Scopes the union's local half to the node whose store it is.
 	Node string
@@ -147,7 +186,9 @@ type BackupCensus struct {
 	Retention []string
 }
 
-// One recorded maintenance attempt as safe diagnostics.
+// BackupAttempt is one recorded maintenance attempt as safe diagnostics:
+// when it ran and the typed outcome. A zero AttemptedAt means no attempt is
+// recorded; when BackupMaintenance.AttemptsKnown is false the history is unknown.
 type BackupAttempt struct {
 	// When the loop started the attempt.
 	AttemptedAt time.Time
@@ -155,7 +196,11 @@ type BackupAttempt struct {
 	Outcome BackupAttemptOutcome
 }
 
-// The loop's durable maintenance state; the record's raw error text is never echoed.
+// BackupMaintenance is the scheduled snapshot loop's durable maintenance
+// state as safe diagnostics: the latest save, upload and prune attempts,
+// when the save and the upload last succeeded, and the scheduling and
+// retention warnings the loop's last tick ran with. The recorded line's own
+// text — which can carry the raw error the tick printed — is never echoed.
 type BackupMaintenance struct {
 	// A save that succeeded while pruning failed is a working backup with broken retention.
 	Save   BackupAttempt
@@ -170,7 +215,12 @@ type BackupMaintenance struct {
 	AttemptsKnown bool
 }
 
-// One bounded read of the engine's backup evidence; Complete says every stage ran whole.
+// BackupEvidenceResult is one bounded read of the engine's backup evidence:
+// the effective policy with every value's provenance, the local artifacts,
+// the remote copies, the deduplicated census counting each backup once
+// across both locations, and the maintenance diagnostics. Complete says
+// every stage ran whole within the bounds — false means some stage's
+// evidence is a floor or unknown, never that it is zero.
 type BackupEvidenceResult struct {
 	// The effective backup policy the scheduled loop enforces.
 	Policy BackupPolicy
@@ -199,24 +249,33 @@ type backupEvidenceOptions struct {
 	maxTime    time.Duration
 }
 
+// BackupEvidenceOption configures one backup-evidence read.
 type BackupEvidenceOption func(*backupEvidenceOptions)
 
-// Empty means this host's short name, the way the engine's snapshot naming resolves it.
+// WithBackupEvidenceNode names the node the local half is scoped to. Empty —
+// the default — means this host's short name, the way the engine's own
+// snapshot naming resolves it.
 func WithBackupEvidenceNode(node string) BackupEvidenceOption {
 	return func(o *backupEvidenceOptions) { o.node = node }
 }
 
-// Zero or negative means the engine read's built-in page budget, never unbounded.
+// WithBackupEvidenceMaxEntries caps how many backups — local artifacts and
+// remote copies together — one read may describe. Zero or negative means the
+// engine read's built-in page budget, never an unbounded read.
 func WithBackupEvidenceMaxEntries(maxEntries int) BackupEvidenceOption {
 	return func(o *backupEvidenceOptions) { o.maxEntries = maxEntries }
 }
 
-// Zero or negative means the engine read's built-in byte budget.
+// WithBackupEvidenceMaxBytes caps how many artifact bytes the read may
+// account for across the local walk and the remote listing together. Zero
+// or negative means the engine read's built-in byte budget.
 func WithBackupEvidenceMaxBytes(maxBytes int64) BackupEvidenceOption {
 	return func(o *backupEvidenceOptions) { o.maxBytes = maxBytes }
 }
 
-// Zero or negative means the engine read's built-in deadline.
+// WithBackupEvidenceMaxTime bounds how long the whole read may take,
+// however patient the caller's own context is. Zero or negative means the
+// engine read's built-in deadline.
 func WithBackupEvidenceMaxTime(maxTime time.Duration) BackupEvidenceOption {
 	return func(o *backupEvidenceOptions) { o.maxTime = maxTime }
 }
@@ -224,7 +283,23 @@ func WithBackupEvidenceMaxTime(maxTime time.Duration) BackupEvidenceOption {
 // Seam so tests stand in for the read without touching node state or the cluster.
 var backupEvidenceRead = backupevidence.Evidence
 
-// Returns the engine's read-only view of what it does for backups, in one bounded call.
+// BackupEvidence returns the engine's read-only view of what it does for
+// backups, in one bounded call: the effective policy the scheduled loop
+// enforces with every value's provenance, the local artifacts in the
+// snapshot directory, the remote copies on the S3 target, the deduplicated
+// census counting each backup once across both locations, and the loop's
+// maintenance diagnostics — typed attempt outcomes, last-success stamps,
+// scheduling and retention warnings.
+//
+// The whole read is the engine's own: the caller's context propagates into
+// every local and remote read the engine makes, and the engine enforces the
+// overall time, page and byte budgets — the caller's caps when the options
+// set them, the engine's built-in defaults otherwise. A stage the bounds
+// stop is unknown, never zero: a partial catalog is a floor and the census
+// is never an exact total.
+//
+// Every diagnostic is a typed safe reason: no credential, no executable
+// path and no raw storage error reaches the result.
 func BackupEvidence(ctx context.Context, opts ...BackupEvidenceOption) BackupEvidenceResult {
 	var o backupEvidenceOptions
 	for _, opt := range opts {

@@ -6,7 +6,17 @@ import (
 	"github.com/ctrliq/stratum/internal/profile"
 )
 
-// A node refuses to start if its state names a profile this binary did not register.
+// Profile is a named node profile an importer registers with WithProfiles.
+// Registering validates the declaration and makes the profile selectable by
+// name; the engine release's notes say which of its fields the node start
+// reads and renders, as the engine's own profile moves onto this seam. Once
+// selection is in place, a node selects a profile with `stratum up --profile
+// <name>` or `spec.profile`, records the name in its state, and hands it to
+// every worker's join line; a node whose state names a profile the running
+// binary did not register refuses to start, so every node of a cluster must
+// run a binary that carries its profile. An importer must not take a
+// registered profile for an applied one on a release whose notes do not say
+// the start reads it.
 type Profile struct {
 	// A DNS-1123 label, unique in the binary.
 	Name string
@@ -30,26 +40,33 @@ type Profile struct {
 	DisableNodeShell bool
 }
 
+// ProfileSource says where a flag's or a setting's value comes from.
 type ProfileSource int
 
 const (
-	// Uses Value as written.
+	// ProfileLiteral uses Value as written.
 	ProfileLiteral ProfileSource = ProfileSource(profile.Literal)
-	// Resolves Value, a ConfigFiles or SharedSecrets name, to the path the engine wrote it at.
+	// ProfileConfigFile resolves Value, the name of one of the profile's
+	// ConfigFiles or SharedSecrets, to the path the engine wrote it at.
 	ProfileConfigFile ProfileSource = ProfileSource(profile.ConfigFile)
-	// Resolves Value, a file name, to a path under the engine's log directory.
+	// ProfileLogFile resolves Value, a file name, to a path under the
+	// engine's log directory.
 	ProfileLogFile ProfileSource = ProfileSource(profile.LogFile)
-	// Resolves Value, a file name, to a path under the engine's PKI directory.
+	// ProfilePKIFile resolves Value, a file name, to a path under the
+	// engine's PKI directory.
 	ProfilePKIFile ProfileSource = ProfileSource(profile.PKIFile)
 )
 
-// How the engine treats a config file beyond writing it.
+// ProfileFileKind says how the engine treats a config file beyond writing it.
 type ProfileFileKind int
 
 const (
-	// Written, and may be named by a ProfileConfigFile flag.
+	// ProfilePlainFile is written, and may be named by a ProfileConfigFile
+	// flag.
 	ProfilePlainFile ProfileFileKind = ProfileFileKind(profile.PlainFile)
-	// The engine merges its own admission plugins in and names the merged file on the argv.
+	// ProfileAdmissionConfiguration is an apiserver AdmissionConfiguration
+	// the engine merges its own admission plugins into. The engine names the
+	// merged file on the apiserver's argv itself.
 	ProfileAdmissionConfiguration ProfileFileKind = ProfileFileKind(profile.AdmissionConfiguration)
 )
 
@@ -75,6 +92,7 @@ type ProfileSetting struct {
 	From  ProfileSource
 }
 
+// ProfileFile is a config file the engine writes for the profile.
 type ProfileFile struct {
 	// No directory, and not a file the engine keeps in its config dir, such as kubelet.conf.
 	Name   string
@@ -82,6 +100,8 @@ type ProfileFile struct {
 	Render func(ProfileContext) ([]byte, error)
 }
 
+// ProfileSecret is a file the engine mints once and shares between control
+// planes.
 type ProfileSecret struct {
 	// No directory.
 	Name string
@@ -89,7 +109,9 @@ type ProfileSecret struct {
 	Mint func() ([]byte, error)
 }
 
-// An incomplete declaration or a duplicate name fails the node commands that read profiles.
+// WithProfiles registers node profiles a node may select by name. A profile
+// that is not declared completely, or a name registered twice, fails the
+// node commands that read profiles.
 func WithProfiles(ps ...Profile) Option {
 	return func(c *rootConfig) {
 		c.profiles = append(c.profiles, ps...)
