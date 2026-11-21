@@ -1,7 +1,7 @@
 // Package enginesettings is a leaf: the renderers import it, so it imports no stratum package back.
 package enginesettings
 
-// An anchor the renderer splices flags in front of, not a flag with meaning of its own.
+// A live apiserver flag; the renderer splices the profile's and engine's flags in front of it.
 const ArgvAnchor = "--enable-aggregator-routing=true"
 
 // The renderer splices these after the node profile's flags and before ArgvAnchor.

@@ -251,8 +251,8 @@ cp_line=$(grep -F -- '--join' <<<"$TOKEN_OUT" | head -1) || true
 # could defeat flag-keyed matching. So the value-shaped rules catch the secrets
 # by their generators' own shapes, which do not drift with the output text:
 # a bootstrap token is randStr(6)"."randStr(16) over [a-z0-9]
-# (internal/token/token.go:88) and a certificate-key is 32 random bytes hex
-# (internal/ha/certs.go:108-113). The 64-hex rule also eats the CA hash, which
+# (internal/token/token.go:118) and a certificate-key is 32 random bytes hex
+# (internal/ha/certs.go:235-240). The 64-hex rule also eats the CA hash, which
 # is not secret — acceptable.
 [[ -n $cp_line ]] || {
   sed -E -e 's/--token [^ ]*/--token REDACTED/g' \

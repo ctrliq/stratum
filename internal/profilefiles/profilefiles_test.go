@@ -9,7 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Every file renders before any is written, so a failure changes nothing on disk.
+// Every file renders before any is written, so a render failure changes nothing on disk.
 func TestWriteWritesEveryFileOrNothing(t *testing.T) {
 	old := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()

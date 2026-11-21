@@ -9,7 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Write renders every file before any is written, so a failure changes nothing.
+// Write renders every file before any is written, so a render failure changes nothing.
 func Write(p profile.Profile) error {
 	ctx := profile.Context{KubernetesVersion: version.K8sVersion}
 	bodies := make([][]byte, len(p.ConfigFiles))
