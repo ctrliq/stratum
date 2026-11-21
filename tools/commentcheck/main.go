@@ -29,6 +29,9 @@ var directive = regexp.MustCompile(`^//(go:|line |export |nolint|lint:|\+build )
 
 var generated = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
 
+// go test compares an Example's output block line by line, so the block is test data.
+var exampleOutput = regexp.MustCompile(`^//\s*(Unordered output|Output):`)
+
 var banned = []struct {
 	re  *regexp.Regexp
 	why string
@@ -41,7 +44,7 @@ var banned = []struct {
 	{regexp.MustCompile(`(?i)\bused to\b|\boriginally\b|\bhistorically\b|\bthe old (code|path|behaviou?r|version|way|format|implementation)\b|\b(after|before|until) (the|this) (fix|change|refactor)\b|\bthe bug\b|\bbug (where|that|in)\b|\bwas (changed|fixed|introduced|rewritten)\b|\bno longer (reads|uses|finds|calls|runs|writes|checks)\b|\bonce (accepted|allowed|returned|failed|passed) (a|an|the)\b|\bregression guard\b`), "history narration"},
 	{regexp.MustCompile(`\b[a-z]\w* now (uses|returns|refuses|reads|writes|fails|checks|needs|runs)\b`), "history narration"},
 	{regexp.MustCompile(`(?i)\b(we|we're|we've|let's)\b`), "first-person narration"},
-	{regexp.MustCompile(`(?i)^\s*//\s*step [0-9]`), "step-by-step narration; extract named functions"},
+	{regexp.MustCompile(`(?i)^\s*(//|/\*|\*)?\s*step [0-9]`), "step-by-step narration; extract named functions"},
 }
 
 type finding struct {
@@ -189,6 +192,11 @@ func specDoc(spec ast.Spec) *ast.CommentGroup {
 }
 
 func checkGroup(fset *token.FileSet, g *ast.CommentGroup, multiLine bool) []finding {
+	for _, c := range g.List {
+		if exampleOutput.MatchString(c.Text) {
+			return nil
+		}
+	}
 	var out []finding
 	lines := 0
 	for _, c := range g.List {

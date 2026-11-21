@@ -40,6 +40,10 @@ func TestCheckFile(t *testing.T) {
 		{"state no longer passes", "package p\n\n// Cleared when the key no longer matches.\nvar P int\n", nil},
 		{"we fails", "package p\n\n// Here we read the key.\nvar P int\n", []string{`3: first-person narration "we"`}},
 		{"step fails", "package p\n\nfunc P() {\n\t// Step 2: dial.\n}\n", []string{`4: step-by-step narration; extract named functions "// Step 2"`}},
+		{"block step fails", "package p\n\nfunc P() {\n\t/* Step 2: dial. */\n}\n", []string{`4: step-by-step narration; extract named functions "/* Step 2"`}},
+		{"block step on a later line fails", "package p\n\nfunc P() {\n\t/* Dial.\n\t * Step 3: read. */\n}\n", []string{`5: step-by-step narration; extract named functions "* Step 3"`, "4: comment is 2 lines"}},
+		{"example output passes", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Output:\n\t// one\n\t// two\n}\n", nil},
+		{"unordered output passes", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Unordered output:\n\t// two\n\t// one\n}\n", nil},
 		{"strings are not comments", "package p\n\nvar P = \"§1 KUB-" + "1 #2 TODO red until\"\n", nil},
 		{"SHA-256 is not a tracker", "package p\n\n// P is a SHA-256 sum.\nvar P int\n", nil},
 	}
