@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -617,5 +619,83 @@ func TestWriteHandlersWithNoContainerdClearsTheUnloadedRecord(t *testing.T) {
 	}
 	if _, err := os.Stat(unloadedPath()); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("record after a write with no containerd: %v, want it removed", err)
+	}
+}
+
+// stubContainerd stands in for containerdInstance with next, restoring it
+// when the test ends.
+func stubContainerd(t *testing.T, next func() (string, bool, error)) {
+	t.Helper()
+	old := containerdInstance
+	t.Cleanup(func() { containerdInstance = old })
+	containerdInstance = next
+}
+
+// A containerd the supervisor starts while the drop-in is being written may
+// read the file as it was, so it is recorded with the one running before the
+// write, and the change stays pending while it runs.
+func TestWriteHandlersRecordsAContainerdStartedDuringTheWrite(t *testing.T) {
+	handlersHost(t, true)
+	current := "100 5"
+	stubContainerd(t, func() (string, bool, error) {
+		id := current
+		current = "101 9"
+		return id, true, nil
+	})
+	if _, err := writeHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")}); err != nil {
+		t.Fatal(err)
+	}
+	unloaded, err := dropInUnloaded()
+	if err != nil || !unloaded {
+		t.Fatalf("dropInUnloaded under the containerd started during the write = %v, %v; want true", unloaded, err)
+	}
+	current = "102 30"
+	stubContainerd(t, func() (string, bool, error) { return current, true, nil })
+	if unloaded, err := dropInUnloaded(); err != nil || unloaded {
+		t.Errorf("dropInUnloaded after a later restart = %v, %v; want false", unloaded, err)
+	}
+}
+
+// A supervisor that answers with an error is not taken for one that is not
+// running, or for one that has stopped containerd: the write is refused before the drop-in or the record
+// changes, and the check cannot tell rather than calling the change loaded.
+func TestWriteHandlersRefusesWhenTheSupervisorCannotSay(t *testing.T) {
+	handlersHost(t, true)
+	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unloadedPath(), []byte("100 5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = bufio.NewReader(conn).ReadBytes('\n')
+			_, _ = conn.Write([]byte(`{"ok":false,"error":"busy"}` + "\n"))
+			conn.Close()
+		}
+	}()
+	version.ControlSocket = socket
+	changed, err := writeHandlers(io.Discard, map[string]string{"gvisor": fakeBinary(t, "runsc")})
+	if err == nil || changed {
+		t.Fatalf("writeHandlers = %v, %v; want an error and no change", changed, err)
+	}
+	if _, err := os.Stat(version.ContainerdRuntimeConfD); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("drop-in after the refused write: %v, want none written", err)
+	}
+	if b, err := os.ReadFile(unloadedPath()); err != nil || string(b) != "100 5\n" {
+		t.Errorf("record after the refused write = %q, %v; want it kept", b, err)
+	}
+	if _, err := dropInUnloaded(); err == nil {
+		t.Error("dropInUnloaded with a supervisor that cannot say returned no error")
 	}
 }

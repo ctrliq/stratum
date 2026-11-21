@@ -1178,10 +1178,10 @@ func fakeSupervisor(t *testing.T, refuseRestart bool) (restarts func() int) {
 		defer mu.Unlock()
 		return slices.Clone(loaded), nil
 	}
-	containerdInstance = func() (string, bool) {
+	containerdInstance = func() (string, bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
-		return fmt.Sprintf("fake %d", instance), true
+		return fmt.Sprintf("fake %d", instance), true, nil
 	}
 	go func() {
 		for {

@@ -168,13 +168,15 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 		if prevErr != nil || !strings.HasPrefix(string(prev), handlersMarker) {
 			return false, nil
 		}
-		if err := recordDropInChange(); err != nil {
-			return false, fmt.Errorf("record the drop-in change: %w", err)
-		}
-		if err := os.Remove(path); err != nil {
-			return false, err
-		}
-		return true, nil
+		removed := false
+		err := changeDropIn(func() error {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			removed = true
+			return nil
+		})
+		return removed, err
 	}
 	for _, name := range slices.Sorted(maps.Keys(handlers)) {
 		if err := ValidateHandler(name, handlers[name]); err != nil {
@@ -195,16 +197,16 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	if prevErr == nil && !strings.HasPrefix(string(prev), handlersMarker) {
 		fmt.Fprintf(w, "  WARN: %s was not written by stratum; replacing it with the runtime handlers this node declares\n", path)
 	}
-	if err := recordDropInChange(); err != nil {
-		return false, fmt.Errorf("record the drop-in change: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
-	}
-	if err := atomicfile.WriteFileWith(path, []byte(rendered), 0o644, atomicfileSeams()); err != nil {
-		return errors.Is(err, atomicfile.ErrNotDurable), err
-	}
-	return true, nil
+	written := false
+	err := changeDropIn(func() error {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		err := atomicfile.WriteFileWith(path, []byte(rendered), 0o644, atomicfileSeams())
+		written = err == nil || errors.Is(err, atomicfile.ErrNotDurable)
+		return err
+	})
+	return written, err
 }
 
 // RequireOwnDropIn refuses runtime handlers whose drop-in would replace a file

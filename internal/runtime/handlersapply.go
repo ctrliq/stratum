@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -127,39 +128,78 @@ func handlersPending(handlers map[string]string) bool {
 
 // containerdInstance names the supervisor's running containerd process by its
 // PID and start time, so a restart, which replaces the process, changes it. ok
-// is false when no containerd runs under the supervisor, or the supervisor
-// cannot be asked, as before a node starts.
-var containerdInstance = func() (id string, ok bool) {
+// is false when no containerd runs under the supervisor, or no supervisor
+// runs, as before a node starts: its control socket is missing or refuses the
+// connection. Any other failure to ask is an error, never "not running".
+var containerdInstance = func() (id string, ok bool, err error) {
 	procs, err := comps.Status()
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
+		return "", false, nil
+	}
 	if err != nil {
-		return "", false
+		return "", false, fmt.Errorf("ask the supervisor whether containerd runs: %w", err)
 	}
 	p, found := procs["containerd"]
 	if !found || !p.Running || p.Foreign || p.Pid <= 0 {
-		return "", false
+		return "", false, nil
 	}
 	ticks, alive, err := staticpod.StartTicks(p.Pid)
-	if err == nil && !alive {
-		return "", false
+	if err != nil {
+		return "", false, fmt.Errorf("read when containerd (pid %d) started: %w", p.Pid, err)
 	}
-	return fmt.Sprintf("%d %d", p.Pid, ticks), true
+	if !alive {
+		return "", false, nil
+	}
+	return fmt.Sprintf("%d %d", p.Pid, ticks), true, nil
 }
 
-// unloadedPath records the containerd that was running when the
-// runtime-handler drop-in last changed. That containerd read the file before
-// the change, so while it runs, the change is not loaded.
+// unloadedPath records, one per line, the containerd processes that may have
+// read the runtime-handler drop-in before its last change. While one of them
+// runs, the change is not loaded.
 func unloadedPath() string {
 	return filepath.Join(filepath.Dir(version.ContainerdRuntimeConfD), ".stratum-runtime.unloaded")
 }
 
-// recordDropInChange runs before the drop-in changes: it records the running
-// containerd, which will not read the change, or clears the record when none
-// runs, since the next containerd reads the file as it is. A record in place
-// whose directory did not sync is enough: only a host crash loses it, and that
-// also ends the containerd it names.
-func recordDropInChange() error {
-	id, ok := containerdInstance()
-	if !ok {
+// changeDropIn runs write, which changes the drop-in, between two looks at the
+// running containerd. The one running before the write read the file as it
+// was, and so may one the supervisor started during the write, so both are
+// recorded; one that starts after the second look reads the change. The
+// first record is written before the drop-in changes, so a crash between them
+// leaves the change pending rather than lost. When neither look finds a
+// containerd, the record is cleared: the next one reads the file as it is.
+// A look that cannot tell stops the change before the write, or reports it
+// after. A write that replaced the file but did not sync its directory still
+// takes the second look, and its error is returned. A record whose directory did not sync is kept: only a host crash
+// loses it, and that also ends the containerd it names.
+func changeDropIn(write func() error) error {
+	var ids []string
+	if id, ok, err := containerdInstance(); err != nil {
+		return fmt.Errorf("record the drop-in change: %w", err)
+	} else if ok {
+		ids = append(ids, id)
+	}
+	if err := saveUnloaded(ids); err != nil {
+		return fmt.Errorf("record the drop-in change: %w", err)
+	}
+	werr := write()
+	if werr != nil && !errors.Is(werr, atomicfile.ErrNotDurable) {
+		return werr
+	}
+	id, ok, err := containerdInstance()
+	if err != nil {
+		return fmt.Errorf("the drop-in changed, but %w; run `stratum runtime restart` so containerd reads it", err)
+	}
+	if ok && !slices.Contains(ids, id) {
+		if err := saveUnloaded(append(ids, id)); err != nil {
+			return fmt.Errorf("the drop-in changed, but recording that containerd has not read it failed: %w; run `stratum runtime restart`", err)
+		}
+	}
+	return werr
+}
+
+// saveUnloaded replaces the record with ids, or removes it when there are none.
+func saveUnloaded(ids []string) error {
+	if len(ids) == 0 {
 		if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -168,17 +208,17 @@ func recordDropInChange() error {
 	if err := os.MkdirAll(filepath.Dir(unloadedPath()), 0o755); err != nil {
 		return err
 	}
-	err := atomicfile.WriteFileWith(unloadedPath(), []byte(id+"\n"), 0o644, atomicfileSeams())
+	err := atomicfile.WriteFileWith(unloadedPath(), []byte(strings.Join(ids, "\n")+"\n"), 0o644, atomicfileSeams())
 	if errors.Is(err, atomicfile.ErrNotDurable) {
 		return nil
 	}
 	return err
 }
 
-// dropInUnloaded reports whether the running containerd was already running
-// when the drop-in last changed, so it has not read the change. A handler
-// whose binary changed keeps its name, so the names containerd reports cannot
-// show that change.
+// dropInUnloaded reports whether the running containerd is one recorded at
+// the drop-in's last change, so it has not read the change. A handler whose
+// binary changed keeps its name, so the names containerd reports cannot show
+// that change.
 func dropInUnloaded() (bool, error) {
 	b, err := os.ReadFile(unloadedPath())
 	if errors.Is(err, fs.ErrNotExist) {
@@ -187,8 +227,11 @@ func dropInUnloaded() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	id, ok := containerdInstance()
-	return ok && strings.TrimSpace(string(b)) == id, nil
+	id, ok, err := containerdInstance()
+	if err != nil || !ok {
+		return false, err
+	}
+	return slices.Contains(strings.Split(strings.TrimSpace(string(b)), "\n"), id), nil
 }
 
 // missingHandlers is the declared handlers containerd has not loaded.
