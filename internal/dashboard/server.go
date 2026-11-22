@@ -20,7 +20,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// What /me and /config report as the authentication mechanism; there is exactly one.
+// What /me and /config report as the authentication mechanism: only one, the cluster's own.
 const provider = "kubernetes"
 
 // server holds the handler dependencies.

@@ -196,7 +196,7 @@ func AllowRestart() error {
 	return removeStaleRestartOverride()
 }
 
-// removeStaleRestartOverride removes the drop-in if present, then always reloads systemd.
+// Removes the drop-in if present, then reloads systemd even if absent; a failed remove stops first.
 func removeStaleRestartOverride() error {
 	if _, err := os.Stat(systemdDropInPath); err == nil {
 		if err := os.Remove(systemdDropInPath); err != nil {
