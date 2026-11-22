@@ -679,7 +679,7 @@ func TestTokenCreateNamesTheVIP(t *testing.T) {
 	}
 }
 
-// The URL must bracket the IPv6 address so it parses back on the apiserver port.
+// The URL brackets the IPv6 address; createToken gets defaultServerURL's output, never a literal.
 func TestTokenCreateJoinURLParsesBackOnIPv6(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

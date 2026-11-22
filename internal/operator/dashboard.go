@@ -164,7 +164,7 @@ func withoutLegacyTokenMarks(labels map[string]string) map[string]string {
 	return out
 }
 
-// Users install the dashboard CA as a trust root, so it stays name-constrained to the dashboard.
+// Users install the dashboard CA as a trust root: it may sign no other CA; the pod never holds it.
 func dashboardCA(ctx context.Context, cs kubernetes.Interface, dns, ips []string) (*pki.CA, error) {
 	secrets := cs.CoreV1().Secrets(dashboardCANamespace)
 	where := dashboardCANamespace + "/" + addons.DashboardCASecret
@@ -376,7 +376,7 @@ func (d *dashboardSecrets) renewReason(certPEM []byte, ca *pki.CA, dns, ips []st
 
 const dashboardNodePortHeldKey = "stratum.ciq.com/nodeport-held-by"
 
-// A Service whose NodePort is already allocated would be refused, stopping the stack's apply.
+// A held NodePort stops the stack's apply; Services hold one via spec.ports or healthCheckNodePort.
 func yieldDashboardNodePort(ctx context.Context, cs kubernetes.Interface, obj *unstructured.Unstructured) (string, error) {
 	if !isDashboardService(obj) {
 		return "", nil

@@ -534,7 +534,7 @@ func TestInventoryDesiredRecordSurvivesAConcurrentWriter(t *testing.T) {
 	}
 }
 
-// union returns every object reference the inventory holds, stacks in a deterministic order.
+// What pruning drives against once migration completes: everything any node applied, not pruned.
 func (inv pruneInventory) union() []objRef {
 	var out []objRef
 	for _, node := range sortedStringKeys(inv.Nodes) {

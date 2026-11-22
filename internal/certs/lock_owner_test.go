@@ -18,7 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// Uses the real client-go transport, which retries a 503 + Retry-After DELETE.
+// An API server for one lock Secret; the tests drive it over client-go's retrying transport.
 type lockServer struct {
 	mu      sync.Mutex
 	present bool

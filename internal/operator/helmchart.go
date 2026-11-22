@@ -79,7 +79,7 @@ const (
 	uninstallIncompleteDelete  = uninstallIncompletePrefix + "remove these objects by hand, then the " + helmFinalizer + " finalizer: "
 	uninstallIncompleteRecover = uninstallIncompletePrefix + "remove these objects by hand, then change the chart source (spec.repo, spec.chart, spec.version or spec.chartContent) or the merged values (spec.valuesContent, spec.set, spec.setString, or the same-name HelmChartConfig's valuesContent) to reinstall; other spec fields, and values edits that leave the merged values the same, do not reinstall, except on a HelmChart with spec.valuesSecrets, where any edit to those values fields or to a Secret it names reinstalls: "
 
-	// must not start with uninstallIncompletePrefix, or the message parses as a hold.
+	// must not start with uninstallIncompletePrefix, or an incomplete-write outage would fail it too.
 	recoveringUninstallMarker = "uninstalling release to recover"
 	// recording it clears unrecordedRecoveryField.
 	recoveringPendingMessage = "recovering pending release"
@@ -508,11 +508,11 @@ func reconcileHelmChart(rootCtx context.Context, dyn dynamic.Interface, kubeconf
 		inst.ReleaseName = spec.releaseName
 		inst.Namespace = spec.targetNamespace
 		inst.CreateNamespace = spec.createNamespace
-		// server-side apply would need the requester patch rights on every chart object.
+		// server-side apply needs requester patch rights; upgrades and rollbacks follow the recorded method
 		inst.ServerSideApply = false
 		inst.WaitStrategy = helmWaitStrategy
 		inst.Timeout = spec.timeout
-		// RunWithContext can return while Helm's worker still runs.
+		// the transport carries ctx; RunWithContext can return while the worker runs; Run waits for it.
 		installed, err := inst.Run(chrt, vals)
 		if err != nil {
 			setHelmStatus(rootCtx, dyn, ns, name, hcPhaseFailed, spec, 0, "", helmFailure(ns, name, privateErrors, "install", err))
@@ -789,7 +789,7 @@ func deletionIncompleteMessage(msg string) string {
 // rides out a transient apiserver error without stalling the other charts long.
 var incompleteWriteBackoff = wait.Backoff{Duration: 100 * time.Millisecond, Factor: 2, Jitter: 0.1, Steps: 5}
 
-// each failed incomplete write, retried each reconcile instead of uninstalling.
+// each failed incomplete write, retried each reconcile instead of finalizer removal or reinstall.
 var (
 	unwrittenIncompleteMu sync.Mutex
 	unwrittenIncomplete   = map[string]incompleteRecord{}
@@ -897,7 +897,7 @@ func loadChart(ctx context.Context, spec helmSpec, ns, name string) (*chart.Char
 	return loader.Load(path)
 }
 
-// each file is created exclusively and mode-preserved, so an interrupted copy never truncates.
+// a byte-identical refused repositories.yaml is this migration's earlier copy, so the scan resumes
 func migrateLegacyHelmCache() error {
 	legacyConfig := filepath.Join(legacyHelmCacheDir, "repositories.yaml")
 	legacyData, err := os.ReadFile(legacyConfig)
@@ -972,7 +972,7 @@ func migrateLegacyHelmCache() error {
 	return nil
 }
 
-// exclusive create keeps a stale legacy copy from overwriting the data-dir home.
+// the pre-check spares staging whole files each load; the exclusive create is the race backstop.
 func migrateLegacyHelmFile(dst string, data []byte, mode fs.FileMode) error {
 	if _, err := os.Lstat(dst); err == nil {
 		return fs.ErrExist
@@ -1047,7 +1047,7 @@ func newActionConfig(ctx context.Context, kubeconfig, namespace string, imp *res
 
 var crdGK = schema.GroupKind{Group: "apiextensions.k8s.io", Kind: "CustomResourceDefinition"}
 
-// Helm v4's own waiter lists and watches namespace-wide; an impersonated requester may not.
+// Helm v4's waiter lists/watches namespace-wide (impersonation fails) and never waits for new CRDs.
 type v3WaitClient struct{ *kube.Client }
 
 var _ kube.InterfaceWaitOptions = v3WaitClient{}

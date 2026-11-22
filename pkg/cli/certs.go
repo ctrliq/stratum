@@ -74,7 +74,7 @@ func newCertsCheckCommand() *cobra.Command {
 			if incomplete, _ := certs.IncompleteRotation(); incomplete {
 				fmt.Printf("leaf rotation: INCOMPLETE: leaves were reissued but not every component restarted onto them; the scheduled renewal rotates again, or run `sudo /usr/local/bin/stratum certs rotate --yes`\n")
 			}
-			// The shared key re-keys only as a side effect; a frozen key is worth surfacing.
+			// No timer re-keys it: only token create --control-plane, rotate-ca and --rekey-shared move it.
 			fmt.Print(clusterCertsReport(isWorkerNode(), sharedCertsKeySetAt, rotationPhase, carotateKeyStaged))
 			return nil
 		},
@@ -374,7 +374,7 @@ func newCertsRotateCACommand() *cobra.Command {
 	return cmd
 }
 
-// --cluster is the supported form; --phase is the per-node lever the orchestration drives.
+// --cluster is supported; --phase is what the node Jobs run; a lone issue-new run costs quorum.
 func newCertsMigrateEtcdCACommand() *cobra.Command {
 	var (
 		clusterWide bool

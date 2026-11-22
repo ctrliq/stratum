@@ -63,7 +63,7 @@ func confdDropin() string {
 	return generatedMarker + "[plugins.'io.containerd.cri.v1.images'.registry]\n  config_path = '" + version.CertsDir + "'\n"
 }
 
-// Load parses registries.yaml; an absent file returns (nil, nil).
+// Load parses registries.yaml; an absent file returns (nil, nil), meaning nothing configured.
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -248,7 +248,7 @@ func hostsToml(reg string, self RegConfig, cfgs map[string]RegConfig, m Mirror) 
 	return b.String(), secret, warnings
 }
 
-// Result reports what Apply did; a caller restarts containerd when Changed is set.
+// Result reports what Apply did; ApplyRegistry restarts containerd on Changed only while it runs.
 type Result struct {
 	Configured bool     // a registries.yaml configuring mirrors or configs was present and applied
 	Changed    bool     // the conf.d drop-in was created/updated; restarting containerd is the caller's decision

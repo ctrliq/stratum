@@ -37,7 +37,7 @@ type IssueDeps struct {
 	Revoke func(tok string, cause error) error
 }
 
-// Owns the credential until the handover reports delivery; never revokes a delivered token.
+// Owns the credential until delivery; revokes nothing on a failed mint, never a delivered token.
 func Issue(w io.Writer, deps IssueDeps, serverURL string, ttl time.Duration, controlPlane bool, flags JoinFlags, handover func(Grant) (bool, error)) (Grant, error) {
 	confirm := func() error {
 		if deps.Confirm != nil {

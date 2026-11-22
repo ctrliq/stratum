@@ -58,7 +58,7 @@ func DecodeCiliumSettings(b []byte) (CiliumSettings, error) {
 	return s, nil
 }
 
-// Each anchor must occur exactly once in the generated asset for targeted substitution.
+// Each anchor is unique in the asset, except the checksum line that appears once per pod template.
 const (
 	ciliumRoutingModeAnchor     = "\n  routing-mode: \"tunnel\"\n"
 	ciliumDevicesAnchor         = "\n  devices: \"\"\n"

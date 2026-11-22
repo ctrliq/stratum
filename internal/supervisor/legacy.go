@@ -13,7 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/procid"
 )
 
-// Older supervisors can unlink the socket after their listener closes; refuse until they exit.
+// Older supervisors can unlink the socket; the scan misses any started after it: stop old first.
 func refuseLegacySupervisor() error {
 	if runtime.GOOS != "linux" {
 		return nil
@@ -28,7 +28,7 @@ func refuseLegacySupervisor() error {
 	return nil
 }
 
-// Identity is subcommand plus build info; fail closed on an uninspectable binary.
+// self and its forked children read as self until their exec completes, so neither is reported.
 func findLegacySupervisor(procRoot string, self int, readInfo func(string) (*buildinfo.BuildInfo, error)) (int, error) {
 	var found int
 	err := procid.Walk(procRoot, func(p procid.Process) (bool, error) {

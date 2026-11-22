@@ -202,7 +202,7 @@ func storeKubeletClientCert(certPath string) func(certPEM, keyPEM []byte) error 
 	}
 }
 
-// A pending CSR blocks finalize until kube-controller-manager collects it a day later.
+// A pending CSR blocks finalize; the kubelet may lack delete rights, so failure only names it.
 func abandonCSR(cs kubernetes.Interface, name string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

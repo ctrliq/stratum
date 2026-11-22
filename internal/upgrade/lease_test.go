@@ -31,7 +31,7 @@ func fakeClock(t *testing.T, at time.Time) *time.Time {
 	return &now
 }
 
-// The lease name is a released identity; renaming it breaks cross-release exclusivity.
+// The released name is pinned as a literal, not upgradeLeaseName: a rename must fail this test.
 func TestClusterUpgradeStillTakesTheReleasedLeaseName(t *testing.T) {
 	fakeClock(t, time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC))
 	ctx := context.Background()

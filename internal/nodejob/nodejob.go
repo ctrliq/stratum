@@ -1,4 +1,4 @@
-// Package nodejob runs a privileged Job that nsenters PID 1 and execs the on-host stratum binary.
+// Package nodejob runs a privileged, shell-free Job that nsenters PID 1 and execs argv verbatim.
 package nodejob
 
 import (
@@ -39,7 +39,7 @@ func readTimeout() time.Duration {
 
 const maxNameLen = 63
 
-// Spec describes one privileged node Job.
+// Spec describes one privileged node Job; fit Name to 63 characters with TruncName.
 type Spec struct {
 	// Nil keeps stdout: standalone callers print there; MCP callers supply their own.
 	Output         io.Writer
@@ -52,7 +52,7 @@ type Spec struct {
 	ActiveDeadline time.Duration
 	PollAttempts   int
 	Kind           string // noun for error messages
-	// system-node-critical is admitted under node pressure, but may evict workloads past PDBs.
+	// Admitted under node pressure, may evict past PDBs; only a Job on a drained node should set it.
 	Critical bool
 }
 
@@ -134,7 +134,7 @@ func create(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create %s job: %w", s.Kind, err)
 		}
-		// Replace only a finished Job: a running one belongs to a run still changing the host.
+		// Replace only a finished Job: a stale Succeeded would falsely pass this node's poll.
 		existing, err := jobs.Get(ctx, s.Name, metav1.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("inspect existing %s Job %s: %w", s.Kind, s.Name, err)

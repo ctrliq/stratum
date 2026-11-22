@@ -205,7 +205,7 @@ func TestHelmChartCleanRecoveryOutcomeWriteIsRetried(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// rejects every status write whose message starts with uninstallIncompletePrefix.
+// rejects, until end, every status write whose message starts with uninstallIncompletePrefix.
 type incompleteOutage struct {
 	ended    bool
 	rejected int

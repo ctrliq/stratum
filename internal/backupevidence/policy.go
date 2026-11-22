@@ -94,7 +94,7 @@ func policy(ctx context.Context) EffectivePolicy {
 		warns = append(warns, "WARN: cannot read the snapshot config; the scheduled loop still takes snapshots but keeps every snapshot and uploads nothing, and the retention and copy policy are unknown")
 	}
 
-	// snapshot.conf carries no interval and cannot disable the loop.
+	// snapshot.conf carries no interval and no directory, and cannot disable the loop.
 	if ccErr == nil && stateKnown {
 		p.Interval = time.Duration(cc.Spec.Snapshot.IntervalHours) * time.Hour
 		// An explicitly configured default is indistinguishable from an unset field.

@@ -23,7 +23,7 @@ func stubPublisherSeam(t *testing.T, interval time.Duration, sample EvidenceSamp
 	evidenceSampler, evidencePublishInterval = sample, interval
 }
 
-// Nothing carries a sample across processes but through this file.
+// Nothing carries a sample across processes but through the record file.
 type recordedPublisherEvidence struct {
 	SchemaVersion  int       `json:"schemaVersion"`
 	SampledAt      time.Time `json:"sampledAt"`
@@ -293,7 +293,7 @@ func TestPublisherIsGatedLikeTheSnapshotLoop(t *testing.T) {
 	}
 }
 
-// The supervisor stub returns once the first sample has landed in the durable record.
+// The stub returns once the record lands; the renders, roster and postStart before it are real.
 func TestPublisherSamplerParameterIsWiredByRunController(t *testing.T) {
 	fakeHostKubectl(t)
 	redirectStateArea(t)

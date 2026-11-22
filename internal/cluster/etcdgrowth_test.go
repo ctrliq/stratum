@@ -238,7 +238,7 @@ func TestKeepEtcdMembershipCarriesAPendingPromote(t *testing.T) {
 	}
 }
 
-// SaveState replaces the file; a writer from a fresh NodeState drops fields it does not own.
+// Bring-up's save is out of the table on purpose; prepare_savestate_test.go pins it instead.
 func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 	growthFixture(t)
 	seed := seedState()

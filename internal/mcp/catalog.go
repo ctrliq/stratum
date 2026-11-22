@@ -48,7 +48,7 @@ type Tool struct {
 	// Annotates a write-tier tool destructive: some targets also need --allow-destructive.
 	Destructive bool
 
-	// Which credential the handler rides; an empty one fails registration.
+	// Which credential the handler rides; an empty one fails pkg/cli's credential pin.
 	Credential CredentialSource
 
 	Add func(srv *sdk.Server, t *sdk.Tool)

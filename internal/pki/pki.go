@@ -30,7 +30,7 @@ import (
 
 const (
 	rsaBits = 2048
-	// The controller-manager signs one-year kubelet client certs with it by default.
+	// CA lifetime; also the controller-manager's signing duration, set past its one-year default.
 	CAValidity = 10 * 365 * 24 * time.Hour
 )
 
@@ -665,7 +665,7 @@ func WriteSABundle(pubNames ...string) error {
 // The old certificate in the bundle is what lets nodes verify the new root by it.
 func RootCertPresent() bool { return certTrusted("ca") }
 
-// No bundle means the plain certificate counts as trusted.
+// No bundle means the plain cert counts as trusted; with one, a copied-in file is not the root.
 func certTrusted(name string) bool {
 	b, err := os.ReadFile(path(name, "crt"))
 	if err != nil {
@@ -694,7 +694,7 @@ func certTrusted(name string) bool {
 	return false
 }
 
-// From trust-new to sign-new the staged pair is the only key; PromoteCA/SA restore base.
+// Base itself, or the staged pair when base's key is gone; PromoteCA/PromoteSA restore base.
 func Signer(base string) string {
 	if _, err := os.Stat(path(base, "key")); err == nil {
 		return base
@@ -1157,7 +1157,7 @@ type restoreFile struct {
 	name, ext string
 }
 
-// Restores the pre-rotation material; the caller then rotates leaves and removes scratch.
+// Restores the old material; the caller reissues leaves once sign-new was reached, then cleans up.
 func RollbackCA() error {
 	if err := RollbackCheck(); err != nil {
 		return err
@@ -1247,7 +1247,7 @@ func setForcedMarker(force bool) error {
 
 func ForcedRotation() bool { return fileExists(filepath.Join(version.PKIDir, caForcedMarker)) }
 
-// Reports why RollbackCA would refuse, changing nothing; refusals wrap ErrRollbackUnsafe.
+// All of RollbackCA's refusal logic, read-only; --check answers exactly what --yes there would do.
 func RollbackCheck() error {
 	if ForcedRotation() {
 		return fmt.Errorf("pki: refusing to roll back (nothing has been changed): this rotation was started with --force: %w. "+

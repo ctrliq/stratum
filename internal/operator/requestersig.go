@@ -82,13 +82,13 @@ func (h *requesterSignerHolder) publish(signer *requesterSigner) {
 	h.cur.Store(signer)
 }
 
-// Kubernetes assigns metadata.uid only after CREATE admission.
+// uid arrives after CREATE admission; json.Marshal's sorted map keys keep the binding byte-stable.
 func requesterBinding(obj *unstructured.Unstructured) string {
 	payload, _ := json.Marshal([]interface{}{obj.GetAPIVersion(), obj.GetKind(), obj.GetNamespace(), obj.GetName(), obj.Object["spec"]})
 	return string(payload)
 }
 
-// Nil strips nothing, so until it is live the v2 binding covers the full spec.
+// Nil strips nothing until live; admission and reconcile read it while the signer owner refreshes.
 var schemaDefaultStripper atomic.Value // of func(spec any) any
 
 func bindingV2(obj *unstructured.Unstructured) string {
@@ -159,7 +159,7 @@ func legacyCompatibleBinding(obj *unstructured.Unstructured) string {
 	return string(payload)
 }
 
-// Frozen compatibility policy for legacy stamps; never derive it from the mutable CRD.
+// Released legacy-stamp field set: never CRD-derived; extend only after stored stamps migrate.
 func legacyRequesterField(field string) bool {
 	switch field {
 	case "chart", "repo", "version", "chartContent", "releaseName", "targetNamespace",
@@ -275,7 +275,7 @@ func stripSchemaDefaults(value any, schema map[string]any) (out any, keep bool) 
 	return value, true
 }
 
-// Numbers compare by value: unstructured decoding yields int64, schemas yield json.Number.
+// Exact comparison across representations: float64 would equate neighboring int64s above 2^53.
 func jsonEqual(a, b any) bool {
 	if fa, ok := jsonNumber(a); ok {
 		fb, ok := jsonNumber(b)

@@ -12,7 +12,7 @@ import (
 // MaxBytes bounds each metadata file, including files that grow during a read.
 const MaxBytes = 1 << 20
 
-// Opening nonblocking also rejects a FIFO swapped into place during the open.
+// Nonblocking open rejects a swapped-in FIFO; cancellation is observed only between syscalls.
 func Read(ctx context.Context, path string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

@@ -14,7 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// RestoreCopy is a full etcd data-dir copy a restore kept aside.
+// A full etcd data-dir copy a restore kept aside; only RemoveRestoreCopies removes one.
 type RestoreCopy struct {
 	Path string
 	Kind string // "pre-restore" or "failed-restore"

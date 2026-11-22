@@ -227,7 +227,7 @@ func encryptionKeyRefusal(read func() (etcdJoinState, error)) (etcdJoinState, er
 	return st, nil
 }
 
-// A second look after the write takes the secret back if the answer changed.
+// A second look after the write takes the key back, unless the published bundle carries it.
 func mintSharedSecret(path string, write func() (os.FileInfo, error), read func() (etcdJoinState, error)) error {
 	return mintSharedSecretFor(profile.Profile{Name: profile.CISName}, profile.CISEncryptionConfigName, path, write, read)
 }
@@ -327,7 +327,7 @@ func removeMinted(path string, created os.FileInfo, cause error) error {
 	return fmt.Errorf("%w; the key was removed from %s, so none was left behind", cause, path)
 }
 
-// Offline first: after a reboot etcd is down; a locked database defers to the running member.
+// The backend can trail the WAL after an unclean stop; failing closed would block crash recovery.
 func localEtcdJoinState(dataDir string, live func() (etcdJoinState, error)) (etcdJoinState, error) {
 	path := filepath.Join(dataDir, "member", "snap", "db")
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
@@ -374,7 +374,7 @@ func localEtcdJoinState(dataDir string, live func() (etcdJoinState, error)) (etc
 	return etcdJoinState{Members: n, JoinBundle: bundle}, nil
 }
 
-// etcd's internal layout, checked against real databases; a zero count is an error, never fresh.
+// A database always has this node as a member, so a zero count means the read is incomplete.
 func countBackendMembers(db *bolt.DB) (int, error) {
 	n := 0
 	err := db.View(func(tx *bolt.Tx) error {
@@ -397,7 +397,7 @@ func countBackendMembers(db *bolt.DB) (int, error) {
 	return n, err
 }
 
-// etcd's internal MVCC layout, not an API: the key exists when its latest revision is live.
+// etcd's MVCC: revision keys iterate in order; compaction never drops a live key's latest revision.
 func backendHasKey(db *bolt.DB, key []byte) (bool, error) {
 	exists := false
 	err := db.View(func(tx *bolt.Tx) error {

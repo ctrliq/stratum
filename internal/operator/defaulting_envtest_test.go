@@ -431,7 +431,7 @@ func stampWaitWebhookStamping(t *testing.T, dyn dynamic.Interface, gvr schema.Gr
 	}
 }
 
-// A re-stamp signs a new binding, so a changed signature proves the webhook is gone.
+// A re-stamp re-signs, so a signature unchanged by a write means the webhook is gone.
 func stampWaitWebhookGone(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, ns string, spec func() map[string]any) {
 	t.Helper()
 	name := "deregister-canary"

@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-// the provisioner's volume directory can hold users' data, so it is removed only when empty.
+// the one directory outside the targets the uninstall owns; stratum up or the provisioner makes it.
 
 // one explanation shared by the CLI dry run and the MCP tool.
 const localPathPreviewDetail = "the local-path provisioner's volume directory; removed only when it is empty, and kept, with the reason, when it holds anything (it can hold volume data), is a mount point, or is not a plain directory"
@@ -20,7 +20,7 @@ const (
 	localPathNotDirReason = "it is a symlink or not a plain directory, so uninstall does not touch it"
 )
 
-// rmdir refuses a non-empty directory, so what arrives after the check is kept.
+// rmdir refuses a non-empty or non-directory path, so what arrives or replaces it is kept.
 func removeLocalPathDir(w io.Writer, fx *hostEffects) error {
 	dir := fx.localPathDir
 	if dir == "" {

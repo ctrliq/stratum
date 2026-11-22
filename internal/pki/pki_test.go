@@ -1244,7 +1244,7 @@ func TestCertWriteFailureLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-// The real writer renames the file into place and then reports ErrNotDurable.
+// Renames into place, then ErrNotDurable; writeSeams is global, so these tests never parallel.
 func failDirSync(t *testing.T) {
 	t.Helper()
 	writeSeams = atomicfile.Seams{SyncDir: func(string) error { return syscall.EIO }}

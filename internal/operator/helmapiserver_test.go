@@ -345,7 +345,7 @@ func waitChart(t *testing.T, files map[string]string) string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-// kube-system is the only privileged namespace here; elsewhere the install impersonates.
+// Only kube-system is privileged; elsewhere a requester stamp must be set or the install refuses.
 func installAgainst(t *testing.T, api *fakeAPIServer, ns string, files map[string]string, requester *requesterInfo) (phase, message string) {
 	t.Helper()
 	kubeconfig := api.start(t)

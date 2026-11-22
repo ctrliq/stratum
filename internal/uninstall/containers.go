@@ -67,7 +67,7 @@ func stopPods(w io.Writer, fx *hostEffects, undo *teardownUndo, status map[strin
 	if fx.hostProcessRunning == nil {
 		return unsetEffect("hostProcessRunning")
 	}
-	// A kubelet in restart backoff is not running but would come back mid-teardown.
+	// A backoff kubelet returns mid-teardown; stop it before containerd starts, or it recreates pods.
 	kubeletLive, err := fx.hostProcessRunning("kubelet")
 	if err != nil {
 		return fmt.Errorf("check for a running kubelet: %w", err)
@@ -83,7 +83,7 @@ func stopPods(w io.Writer, fx *hostEffects, undo *teardownUndo, status map[strin
 		}
 	}
 	if !status["containerd"].Running {
-		// A refused uninstall leaves shims holding containers; containerd is started again to stop them.
+		// A refused uninstall leaves shims holding containers; a restarted containerd reattaches to them.
 		shims, err := fx.hostProcessRunning("runtime-shim")
 		if err != nil {
 			return fmt.Errorf("check for runtime shims: %w", err)
@@ -134,7 +134,7 @@ func startContainerd(fx *hostEffects) error {
 	}
 }
 
-// The supervisor's stop only signals, so the stop waits for the process to be gone.
+// The stop only signals, so the process is waited out; a failed ask is no failure once it is gone.
 func stopContainerd(fx *hostEffects) error {
 	if fx.stopSupervisedUnit == nil {
 		return unsetEffect("stopSupervisedUnit")
@@ -162,7 +162,7 @@ func stopContainerd(fx *hostEffects) error {
 	}
 }
 
-// Read into memory because the state dir holding the kubelet credential is removed first.
+// Kubelet's credential may annotate its own Node; held in memory because the state dir goes first.
 func kubeletNodeMarker() (func(host string, at time.Time) error, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", filepath.Join(version.KubeconfigDir, "kubelet.kubeconfig"))
 	if err != nil {
@@ -186,7 +186,7 @@ func kubeletNodeMarker() (func(host string, at time.Time) error, error) {
 	}, nil
 }
 
-// Every call is bounded: a wedged containerd would hang the uninstall with the node half torn down.
+// Bounded: a wedge would hang a half-torn-down node; only Stratum's containerd, never a host one.
 func runCtr(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ctrTimeout)
 	defer cancel()
@@ -399,7 +399,7 @@ func taskStatuses(out string) map[string]string {
 	return st
 }
 
-// ctr failing to reach containerd at all says "no such file or directory", which is not gone.
+// "ttrpc: closed" is the shim exiting, the asked outcome; "no such file or directory" is not gone.
 func taskGone(err error) bool {
 	return taskNotFound(err) || strings.Contains(strings.ToLower(err.Error()), "ttrpc: closed")
 }
@@ -408,7 +408,7 @@ func taskNotFound(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
-// The supervisor's stop only signals, so a still-shutting-down containerd needs this wait.
+// The stop only signals, so containerd is waited out; shims exit once their sandbox is removed.
 func waitHostExit(fx *hostEffects) {
 	waitGone(fx, units, hostExitWait)
 	waitGone(fx, []string{"runtime-shim"}, shimExitWait)

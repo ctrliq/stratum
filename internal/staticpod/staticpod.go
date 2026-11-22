@@ -28,7 +28,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// kubelet recreates a static pod whenever its manifest content changes.
+// kubelet recreates a pod on a content change; the annotation is the one field free to change.
 const RestartedAtAnnotation = "stratum.ciq.com/restarted-at"
 
 // Dir is the kubelet staticPodPath (prepare.go points kubelet.conf here).
@@ -135,7 +135,7 @@ func derivedFiles() map[string]string {
 	}
 }
 
-// the set lands complete or not at all, staged beside dir and renamed once complete.
+// the set lands complete or not at all; a snapshot already at dir is not retaken, so check first.
 func Snapshot(dir string) error {
 	entries, err := os.ReadDir(Dir())
 	if err != nil {
@@ -200,7 +200,7 @@ func Snapshot(dir string) error {
 	return nil
 }
 
-// puts a snapshot's manifest set back where the render keeps it.
+// puts the manifest set back; sweep reports go on w, not stdout, which may be a protocol stream.
 func RestoreSnapshot(w io.Writer, dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -289,7 +289,7 @@ func Restart(name string) error {
 	return write(name, st, time.Now().UTC().Format(time.RFC3339Nano))
 }
 
-// restarts by bumping the annotation on the manifest as it is on disk, not re-rendering.
+// restarts the manifest on disk: a re-render takes images from this binary, not the rollback's.
 func RestartAsIs(name string) error {
 	b, err := os.ReadFile(Path(name))
 	if err != nil {
@@ -342,7 +342,7 @@ func Stop(name string, timeout time.Duration) error {
 	return fmt.Errorf("static pod %s process still present after %v", name, timeout)
 }
 
-// unlike Active, it covers a listener already closed during shutdown, and kube-vip.
+// unlike Active, it covers a listener closed during shutdown and kube-vip; an error means unknown.
 func Running(name string) (bool, error) {
 	gone, err := processGone(name)
 	return !gone, err
@@ -372,7 +372,7 @@ func PIDs(name string) ([]int, error) {
 // a point in time on the node's boot clock, the clock process start times use.
 type Mark struct{ ticks uint64 }
 
-// the kernel's USER_HZ, the unit of process start times.
+// the kernel's USER_HZ, the unit of process start times; Linux fixes it at 100 for user space.
 const clockTicks = 100
 
 // Now marks the current time on the boot clock.
@@ -389,7 +389,7 @@ func Now() (Mark, error) {
 	return Mark{ticks: uint64(secs * clockTicks)}, nil
 }
 
-// StartTicks is when process pid started, in clock ticks since boot.
+// StartTicks is when process pid started, in clock ticks since boot (stat's 22nd field).
 func StartTicks(pid int) (uint64, bool, error) {
 	b, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 	if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
@@ -398,7 +398,7 @@ func StartTicks(pid int) (uint64, bool, error) {
 	if err != nil {
 		return 0, false, fmt.Errorf("read /proc/%d/stat: %w", pid, err)
 	}
-	// the command name is in parentheses and may hold spaces; the start time is the 22nd field.
+	// the command name is in parentheses and may hold spaces; the fields after it start at the third.
 	end := strings.LastIndexByte(string(b), ')')
 	fields := strings.Fields(string(b)[end+1:])
 	if end < 0 || len(fields) < 20 {

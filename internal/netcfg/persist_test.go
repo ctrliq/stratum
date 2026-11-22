@@ -60,7 +60,7 @@ func TestSaveFailureLeavesNoTempFile(t *testing.T) {
 	}
 }
 
-// A damaged netconfig stops the node: the error says to restore it, not remove it.
+// A damaged netconfig stops the node: only a controller start restores the CIDRs without it.
 func TestLoadDamagedFileNamesIt(t *testing.T) {
 	for name, content := range map[string]string{
 		"empty":          "",

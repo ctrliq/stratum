@@ -159,7 +159,7 @@ func (f *fakeFirewalld) added() int {
 	return n
 }
 
-// Captures stdout even if fn fails the test, and returns what was printed.
+// Returns what was printed; stdout is restored even if fn fails the test.
 func quiet(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout

@@ -15,7 +15,7 @@ import (
 // The generateName the SPA's NodeShell pod uses.
 const nodeShellPrefix = "stratum-node-shell-"
 
-// Judges a Job by its pod template and a PATCH like a POST (server-side apply creates).
+// Pod/Job creates and prefixed exec only; a hostPID DaemonSet is the caller's RBAC, as via kubectl.
 func (p *proxy) checkNodeShell(w http.ResponseWriter, r *http.Request, path string) bool {
 	if p.nodeShell {
 		return false
@@ -144,7 +144,7 @@ func gatedPodFrom(r *http.Request, body []byte) (gatedPod, error) {
 	return pod, errors.New("unsupported patch content type " + mediaType)
 }
 
-// The apiserver applies RFC 6901 unescaping, so a raw match would let /spec~1hostPID through.
+// Unescape ~1 before ~0 (RFC 6901); a raw match would let /spec~1hostPID through.
 func unescapeJSONPointer(p string) string {
 	p = strings.ReplaceAll(p, "~1", "/")
 	return strings.ReplaceAll(p, "~0", "~")

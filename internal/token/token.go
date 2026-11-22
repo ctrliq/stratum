@@ -48,7 +48,7 @@ func randStr(n int) string {
 // Lifetime of a fresh bootstrap token; tokencleaner reaps the Secret once it elapses.
 const DefaultTokenTTL = 24 * time.Hour
 
-// Rendered and re-parsed with the controller's layout, so a bad value fails at mint time.
+// Renders and re-parses with the controller's layout; ttl<=0 omits the key: never expires.
 func bootstrapExpiration(now time.Time, ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		return "", nil
@@ -112,7 +112,7 @@ func RepinCAWith(ctx context.Context, cs kubernetes.Interface) error {
 	return ensureClusterInfo(ctx, cs, server, nil)
 }
 
-// Mints a token and all join setup; confirm is the caller's maintenance-lease recheck.
+// Mints a token and all join setup; confirm is the caller's lease recheck; ttl<=0 never expires.
 func Create(w io.Writer, cs kubernetes.Interface, serverURL string, ttl time.Duration, controlPlane bool, confirm func(context.Context) error) (string, string, *metav1.OwnerReference, error) {
 	ctx := context.Background()
 	id, secret := randStr(6), randStr(16)
@@ -214,7 +214,7 @@ func RevokeOnFailure(tokenStr string, cause error) error {
 	return revokeTokenBounded(cs.CoreV1().Secrets("kube-system"), tokenStr, cause)
 }
 
-// Bounded: the rollback talks to the same wedged apiserver that failed the caller.
+// Bounded: the likely trigger is a wedged apiserver, and the rollback talks to it again.
 func revokeTokenBounded(secrets secretAPI, tokenStr string, cause error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), waitForSigningTimeout)
 	defer cancel()

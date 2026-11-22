@@ -27,7 +27,7 @@ func atomicfileSeams() atomicfile.Seams {
 	}
 }
 
-// a profile that declares an AdmissionConfiguration file is the base the plugins merge into.
+// reuses the front-proxy identity: tenants cannot mint it and CA rotation renews it.
 func writeWebhookAuth(p profile.Profile) error {
 	config := map[string]interface{}{"apiVersion": "apiserver.config.k8s.io/v1", "kind": "AdmissionConfiguration"}
 	if f, ok := p.AdmissionFile(); ok {

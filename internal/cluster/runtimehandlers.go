@@ -39,7 +39,7 @@ var (
 	restartContainerd     = runtime.RestartContainerd
 )
 
-// ApplyRuntimeHandlers saves node.yaml only once the drop-in lands: a failed write names nothing.
+// ApplyRuntimeHandlers saves node.yaml only once the drop-in lands; the lock spans read to relabel.
 func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResult, error) {
 	if o.Clear && o.Handlers != nil {
 		return RuntimeApplyResult{}, errors.New("--clear and --runtime-handler cannot be combined")

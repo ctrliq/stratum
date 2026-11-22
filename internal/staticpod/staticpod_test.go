@@ -139,7 +139,7 @@ func TestEtcdMembershipRerenders(t *testing.T) {
 	}
 }
 
-// bootstrapsigner is off by default; without it every join fails closed at DiscoverCA.
+// asserted on the rendered manifest, not the constant: nothing rendering it is the failure.
 func TestControllerManagerEnablesBootstrapSigner(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -845,7 +845,7 @@ func TestSigningFlagsFollowTheSigner(t *testing.T) {
 	}
 }
 
-// the CIS flags must be exactly the profile's, spliced before a flag every render carries.
+// apiserverArgs builds argv only; fixed literals keep it independent of earlier tests' redirects.
 func TestAPIServerCISFlagsAreExactlyTheProfile(t *testing.T) {
 	oldAudit, oldLog, oldEncryption, oldConf, oldLogDir := version.AuditPolicyPath, version.AuditLogPath, version.EncryptionConfigPath, version.K8sConfDir, version.AuditLogDir
 	t.Cleanup(func() {
@@ -973,7 +973,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	if err := WriteAll(st); err != nil {
 		t.Fatal(err)
 	}
-	// files the CIS config writer owns rather than the render.
+	// files the CIS config writer owns: they ride its backup, never the manifest set.
 	for name, body := range map[string]string{
 		"admission-config.yaml": "admission config\n",
 		"audit-policy.yaml":     "audit policy\n",

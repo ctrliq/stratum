@@ -257,7 +257,7 @@ func JoinState(cpIP string) (members int, bundle bool, err error) {
 	return len(ml.Members), got.Count > 0, nil
 }
 
-// Outside the certs- grant prefix, or the grant prune would drop the proof.
+// Sealed under the at-rest key, never a forgeable annotation; off certs- so the prune spares it.
 const encryptionKeyProofEntry = "encryption-key-proof"
 
 // Answers from the Secret the API serves, not its etcd key; an unopenable proof means unkeyed.
@@ -620,7 +620,7 @@ func memberPromote(id uint64, cpIPs ...string) error {
 	return nil
 }
 
-// A landed promote returns isMemberNotLearner, so an indeterminate answer is retried.
+// A landed promote returns isMemberNotLearner; ErrUnhealthy absent: etcd never answers one with it.
 func isPromoteNotYet(err error) bool {
 	if err == nil {
 		return false

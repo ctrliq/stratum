@@ -119,7 +119,7 @@ func goCommand(t buildTarget, arch string, args ...string) ([]byte, error) {
 
 // A package that fails to load is an error: dropped, it would pass the check silently.
 func loadLinked(t buildTarget, patterns []string, stderr io.Writer) (map[string]*linkedPackage, error) {
-	// -buildvcs=false: a stray VCS directory above t.dir, a junk .git in TMPDIR, fails the load.
+	// -buildvcs=false: a stray VCS directory above t.dir, a junk .git in TMPDIR, would fail the load.
 	args := []string{"list", "-e", "-deps", "-json", "-buildvcs=false"}
 	if t.tags != "" {
 		args = append(args, "-tags="+t.tags)
@@ -311,7 +311,7 @@ func (fc *fileClassifier) fileVerdict(p *linkedPackage) (verdict, error) {
 // classifierNames maps the classifier's license names that differ from the SPDX id.
 var classifierNames = map[string]string{"BSD-0-Clause": "0BSD"}
 
-// minConfidence: 0.95 for full texts (an altered BSD-3-Clause scores 0.88), 0.9 for notices.
+// Altered BSD-3-Clause scores 0.88; the Apache-2.0 notice's placeholder caps real notices at 0.93.
 var minConfidence = map[string]float64{"License": 0.95, "Header": 0.9}
 
 // A match below its minConfidence identifies no license; classify describes it instead.
@@ -382,7 +382,7 @@ var noticeWords = map[string]bool{
 	"its": true, "authors": true, "contributors": true, "all": true, "rights": true, "reserved": true,
 }
 
-// A bare copyright notice: every lowercase word is in noticeWords.
+// A bare copyright notice: every lowercase word is in noticeWords; Title Case terms still pass.
 func copyrightNotice(line string) bool {
 	if !copyrightLine.MatchString(line) {
 		return false

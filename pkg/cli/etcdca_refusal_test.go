@@ -11,7 +11,7 @@ import (
 
 // Resolves each pinned refusal invocation against the real cobra tree, flags included.
 func TestRefusalCommandsResolveThroughTheCommandTree(t *testing.T) {
-	// Every operator-facing invocation a refusal prints, plus each per-node Job's argv.
+	// Every invocation a refusal prints, plus per-node Job argv; adding either means adding it here.
 	for _, invocation := range []string{
 		pki.EtcdMigrateCommand + " --cluster --rollback --force --yes",
 		pki.EtcdMigrateCommand + " --cluster --resume --yes",

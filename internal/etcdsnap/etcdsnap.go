@@ -44,7 +44,7 @@ func etcdctl() string { return filepath.Join(version.BinDir, "etcdctl") }
 // etcdutl holds snapshot restore since etcd 3.6; etcdctl snapshot has only save.
 func etcdutl() string { return filepath.Join(version.BinDir, "etcdutl") }
 
-// DefaultSnapshotPath returns a timestamped pre-upgrade snapshot path.
+// DefaultSnapshotPath returns a timestamped pre-upgrade snapshot path; ts must be a UTC stamp.
 func DefaultSnapshotPath(ts string) string {
 	return filepath.Join(defaultSnapshotDir, "pre-upgrade-"+ts+".db")
 }
@@ -182,7 +182,7 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	return path, uploadErr
 }
 
-// PruneScheduled keeps the newest `keep` snapshots locally and in S3, one error per failed target.
+// PruneScheduled keeps `host`'s newest `keep` snapshots, local+S3; one error per failed target.
 func PruneScheduled(dir, host string, keep int, s3 *objstore.Target) []error {
 	return PruneScheduledContext(context.Background(), dir, host, keep, s3)
 }
@@ -205,7 +205,7 @@ func PruneScheduledContext(ctx context.Context, dir, host string, keep int, s3 *
 	return errs
 }
 
-// snapshot-evidence.yaml is the file contract with internal/backupevidence, which cannot import it.
+// snapshot-evidence.yaml is the contract with internal/backupevidence; etcdsnap cannot import it.
 
 // evidenceSchemaVersion is the record's schema version, pinned in lockstep with the reader.
 const evidenceSchemaVersion = 1
@@ -467,7 +467,7 @@ type RestoreOptions struct {
 	PeerURL        string // https://<nodeIP>:2380
 	InitialCluster string // "<name>=<peerURL>"
 	Stamp          string // UTC stamp for the moved-aside data dir
-	// NodeLockHeld says the caller holds the maintenance lock, so Restore skips the acquire.
+	// NodeLockHeld says the caller holds the maintenance lock; Restore still takes the data lock.
 	NodeLockHeld bool
 }
 
@@ -1001,7 +1001,7 @@ func restoreArgs(o RestoreOptions, token, dataDir string) []string {
 	}
 }
 
-// Restore stops apiserver and etcd, restores into a fresh data dir, and rolls back on failure.
+// Restore restores a snapshot; rolls back only until etcd runs; not for live multi-member clusters.
 func Restore(w io.Writer, o RestoreOptions) error {
 	// One value per call, wired inline, so no stub lingers as a package variable.
 	fx := &restoreEffects{

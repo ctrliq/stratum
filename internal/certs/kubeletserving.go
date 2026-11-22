@@ -37,7 +37,7 @@ func kubeletServingCertPath() string {
 	return filepath.Join(filepath.Dir(kubeletClientCertPath()), pki.KubeletServingCurrent)
 }
 
-// Refuses when the node state is unreadable rather than guess a static leaf.
+// A static serving leaf is reissued by leaf rotation; unreadable state refuses rather than guess.
 var kubeletBootstrapsServing = func() (bool, error) {
 	st, err := nodestate.LoadState()
 	if err != nil {

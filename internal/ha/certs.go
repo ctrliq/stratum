@@ -114,7 +114,7 @@ func pkiTrustNames(class pki.TrustFileClass) []string {
 // Byte-identical everywhere; a joining CP without the etcd CA mints a divergent anchor.
 var sharedCerts = pkiTrustNames(pki.TrustShared)
 
-// Optional, so a joiner mid-rotation receives the same in-flight trust state.
+// Optional except split clusters' kubelet-client files; netconfig/cilium.json are cluster config.
 var rotationCerts = append(pkiTrustNames(pki.TrustRotation),
 	netconfigEntry,
 	ciliumSettingsEntry,
@@ -164,7 +164,7 @@ func carriedSecrets(files map[string][]byte, secrets map[string]bool) []string {
 	return out
 }
 
-// Entry names become PKI filenames; an unvalidated name could write anywhere as root.
+// A separate pass: in the write loop a rejected blob would leave a random subset written.
 func checkCertNames(dir string, files map[string][]byte) error {
 	secrets, err := profileSecretEntries()
 	if err != nil {

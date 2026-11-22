@@ -1,4 +1,4 @@
-// Package apparmor manages the runc profile under kernel.apparmor_restrict_unprivileged_unconfined.
+// Package apparmor: name runc for containerd's signals; stdin, not /etc/apparmor.d, avoids races.
 package apparmor
 
 import (

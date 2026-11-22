@@ -41,7 +41,7 @@ var rejoinSeedMembers = memberList
 var rejoinHostname = host.Hostname
 var rejoinNodeIP = nodestate.NodeIP
 
-// asks the seed alone: a survivor without quorum answers nothing, so its own etcd is not read
+// asks the seed alone: a survivor without quorum answers nothing; a different member is the repair
 var rejoinSeedIsThisNode = func(cp1IP string, own []string) (bool, error) {
 	cli, err := etcdClient(cp1IP)
 	if err != nil {
@@ -142,7 +142,7 @@ var (
 	rejoinAddLearner   = memberAddLearner
 	rejoinRemoveMember = memberRemoveID
 	rejoinPromote      = memberPromote
-	// the data lock's release; reacquiring would refuse against the rejoin's own descriptor
+	// the data lock's release; reacquiring would refuse, and the lone rejoin needs only one capability
 	rejoinHeldLock func()
 	// the record was read under the data lock still held, so nothing can have changed it
 	rejoinSaveState = func(st *nodestate.NodeState) error {
@@ -181,7 +181,7 @@ func etcdDataMarkNow() etcdDataMark {
 	return m
 }
 
-// the wait follows progress, not a clock: a flat budget fails a slow converging member
+// gives up only on no progress for rejoinStallTimeout; rejoinMaxWait just ends what never converges
 var (
 	rejoinStallTimeout = 5 * time.Minute
 	rejoinMaxWait      = 30 * time.Minute
@@ -318,7 +318,7 @@ func rejoinRerun(cp1IP string, learner bool) string {
 		"written since the last restore, then rejoin the other control planes"
 }
 
-// Re-adds this control plane's etcd member to the restored cluster; safe to re-run.
+// Re-adds this control plane's etcd to the restored cluster; --force lifts the quorum-wipe refusal.
 func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) error {
 	hostname, err := rejoinHostname()
 	if err != nil {
@@ -375,7 +375,7 @@ func RejoinEtcd(ctx context.Context, w io.Writer, cp1IP string, force bool) erro
 	if err := rejoinPKIPreflight(); err != nil {
 		return fmt.Errorf("rejoin: etcd trust material: %w", err)
 	}
-	// the wipe destroys this node's data, so an unreachable seed must fail before it
+	// an unreachable seed must fail before the wipe; MemberList uses the certs every change below does
 	k8sutil.Step(w, "rejoin: reach the seed before touching local state")
 	seed, err := rejoinSeedMembers(cp1IP)
 	if err != nil {

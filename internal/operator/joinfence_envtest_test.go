@@ -1,6 +1,6 @@
 package operator
 
-// RBAC cannot restrict a create by name, so the fence policy is a security control.
+// A join token prints on stdout; the Role alone would let its holder squat any kube-system Lease.
 
 import (
 	"errors"
@@ -139,7 +139,7 @@ func TestJoinTokenHoldsOnlyItsOwnMaintenanceFence(t *testing.T) {
 		}
 		secs := int32(maintlease.Duration / time.Second)
 		fenceSeed(t, admin, fenceLease(fenceCommon, "controller/active/1", &secs, time.Now()))
-		// The Role cache may lag, so poll until GET stops returning Forbidden.
+		// Poll until the Role cache grants GET, so the later denials are the policy's, not an RBAC refusal.
 		deadline := time.Now().Add(10 * time.Second)
 		for {
 			_, err = worker.CoordinationV1().Leases(fenceNS).Get(ctx, fenceCommon, metav1.GetOptions{})

@@ -21,7 +21,7 @@ const (
 // The kubelet's clientCAFile.
 func KubeletClientBundlePath() string { return bundleCrtPath(KubeletClientBundleBase) }
 
-// A missing bundle is split where KubeletClientCAName is on disk; unreadable there is an error.
+// With KubeletClientCAName on disk: missing split, unreadable an error; elsewhere both not split.
 func KubeletClientSplit() (bool, error) {
 	if _, err := os.Stat(KubeletClientBundlePath()); errors.Is(err, os.ErrNotExist) {
 		return fileExists(path(KubeletClientCAName, "crt")), nil

@@ -25,12 +25,12 @@ const (
 	k8sPrefix = "/k8s"
 )
 
-// Never travel to the apiserver; Authorization is replaced with the session's own token.
+// Never travel to the apiserver; Forwarded values would spoof apiserver audit metadata.
 var scrubbedRequestHeaders = []string{
 	"Cookie", "Authorization", csrfHeader, "Forwarded",
 }
 
-// Impersonate-Extra-<key> is an open family no fixed list can cover; X-Forwarded- likewise.
+// Open families; the apiserver honours a forwarded Impersonate- where the token may impersonate.
 var scrubbedRequestHeaderPrefixes = []string{"Impersonate-", "X-Forwarded-"}
 
 type target struct {
@@ -108,7 +108,7 @@ func rewriteRequest(out *http.Request, prefix string, t target) {
 	}
 }
 
-// GET only: a caller must not lift the deadline with an Upgrade header or ?follow=.
+// GET only: every stream the dashboard opens is a GET; otherwise a caller could lift the deadline.
 func isStreaming(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false

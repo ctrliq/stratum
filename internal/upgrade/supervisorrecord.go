@@ -22,7 +22,7 @@ var (
 	}
 )
 
-// Only asking tells it cannot be replaced, and its answer cannot change, so a rerun trusts this.
+// Only asking can tell, and the answer cannot change; Start stops a reused pid inheriting it.
 type unreplaceableSupervisor struct {
 	PID   int    `json:"pid"`
 	Start uint64 `json:"start"`

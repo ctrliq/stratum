@@ -24,7 +24,7 @@ const (
 	leaderLockName = k8sutil.OperatorLeaseName
 )
 
-// runLeaderElected blocks while campaigning; run must return when its ctx is cancelled.
+// Blocks while campaigning; run must return when its ctx is cancelled: leadership loss cancels it.
 func runLeaderElected(ctx context.Context, cfg *rest.Config, id string, run func(context.Context)) error {
 	client, err := kubernetes.NewForConfig(cfg)
 	if err != nil {

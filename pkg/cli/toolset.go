@@ -63,7 +63,7 @@ type Registrar struct {
 	// byName makes a second claim on a name an error, not a shadowing.
 	byName map[string]bool
 
-	// records which Kubernetes credential each admitted tool reaches the API with
+	// A credential per admitted catalog tool and per destructive node tool; AddTool records none.
 	credentials map[string]string
 
 	nodeConn *kube.Connector

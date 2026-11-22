@@ -9,7 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/host"
 )
 
-// NodeIP returns the primary IP the node was brought up with, or the $NODE_IP primary.
+// NodeIP is the recorded primary for a running node; re-detecting can pick the default-route NIC.
 func NodeIP() (string, error) {
 	st, err := LoadState()
 	if errors.Is(err, fs.ErrNotExist) {

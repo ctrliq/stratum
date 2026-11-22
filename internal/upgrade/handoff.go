@@ -44,7 +44,7 @@ func requireRunningFrom(from string) error {
 	return nil
 }
 
-// Execs the staged binary when --from is not this binary: manifests come from the executing build.
+// Execs the staged binary and never returns on success; args is the command line after argv[0].
 func HandOff(w io.Writer, from string, args []string, readOnly bool) error {
 	if from == "" {
 		return nil

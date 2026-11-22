@@ -92,7 +92,7 @@ func TestKubeletOnStartRestampsOnKubeletOnly(t *testing.T) {
 		hostnames <- h
 	}, nil)
 
-	// Non-kubelet starts come first: the single-flight guard would absorb a wrongly restamping one.
+	// Non-kubelet starts go first, nothing in flight, or the guard absorbs a wrongly restamping one.
 	onStart("containerd", 1)
 	onStart("operator", 1)
 	time.Sleep(50 * time.Millisecond) // an erroneous restamp would land by now
@@ -111,7 +111,7 @@ func TestKubeletOnStartRestampsOnKubeletOnly(t *testing.T) {
 	}
 }
 
-// A crash-looping kubelet must not pile up restamps; overlapping starts share the one in flight.
+// A crash-looping kubelet cannot pile up restamps; a start after the in-flight one restamps again.
 func TestKubeletOnStartSingleFlight(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -150,7 +150,7 @@ func TestKubeletOnStartSingleFlight(t *testing.T) {
 	}
 
 	release <- struct{}{}
-	// A start landing just after restamp returns is dropped by the guard, so retry until one runs.
+	// The guard clears after restamp returns; a start in the gap is dropped, so retry until one runs.
 	deadline := time.After(5 * time.Second)
 	for count() < 2 {
 		onStart("kubelet", 4)
@@ -166,7 +166,7 @@ func TestKubeletOnStartSingleFlight(t *testing.T) {
 	}
 }
 
-// A containerd restart may load a handler an apply wrote without a kubelet start following.
+// Every containerd start relabels, nothing else does: a restart may load a handler an apply wrote.
 func TestContainerdStartsRelabelInBothRoles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

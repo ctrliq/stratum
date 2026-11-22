@@ -31,9 +31,9 @@ const (
 
 // Options configure a Connector; the zero value is usable.
 type Options struct {
-	// Kubeconfig is an explicit path; empty means auto-detect.
+	// Kubeconfig is an explicit path overriding $KUBECONFIG and ~/.kube/config; empty auto-detects.
 	Kubeconfig string
-	// KubeconfigPath selects a credential on every resolution; missing or empty is a hard error.
+	// KubeconfigPath selects a credential on every resolution; empty or missing errors; no fallback.
 	KubeconfigPath func() string
 
 	// Context selects a kubeconfig context; empty means the file's current-context.
@@ -44,7 +44,7 @@ type Options struct {
 
 	Timeout time.Duration
 
-	// MaxResponseBytes caps one response body; negative disables the cap.
+	// MaxResponseBytes caps one response body; zero means DefaultMaxResponseBytes, negative disables.
 	MaxResponseBytes int64
 
 	QPS   float32
@@ -96,7 +96,7 @@ type Cluster struct {
 	ConfigPath  string
 	Host        string
 
-	// Revalidated by the connector before reuse; in-cluster digests empty.
+	// digest covers every source and referenced credential; revalidated before reuse; in-cluster empty.
 	digest string
 
 	refreshMu   sync.Mutex
@@ -217,7 +217,7 @@ func (c *Connector) cluster(name string) (*Cluster, error) {
 	return cl, nil
 }
 
-// One-shot: callers that may rewrite credentials cannot say whether they did.
+// One-shot: callers that may rewrite credentials cannot say if they did; held clusters never mutate
 func (c *Connector) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -247,7 +247,7 @@ func (c *Connector) ReloadCluster(name string) (*Cluster, error) {
 
 func (c *Connector) connect(name string, r *resolved) (*Cluster, error) {
 	cfg := rest.CopyConfig(r.rest)
-	// Snapshot TLS files before any client: client-go caches transports by config.
+	// Snapshot TLS files first: client-go caches transports by config; in-cluster reloads natively.
 	if r.source != SourceInCluster {
 		if err := rest.LoadTLSFiles(cfg); err != nil {
 			return nil, fmt.Errorf("load TLS credentials: %w", err)

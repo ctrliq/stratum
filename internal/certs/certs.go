@@ -1,4 +1,4 @@
-// Package certs rotates a node's control-plane leaf certificates, not the cluster CAs.
+// Package certs checks expiry and rotates node leaf certificates and the cluster CAs.
 package certs
 
 import (
@@ -65,7 +65,7 @@ func incompleteRotationPath() string {
 // Marker for a rotation begun from expired leaves; its retry keeps the expired-leaf path.
 const incompleteRotationExpired = "expired"
 
-// IncompleteRotation reports whether a rotation is incomplete and began expired.
+// IncompleteRotation reports incomplete and expired; an unreadable marker still counts as present.
 func IncompleteRotation() (present, expired bool) {
 	if _, err := os.Lstat(incompleteRotationPath()); errors.Is(err, fs.ErrNotExist) {
 		return false, false
@@ -119,14 +119,14 @@ type Options struct {
 	WarnDays       int  // window for the "expiring" flag in Check (default version.CertRenewWindowDays)
 	Quiet          bool // suppress the per-step step logs (timer path)
 
-	// The caller already holds the node lock; a same-process second Acquire hits its own fence.
+	// Caller holds the node lock and the cluster fence for the whole call and releases them itself.
 	NodeLockHeld bool
 
 	// Fails the rotation when the kube-vip restart is unconfirmed, not best-effort.
 	KubeVipRequired bool
 }
 
-// warnDays is the window behind Check's "expiring" flag; a caller's WarnDays wins.
+// The window behind "expiring"; a caller's positive WarnDays wins, else the timer's renewal window.
 func warnDays(o Options) int {
 	if o.WarnDays > 0 {
 		return o.WarnDays
@@ -251,7 +251,7 @@ func SubjectDrift() ([]string, error) {
 	return subjectDrift(hostname, nodeIP)
 }
 
-// RotateContext reissues the leaves, rewrites kubeconfigs and restarts the units, bounded by ctx.
+// Reissues leaves, rewrites kubeconfigs, restarts units; the bool says if anything was reissued.
 func RotateContext(ctx context.Context, w io.Writer, o Options) (bool, error) {
 	// A negative window would read as a forced run below and reissue every leaf without consent.
 	if o.IfExpiringDays < 0 {
@@ -401,7 +401,7 @@ func restartControlPlane(w io.Writer) error {
 	return err
 }
 
-// Takes pod operations explicitly so restart failures can be tested without a live control plane.
+// Takes pod ops for tests; allRestarted is false with nil error when a best-effort restart failed.
 func restartControlPlaneGuarded(w io.Writer, restartPod, waitPod func(string) error, confirm func(string) error, kubeVipRequired bool) (allRestarted bool, err error) {
 	var failures []error
 	allRestarted = true
@@ -509,7 +509,7 @@ const (
 	downWindowWait  = 30 * time.Second
 )
 
-// etcd's longer budget covers kubelet noticing the manifest and mounting volumes before it starts.
+// A ceiling, not a delay; etcd's covers kubelet noticing the manifest and mounting volumes.
 func serveBudget(name string) time.Duration {
 	if name == "etcd" {
 		return 5 * time.Minute

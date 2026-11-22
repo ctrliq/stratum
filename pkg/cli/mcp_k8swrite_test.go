@@ -1365,7 +1365,7 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// the provisioner makes hostPath PVs for every claim, so this must keep applying.
+	// the provisioner makes hostPath PVs; the explicit class keeps the node-path PV from matching.
 	t.Run("a StatefulSet on a provisioned class is applied", func(t *testing.T) {
 		s.createNodePathPV(t, "np-provisioned")
 
@@ -1444,7 +1444,7 @@ func TestApplyChecksTheObjectAlreadyThere(t *testing.T) {
 		t.Errorf("error %q does not say the retained secret volume is why", msg)
 	}
 
-	// SSA keeps the retained claim template, so a scale-up apply must refuse too.
+	// SSA keeps the retained template; a scale-up is refused only while a node-path PV could take one.
 	t.Run("a retained claim template on the stored object is refused", func(t *testing.T) {
 		s.createNodePathPV(t, "np-retained")
 		emptyClass := ""

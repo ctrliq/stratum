@@ -23,7 +23,7 @@ type waitRecorder struct {
 	strategies []kube.WaitStrategy
 }
 
-// recordWaits puts a waitRecorder in front of h's Kubernetes client.
+// Wraps the one Kubernetes client every action config shares, so every waiter is recorded.
 func recordWaits(h *fakeHelm) *waitRecorder {
 	rec := &waitRecorder{Interface: h.cfg.KubeClient}
 	h.cfg.KubeClient = rec

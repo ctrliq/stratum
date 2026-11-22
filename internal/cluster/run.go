@@ -57,7 +57,7 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampl
 	if err := writeCoreDNSUpstream(st); err != nil {
 		return fmt.Errorf("write the CoreDNS upstream: %w", err)
 	}
-	// before supervisor.Run: upgrade treats an answering supervisor as proof this write is done
+	// before supervisor.Run: upgrade and rollback treat a live supervisor as proof this write is done
 	if err := staticpod.WriteAll(st); err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func refuseForeignRuntimeClassFiles() error {
 		dir, strings.Join(foreign, ", "), version.ManifestsDir)
 }
 
-// removeStaleBundledFiles deletes bundles the config dropped; writeBundles only rewrites.
+// deletes dropped bundles only under the bundled stacks, never hand-dropped or loose files
 func removeStaleBundledFiles(stacks map[string][]byte) error {
 	for _, stack := range bundledStacks {
 		var files []string
@@ -411,7 +411,7 @@ var (
 		return etcdsnap.SaveContext(ctx, os.Stdout, opts)
 	}
 
-	// the node-registered task holds the tree's one registration wait and give-up budget
+	// the controller's one registration wait and give-up budget; no second controller wait or give-up
 	nodeRegistrationInterval = 3 * time.Second
 	nodeRegistrationGiveUp   = 10 * time.Minute
 	nodeRegistered           = func(ctx context.Context, hostname string) bool {
@@ -728,7 +728,7 @@ func leafSubjectMigrationMarker() string {
 	return filepath.Join(version.K8sConfDir, "leaf-subject-migration")
 }
 
-// leafSubjectMigration is retried across restarts: a cut-short reissue no longer drifts.
+// retried across restarts: a cut-short reissue leaves no drift, but components still hold old certs
 func leafSubjectMigration(st *NodeState) func(context.Context) error {
 	resumed := false
 	var retryAt time.Time
@@ -996,7 +996,7 @@ func (c *ClusterConfig) SnapshotBase() etcdsnap.Config {
 // defaultSnapshotDir must match etcdsnap's own unexported default save-path fallback.
 const defaultSnapshotDir = "/var/backups/etcd"
 
-// SnapshotDir ignores a dir whose ".." the kernel and filepath.Clean resolve to different places.
+// ignores a relative dir ("-" would read as a flag) and ".." dirs Clean and the kernel disagree on
 func (c *ClusterConfig) SnapshotDir() string {
 	if d := c.Spec.Snapshot.Dir; filepath.IsAbs(d) && !hasParentElem(d) {
 		return filepath.Clean(d)
@@ -1035,7 +1035,7 @@ func warnRelativeSnapshotDir(c *ClusterConfig, prefix string) {
 	}
 }
 
-// recordConfigPath records the default path as empty: readers look there anyway.
+// the default path records as empty; MutateSave re-reads, so a mid-start rejoin is not dropped
 func recordConfigPath(cfg *ClusterConfig, st *NodeState, save func(*NodeState) error) error {
 	if cfg.path == "" {
 		return nil
@@ -1128,7 +1128,7 @@ func (w *tickWarnings) Write(p []byte) (int, error) {
 
 func (w *tickWarnings) recorded() []string { return w.lines }
 
-// snapshotLoop's first save is retried inside a one-interval window; a failed upload ends it.
+// retry the first save for one interval; a failed upload ends it: a retry would prune old snapshots
 func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 	if ctx.Err() != nil {
 		return
@@ -1314,7 +1314,7 @@ func importOperatorImages(ctx context.Context, w, warn io.Writer) {
 	}
 }
 
-// importDropInImages skips a bad archive with a warning: a dropped file must not fail kubelet.
+// skips a bad archive (a dropped file must not fail kubelet); a stamp lands only once pins succeed
 func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 	tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
 	if len(tars) == 0 {
@@ -1442,7 +1442,7 @@ func stampPath(tar string) string {
 
 func stampValue(fi os.FileInfo) string { return runtime.ImportStampValue(fi) }
 
-// payloadImageRows picks the rows to pin: archived names and images under the engine's registry.
+// archived names plus engine-registry images, which catch aliases an earlier start made
 func payloadImageRows(ls string, archived map[string]bool) [][2]string {
 	var rows [][2]string
 	for _, line := range strings.Split(ls, "\n") {
@@ -1457,7 +1457,7 @@ func payloadImageRows(ls string, archived map[string]bool) [][2]string {
 	return rows
 }
 
-// pinPayloadImages registers the digest alias and pins each image against kubelet's GC.
+// the alias serves CRI's name:tag@digest resolution; the pin keeps airgap images off kubelet's GC
 func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string]bool) error {
 	out, err := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "ls").Output()
 	if err != nil {
@@ -1491,7 +1491,7 @@ func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string
 	return nil
 }
 
-// saveCiliumSettings records the Cilium settings for the shared certs to carry to a joining node.
+// default settings leave no file: a joining older binary must not meet an entry it cannot decode
 func saveCiliumSettings(s addons.CiliumSettings) error {
 	if s.IsDefault() {
 		if err := os.Remove(version.CiliumSettingsPath); err != nil && !errors.Is(err, fs.ErrNotExist) {

@@ -43,7 +43,7 @@ type Options struct {
 	PrivilegedNamespaces []string
 	// permits a HelmChart's spec.insecureSkipTLSVerify to be honored. Default false.
 	AllowInsecureHelmRepos bool
-	// empty disables the webhook; the reconcile backstop still refuses unstamped installs.
+	// empty disables the webhook; the reconcile backstop refuses unstamped non-privileged installs.
 	NodeIP        string
 	APIServerVIP  string
 	ClusterDomain string
@@ -270,7 +270,7 @@ func runLeaderLoop(ctx context.Context, interval time.Duration, manifestsSet, le
 					spreadStep(spreadCtx)
 				})
 			}
-			// the elector joins the callback before reporting leadership loss; join the helm loop first.
+			// a delete another operator already made is NotFound.
 			safe(func() {
 				nodesCtx, cancel := context.WithTimeout(ctx, perIterationTimeout)
 				defer cancel()

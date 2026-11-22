@@ -19,7 +19,7 @@ type Workload struct {
 	Targets   []string
 }
 
-// Workloads' watches would point past etcd's restored resourceVersions.
+// Restore rolls them for stale watches, CA rotation for stale credentials; only what Stratum owns.
 var Workloads = []Workload{
 	{"cilium agent + operator", "kube-system", "ds/cilium", []string{"ds/cilium", "deploy/cilium-operator"}},
 	{"coredns", "kube-system", "deploy/coredns", []string{"deploy/coredns"}},

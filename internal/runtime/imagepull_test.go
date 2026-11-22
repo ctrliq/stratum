@@ -139,7 +139,7 @@ func kubeletAllowlist(t *testing.T) []string {
 	return conf.Allowlist
 }
 
-// Importer images sit outside the payload namespace; kubelet would ask the unreachable registry.
+// Importer images sit outside the payload namespace; kubelet would ask the registry for them.
 func TestKubeletConfigExemptsEveryPayloadRepository(t *testing.T) {
 	isolatePayload(t)
 	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
@@ -206,7 +206,7 @@ func TestKubeletConfigSkipsAnUnreadableDropInArchive(t *testing.T) {
 	}
 }
 
-// The exemption covers a whole repository, so an unimported archive exempts nothing.
+// An unimported archive exempts nothing: its whole repository would then be used unverified.
 func TestKubeletConfigExemptsOnlyImportedDropInArchives(t *testing.T) {
 	isolatePayload(t)
 	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"

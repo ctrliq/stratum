@@ -108,7 +108,7 @@ func packageVars(t *testing.T, dir string) map[string]bool {
 					obj, ok := info.Defs[name].(*types.Var)
 					stampable := ok && types.Identical(obj.Type(), types.Typ[types.String])
 					if len(vs.Values) > 0 {
-						// One tuple expression initializes every name.
+						// One tuple expression initializes every name; a later name is call-initialized, not stampable.
 						stampable = stampable && i < len(vs.Values)
 						if stampable {
 							value := info.Types[vs.Values[i]].Value
@@ -162,7 +162,7 @@ func TestLinkStampsReachTheRunningBinary(t *testing.T) {
 			components[fields[0]] = fields[1]
 		}
 	}
-	// Their expectation is the image list's own version, the payload's surface.
+	// kube-vip, cilium and coredns stamp images.txt pins; a make override reaches all but these three.
 	for name, want := range map[string]string{
 		"kubernetes": "1.91.1", "etcd": "3.91.2", "containerd": "2.91.3", "runc": "1.91.4",
 		"kube-vip": imageListVersion(t, "kube-vip"), "cilium": imageListVersion(t, "cilium"),
@@ -307,7 +307,7 @@ func TestLinkStampsNameRealVariables(t *testing.T) {
 		t.Fatalf("parsed no -X flags from %s — the flag grammar no longer matches the Makefile", makefile)
 	}
 
-	// Remember which packages the Makefile addresses, so a parsing regression
+	// Track which packages the Makefile addresses, so a parsing regression fails loudly, not silently.
 	checked := make(map[string]map[string]bool)
 	touched := make(map[string]bool)
 	for _, m := range matches {

@@ -298,7 +298,7 @@ func TestLeaderPassKeepsClusterControllersOnCadenceWhenHelmBlocks(t *testing.T) 
 		defer cancel()
 		started := make(chan struct{})
 		release := make(chan struct{})
-		// keep the ticker beyond the whole pass: the loop may select a pending tick beside cancellation.
+		// snapshot before release and cancel: a pending tick beside cancellation must not skew the pins.
 		helm := rec.newStep(helmStepName, stepOptions{release: release, onRun: func(run int) {
 			if run == 1 {
 				close(started)
@@ -349,7 +349,7 @@ func TestLeaderHelmStepRunsOnItsOwnTickerWhenAClusterControllerBlocks(t *testing
 		defer cancel()
 		started := make(chan struct{})
 		release := make(chan struct{})
-		// snapshot before releasing HelmChart work: shutdown must not satisfy the cadence pins.
+		// snapshot before release and cancel: a pass during shutdown must not satisfy the cadence pins.
 		helm := rec.newStep(helmStepName, stepOptions{})
 		deployer := rec.newStep(deployerStepName, stepOptions{release: release, onRun: func(run int) {
 			if run == 1 {
@@ -528,7 +528,7 @@ func TestLeaderLoopNeverOverlapsHelmChartPasses(t *testing.T) {
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
 		max, runs := rec.maxConcurrent(), rec.runsOf(helmStepName)
-		// only Helm feeds the concurrency recorder: cleanup may overlap Helm without two Helm passes.
+		// only Helm feeds the recorder; snapshot before cancel, or shutdown passes satisfy the runs pin.
 		cancel()
 		<-loopDone
 

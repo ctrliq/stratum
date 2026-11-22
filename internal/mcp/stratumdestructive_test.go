@@ -435,7 +435,7 @@ func TestCertsRotateCARefusesWhatTheCLIRefuses(t *testing.T) {
 func TestCATools_RefuseABadPhaseBeforeTheHostCheck(t *testing.T) {
 	notStratumHost(t)
 
-	// Pinned as literals: a phase list that drops or renames a phase must fail here, not pass.
+	// Pinned as literals, not the exported lists: the error and the assertion share no variable.
 	rotate := []string{"trust-new", "sign-new", "finalize"}
 	migrate := []string{"trust-both", "issue-new", "drop-root", "rollback"}
 	kubelet := []string{"trust-both", "issue-new", "drop-root", "re-add-root", "reissue-root", "remove-ca"}

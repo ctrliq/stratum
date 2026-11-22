@@ -28,7 +28,7 @@ var (
 	evidenceUploadLast = evidenceCreated
 )
 
-// One working node: full policy, two local and two remote artifacts, census, maintenance.
+// One working node, except the old remote copy: it exercises the reserved age fields.
 func engineEvidence() backupevidence.EvidenceResult {
 	const (
 		shared   = "etcd-snapshot-cp-1-20261112-110000.db" // local and remote

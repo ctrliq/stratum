@@ -53,7 +53,7 @@ var (
 
 const scanTokens = "scan-tokens"
 
-// a scan Job restarts the kubelet, so it gets far less time than a phase Job
+// a scan Job restarts the kubelet; deadline and attempts move together: 60 polls at 5s is 5m
 const (
 	scanJobDeadline     = 5 * time.Minute
 	scanJobPollAttempts = 60
@@ -207,7 +207,7 @@ func staleInVolume(ctx context.Context, vol, oldKid string) ([]string, error) {
 	return nil, fmt.Errorf("scan %s: the volume kept changing under the scan (%d attempts), so no complete read of it could be made", vol, scanAttempts)
 }
 
-// scanHook runs between choosing a generation and reading it, so a test can replace it there.
+// scanHook runs between choosing and reading a generation; the kubelet rarely publishes a new one
 var (
 	scanAttempts = 5
 	scanHook     = func() {}

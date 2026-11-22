@@ -24,7 +24,7 @@ func (p originPolicy) allowedOrigin(r *http.Request, origin string) bool {
 	if !ok {
 		return false
 	}
-	// A plaintext origin is foreign whenever the browser is known to arrive over TLS.
+	// r.TLS is nil behind a TLS-terminating proxy, so the public scheme has to answer too.
 	if scheme == "http" && (r.TLS != nil || p.publicScheme() == "https") {
 		return false
 	}
@@ -81,7 +81,7 @@ func canonicalOrigin(s string) (canonical, scheme string, ok bool) {
 	return scheme + "://" + host, scheme, true
 }
 
-// Login has no session to derive a CSRF token from, so it needs this origin guard alone.
+// Login has no session for a CSRF token, so Origin gates it; an absent Origin still passes.
 func (p originPolicy) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !safeMethod(r.Method) {
@@ -99,7 +99,7 @@ func (m *sessions) csrf(policy originPolicy) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if safeMethod(r.Method) {
-				// Browsers cannot add headers to a WebSocket handshake, so upgrades are gated on origin alone.
+				// Browsers cannot add custom headers to a WebSocket handshake, so origin alone gates upgrades.
 				if r.Header.Get("Upgrade") != "" {
 					if reason := policy.checkFetchMetadata(r); reason != "" {
 						writeJSONError(w, http.StatusForbidden, "csrf", reason)

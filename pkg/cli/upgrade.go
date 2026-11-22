@@ -93,7 +93,7 @@ func newUpgradeCommand() *cobra.Command {
 	_ = fs.MarkHidden("expect-build")
 	fs.StringVar(&expectSum, "expect-sha256", "", "refuse unless this upgrade binary has the given sha256")
 	_ = fs.MarkHidden("expect-sha256")
-	// set only by the cluster upgrade, before the first node is upgraded
+	// set only by the cluster upgrade: all nodes import before the first upgrade; add-ons roll out then
 	fs.BoolVar(&importImgs, "import-images", false, "import this upgrade binary's images into the node's runtime, and change nothing else")
 	_ = fs.MarkHidden("import-images")
 	return cmd

@@ -11,13 +11,13 @@ import (
 	"strings"
 )
 
-// firewalld accepts a trailing + as an interface-prefix wildcard.
+// A trailing + is a prefix wildcard; unlike a source binding it cannot admit spoofed traffic.
 const (
 	ciliumPodInterface = "lxc+"
 	lxcBridgeInterface = "lxcbr+"
 )
 
-// A stopped daemon can still hold the old broad wildcard in its permanent configuration.
+// Remove it before the daemon next starts, or the wildcard activates without the bridge guard.
 func removeOwnedCiliumWildcardOffline() {
 	r, err := readFirewalldRecord()
 	if err != nil {

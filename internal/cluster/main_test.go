@@ -1,6 +1,6 @@
 package cluster
 
-// Stubs the host seams package-wide: a test that reached the host would depend on its environment.
+// Stubs the host seams package-wide; a real AppArmor watcher parks in epoll and hangs synctest.
 import (
 	"context"
 	"fmt"

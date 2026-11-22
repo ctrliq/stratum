@@ -1,6 +1,6 @@
 package operator
 
-// Installs run impersonated so the apiserver evaluates RBAC as the requester, not system:masters.
+// Non-privileged installs run impersonated, so RBAC sees the requester, not system:masters.
 
 import (
 	"encoding/json"

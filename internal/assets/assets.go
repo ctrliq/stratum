@@ -1,4 +1,4 @@
-// The payload is a ZIP archive concatenated onto the executable and staged to disk.
+// A ZIP appended to the ELF is found by scanning back from EOF; the loader ignores trailing bytes.
 package assets
 
 import (
@@ -114,7 +114,7 @@ func upToDate(path string, size int64, mtime time.Time) bool {
 // A var so a test can see which files are labelled.
 var labelLike = selinux.LabelLikeWithWriter
 
-// Writes a temp file and renames it, so a crash never leaves a half-written binary.
+// Writes and renames a temp file, so a crash or concurrent staging leaves no half-written binary.
 func extract(w io.Writer, f *zip.File, dst string, mode os.FileMode, mtime time.Time) error {
 	src, err := f.Open()
 	if err != nil {

@@ -21,7 +21,7 @@ import (
 // Bounds the whole handshake attempt; the probe runs inside interactive checks.
 const probeTimeout = 5 * time.Second
 
-// Reports whether the running etcd rejects a root-signed client cert; an error is indeterminate.
+// A handshake, not the bundle: a failed restart leaves it saying migrated; error is indeterminate.
 func EtcdRejectsRootSignedClient() (bool, error) {
 	return EtcdRejectsRootSignedClientAt(net.JoinHostPort("127.0.0.1", fmt.Sprint(version.EtcdClientPort)))
 }
@@ -64,7 +64,7 @@ func EtcdRejectsRootSignedClientAt(addr string) (bool, error) {
 	return false, nil
 }
 
-// Local: byte-identical to etcd.crt; peer: an etcd leaf for the dialled address from a known CA.
+// The weaker peer check is safe: forgery cannot advance a phase; Migrate* re-guard on the node.
 func peerIsEtcdAt(addr string, rawCerts [][]byte) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

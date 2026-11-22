@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// an idle shim holds nothing: the reason not to kill one is the containers beneath it.
+// the reason not to kill a shim is the containers beneath it; an idle one has none.
 
-// Variables, not constants: tests shorten them.
+// read-only after init, so two Runs cannot race over it; a variable only because tests shorten it.
 var idleShimWait = 5 * time.Second
 
 // PID and start time together identify one process: a PID alone can be reused.
@@ -64,7 +64,7 @@ func idleShims(fx *hostEffects) []shimProc {
 	return idle
 }
 
-// best-effort: an unconfirmable shim is skipped, neither waited on nor signalled.
+// best-effort: an unconfirmable shim is skipped; the host-process check still refuses if alive.
 func stillShims(fx *hostEffects, procs []shimProc) []shimProc {
 	if fx.shimPIDs == nil {
 		return nil

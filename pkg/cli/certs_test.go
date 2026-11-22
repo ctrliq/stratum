@@ -175,7 +175,7 @@ func TestCertsRotateRekeySharedSurfacesTheRekeyGuardRefusal(t *testing.T) {
 	}
 }
 
-// A re-key on a cis control plane would publish a bundle without the at-rest encryption key.
+// A re-key on cis run by a binary that does not register it drops the at-rest encryption key.
 func TestCertsRotateRekeySharedRefusesAnUnregisteredProfile(t *testing.T) {
 	registerProfilesForTest(t)
 	oldConf := version.K8sConfDir
@@ -214,7 +214,7 @@ func TestCertsRotateRekeySharedRefusesAnUnregisteredProfile(t *testing.T) {
 	}
 }
 
-// A token mint refuses while a CA rotation is staged, before any publication.
+// A token mint refuses while a CA rotation is staged or mid-phase, before any publication.
 func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 	refusal := errors.New("a cluster-wide CA rotation or etcd-CA migration is staging shared material (the stratum-carotate Secret exists)")
 
@@ -321,7 +321,7 @@ func TestCertsRotate_SaysWhenNothingIsCloseToExpiry(t *testing.T) {
 	}
 }
 
-// The no-op verdict also travels as data on the operation, for callers like the MCP tool.
+// The verdict also travels as data for the MCP tool; the no-op returns before the AdminConf read.
 func TestCertsRotate_NoOpVerdictTravelsAsData(t *testing.T) {
 	freshPKI(t)
 	before := pkiContents(t)
@@ -338,7 +338,7 @@ func TestCertsRotate_NoOpVerdictTravelsAsData(t *testing.T) {
 	}
 }
 
-// A rotation staged on disk refuses through the production phase read, no seam stubs.
+// The production phase read precedes the cluster-wide check, so the refusal reaches no apiserver.
 func TestRekeySharedRefusesWithARotationStagedOnDisk(t *testing.T) {
 	oldFence := rekeyMaintenanceFence
 	rekeyMaintenanceFence = func() (*k8sutil.MaintenanceLease, error) { return &k8sutil.MaintenanceLease{Release: func() {}}, nil }
@@ -531,7 +531,7 @@ func TestRotateCAWorkloadFlags(t *testing.T) {
 		{"skip tokens without --force, phase", []string{"--phase=finalize", "--yes", "--skip-token-check"}, certs.CARotateOptions{}, "goes with --force"},
 		// What --cluster's node Jobs pass: no --force, and not the operator's flag.
 		{"tokens checked", []string{"--phase=finalize", "--yes", "--tokens-checked"}, certs.CARotateOptions{Phase: "finalize", SkipTokenCheck: true}, ""},
-		// Not an operator's flag: alone it would skip the token gate without --force.
+		// Not an operator's flag: alone or with --cluster it would skip the token gate without --force.
 		{"tokens checked with --cluster", []string{"--cluster", "--yes", "--tokens-checked"}, certs.CARotateOptions{}, "goes with --phase"},
 		{"tokens checked with no phase", []string{"--yes", "--tokens-checked"}, certs.CARotateOptions{}, "goes with --phase"},
 		{"tokens checked with --cluster and --force", []string{"--cluster", "--yes", "--force", "--tokens-checked"}, certs.CARotateOptions{}, "goes with --phase"},

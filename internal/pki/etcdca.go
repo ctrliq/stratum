@@ -1,4 +1,4 @@
-// Package pki stages the etcd CA split: dropping a live trust anchor cannot be done in one step.
+// Package pki stages the etcd CA split; only drop-root closes the hole, mid-way stays exploitable.
 package pki
 
 import (
@@ -207,7 +207,7 @@ func etcdLeafPairsMatch() bool {
 // False on any read failure; callers that must distinguish use ReadEtcdTrust().Err.
 func EtcdLeavesMigrated() bool { t := ReadEtcdTrust(); return t.Err == nil && t.LeavesMigrated }
 
-// While any root is an anchor, existing members are root-signed and a new leaf must match them.
+// Root is the safe signer while any root is an anchor; a caller avoiding a guess checks Err first.
 func (t EtcdTrust) EtcdSignerName() string {
 	if t.Err != nil || !t.HasEtcdAnchor || t.TrustsRoot() {
 		return "ca"
@@ -290,7 +290,7 @@ func MigrateEtcdIssueNew(host, nodeIP string, sans *APISANs) error {
 	return nil
 }
 
-// Closes the etcd trust hole; the caller must restart etcd, whose CA pool never reloads.
+// Closes the trust hole; local gate only (the --cluster run surveys every member); restart etcd.
 func MigrateEtcdDropRoot() error {
 	if !exists(EtcdCAName) {
 		return fmt.Errorf("pki: %s requires the etcd CA — run --phase=%s first", EtcdPhaseDropRoot, EtcdPhaseTrustBoth)
@@ -323,7 +323,7 @@ func MigrateEtcdRollback(host, nodeIP string, sans *APISANs) error {
 	return migrateEtcdRollback(host, nodeIP, sans)
 }
 
-// Guard-waived rollback backing --rollback --force: re-opens the trust hole on this node by design.
+// Re-opens the hole on this node by design; only rolling across every control plane keeps quorum.
 func MigrateEtcdRollbackFromMigrated(host, nodeIP string, sans *APISANs) error {
 	return migrateEtcdRollback(host, nodeIP, sans)
 }

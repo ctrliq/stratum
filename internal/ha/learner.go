@@ -15,7 +15,7 @@ const (
 	MemberIsVoter
 )
 
-// wraps the PromoteLearner errors a later attempt can still land; the text says why it waits
+// what PromoteLearner's error wraps when a later attempt can still land; the rest says why it waits
 var ErrLearnerWaiting = errors.New("etcd learner not promoted yet")
 
 // indirected so PromoteLearner's decisions can be driven without a cluster
@@ -24,7 +24,7 @@ var (
 	learnerPromote     = memberPromote
 )
 
-// promotes this node's etcd learner once caught up; until then the error wraps ErrLearnerWaiting
+// promotes through the other members initialCluster names; a learner serves only serializable reads
 func PromoteLearner(nodeIP, initialCluster string) (LearnerState, error) {
 	st, err := learnerLocalStatus(nodeIP)
 	if err != nil {
@@ -51,7 +51,7 @@ func PromoteLearner(nodeIP, initialCluster string) (LearnerState, error) {
 	return LearnerWaiting, fmt.Errorf("promote etcd learner %x via %s: %w", st.MemberID, strings.Join(voters, ","), perr)
 }
 
-// the controller asks this under the etcd data lock before recording a promote done
+// asked under the data lock before recording the promote: a snapshot rejoin can replace this member
 func ConfirmVoter(nodeIP string) error {
 	st, err := learnerLocalStatus(nodeIP)
 	if err != nil {

@@ -7,7 +7,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// ServerURL is the controller's apiserver endpoint: the VIP when set, else the local apiserver.
+// ServerURL returns the VIP when set, else the local apiserver; JoinHostPort brackets an IPv6 VIP.
 func ServerURL(vip VIP) string {
 	port := strconv.Itoa(version.APIServerPort)
 	if vip.Address != "" {

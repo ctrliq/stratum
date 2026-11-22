@@ -17,7 +17,7 @@ import (
 // seam: the test binary carries no payload, so tests stub the extraction.
 var stagePayload = assets.Stage
 
-// uninstall holds this lock while deleting DataDir; a stage that skipped it could recreate it.
+// uninstall deletes DataDir under this lock; other roots: CI stages unprivileged and can't lock.
 func lockStageRoot(root string) (release func(), err error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {

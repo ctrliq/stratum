@@ -102,7 +102,7 @@ type options struct {
 	Out           io.Writer
 }
 
-// Fails closed when the feature is on but this build has no bundled image stamped.
+// Disabled serves no image (no /api/v1/config disclosure); enabled but unstamped fails closed.
 func nodeShellImageOrErr(enabled bool, image string) (string, error) {
 	if !enabled {
 		return "", nil
@@ -273,7 +273,7 @@ func loopbackOnly(addr string) bool {
 	return host == "localhost"
 }
 
-// The browser's scheme, not this process's; --public-url is the only signal behind a terminator.
+// Browser's scheme; --public-url is the proxy hint; some browsers drop Secure cookies on loopback.
 func reachedOverHTTPS(serveTLS bool, publicURL string) bool {
 	if serveTLS {
 		return true

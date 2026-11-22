@@ -1,4 +1,4 @@
-// Phase-major cross-node orchestration of migrate-etcd-ca --cluster over node Jobs.
+// Phase-major over node Jobs: all nodes finish a phase before the next starts, or quorum is lost.
 package certs
 
 import (
@@ -373,13 +373,13 @@ func (m *etcdMigration) runPhaseWithSharedMaterial(phase string, states map[stri
 	return m.runPhase(phase, states)
 }
 
-// Serial, initiator first: two control planes restarting etcd at once loses quorum.
+// Serial, initiator first: two members restarting at once loses quorum on a three-node cluster.
 func (m *etcdMigration) runPhase(phase string, states map[string]string) error {
 	for i, n := range m.nodes {
 		if err := m.drv.Interrupted(); err != nil {
 			return fmt.Errorf("%s halted before %s: %w (the cluster is left in the last state every node completed, which is a working one)", phase, n.Name, err)
 		}
-		// fetchShared tells the node whether it may mint; only the initiator may.
+		// fetchShared marks a follower, which must fetch the CA; only the initiator mints.
 		fetchShared := i > 0 && phase == pki.EtcdPhaseTrustBoth
 		// A resumed run would otherwise print identically to a fresh one.
 		if o, ok := etcdStateOrder[states[n.Name]]; ok && o >= phaseAppliedAt[phase] {
@@ -611,7 +611,7 @@ func (d *clusterDriver) RunPhase(n etcdNode, phase string, fetchShared, force bo
 	return nil
 }
 
-// The staged key decrypts every cluster private key, so its lifetime is one phase or less.
+// The staged key decrypts all cluster private keys; a hard kill leaves it for the next run to reap.
 func (d *clusterDriver) PublishEtcdCA() (func(), error) {
 	if err := checkStagedKeyOwner(d.ctx, d.cs, carotateOpMigrateEtcdCA); err != nil {
 		return nil, err
@@ -620,7 +620,7 @@ func (d *clusterDriver) PublishEtcdCA() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	// The etcd CA exists to publish even on a control plane installed before it did.
+	// The upload runs pki.EnsureEtcdTrustBundle first, so the etcd CA exists on an older control plane.
 	if err := uploadStagedMaterial(certKey); err != nil {
 		return nil, fmt.Errorf("publish shared material: %w", err)
 	}
@@ -647,9 +647,9 @@ func cleanupContext() (context.Context, context.CancelFunc) {
 // Covers the apiserver health gate, then five attempts five seconds apart.
 const cleanupBudget = 3 * time.Minute
 
-// Bounds a hard kill's window to the next invocation; not fatal, the warning says what is left.
 func (d *clusterDriver) Interrupted() error { return d.ctx.Err() }
 
+// Reaps a killed run's fetch key before publishing; a delete that fails only warns.
 func (d *clusterDriver) ReapStaleFetchKey() {
 	sec, err := d.cs.CoreV1().Secrets(caNamespace).Get(d.ctx, caRotateKeySecret, metav1.GetOptions{})
 	if err != nil {

@@ -217,7 +217,7 @@ func checkCARotationState(o CARotateOptions, node string) error {
 		if o.Phase == PhaseTrustNew && pki.ForcedRotation() {
 			return stateRefusal{forcedStagedRefusal(node)}
 		}
-		// A forced rotation resumes only with --force, or the re-run would silently un-force it.
+		// A widened bundle (or resumeStaging) proves the staging is this run's own; forced needs --force.
 		if o.Phase == PhaseTrustNew && rot.Err == nil && (rot.BundleCAs > 1 || o.resumeStaging) && (o.Force || !pki.ForcedRotation()) {
 			return nil
 		}

@@ -1,4 +1,4 @@
-// Package clusterinfo authenticates the kube-public cluster-info ConfigMap into a trust bundle.
+// Separate package so only Authenticate can yield the trust bundle; the compiler enforces it.
 package clusterinfo
 
 import (
@@ -99,7 +99,7 @@ func detachedTokenIsValid(detached, content, tokenID, tokenSecret string) bool {
 	return subtle.ConstantTimeCompare([]byte(detached), []byte(want)) == 1
 }
 
-// The one absent-signature case worth retrying; an invalid signature is never retried.
+// The signer writes the ConfigMap first, its signature moments later; absence alone is retried.
 type NoSignatureError struct{ TokenID string }
 
 func (e *NoSignatureError) Error() string {

@@ -33,7 +33,7 @@ type fakeAPIServer struct {
 	mu       sync.Mutex
 	requests []recordedRequest
 
-	// attacker-written text that every pod log and object read returns.
+	// when set, what every pod log and configmap read returns: attacker-written text.
 	payload string
 	// serves secrets in discovery, so a write is refused for its target, not as unknown.
 	secrets bool

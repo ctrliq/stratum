@@ -62,7 +62,7 @@ func stageDesiredBundles(cfg *ClusterConfig, st *NodeState, bundles map[string][
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), desiredRecordBudget)
 	defer cancel()
-	// A prior API commit can precede its local success stamp; keep it until acknowledged.
+	// A prior commit stays until acknowledged; the API takes one only if it is the active publication.
 	priorBytes, err := os.ReadFile(filepath.Join(version.ManifestsDir, pendingStagingName))
 	if err != nil && !os.IsNotExist(err) {
 		return err

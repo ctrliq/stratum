@@ -60,7 +60,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 	transport.TLSClientConfig = tlsConfig
 	var next http.RoundTripper = transport
 	if entry != nil && len(tlsConfig.Certificates) > 0 && !entry.PassCredentialsAll {
-		// The client certificate is a credential like the basic auth: withheld off-origin.
+		// A client certificate is a credential: withheld off-origin unless PassCredentialsAll is set.
 		other := transport.Clone()
 		other.TLSClientConfig = tlsConfig.Clone()
 		other.TLSClientConfig.Certificates = nil
@@ -113,7 +113,7 @@ func locateChart(ctx context.Context, spec helmSpec, settings *cli.EnvSettings) 
 			}
 		}
 		if entry != nil {
-			// Bind under the archive's own spelling: the getter compares scheme and host verbatim.
+			// Bind under the archive's spelling; other origins stay unauthenticated unless PassCredentialsAll.
 			bound := normalizeRepoURL(entry.URL)
 			if e, err := url.Parse(entry.URL); err == nil &&
 				strings.EqualFold(u.Scheme, e.Scheme) && strings.EqualFold(u.Host, e.Host) {
@@ -182,7 +182,7 @@ func chartRepositoryEntry(ref string, settings *cli.EnvSettings) (*repo.Entry, e
 	return nil, nil
 }
 
-// repoURLEntry returns the repositories.yaml entry whose URL equals repoURL; nil, not an error.
+// repoURLEntry returns the first entry equal after normalizeRepoURL; no match is nil, not an error.
 func repoURLEntry(repoURL string, settings *cli.EnvSettings) (*repo.Entry, error) {
 	file, err := repo.LoadFile(settings.RepositoryConfig)
 	if errors.Is(err, os.ErrNotExist) {
@@ -200,7 +200,7 @@ func repoURLEntry(repoURL string, settings *cli.EnvSettings) (*repo.Entry, error
 	return nil, nil
 }
 
-// normalizeRepoURL lowercases scheme and host and drops userinfo, fragment and the trailing slash.
+// normalizeRepoURL never cleans the escaped path; cleaning it would leak the entry's credentials.
 func normalizeRepoURL(ref string) string {
 	u, err := url.Parse(ref)
 	if err != nil {
@@ -219,7 +219,7 @@ func normalizeRepoURL(ref string) string {
 	return u.String()
 }
 
-// originTransport sends requests to the entry's origin through own, everything else through other.
+// originTransport sends the entry's origin through own; all else, even redirects, through other.
 type originTransport struct {
 	scheme, host string
 	own, other   http.RoundTripper

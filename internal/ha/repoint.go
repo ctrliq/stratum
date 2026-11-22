@@ -67,7 +67,7 @@ func nodeRepoint(w io.Writer, vip string, repoint func(string) error) ([]string,
 	return warnings, nil
 }
 
-// Cilium's agents dial the apiserver directly, so the address they get must be highly available
+// Agents dial the apiserver directly; run once, after the VIP exists; slow rollouts warn, not fail
 func RepointCilium(w io.Writer, vip string) ([]string, error) {
 	cs, err := k8sutil.AdminClientset()
 	if err != nil {
@@ -187,7 +187,7 @@ func deploymentRolledOut(ctx context.Context, cs kubernetes.Interface, name stri
 		st.UpdatedReplicas == want && st.Replicas == want && st.AvailableReplicas == want, progress, nil
 }
 
-// bootstrap.conf is included: workers hand it to the kubelet on every start
+// records the server every kubeconfig writer reads; bootstrap.conf is included for the kubelet
 func RepointKubeconfigs(server string) error {
 	// the rewrites and the record must land under one data-lock acquisition, or repoints interleave
 	if _, err := os.Stat(nodestate.StatePath()); errors.Is(err, fs.ErrNotExist) {

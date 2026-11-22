@@ -123,7 +123,7 @@ func waitJoinFenceEnforcement(ctx context.Context, cs kubernetes.Interface) erro
 						SetHeader("Impersonate-Group", "system:masters", group).
 						Body(probe).Do(attempt).Error()
 					stop()
-					// a plain RBAC denial, compile failure, or another policy's denial is not enforcement proof
+					// masters authorizes the probe before the token Role exists; only the fence's message is proof
 					if !k8sutil.JoinFenceDenied(err) || !strings.Contains(err.Error(), message) {
 						last = fmt.Errorf("apiserver %s has not enforced the join fence metadata policy for %s (probe result: %v)", target, group, err)
 						break

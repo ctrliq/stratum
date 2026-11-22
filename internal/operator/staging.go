@@ -11,7 +11,7 @@ import (
 )
 
 type StagedGeneration struct {
-	// Content fingerprints cannot identify publication epochs.
+	// Fresh per changed request, stable across its retries; fingerprints cannot identify epochs.
 	PublicationID string        `json:"publicationID"`
 	Digest        string        `json:"digest"`
 	Provenance    string        `json:"provenance"`

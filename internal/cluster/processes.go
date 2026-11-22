@@ -16,7 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// The host processes a node's supervisor runs; the control plane is static pods.
+// operator is spec.operator resolved by the caller, nil meaning on; a worker never runs it.
 func Processes(st *NodeState, operator bool) []supervisor.Process {
 	bin := func(b string) string { return filepath.Join(version.BinDir, b) }
 	pki := func(f string) string { return filepath.Join(version.PKIDir, f) }
@@ -43,7 +43,7 @@ func Processes(st *NodeState, operator bool) []supervisor.Process {
 				"--manifests-dir", version.ManifestsDir,
 				"--helm-cache", version.HelmCacheDir,
 				"--leader-elect",
-				// The apiserver reaches its admission webhook only through this endpoint.
+				// Serves the admission webhook here; a shutdown leaves it in force, disabling is cluster-wide.
 				"--node-ip", st.NodeIP,
 				"--cluster-domain", st.Domain(),
 			}})
@@ -87,7 +87,7 @@ func kubeletProcess(st *NodeState, pki, kc func(string) string) supervisor.Proce
 	}
 }
 
-// A var so a test can run the kubelet's WaitFor without them.
+// A var so a test can run the kubelet's WaitFor without containerd or the image import.
 var kubeletRuntimeReady = func(ctx context.Context) error {
 	if err := waitContainerd(ctx, 2*time.Minute); err != nil {
 		return err

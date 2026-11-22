@@ -70,7 +70,7 @@ func etcdctlDefaults(env, args []string) []string {
 	return out
 }
 
-// kubectl stops at a missing KUBECONFIG rather than falling through, so name it only if it exists.
+// Name admin.conf if it exists: kubectl stops at a missing file; naming it hides ~/.kube/config.
 func kubeconfigDefault() []string {
 	if _, err := os.Stat(version.AdminConf); err != nil {
 		return nil

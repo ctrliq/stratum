@@ -30,7 +30,7 @@ func Exited(err error) bool {
 	return os.IsNotExist(err) || errors.Is(err, syscall.ESRCH)
 }
 
-// Walk visits every live process under procRoot; an unreadable cmdline fails the walk.
+// Walk visits every live process; an unreadable cmdline fails the walk, never reads as empty.
 func Walk(procRoot string, visit func(Process) (bool, error)) error {
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -70,7 +70,7 @@ func Walk(procRoot string, visit func(Process) (bool, error)) error {
 	return nil
 }
 
-// BuildInfo reads the executable's Go build information; a native ELF image returns nil.
+// BuildInfo reads Go build info; a valid native ELF returns nil, a malformed one is an error.
 func BuildInfo(path string) (*buildinfo.BuildInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -106,7 +106,7 @@ func IsStratumBuild(info *buildinfo.BuildInfo) bool {
 	return false
 }
 
-// isUpSubcommand follows Cobra root-command selection: the first command decides.
+// isUpSubcommand follows Cobra root selection: first command decides; no optional-value root flags.
 func isUpSubcommand(args []string) bool {
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
@@ -126,7 +126,7 @@ func isUpSubcommand(args []string) bool {
 	return false
 }
 
-// IsUpCommand reports whether args selects the `up` subcommand; any Stratum build counts.
+// IsUpCommand reports whether args selects up, whatever binary; the handoff adds IsStratumBuild.
 func IsUpCommand(args []string) bool {
 	return isUpSubcommand(args)
 }
@@ -136,7 +136,7 @@ func HasPayloadPath(component string, p Process) bool {
 	return len(p.Argv) > 0 && p.Argv[0] == filepath.Join(version.BinDir, component)
 }
 
-// IsOperator reports whether the process is the stratum operator, by its flag shape.
+// IsOperator identifies the operator by flag shape; its exe name may be a release artifact.
 func IsOperator(p Process) bool {
 	args := p.Argv
 	if len(args) < 2 || args[0] == "" || args[1] != "operator" {

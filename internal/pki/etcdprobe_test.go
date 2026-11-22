@@ -151,7 +151,7 @@ func TestProbeIndeterminateWhenNothingListening(t *testing.T) {
 	}
 }
 
-// Direct test for the peer-alert allowlist; nothing else reaches isCertRejection.
+// Direct test for the allowlist; the true branch is also reached by TestProbeDetectsMigratedEtcd.
 func TestIsCertRejectionDiscriminates(t *testing.T) {
 	peerAlert := func(alert string) error { return &net.OpError{Op: "remote error", Err: errors.New("tls: " + alert)} }
 	cases := []struct {

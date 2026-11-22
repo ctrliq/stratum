@@ -14,7 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// exec refuses a NUL in an env value, so argv passes as unit-separator-separated vars.
+// exec refuses a NUL in an env value; \x1f never appears in argv, so the split is unambiguous.
 const (
 	childArgsEnv  = "STRATUM_MAIN_TEST_ARGS"
 	childStateEnv = "STRATUM_MAIN_TEST_STATE"
@@ -50,11 +50,11 @@ func fakeState(t *testing.T, binScript string) string {
 	return state
 }
 
-// Re-runs this binary as stratum, pinning one row per pkg/cli error sentinel.
+// Re-runs this binary as stratum, pinning exit rows for ErrNoCommand, ErrUsage and *ErrExitCode.
 func TestMain_ExitCodes(t *testing.T) {
 	if encoded, ok := os.LookupEnv(childArgsEnv); ok {
 		runAsStratum(childArgv(encoded), os.Getenv(childStateEnv))
-		return // main() ends every pinned path in os.Exit, so this is unreachable
+		return // the success row reaches this; main returns instead of exiting when ExitCode is 0
 	}
 
 	for _, tc := range []struct {

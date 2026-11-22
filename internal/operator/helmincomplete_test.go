@@ -145,7 +145,7 @@ func shortIncompleteWriteBackoff(t *testing.T) {
 	t.Cleanup(func() { incompleteWriteBackoff = prev })
 }
 
-// newFlowHC's HelmChart has no UID, so every flow test shares one key into the record.
+// Clears the process-wide record at start and end so one test's entry cannot reach another test.
 func forgetUnwrittenIncomplete(t *testing.T) {
 	t.Helper()
 	forget := func() {
@@ -157,7 +157,7 @@ func forgetUnwrittenIncomplete(t *testing.T) {
 	t.Cleanup(forget)
 }
 
-// The outage cannot start earlier: the recovery stops before Helm work when the write fails.
+// Cannot start earlier: the pre-uninstall write must succeed or the uninstall never runs.
 type statusOutage struct {
 	started, ended bool
 	rejected       int

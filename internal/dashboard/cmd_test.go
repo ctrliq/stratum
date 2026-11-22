@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-// Addresses a port nothing serves, so the dashboard starts and only a signal ends it.
+// A port nothing serves: clients are built without contacting it, so only a signal ends run().
 const deadAPIServerKubeconfig = `apiVersion: v1
 kind: Config
 clusters:
@@ -79,7 +79,7 @@ func TestDashStopsCleanlyOnEverySignalInTheSharedSet(t *testing.T) {
 				return
 			}
 			child := startDashChild(t, "TestDashStopsCleanlyOnEverySignalInTheSharedSet")
-			// A served response proves the signal handler is installed.
+			// The serving log line prints before the signal context; a served response only comes after it.
 			servingBarrier(t, waitForServing(t, child))
 			if err := child.cmd.Process.Signal(tc.sig); err != nil {
 				t.Fatal(err)
@@ -103,7 +103,7 @@ func TestDashSecondSignalKillsDuringShutdown(t *testing.T) {
 	child := startDashChild(t, "TestDashSecondSignalKillsDuringShutdown")
 	addr := waitForServing(t, child)
 	servingBarrier(t, addr)
-	// A connection stuck mid-headers is active, not idle, so Shutdown waits for it.
+	// StateNew counts as idle only after a 5s grace, so a stalled connection holds the stop open.
 	stalled, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial the dash child at %s: %v", addr, err)
@@ -112,7 +112,7 @@ func TestDashSecondSignalKillsDuringShutdown(t *testing.T) {
 	if _, err := stalled.Write([]byte("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n")); err != nil {
 		t.Fatalf("write a partial request head: %v", err)
 	}
-	// Proves the accept loop already accepted the stalled connection.
+	// A later response proves the serial accept loop already accepted the stalled connection.
 	servingBarrier(t, addr)
 
 	if err := child.cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -243,7 +243,7 @@ func waitForServing(t *testing.T, p *dashProc) string {
 	}
 }
 
-// A served response proves the signal handler is in place and a signal cannot race it.
+// Serve starts only after the signal context is installed, so a served response proves it.
 func servingBarrier(t *testing.T, addr string) {
 	t.Helper()
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
@@ -301,7 +301,7 @@ func waitForListenerClosed(t *testing.T, addr string) {
 			if errors.Is(err, syscall.ECONNREFUSED) {
 				return
 			}
-			// Keep polling until refusal proves the listener has closed.
+			// A dial racing shutdown can reset or time out before refusal; keep polling until refused.
 			var ne net.Error
 			if !errors.Is(err, syscall.ECONNRESET) && !(errors.As(err, &ne) && ne.Timeout()) {
 				t.Fatalf("observe listener shutdown: %v", err)

@@ -40,7 +40,7 @@ func terminalAPIError(err error) bool {
 	return c >= 400 && c < 500 && c != http.StatusRequestTimeout && c != http.StatusConflict && c != http.StatusTooManyRequests
 }
 
-// Retries writes through the API-server restart the upgrade itself causes.
+// Retries writes through the API-server restart; f must call the API with the context it gets.
 func retryAPI(ctx context.Context, f func(context.Context) error) error {
 	ctx, cancel := context.WithTimeout(ctx, apiRetryWindow)
 	defer cancel()
@@ -157,7 +157,7 @@ func orderedNodes(nodes []Node) []Node {
 	return append(cp, wk...)
 }
 
-// Distinguishes an interrupted upgrade from a finished one, which the kubelet version cannot.
+// Distinguishes interrupted from finished; the caller confirms the lease on every attempt.
 func markUpgradeInProgress(ctx context.Context, cs kubernetes.Interface, name, target, holder string) error {
 	_, err := updateNode(ctx, cs, name, func(n *corev1.Node) (bool, error) {
 		if _, h := parseCordonClaim(n); h != "" && h != holder {
@@ -190,7 +190,7 @@ func parseCordonClaim(n *corev1.Node) (kind, holder string) {
 	return kind, holder
 }
 
-// No claim with an in-progress record is an older orchestrator's cordon.
+// No claim plus a record: an older orchestrator cordoned unconditionally, so the upgrade owns it.
 func ownsCordon(n *corev1.Node, target string) bool {
 	if _, claimed := n.Annotations[k8sutil.UpgradeCordonAnnotation]; !claimed {
 		return n.Annotations[k8sutil.UpgradeInProgressAnnotation] == target
@@ -257,7 +257,7 @@ func cordonForUpgrade(ctx context.Context, cs kubernetes.Interface, name, target
 	})
 }
 
-// One write so no reader sees a stamp without the uncordon; refuses a claim another run holds.
+// One write: stamp, clear the record, uncordon only the upgrade's own cordon; an admin's stays.
 func finishNode(ctx context.Context, cs kubernetes.Interface, name, target, stratumVersion, holder string) error {
 	_, err := updateNode(ctx, cs, name, func(n *corev1.Node) (bool, error) {
 		if _, h := parseCordonClaim(n); h != "" && h != holder {
@@ -305,7 +305,7 @@ func releaseCurrentCordon(ctx context.Context, cs kubernetes.Interface, name str
 	return err
 }
 
-// The per-node Job's backstop for an orchestrator that died mid-upgrade.
+// The Job's backstop for a dead orchestrator; the in-progress record stays for a re-run to clear.
 func releaseUpgradeCordon(ctx context.Context, cs kubernetes.Interface, node, target string) (bool, error) {
 	return updateNode(ctx, cs, node, func(n *corev1.Node) (bool, error) {
 		if !n.Spec.Unschedulable || !ownsCordon(n, target) {

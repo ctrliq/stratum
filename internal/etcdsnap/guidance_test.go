@@ -15,12 +15,12 @@ import (
 // flat folds whitespace runs into one space, so assertions ignore rendering wraps.
 func flat(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// debracket strips the [k] pkill trick, so a bracketed pattern still counts as naming it.
+// debracket strips the [k] that keeps pkill from matching itself; bracketed names still count.
 func debracket(command string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(command, "[", ""), "]", "")
 }
 
-// hasPkillFor reports whether text gives a sudo pkill command naming name.
+// hasPkillFor reports a sudo pkill naming name; each command is one line, name and pkill together.
 func hasPkillFor(text, name string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "sudo pkill") && strings.Contains(debracket(line), name) {
@@ -249,7 +249,7 @@ func TestRepeatRestartCommandsComeFromTheSet(t *testing.T) {
 			t.Errorf("the per-control-plane block lacks %q", c)
 		}
 	}
-	// Dependency order: kubelet first, the rest are pods it recreates.
+	// Dependency order: kubelet first (it recreates the pods); the operator, a supervisor unit, last.
 	last := -1
 	for _, name := range []string{"kubelet", "kube-controller-manager", "kube-scheduler", "kube-vip", "operator"} {
 		idx := slices.IndexFunc(want, func(c string) bool { return strings.Contains(debracket(c), name) })

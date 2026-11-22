@@ -69,7 +69,7 @@ func localMembership() (localCluster, error) {
 	return localCluster{ClusterID: ml.Header.ClusterId, SelfID: ml.Header.MemberId, Members: ml.Members}, nil
 }
 
-// a peer's loopback client URL is this node's own etcd, not the peer's
+// a peer's loopback URL is this node's etcd; Status is served without quorum, so a peer can answer
 func peerClusterID(m *etcdserverpb.Member) (uint64, bool) {
 	tc, err := etcdTLS()
 	if err != nil {

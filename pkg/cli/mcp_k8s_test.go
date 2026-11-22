@@ -285,7 +285,7 @@ func TestPodGetOverProtocol(t *testing.T) {
 	if out.Summary.Ready != "0/1" {
 		t.Errorf("ready = %q, want 0/1", out.Summary.Ready)
 	}
-	// envtest runs no scheduler or kubelet, so neither is ever populated.
+	// envtest runs no scheduler or kubelet, so Containers and Conditions stay empty.
 
 	t.Run("a missing pod is an error, not an empty result", func(t *testing.T) {
 		msg := s.callExpectingError(t, "pod_get", map[string]any{"name": "absent", "namespace": s.namespace})
@@ -472,7 +472,7 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
-// admin.conf is cluster-admin, so the refusal is policy here, not something RBAC does.
+// admin.conf is cluster-admin; secret contents cannot be taken back from a model's context.
 func TestSecretsAreRefusedAtTheReadTier(t *testing.T) {
 	s := newK8sSession(t)
 

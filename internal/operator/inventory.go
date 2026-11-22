@@ -52,7 +52,7 @@ type desiredGeneration struct {
 	Provenance         string   `json:"provenance"`
 	PublicationID      string   `json:"publicationID,omitempty"`
 	JoinedPublications []string `json:"joinedPublications,omitempty"`
-	// Every directory staging has managed, including retired stacks.
+	// Every managed directory, retired stacks included: a follower keeping one fails the digest check.
 	Stacks []string `json:"stacks"`
 	// Copied beside the digest so a reconcile cannot mix generations' inputs.
 	Inputs *ClusterInputs `json:"inputs,omitempty"`
@@ -117,7 +117,7 @@ func publishInventory(ctx context.Context, cs kubernetes.Interface, node string,
 	})
 }
 
-// writeInventory retries on resourceVersion conflict; mutate must be a pure function of inv.
+// mutate must be pure in inv; replacing an unreadable inventory would lose other nodes' entries.
 func writeInventory(ctx context.Context, cs kubernetes.Interface, mutate func(pruneInventory) pruneInventory) error {
 	configMaps := cs.CoreV1().ConfigMaps(inventoryNamespace)
 	var lastErr error

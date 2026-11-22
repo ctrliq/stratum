@@ -173,7 +173,7 @@ func writeHandlers(w io.Writer, handlers map[string]string) (bool, error) {
 	return true, nil
 }
 
-// RequireOwnDropIn refuses to replace a file stratum did not write; an operator may own it.
+// RequireOwnDropIn refuses a foreign file an operator may own; a node start replaces it, warning.
 func RequireOwnDropIn(handlers map[string]string) error {
 	if len(handlers) == 0 {
 		return nil

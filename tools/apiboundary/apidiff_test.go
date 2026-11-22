@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// The baseline moves only by regenerating it at a new releasedBaselineTag.
+// Regenerating the doc golden records a change but cannot bless it; the baseline still decides.
 const (
 	releasedBaselineTag    = "v1.37.1-stratum.0-rc.1"
 	releasedBaselineSHA256 = "342eda120cb35bc3d2d87fa188bb3a08a0e6d961a05a2befe06007e8e21fd450"

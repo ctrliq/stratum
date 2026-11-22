@@ -15,7 +15,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// resolved through symlinks (macOS /var) so a relative root spells DataDir's path.
+// The data dir stays uncreated, as uninstall leaves it; symlinks resolved for the relative root.
 func useStageDataDir(t *testing.T) string {
 	t.Helper()
 	tmp, err := filepath.EvalSymlinks(t.TempDir())

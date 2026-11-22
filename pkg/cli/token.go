@@ -138,7 +138,7 @@ func remaining(d time.Duration) string {
 type tokenCmd struct {
 	create           func(w io.Writer, serverURL string, ttl time.Duration, controlPlane bool, confirm func(context.Context) error) (tok, hash string, owner *metav1.OwnerReference, err error)
 	rekeyGuard       func() error
-	maintenanceFence func() (*k8sutil.MaintenanceLease, error)
+	maintenanceFence func() (*k8sutil.MaintenanceLease, error) // The fence stays at this seam, not in the ha helpers: rotations hold their own fence mid-run.
 	newCertKey       func() (string, error)
 	uploadCerts      func(certKey string, owner *metav1.OwnerReference, confirm func(context.Context) error) error
 	writeKeyFile     func(certKey string) (path string, err error)
@@ -154,7 +154,7 @@ func workerJoinExtra() (string, error) {
 		return "", err
 	}
 	var extra string
-	// The pod range stays in worker state for compatibility with earlier builds.
+	// Earlier builds read the range from worker state; the firewall trusts interfaces, not ranges.
 	if flags.PodCIDR != "" {
 		extra += " --pod-cidr " + shellQuote(flags.PodCIDR)
 	}

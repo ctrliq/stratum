@@ -666,7 +666,7 @@ func snapshotDirNote(dir string, targets []string) string {
 	return fmt.Sprintf("Snapshots under %s are listed by snapshot_list and are NOT part of this set.", dir)
 }
 
-// resolveExisting resolves the nearest existing ancestor and re-appends the tail.
+// resolveExisting is EvalSymlinks for a missing tail: the snapshot dir is created on first save.
 func resolveExisting(path string) (string, error) {
 	rest := ""
 	for p := filepath.Clean(path); ; p = filepath.Dir(p) {

@@ -208,7 +208,7 @@ func artifactBytes(artifacts []Artifact) int64 {
 	return n
 }
 
-// Evidence composes the policy, catalogs, census and maintenance into one bounded read.
+// MaxTime bounds every read but cannot interrupt a local filesystem syscall stalled in the kernel.
 func Evidence(ctx context.Context, o EvidenceOptions) EvidenceResult {
 	var res EvidenceResult
 

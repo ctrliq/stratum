@@ -211,7 +211,7 @@ func TestUpgradeNodeKeepsItsRefreshOrder(t *testing.T) {
 	}
 }
 
-// kubelet parses every file in the static-pod dir, so the rollback must restore it byte for byte
+// kubelet parses every visible file in the static-pod dir; a rollback must restore it byte for byte
 func TestGateRollbackRestoresTheManifestSetByteForByte(t *testing.T) {
 	for _, tc := range []struct {
 		name string

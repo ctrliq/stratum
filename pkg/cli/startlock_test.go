@@ -44,7 +44,7 @@ func TestStartLockSurvivesUninstall(t *testing.T) {
 	}
 }
 
-// Nothing else proves pkg/cli's lock and the probes' lock are the same file.
+// Nothing else proves the locks are one file; drift lets uninstall replace etcd data mid-start.
 func TestTheStartLockIsTheOneTheProbesRead(t *testing.T) {
 	if startLockPath != version.StartLockPath {
 		t.Fatalf("the package default startLockPath = %q, want version.StartLockPath %q: the probes read the latter",
@@ -142,7 +142,7 @@ func TestRunUpTakesTheStartLockBeforeStaging(t *testing.T) {
 	}
 }
 
-// The host's own node.yaml and control socket are redirected so they cannot decide the test.
+// runUp hands preparation the held data lock's release; nil is refused before node.yaml is saved.
 func TestRunUpPreparesUnderTheHeldDataLock(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {

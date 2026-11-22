@@ -35,7 +35,7 @@ var units = func() []string {
 	return u
 }()
 
-// variables, not constants: tests shorten them.
+// production only reads these: two Runs in one process cannot race. Tests shorten them.
 var (
 	topLevelStopWait = 30 * time.Second
 	topLevelKillWait = 5 * time.Second
@@ -372,7 +372,7 @@ func orphanPreflight(fx *hostEffects) error {
 	return orphanRefusal(supervisorUp, kubeletUp, activeControlPlane, activeHost)
 }
 
-// the process table is authoritative when the supervisor is gone or was asked to stop children.
+// the process table is authoritative: a socket status is only a snapshot, not deletion authority.
 func activeHostProcesses(fx *hostEffects) ([]string, error) {
 	if fx.hostProcessRunning == nil {
 		return nil, unsetEffect("hostProcessRunning")
@@ -788,7 +788,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	if fx.reloadSystemd == nil {
 		return unsetEffect("reloadSystemd")
 	}
-	// the credential goes with the state, so it is read before the removal.
+	// removal destroys the credential, so read it first; mark after it: an early mark loses the Node.
 	var mark func() error
 	var host string
 	if fx.loadNodeState == nil {
@@ -1037,7 +1037,7 @@ func nodeNotice(fx *hostEffects, marked bool) string {
 		"  kubectl delete node %s", st.Hostname)
 }
 
-// lingering pod and container mounts make RemoveAll fail with EBUSY.
+// lingering pod and container mounts: RemoveAll would delete through them and fail with EBUSY.
 
 // the removed directories are never unmounted, so removeTarget can empty a dedicated disk there.
 func unmountState(fx *hostEffects) error {

@@ -37,7 +37,7 @@ func SystemdAvailable() bool {
 	return err == nil
 }
 
-// Renders the reboot unit; only the top-level stratum up is supervised here.
+// Renders the reboot unit for steady-state argv, never a join flag; supervises only stratum up.
 func InstallUnit(argv []string) error {
 	if !SystemdAvailable() {
 		return nil
@@ -480,7 +480,7 @@ func CreateFileExclusively(path string, data []byte, perm os.FileMode) (os.FileI
 // SyncDir fsyncs dir, so an entry added to or removed from it survives a power loss.
 func SyncDir(dir string) error { return syncDir(dir) }
 
-// KillMode=process, not mixed: Delegate=yes puts containerd's shims in this cgroup,
+// KillMode=process, not mixed: shims share this cgroup (Delegate=yes); mixed would SIGKILL them.
 func renderUnit(argv []string) (string, error) {
 	execStart, err := quoteArgv(argv)
 	if err != nil {

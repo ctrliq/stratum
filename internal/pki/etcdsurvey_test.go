@@ -58,7 +58,7 @@ func remoteEtcd(t *testing.T, trustEtcdCA, trustRoot bool, leaf string) string {
 	return net.JoinHostPort(tIP, port)
 }
 
-// Points the dial at a loopback listener; the optional timeout keeps timeout tests fast.
+// Points the dial at to, not the address judged; an optional timeout keeps timeout tests fast.
 func redirectProbeDial(t *testing.T, to string, timeout ...time.Duration) {
 	t.Helper()
 	d := probeTimeout
@@ -95,7 +95,7 @@ func TestSurveyReadsBothAxes(t *testing.T) {
 		{"both anchors, etcd-CA-signed leaf", true, true, true, EtcdStateIssueNew},
 		// The end state, and the only one that closes the etcd trust hole.
 		{"etcd-CA only, etcd-CA-signed leaf", true, false, true, EtcdStateMigrated},
-		// Trust and leaves disagree: a surveyed resting state here is a broken node.
+		// Trust and leaves disagree: on disk not-migrated, but surveyed a resting state is a broken node.
 		{"etcd-CA only, root-signed leaf", true, false, false, EtcdStateUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

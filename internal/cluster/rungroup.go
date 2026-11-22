@@ -19,7 +19,7 @@ var (
 // runGroupUpReset is how long a task run must stay up before its early end resets the backoff.
 const runGroupUpReset = 30 * time.Second
 
-// runGroup owns a node's in-process tasks like internal/supervisor owns its child processes.
+// Owns the node's in-process tasks; wait joins all: KillMode=process would cut mid-flight work.
 type runGroup struct {
 	ctx   context.Context
 	wg    sync.WaitGroup

@@ -18,7 +18,7 @@ const holdLockEnv = "STRATUM_TEST_HOLD_NODE_LOCK"
 
 const holdLockOpEnv = "STRATUM_TEST_HOLD_NODE_LOCK_OP"
 
-// Helper process: re-executed to hold the node lock as a second process, until killed.
+// Helper process: holds the node lock as a second process, until killed or the parent dies.
 func TestHelperHoldNodeLock(t *testing.T) {
 	path := os.Getenv(holdLockEnv)
 	if path == "" {
@@ -37,7 +37,7 @@ func TestHelperHoldNodeLock(t *testing.T) {
 	// Keeps the *os.File reachable, or its finalizer would close the fd and drop the lock.
 	defer release()
 	fmt.Println("held")
-	// Not select {}: a cgo-free binary parked everywhere dies of the runtime's deadlock detector.
+	// Not select {}: a parked cgo-free binary hits the deadlock detector; a syscall counts as running.
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
@@ -49,7 +49,7 @@ func holdNodeLockInChild(t *testing.T, op string) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// cmd keeps the pipe write end open until Wait, so the holder survives cleanup.
+	// cmd keeps the write end open until Wait, so the holder holds until killed or the parent dies.
 	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func holdNodeLockInChild(t *testing.T, op string) *exec.Cmd {
 
 const holdRawFlockEnv = "STRATUM_TEST_HOLD_RAW_NODE_LOCK"
 
-// Helper process: holds a raw flock and records only its pid, like a released binary.
+// Helper process: holds a raw flock, pid only, like a released binary, until killed or parent dies.
 func TestHelperHoldRawNodeLock(t *testing.T) {
 	path := os.Getenv(holdRawFlockEnv)
 	if path == "" {
@@ -87,7 +87,7 @@ func TestHelperHoldRawNodeLock(t *testing.T) {
 	}
 	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }()
 	fmt.Println("held")
-	// Not select {}: a cgo-free binary parked everywhere dies of the runtime's deadlock detector.
+	// Not select {}: a parked cgo-free binary hits the deadlock detector; a syscall counts as running.
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
@@ -99,7 +99,7 @@ func holdRawFlockInChild(t *testing.T) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// cmd keeps the pipe write end open until Wait, so the holder survives cleanup.
+	// cmd keeps the write end open until Wait, so the holder holds until killed or the parent dies.
 	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}

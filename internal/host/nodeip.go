@@ -12,7 +12,7 @@ type NodeIPChoice struct {
 	Source string
 }
 
-// state outranks config: a config edit for the next node must not move this one on restart.
+// state outranks config; every start path must use this, or a new cert follows the wrong NIC.
 func ResolveNodeIP(flag, config, state string, detect func() (string, error)) (NodeIPChoice, error) {
 	return resolveNodeIP([]NodeIPChoice{
 		{flag, "--node-ip"},
@@ -58,7 +58,7 @@ func resolveNodeIP(sources []NodeIPChoice, detect func() (string, error)) (NodeI
 	return NodeIPChoice{ip, "autodetected"}, nil
 }
 
-// CheckNodeIP refuses a node IP kubelet --node-ip could not register, naming it.
+// Refuses what kubelet --node-ip cannot register; interface membership is the kubelet's check.
 func CheckNodeIP(ip string, dualStack bool) error {
 	parts := strings.Split(ip, ",")
 	switch {
@@ -96,7 +96,7 @@ func CheckNodeIP(ip string, dualStack bool) error {
 	return nil
 }
 
-// The name reads after "is", as in `"127.0.0.1" is a loopback address`.
+// Valid addresses only (zero Addr answers "", zones left to the caller); the name reads after "is".
 func UnreachableKind(a netip.Addr) string {
 	a = a.Unmap()
 	switch {

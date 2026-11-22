@@ -140,7 +140,7 @@ func resolveToken(flag, file string) (string, error) {
 	return strings.TrimSpace(os.Getenv(tokenEnvVar)), nil
 }
 
-// CIS and STIG set root's umask to 027 or 077, which locks out non-root containers.
+// CIS/STIG umasks (027/077) lock out non-root containers; secrets carry explicit 0600/0700 modes.
 const nodeUmask = 0o022
 
 // Not applied root-wide: restore writes 0666 files and relies on the caller's umask.
@@ -382,7 +382,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 					"(`stratum etcdctl member list`)", ha.JoinIntentPath())
 			}
 		}
-		// A held fence refuses the start before anything on the host changes.
+		// A held fence refuses the start; a take no apiserver answers is skipped, not failed.
 		releaseKeyFence, ferr := takeCISKeyMintFence(cfg)
 		if ferr != nil {
 			releaseDataLock()
@@ -418,7 +418,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 	return nil
 }
 
-// Wraps the whole preparation: the mint runs inside PrepareController, unseen from here.
+// The mint runs inside PrepareController; fence only if a secret is missing and admin.conf exists.
 func takeCISKeyMintFence(cfg *cluster.ClusterConfig) (*k8sutil.MaintenanceLease, error) {
 	prof, err := profile.ForNode(cfg.ProfileName())
 	if err != nil {
@@ -455,7 +455,7 @@ func missingSharedSecret(prof profile.Profile) bool {
 	return false
 }
 
-// The joined control plane's registration is waited out by the controller's node task.
+// Seams for runUp wiring tests: stub the blocking supervisor call and the host-mutating prepare.
 var (
 	installUnit         = host.InstallUnit
 	runWorkerFn         = cluster.RunWorker
@@ -468,7 +468,7 @@ var (
 	resolveJoinNodeIP         = cluster.ResolveJoinNodeIP
 )
 
-// A restart cannot leave a profile off: the apiserver reads files only that profile writes.
+// Wires the engine's backup-evidence reader into the publisher; only this file can join them.
 func runControllerWithEvidenceSampler(ctx context.Context, cfg *cluster.ClusterConfig, st *cluster.NodeState) error {
 	return cluster.RunController(ctx, cfg, st, backupEvidenceSampler)
 }
@@ -514,7 +514,7 @@ func (o runUpOptions) profileName() (string, error) {
 	return "", nil
 }
 
-// Refuses before the payload is staged or the SELinux labels are forgotten.
+// Refuses a start that names a different profile than the saved state records, or none at all.
 func refuseDroppedProfile(prev *cluster.NodeState, want string) error {
 	have := prev.ProfileName()
 	switch {
@@ -589,7 +589,7 @@ func refuseWorkerRestartProfileChange(o runUpOptions) error {
 	return cluster.RefuseWorkerProfileChange(st, name)
 }
 
-// upConfigPath resolves --config to an absolute path; the unit's ExecStart starts with / as cwd.
+// Absolute (the unit's cwd is /); a missing non-default config is refused: missing means defaults.
 func upConfigPath(configPath string, worker bool) (string, error) {
 	if configPath == "" {
 		return "", nil
@@ -677,7 +677,7 @@ func upFlagConflict(o runUpOptions) error {
 		"and --worker joins a workload-only node with --server. Use one or the other", strings.Join(bad, ", "))
 }
 
-// A var so tests can point it at a temp dir; uninstall may remove RunDir beneath it.
+// A var for tests; beside RunDir, which uninstall removes — never delete the lock file itself.
 var startLockPath = version.StartLockPath
 
 var forgetSELinuxLabels = selinux.ForgetLabels
@@ -733,7 +733,7 @@ func alreadyJoinedDecision(st *cluster.NodeState, loadErr error, localPins func(
 		"cluster (its CA is %s; --discovery-token-ca-cert-hash names %s) — %s", pins[0], want, remedy)
 }
 
-// A state save can publish node.yaml before its durability is confirmed.
+// With a surviving journal and no local etcd data, resume the join: a member restart needs a WAL.
 func alreadyJoinedWithIntentDecision(st *cluster.NodeState, loadErr error, localPins func() []string, want string, pending bool, dataDir string) (bool, error) {
 	asMember, err := alreadyJoinedDecision(st, loadErr, localPins, want)
 	if err != nil || !asMember || !pending {
@@ -774,7 +774,7 @@ func recordsLargerEtcdCluster(st *cluster.NodeState) bool {
 		(st.EtcdState == "existing" || st.EtcdHasPeers || strings.Contains(st.EtcdInitialCluster, ","))
 }
 
-// A stale socket file refuses the connection, so this means serving, not merely existing.
+// etcd ignores initial-cluster flags on member data; require a nonempty WAL or it may start fresh.
 func requireLocalEtcdMember(dir string) error {
 	walDir := filepath.Join(dir, "member", "wal")
 	entries, err := os.ReadDir(walDir)
@@ -836,7 +836,7 @@ const (
 	containerdDrainPoll  = 500 * time.Millisecond
 )
 
-// The HA join and controller preparation must run under a handler, so a signal stops them.
+// Keys on containerd, not etcd/apiserver ports: control-plane containers survive supervisor stops.
 func runningNodeError(supervisorRunning, containerdOrphaned bool) error {
 	switch {
 	case supervisorRunning:
@@ -849,7 +849,7 @@ func runningNodeError(supervisorRunning, containerdOrphaned bool) error {
 	}
 }
 
-// Reports spec.selinux: false before staging, which runs before the config is validated.
+// A stale socket file left by a crash refuses the connection; a successful dial proves a listener.
 func sockLive(path string) bool {
 	c, err := net.DialTimeout("unix", path, 500*time.Millisecond)
 	if err != nil {
@@ -859,7 +859,7 @@ func sockLive(path string) bool {
 	return true
 }
 
-// Kubernetes does not auto-approve kubelet-serving CSRs; the operator's approver signs them.
+// spec.selinux: false in the config this start reads; staging runs before the config is validated.
 func stageOptOut(o runUpOptions) bool {
 	name, _ := o.profileName()
 	if o.worker {
@@ -913,7 +913,7 @@ func controllerConfig(path string, profileName string) (*cluster.ClusterConfig, 
 	return cfg, nil
 }
 
-// Validated as the API server would, before anything on the host is touched.
+// Kubernetes never auto-approves kubelet-serving CSRs; only the operator's approver signs them.
 func checkProfileOperator(cfg *cluster.ClusterConfig, p profile.Profile) error {
 	if !p.RequiresOperator || cfg.OperatorEnabled() {
 		return nil
@@ -924,7 +924,7 @@ func checkProfileOperator(cfg *cluster.ClusterConfig, p profile.Profile) error {
 		"logs/exec/top cluster-wide. Remove spec.operator: false, or drop the profile", p.Name)
 }
 
-// An incomplete membership would otherwise start a new single-member cluster over its data.
+// spec.node from the worker flags, validated as the API server would, before the host is touched.
 func (o runUpOptions) nodeSpec() (cluster.NodeSpec, error) {
 	labels, err := cluster.ParseKeyValues("--node-label", o.nodeLabels)
 	if err != nil {

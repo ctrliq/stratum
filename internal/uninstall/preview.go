@@ -37,7 +37,7 @@ type PreviewReport struct {
 	Items   []PreviewItem `json:"items" jsonschema:"the conditional effects, fixed layout items first"`
 }
 
-// package variables: the MCP handler builds no hostEffects value; tests stub these.
+// read-only probes, safe to share as a package variable: the MCP handler builds no hostEffects.
 type Probes struct {
 	LegacyHostConfig         func() (string, bool)
 	TrustedPodCIDRs          func() ([]string, error)

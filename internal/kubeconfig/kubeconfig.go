@@ -70,7 +70,7 @@ func Write(e Entry, server string) error {
 	return atomicfile.WriteFile(out, b, 0o600)
 }
 
-// Cert rotation uses this to keep the endpoint ha-repoint recorded (the per-node LB).
+// Cert rotation uses this to keep the endpoint ha-repoint recorded (the cluster VIP).
 func CurrentServer(file string) (string, error) {
 	cfg, err := clientcmd.LoadFromFile(file)
 	if err != nil {
@@ -122,7 +122,7 @@ func NodeServerURL(server, vip string) string {
 	return fmt.Sprintf("https://127.0.0.1:%d", version.APIServerPort)
 }
 
-// kube-vip's kubeconfig targets the local apiserver, never the VIP it manages.
+// Bring-up passes the node record's server; rotations pass what CurrentServer read.
 func GenerateAll(host, server string, vip bool) error {
 	var entries []Entry
 	for _, leaf := range kubeconfigLeaves {
@@ -174,6 +174,7 @@ func legacyKubeVipKubeconfig() string {
 	return filepath.Join(version.KubeconfigDir, "kube-vip.kubeconfig")
 }
 
+// Targets the local apiserver: kube-vip's election client must not depend on the VIP it manages.
 func WriteKubeVip() error {
 	server := fmt.Sprintf("https://127.0.0.1:%d", version.APIServerPort)
 	for _, f := range []string{version.KubeVipKubeconfig(), legacyKubeVipKubeconfig()} {

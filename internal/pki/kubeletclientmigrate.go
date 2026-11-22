@@ -40,7 +40,7 @@ const (
 
 // KubeletClientTrust is this node's kubelet client trust.
 type KubeletClientTrust struct {
-	// In kubelet-client-ca-bundle.crt: Anchors are absent from ca-bundle.crt, Roots shared.
+	// In the kubelet bundle: Anchors are kubelet-client CAs absent from ca-bundle.crt; Roots shared.
 	Anchors []*x509.Certificate
 	Roots   []*x509.Certificate
 	Other   []*x509.Certificate

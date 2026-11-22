@@ -42,7 +42,7 @@ type destructiveOut struct {
 	Warnings []string `json:"warnings,omitempty" jsonschema:"steps that did not complete while the work itself succeeded; a result carrying them is partial, so done is false"`
 }
 
-// Operations rewrite the same host state, so no two may run at once; opMu is their sole exclusion.
+// Operations rewrite the same host state, so no two may run at once; opMu alone spans a whole call.
 var opMu sync.Mutex
 
 // run holds opMu and buffers progress; on the stdio transport os.Stdout is the JSON-RPC stream.
@@ -85,7 +85,7 @@ func invalidateConnectors(connectors ...*kube.Connector) {
 	}
 }
 
-// Handlers call no operation except through it; each writes progress to its io.Writer, not stdout.
+// Handlers call operations only through it; all but removeRestoreCopies write progress to a writer.
 type destructiveDeps struct {
 	upgradeNode             func(io.Writer, upgrade.NodeOptions) error
 	upgradeCluster          func(io.Writer, upgrade.ClusterOptions) error
@@ -96,7 +96,7 @@ type destructiveDeps struct {
 	migrateEtcdCA           func(io.Writer, certs.EtcdCAOptions) error
 	migrateEtcdCACluster    func(context.Context, io.Writer, certs.EtcdCAOptions) error
 	migrateKubeletCA        func(io.Writer, certs.KubeletCAOptions) error
-	migrateKubeletCACluster func(context.Context, io.Writer, certs.KubeletCAOptions) error
+	migrateKubeletCACluster func(context.Context, io.Writer, certs.KubeletCAOptions) error // may be nil in test deps: refusals stop at the validator; an acceptance case must set it
 	restoreLocalSeed        func(io.Writer, string) error
 	removeRestoreCopies     func([]etcdsnap.RestoreCopy) ([]etcdsnap.RestoreCopy, error)
 	rejoinEtcd              func(context.Context, io.Writer, string, bool) error
@@ -447,7 +447,7 @@ type CertsRotateCAIn struct {
 // caPhases is shared with the CLI via internal/certs so the two cannot drift.
 var caPhases = certs.CARotatePhases
 
-// Connectors are invalidated after every phase; a phase may rewrite their kubeconfig inputs.
+// Cluster phases run on this node's super-admin.conf; connectors are invalidated after every phase.
 func CertsRotateCAHandler(conn ...*kube.Connector) sdk.ToolHandlerFor[CertsRotateCAIn, destructiveOut] {
 	return certsRotateCAWith(destructiveOps, conn...)
 }
@@ -766,7 +766,7 @@ func HARepointHandler(conn *kube.Connector, other ...*kube.Connector) sdk.ToolHa
 		if in.Cilium {
 			action = "repoint Cilium cluster-wide at " + in.VIP
 		}
-		// The repoint rewrites the kubeconfigs the server's connector caches, so drop the cache.
+		// The node repoint rewrites kubeconfigs the connectors cache, so drop the caches however it ends.
 		defer invalidateConnectors(append([]*kube.Connector{conn}, other...)...)
 		var cs kubernetes.Interface
 		if in.Cilium {

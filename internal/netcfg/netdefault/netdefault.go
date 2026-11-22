@@ -1,4 +1,4 @@
-// Package netdefault holds the cluster network's built-in defaults. It imports nothing.
+// Package netdefault holds network defaults and imports nothing: netcfg and nodestate import it.
 package netdefault
 
 const (

@@ -38,7 +38,7 @@ func upgradeHolder() string {
 
 var errLeaseTaken = maintlease.ErrTaken
 
-// Doubtful, not lost, after one missed renewal window; a same-holder renewal clears it.
+// A missed window is only doubtful; a takeover is lost for good; a same-holder renewal clears it.
 type leaseGuard struct {
 	mu        sync.Mutex
 	lastRenew time.Time

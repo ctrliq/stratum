@@ -250,7 +250,7 @@ const annDynamicallyProvisioned = "pv.kubernetes.io/provisioned-by"
 
 const localPathProvisioner = "rancher.io/local-path"
 
-// The only node path allowed is the directory local-path made for the PV's claim.
+// The one node path allowed is local-path's directory for the claim; it reaches nothing but itself.
 func nodePathSource(pv *corev1.PersistentVolume) string {
 	switch {
 	case pv.Spec.HostPath != nil:
@@ -444,7 +444,7 @@ func templateVolumeName(template map[string]any) string {
 	return name
 }
 
-// Reads a claim's class as the PV controller does; nil matches any class.
+// Reads a claim's class like the PV controller; nil can get the default class, so it matches any.
 func claimTemplateClass(template map[string]any) *string {
 	if ann, found, _ := unstructured.NestedString(template, "metadata", "annotations", corev1.BetaStorageClassAnnotation); found {
 		return &ann
@@ -642,7 +642,7 @@ func checkContainerSecrets(container map[string]any) error {
 	return nil
 }
 
-// iscsi is live at the pinned kubelet; the rest are refused so a restored plugin reopens no leak.
+// iscsi is live; csi and flexVolume reach node-local drivers; the rest are gone in-tree plugins.
 var volumeSecretRefs = []struct{ source, field string }{
 	{"iscsi", "secretRef"},
 	{"csi", "nodePublishSecretRef"},

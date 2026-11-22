@@ -108,7 +108,7 @@ func firewalldState() (bool, error) {
 	}
 }
 
-// Never reloads firewalld: under the iptables backend a reload flushes Cilium's rules.
+// No reload (iptables reloads flush Cilium's rules); warns, not fails: working nodes must not stop.
 func TrustPodCIDRs(_ string) {
 	running, err := firewalldState()
 	if err != nil {

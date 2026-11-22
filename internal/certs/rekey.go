@@ -70,7 +70,7 @@ func unfinishedCARotation(ctx context.Context, cs kubernetes.Interface) (bool, e
 	return cm.Data["complete"] != "true", nil
 }
 
-// Refuses a re-key while a CA rotation or CA migration has staged key material.
+// Refuses a re-key while material is staged; rotate-ca --cluster and migrate-etcd-ca bypass it.
 func GuardRekey() error { return guardRekey(carotateKeyStaged, carotateKeyMigration) }
 
 // GuardRekey with the caller's clientset.

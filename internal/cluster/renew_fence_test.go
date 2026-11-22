@@ -22,7 +22,7 @@ func redirectVar(t *testing.T, v *string, value string) {
 	t.Cleanup(func() { *v = old })
 }
 
-// runOneTick advances the fake clock to exactly one renewal tick, then cancels and joins the loop.
+// runOneTick waits for the tick's work, then cancels; a file captures stderr (a pipe can block).
 func runOneTick(t *testing.T, interval time.Duration) string {
 	t.Helper()
 	old := certRenewInterval

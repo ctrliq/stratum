@@ -155,7 +155,7 @@ func TestServeControlRefusesLegacyListener(t *testing.T) {
 	stop()
 }
 
-// Pins the wire contract itself: every request and reply crosses two releases in an upgrade.
+// Pins the wire contract; plain maps, not structs: Go's json matches keys case-insensitively.
 func TestControlSocketWireFormatIsReadableAcrossReleases(t *testing.T) {
 	dir := shortSockDir(t)
 	socket := filepath.Join(dir, "control.sock")

@@ -667,7 +667,7 @@ func TestObserveListenerClosedRejectsOtherDialErrors(t *testing.T) {
 
 // Pins the node connector's request timeout; without it the default would be 30s.
 func TestNodeConnector_CarriesTheServersRequestTimeout(t *testing.T) {
-	// A is the node's admin.conf, B the operator's --kubeconfig.
+	// A is the node's admin.conf, B the operator's --kubeconfig; building a connector contacts nothing.
 	adminConf := kubetest.Kubeconfig(t, &rest.Config{Host: "https://admin.example:6443"})
 	operatorConf := kubetest.Kubeconfig(t, &rest.Config{Host: "https://operator.example:6443"})
 	t.Setenv("KUBECONFIG", operatorConf)
@@ -774,7 +774,7 @@ func TestUpgradePlanAndApply_DescribeTheSameCluster(t *testing.T) {
 	})
 }
 
-// Credential groups, in the least-privilege guide's order; a row moves only on a wiring change.
+// Credential groups, guide order; 'none' means no client, but deeper ops may touch admin.conf.
 var (
 	toolsOnTheConfigurableConnector = []string{
 		"context_list",

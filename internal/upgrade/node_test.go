@@ -301,7 +301,7 @@ func TestEnsureNodeUpSupervisorDown(t *testing.T) {
 	}
 }
 
-// The upgrade refuses while a host process is down, and offers rollback only when one can recover.
+// Refuses while a host process is down; a starting node would roll back past the last good one.
 func TestEnsureNodeUpKubeletInactive(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, true, map[string]bool{"containerd": true})
@@ -700,7 +700,7 @@ func TestCopyFileAppliesModePastUmask(t *testing.T) {
 	}
 }
 
-// The identical-content fast path must not fire through a symlink.
+// The identical-content fast path must not fire through a symlink; callers promise a regular dst.
 func TestCopyFileReplacesSymlink(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "stratum.bak-ts")

@@ -215,7 +215,7 @@ func profileFlag(name string) string {
 	return "--profile " + name
 }
 
-// Leaves exactly the bundle's shared secrets on this node, removing and reporting the rest.
+// A joining node has no saved state or retained etcd data, so every secret file here is a leftover.
 func settleJoinSecrets(prof profile.Profile, b bundleProfile, applied bool, dir string, out io.Writer) error {
 	mismatch := requireSharedSecrets(prof, b)
 	keep := map[string]bool{}
@@ -478,7 +478,7 @@ func addMemberIfEtcdDataDirEmpty(dir string, add func() (string, error), remove 
 	return initial, nil
 }
 
-// An add error does not prove the add never committed: the member list decides, never a guess.
+// Only possibly-lost replies belong here; an outright etcd refusal is returned by the caller.
 func reconcileAmbiguousMemberAdd(fx joinEffects, etcdIPs []string, hostname, peer string, addErr error) (string, error) {
 	members, err := fx.clusterMembers(etcdIPs)
 	if err != nil {
@@ -790,7 +790,7 @@ func prepareControlPlaneJoin(ctx context.Context, o JoinOptions, etcdDataDir str
 	return commitJoinMembership(ctx, prepared)
 }
 
-// Only prepareJoinNode builds a populated one; the zero value is inert and the commit refuses it.
+// A caller that prepared must run the commit: the value holds the etcd data-dir lock until then.
 type preparedJoin struct {
 	fx          joinEffects
 	etcdIPs     []string
@@ -1323,7 +1323,7 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 		}
 		return nil, joinPostAddFailure(p.fx, p.etcdIPs, p.journal, err)
 	}
-	// The journal outlives the save: a crash before etcd's first WAL leaves a node.yaml `up` refuses.
+	// From the member-add to the save nothing consults ctx: a stop inside would orphan a voting member.
 	if err := ctx.Err(); err != nil {
 		fmt.Printf("stratum HA join: a signal was received while the etcd member was being added; "+
 			"the member-add and the node-state save were completed before stopping — "+
@@ -1333,7 +1333,7 @@ func commitJoinMembership(ctx context.Context, p preparedJoin) (*nodestate.NodeS
 	return p.st, nil
 }
 
-// Removes the member by ID only when the member list names it and the quorum gate authorises.
+// Removes by ID after the quorum gate authorises; a missing ID is read from the member list.
 func joinPostAddFailure(fx joinEffects, etcdIPs []string, j *joinIntent, cause error) error {
 	recorded := fmt.Sprintf("the intent file %s keeps the member's identity and resumable phase (name %q, peer %s, ID %d, phase %s)",
 		joinIntentPath, j.MemberName, j.PeerURL, j.MemberID, j.Phase)

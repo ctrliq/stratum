@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Exported so the CRD's OpenAPI pattern can be pinned to this; the anchors are load-bearing.
+// Exported to pin the CRD's OpenAPI pattern; OpenAPI patterns search, so anchors are load-bearing.
 const TargetPattern = `^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`
 
 var targetRe = regexp.MustCompile(TargetPattern)

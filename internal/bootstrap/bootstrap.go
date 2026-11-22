@@ -1,4 +1,4 @@
-// Package bootstrap fetches the kube-public cluster-info ConfigMap for join and rotation consumers.
+// Package bootstrap fetches cluster-info: join authenticates the payload, rotation only the peer.
 package bootstrap
 
 import (

@@ -338,7 +338,7 @@ func TestPostStartKeepsRenewalAndSnapshotsThroughASlowApiserver(t *testing.T) {
 	})
 }
 
-// stubNodeTask points the node-registered task's seams at counting stubs, like stubLoops.
+// The task's whole host reach is stubbed: no kubectl, kubelet or stratum binary runs.
 func stubNodeTask(t *testing.T, interval, giveUp time.Duration, wantHost string, registered func(context.Context, string) bool) (labels, stamps, checks func() int32) {
 	t.Helper()
 	oldStart, oldLabelOwn := startEtcdGrowthRecorder, labelOwnNode

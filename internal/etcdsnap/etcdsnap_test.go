@@ -114,7 +114,7 @@ func TestPruneNoopWhenUnderKeep(t *testing.T) {
 	}
 }
 
-// captureStdout swaps the process's stdout for a pipe, the only way to see a fmt.Printf.
+// Swaps stdout for a pipe to see Printf; the reader keeps a full pipe from deadlocking the writer.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -761,7 +761,7 @@ func TestSaveContext_WritesItsWarningsToTheWriter(t *testing.T) {
 	}
 }
 
-// A compile-level pin: the writer cannot be observed through a function that prints nothing.
+// Compile-level pin: SaveConfig prints nothing and writes const ConfigPath; run via saveConfigTo.
 func TestSaveConfig_TakesTheWriterTheWriteTierHandsIt(t *testing.T) {
 	var _ func(io.Writer, Config) error = SaveConfig
 	path := confPath(t)

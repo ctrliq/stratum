@@ -1,4 +1,4 @@
-// Package cli builds the stratum command tree: the engine's one deliberate public API surface.
+// Package cli builds the stratum command tree, the engine's public API, leaking no internal type.
 package cli
 
 import (
@@ -122,7 +122,7 @@ func StampedVersions() ComponentVersions {
 	}
 }
 
-// The linker does not report a dead -X variable, so an unstamped binary fails silently here.
+// The linker does not report a dead -X variable; this guard is where an unstamped binary is caught.
 func refuseUnstampedBuild(op string) error {
 	if version.K8sVersion != "unknown" {
 		return nil

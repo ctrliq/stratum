@@ -1,4 +1,4 @@
-// Package selinux registers Stratum's file contexts and keeps its files labelled.
+// Package selinux registers Stratum's file contexts and labels its files; a no-op when disabled.
 package selinux
 
 import (

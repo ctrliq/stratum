@@ -23,7 +23,7 @@ const ConfigPath = "/etc/stratum/snapshot.conf"
 // Config separates effective S3 settings (env overlaid) from credentials as persisted on disk.
 type Config struct {
 	Retain int
-	// Dir comes from the cluster config (snapshot.conf carries none).
+	// Dir comes from the cluster config (snapshot.conf carries none); callers pick none of their own.
 	Dir string
 	// S3 is the effective target: the file's values with the environment overlaid.
 	S3 objstore.Target
@@ -35,7 +35,7 @@ type Config struct {
 	fromFile bool
 }
 
-// FromFile reports whether this Config was read from the on-disk conf rather than defaults.
+// FromFile reports whether the on-disk conf was read; false means defaults or the caller's base.
 func (c Config) FromFile() bool { return c.fromFile }
 
 // HasPersistedCredentials reports whether the loaded conf carried S3 credentials of its own.
@@ -63,7 +63,7 @@ func LoadConfigOrContext(ctx context.Context, base Config) (Config, error) {
 	return loadConfigFromContext(ctx, ConfigPath, base)
 }
 
-// loadConfigFrom is LoadConfigOr on an explicit path; the file is opened once.
+// loadConfigFrom is LoadConfigOr on an explicit path; one open, so a delete cannot yield defaults.
 func loadConfigFrom(path string, missing Config) (Config, error) {
 	return loadConfigFromContext(context.Background(), path, missing)
 }
@@ -132,7 +132,7 @@ func applyEnv(c *Config) {
 	}
 }
 
-// SaveConfig writes ConfigPath at 0600 from the persisted credentials, never the env overlay.
+// SaveConfig writes ConfigPath from persisted credentials; w follows the write tier and is quiet.
 func SaveConfig(w io.Writer, c Config) error { return saveConfigTo(ConfigPath, c) }
 
 // saveConfigTo is SaveConfig against an explicit path.

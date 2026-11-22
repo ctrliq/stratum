@@ -90,7 +90,7 @@ func (g *Guard) Err() error {
 	return g.compatible.Err()
 }
 
-// A successful same-holder renewal is a compare-and-swap, so it proves nobody held the lease.
+// Proves nobody held it since the last renewal; ErrTaken is permanent, others are retryable.
 func (g *Guard) Confirm(ctx context.Context) error {
 	if g == nil {
 		return nil
@@ -148,7 +148,7 @@ func (g *Guard) Observe(err error, now time.Time) {
 	}
 }
 
-// An API 4xx other than timeout, conflict or throttling; anything else may still clear.
+// ErrTaken, or a 4xx other than timeout, conflict or throttling; anything else may clear.
 func terminalAPIError(err error) bool {
 	if errors.Is(err, ErrTaken) {
 		return true
@@ -161,7 +161,7 @@ func terminalAPIError(err error) bool {
 	return c >= 400 && c < 500 && c != http.StatusRequestTimeout && c != http.StatusConflict && c != http.StatusTooManyRequests
 }
 
-// Refuses a live lease held by another run; takes an expired one by resourceVersion CAS.
+// Returns the Guard to check before destructive steps; refuses a live lease, takes an expired one.
 func Acquire(ctx context.Context, cs kubernetes.Interface, namespace, name, holder, op string) (*Guard, func(), error) {
 	return AcquireWithClock(ctx, cs, namespace, name, holder, op, Now)
 }
@@ -384,7 +384,7 @@ func transientTakeError(err error) bool {
 	return false
 }
 
-// Retries transient failures within the budget; a refusal naming a live holder stops at once.
+// Retries transient failures; a landed take shows up as this holder's lease, so no double-take.
 func acquireRetrying(ctx context.Context, cs kubernetes.Interface, namespace, name, holder string) (*Guard, func(), error) {
 	if AcquireRetryBudget <= 0 {
 		return Acquire(ctx, cs, namespace, name, holder, "maintenance run")

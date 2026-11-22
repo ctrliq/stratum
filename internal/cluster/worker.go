@@ -57,7 +57,7 @@ type WorkerOptions struct {
 	ConfigNode NodeSpec
 }
 
-// ResolveJoinNodeIP checks a join's node IP before anything is written, so a refusal writes none.
+// Call before staging the payload: the join saves this address, so a refusal writes nothing.
 func ResolveJoinNodeIP(nodeIP, configNodeIP string, dual bool) (host.NodeIPChoice, error) {
 	choice, err := host.ResolveNodeIP(nodeIP, configNodeIP, "", func() (string, error) { return hostDetectNodeIPs(dual) })
 	if err != nil {

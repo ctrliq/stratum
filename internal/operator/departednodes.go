@@ -1,4 +1,4 @@
-// Only the node itself can write the uninstall mark; the admission policy refuses everyone else.
+// A worker cannot delete its own Node, so it marks it; only the node itself can write the mark.
 package operator
 
 import (
@@ -30,7 +30,7 @@ type departure struct {
 	renewed time.Time
 }
 
-// A renewal after the mark means a kubelet ran again: a reinstalled worker re-registers.
+// A renewal after the mark means a reinstall; deleting a control-plane Node drops its etcd member.
 func departedWorkers(nodes []corev1.Node, leases map[string]coordinationv1.Lease, now time.Time) (gone, stale []departure) {
 	for _, n := range nodes {
 		mark, ok := n.Annotations[k8sutil.UninstalledAnnotation]
@@ -116,7 +116,7 @@ func reconcileDepartedWorkers(ctx context.Context, cs kubernetes.Interface, now 
 	}
 	gone, stale := departedWorkers(nodes.Items, leases, now)
 	if len(gone) > 0 {
-		// Only the admission policy makes a mark the node's own.
+		// Only the admission policy makes a mark the node's own; taking a stale one off deletes nothing.
 		if err := markPolicyEnforced(ctx, cs); err != nil {
 			log.Printf("stratum-operator: departed workers: not deleting %d marked Node(s): %v", len(gone), err)
 			gone = nil

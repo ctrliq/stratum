@@ -56,7 +56,7 @@ type LocalOptions struct {
 type LocalResult struct {
 	Node      string
 	Artifacts []Artifact
-	// False means len(Artifacts) is a floor, never the store's total.
+	// True means an exact total, an empty store included; false means len(Artifacts) is a floor.
 	Complete bool
 	// The condition, never a raw storage error or a credential.
 	Warnings []string

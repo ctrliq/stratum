@@ -1,4 +1,4 @@
-// Package comps speaks systemctl-shaped verbs to the supervisor's control socket.
+// Package comps drives the host processes; the control plane is static pods in internal/staticpod.
 package comps
 
 import (
@@ -18,7 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Not every node runs every entry; callers filter by IsActive.
+// In start/restart order, which upgrade and uninstall reuse; not every node runs every entry.
 var Units = []string{
 	"containerd",
 	"kubelet",
@@ -34,7 +34,7 @@ func dial(op, name string) error {
 	return err
 }
 
-// Call sites assume systemctl semantics: return only once the replacement runs.
+// Return once the replacement runs, as the ported call sites assume; "all" stays fire-and-forget.
 func Restart(name string) error {
 	if Normalize(name) == "all" {
 		return dial("restart", name)
@@ -172,7 +172,7 @@ func SupervisorRunning() bool {
 	return err == nil
 }
 
-// An error means liveness is unknown; callers that would delete state must refuse to act.
+// Error means liveness unknown: refuse to delete state; payload-path match ignores a distro twin.
 func ProcessRunning(name string) (bool, error) {
 	pids, err := processPIDs("/proc", name, 1)
 	return len(pids) > 0, err

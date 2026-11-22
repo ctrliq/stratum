@@ -32,7 +32,7 @@ func oldCopyTime() time.Time {
 	return time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
 }
 
-// Built by hand: the loop's writer sits in a package this one cannot import.
+// Built by hand: the loop's recording is unexported, so this fixture pins the file contract itself.
 func seedAttempts(t *testing.T, seed func(*Attempts)) {
 	t.Helper()
 	withEvidencePaths(t)

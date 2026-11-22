@@ -186,7 +186,7 @@ func registerProfiles(cfg rootConfig) error {
 	return profile.SetRegistered(ps)
 }
 
-// Records validation errors instead of returning them, so commands that render nothing still run.
+// Records validation errors, so commands that render nothing still run; up validates and refuses.
 func registerProfilesForRender(cfg rootConfig) {
 	profile.SetRegistrationError(registerProfiles(cfg))
 }

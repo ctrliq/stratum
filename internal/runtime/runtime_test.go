@@ -1269,7 +1269,7 @@ func TestEnsureConfigAndWriteNodeConfigs_LeaveTheRestartToTheCaller(t *testing.T
 	}
 }
 
-// failDirSync: the real writer renames the file into place and then reports ErrNotDurable.
+// failDirSync: the real writer renames, then ErrNotDurable; overrides a global, no parallel tests.
 func failDirSync(t *testing.T) {
 	t.Helper()
 	syncDir = func(string) error { return syscall.EIO }

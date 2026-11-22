@@ -38,7 +38,7 @@ func Lock(dir string) (release func(), err error) {
 	}, nil
 }
 
-// The probe takes the lock for an instant, so AcquireStartLock retries briefly around it.
+// Starting or running (the supervisor tells which); AcquireStartLock retries past this brief flock.
 func StartLockHeld() (bool, error) { return startLockHeldAt(version.StartLockPath) }
 
 func startLockHeldAt(path string) (bool, error) {
@@ -57,7 +57,7 @@ func startLockHeldAt(path string) (bool, error) {
 	return false, nil
 }
 
-// Call with the data lock held: it closes the gap between a start's preparation and its supervisor.
+// Call with the data lock held: a start begun after the check fails on it, so no window remains.
 func RefuseStartInProgress(op, doing string, supervisorRunning func() bool, startLockHeld func() (bool, error)) error {
 	if supervisorRunning() {
 		return nil

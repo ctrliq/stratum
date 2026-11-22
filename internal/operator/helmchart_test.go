@@ -183,7 +183,7 @@ func redirectHelmCacheDir(t *testing.T) {
 	t.Cleanup(func() { version.HelmCacheDir = prev })
 	t.Setenv("HELM_CONTENT_CACHE", filepath.Join(version.HelmCacheDir, "content"))
 	t.Setenv("HELM_REPOSITORY_CACHE", filepath.Join(version.HelmCacheDir, "cache"))
-	// the migration must not read the host's real legacy cache in a test.
+	// an absent path makes the migration a no-op; a test may point the seam at its own state.
 	legacyPrev := legacyHelmCacheDir
 	legacyHelmCacheDir = filepath.Join(t.TempDir(), "absent")
 	t.Cleanup(func() { legacyHelmCacheDir = legacyPrev })
@@ -271,7 +271,7 @@ func TestHelmChartRepoFetchStopsOnLeadershipCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("leadership cancellation left reconciliation waiting on the chart's 30s fetch timeout")
 	}
-	// join reconciliation before the test restores its shared Helm state.
+	// the select above may end in a bare t.Error; join even then, before cleanups restore Helm state.
 	t.Cleanup(func() { <-done })
 }
 
@@ -653,7 +653,7 @@ func wantFullNoteLogged(t *testing.T, logs *bytes.Buffer, when string) {
 	}
 }
 
-// an uninstall-incomplete message here would hold the finalizer and the kept volume's data.
+// an uninstall-incomplete message here would hold the finalizer and risk the kept volume's data.
 func TestDeletionRemovesFinalizerWhenNoteListsOnlyKeptObjects(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	logs := captureOperatorLog(t)

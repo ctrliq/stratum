@@ -55,7 +55,7 @@ func hasUnverifiedTaint(n *corev1.Node) bool {
 	return slices.ContainsFunc(n.Spec.Taints, func(t corev1.Taint) bool { return t.Key == UnverifiedTaint })
 }
 
-// Removed is false for a forced re-verify of an untainted node; Cordoned reports a drain's cordon.
+// Removed is false for a forced re-verify of an untainted node; Cordoned is the node's cordon.
 type ReleaseResult struct {
 	Removed  bool
 	Cordoned bool

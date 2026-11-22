@@ -14,7 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The interrupted run's stamp: its kept backups stay the rollback baseline.
+// Kept backups are the baseline; payload-added host binaries, images and certs are not covered.
 type upgradeMarker struct {
 	TS     string `json:"ts"`
 	Target string `json:"target"`
@@ -69,7 +69,7 @@ func writeUpgradeMarker(w io.Writer, m upgradeMarker) error {
 	return nil
 }
 
-// Best-effort: after a complete rollback the kept backups are the node's state.
+// Best-effort where a leftover is harmless; elsewhere removeUpgradeMarker, stopping on its error.
 func clearUpgradeMarker(w io.Writer) {
 	if err := removeUpgradeMarker(); err != nil {
 		fmt.Fprintf(w, "  WARN: %v\n"+
@@ -93,7 +93,7 @@ func refuseOtherInterruptedUpgrade(m *upgradeMarker, target string) error {
 		"then retry; nothing was changed", m.Target, m.TS)
 }
 
-// A path a rollback could not restore from is an error, never "kept".
+// An error, never "kept": a rollback could not restore from it, or a symlink leads out of the set.
 func keptBackup(bak string, dir bool) (bool, error) {
 	fi, err := os.Lstat(bak)
 	if errors.Is(err, fs.ErrNotExist) {

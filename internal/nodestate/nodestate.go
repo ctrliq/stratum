@@ -20,14 +20,14 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// VIP is the kube-vip control-plane address. Empty means no VIP.
+// VIP is the kube-vip control-plane address. Empty means no VIP: clients target this node directly.
 type VIP struct {
 	Address   string `json:"address,omitempty"`
 	Interface string `json:"interface,omitempty"` // empty: kube-vip's default-route choice
 	BGP       bool   `json:"bgp,omitempty"`       // BGP mode instead of ARP (routed networks)
 }
 
-// NodeState is what this node is; the supervisor renders etcd's argv from it each start.
+// The supervisor renders etcd's argv from NodeState each start, so rejoin restarts etcd only.
 type NodeState struct {
 	Role               string `json:"role"` // controller | worker
 	Hostname           string `json:"hostname"`
@@ -56,7 +56,7 @@ type NodeState struct {
 	EtcdHasPeers bool `json:"etcdHasPeers,omitzero"`
 	// The cluster config file the controller was started with; empty until recorded.
 	ConfigPath string `json:"configPath,omitempty"`
-	// spec.node.runtimeHandlers: extra containerd runtime handlers by name.
+	// spec.node.runtimeHandlers: maps handler name to the absolute path of its OCI runtime binary.
 	RuntimeHandlers map[string]string `json:"runtimeHandlers,omitempty"`
 	// spec.node.labels and spec.node.taints; a taint is key[=value]:Effect.
 	NodeLabels map[string]string `json:"nodeLabels,omitempty"`
@@ -121,12 +121,12 @@ func SaveState(st *NodeState) error {
 // A mutate returns this when it changed nothing, and the owner writes nothing.
 var ErrUnchanged = errors.New("nodestate: the mutation changed nothing")
 
-// Mutate re-reads the state under the etcd data lock, runs mutate on it, and writes it back.
+// Mutate re-reads the state under the etcd data lock and writes it back; on refusal, retry later.
 func Mutate(mutate func(*NodeState) error) error {
 	return mutateState(mutate, SaveState)
 }
 
-// MutateSave is Mutate with the caller's writer for the final persist.
+// MutateSave is Mutate with the caller's writer, run under the same etcd data lock.
 func MutateSave(mutate func(*NodeState) error, save func(*NodeState) error) error {
 	return mutateState(mutate, save)
 }

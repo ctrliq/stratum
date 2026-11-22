@@ -43,7 +43,7 @@ type fakeCluster struct {
 	confirmed   int
 	confirmFail map[string]bool
 
-	// What each node's etcd has ADOPTED, updated only on restart; Survey reads this, not the disk.
+	// etcd loads its CA pool once at startup; Survey reads what a restart adopted, never the disk.
 	running map[string]string
 
 	healthErr, quorumErr error

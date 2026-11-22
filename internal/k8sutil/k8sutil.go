@@ -78,7 +78,7 @@ func Step(w io.Writer, msg string) { fmt.Fprintf(w, "\n\033[1;32m==>\033[0m %s\n
 
 // Taken at the command seams only; internal/ha helpers run mid-fence and must not refuse it.
 const (
-	// Spelled as a literal too in internal/certs, internal/upgrade and the leases RBAC grant.
+	// An older binary follows only the literal, repeating in internal/certs, internal/upgrade and ha.
 	maintenanceLeaseName      = "stratum-cluster-maintenance"
 	maintenanceLeaseNamespace = "kube-system"
 )
@@ -190,7 +190,7 @@ func EtcdctlEnv() []string {
 	}
 }
 
-// The etcd CA bundle, not ca.crt; the list's security shape lives in pki.EtcdTrustFile.
+// Prefers pki.EtcdTrustFile's etcd CA bundle; ca.crt remains a blind fallback for a PKI-less node.
 func etcdCACertPath() string {
 	if p, err := pki.EtcdTrustFile(); err == nil {
 		return p
@@ -290,7 +290,7 @@ func WaitNodeRegistered(ctx context.Context, hostname string, attempts int) erro
 	return fmt.Errorf("node %s did not register", hostname)
 }
 
-// Bounded by ctx so the caller's run group joins shutdown against a hung apiserver.
+// Best-effort, needs admin.conf (control-plane); ctx frees the run group from a hung apiserver.
 func LabelControlPlaneContext(ctx context.Context, node string) error {
 	return KubectlContext(ctx, "label", "node", node, ControlPlaneLabel+"=true", "--overwrite").Run()
 }

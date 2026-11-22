@@ -235,7 +235,7 @@ func TestAlreadyJoinedDecision(t *testing.T) {
 		{"different cluster: refuse", ctrl, nil, []string{ours}, theirs, false, []string{"different cluster", ours, theirs, "stratum uninstall"}},
 		{"no readable CA: cannot tell, refuse", ctrl, nil, nil, ours, false, []string{"no readable", "without --join", "stratum uninstall"}},
 		{"a worker: --join would convert it, refuse", worker, nil, []string{ours}, ours, false, []string{`"worker"`, "control plane", "stratum uninstall"}},
-		// Reports spec.selinux: false in the config before staging, which runs before validation.
+		// State that cannot be read is not no state: refuse, never the fresh-join path that wipes etcd.
 		{"unreadable state: refuse, do not treat as fresh", nil, unreadable, []string{ours}, ours, false, []string{"cannot read", "permission denied", "stratum uninstall"}},
 		{"malformed state: refuse, do not treat as fresh", nil, malformed, []string{ours}, ours, false, []string{"cannot read", "mapping values", "stratum uninstall"}},
 		// ...and a bad pin is a bad pin, not "a different cluster".
@@ -486,7 +486,7 @@ func TestUpRefusesAnExplicitEmptyConfig(t *testing.T) {
 	root := NewRootCommand()
 	root.SetArgs([]string{"up", "--config", ""})
 	err := root.Execute()
-	// A worker's unit never carries --config, so only an operator's command line reaches this.
+	// A unit an earlier build wrote may carry an empty --config, so the refusal says how to rewrite it.
 	if err == nil || !strings.Contains(err.Error(), "--config is empty") || !strings.Contains(err.Error(), "sudo systemctl start stratum") {
 		t.Fatalf("up --config \"\" = %v, want the empty-config refusal", err)
 	}
@@ -863,7 +863,7 @@ func TestRunUpInstallsTheSteadyStateUnitOnControlPlaneRestart(t *testing.T) {
 	}
 }
 
-// Restored without its datastore, it must not start on an empty dir while peers hold quorum.
+// A relative --config would name a different file after reboot: the service starts with / as cwd.
 func TestRunUpPersistsAnAbsoluteConfigPath(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -910,7 +910,7 @@ func TestRunUpPersistsAnAbsoluteConfigPath(t *testing.T) {
 	}
 }
 
-// A relative --config would name a different file after reboot: the service starts with / as cwd.
+// Restored without its datastore, it must not start on an empty dir while peers hold quorum.
 func TestRunUpRefusesToStartAnEmptyEtcdOverRecordedMembership(t *testing.T) {
 	const (
 		single = "cp1=https://10.0.0.1:2380"
@@ -1161,7 +1161,7 @@ func TestPublishedJoinStateWithIntentResumesOnlyBeforeEtcdStarts(t *testing.T) {
 	}
 }
 
-// A hardened caller umask must not reach the directories stage or up create.
+// A minimal self-extracting payload (a ZIP with one bin/ member) that assets.StageFrom accepts.
 func writePayload(t *testing.T) string {
 	t.Helper()
 	exe := filepath.Join(t.TempDir(), "stratum")
@@ -1186,7 +1186,7 @@ func writePayload(t *testing.T) string {
 	return exe
 }
 
-// A minimal self-extracting payload (a ZIP with one bin/ member) that StageFrom accepts.
+// A hardened caller umask must not reach the directories stage or up create.
 func TestNodeUmaskReachesStageThenUp(t *testing.T) {
 	root := NewRootCommand()
 	stage, _, err := root.Find([]string{"stage"})
@@ -1263,7 +1263,7 @@ func statMode(t *testing.T, path string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// Restored without its datastore, it must not start on an empty dir while peers hold quorum.
+// Wired into the real cobra dispatch: stage fails with ErrNoPayload after the hook has run.
 func TestNodeUmaskHookFiresOnExecute(t *testing.T) {
 	old := syscall.Umask(0o077)
 	defer syscall.Umask(old)

@@ -87,7 +87,7 @@ type makeRule struct {
 	commands      []string
 }
 
-// Only literal prerequisite names resolve; shell comments run no gate.
+// Conditionals in a recipe are read, not evaluated, so a rule returns every line it spells.
 func makefileCommands(target string) ([]string, error) {
 	rules, err := parseMakefile()
 	if err != nil {
@@ -1163,7 +1163,7 @@ func TestPinPolicyGateEnforcesEqualityOnReleaseBranches(t *testing.T) {
 	})
 }
 
-// Libraries equalized so a failure names only kubectl; one minor ahead untested.
+// One minor ahead is untested on purpose: the repo's tighter rule may forbid what upstream allows.
 func TestPinPolicyGateChecksKubectlWithinUpstreamSkew(t *testing.T) {
 	kube, err := kubernetesVersion()
 	if err != nil {

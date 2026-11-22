@@ -104,7 +104,7 @@ type Network struct {
 	Cilium        *Cilium `json:"cilium,omitempty"`
 }
 
-// Cilium is spec.network.cilium: cluster-wide, so every control plane's file must carry it.
+// Cluster-wide, so every control plane's file must carry the same block.
 type Cilium struct {
 	MTU                   int      `json:"mtu,omitempty"`
 	Devices               []string `json:"devices,omitempty"`
@@ -131,7 +131,7 @@ func (c *Cilium) Settings() addons.CiliumSettings {
 	}
 }
 
-// An interface name, with Cilium's trailing "+" wildcard allowed.
+// An interface name with Cilium's '+' wildcard; nothing that can break out of the ConfigMap value.
 var ciliumDevice = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}\+?$`)
 
 // Dual-stack needs the resolved network, so CheckStack does that part of the check.
@@ -415,7 +415,7 @@ func parseConfigWithRead(path string, read func(string) ([]byte, error)) (*Clust
 	if err := c.Spec.Dashboard.validate(c.OperatorEnabled()); err != nil {
 		return nil, nil, fmt.Errorf("%s: spec.dashboard.%w", path, err)
 	}
-	// time.NewTicker panics on a non-positive interval, taking the whole `stratum up` down.
+	// time.NewTicker panics on a non-positive interval; the run group restart-loops the task forever.
 	if c.Spec.Snapshot.IntervalHours < 0 {
 		return nil, nil, fmt.Errorf("%s: spec.snapshots.intervalHours %d is negative", path, c.Spec.Snapshot.IntervalHours)
 	}

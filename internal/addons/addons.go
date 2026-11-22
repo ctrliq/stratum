@@ -18,7 +18,7 @@ var corednsYAML []byte
 //go:embed manifests/local-path.yaml
 var localPathYAML []byte
 
-// Rendered from the Cilium chart by tools/gen-cilium-manifest.sh at the pinned version.
+// Kube-proxy replacement only: Cilium is the sole dataplane, so no kpr=false variant exists.
 //
 //go:embed manifests/cilium-kpr-true.yaml
 var ciliumKPRTrueYAML []byte
@@ -95,7 +95,7 @@ const (
 	StorageNone      = "none"
 )
 
-// RenderCilium fills node-independent values; per-cluster inputs stay as sentinels.
+// Fills all but the apiserver sentinels, left for FillAPIServer; dualStack sets enable-ipv6.
 func RenderCilium(dualStack bool, s CiliumSettings) []byte {
 	m := bytes.ReplaceAll(ciliumKPRTrueYAML, []byte(registrySentinel), []byte(ImageRegistry))
 	m = pinCiliumOperatorToOneReplica(m)
@@ -112,7 +112,7 @@ func RenderCiliumStaged(s CiliumSettings) []byte {
 	return bytes.ReplaceAll(m, []byte(`enable-ipv6: "false"`), []byte(`enable-ipv6: "`+EnableIPv6Sentinel+`"`))
 }
 
-// The operator pod's hostPorts and anti-affinity admit one pod per node.
+// One operator per node; at one replica 50% maxUnavailable rounds to 0, and the surge pod wedges.
 func pinCiliumOperatorToOneReplica(m []byte) []byte {
 	m = bytes.ReplaceAll(m, []byte("\n  replicas: 2\n"), []byte("\n  replicas: 1\n"))
 	return bytes.ReplaceAll(m, []byte("maxUnavailable: 50%"), []byte("maxUnavailable: 100%"))
@@ -123,7 +123,7 @@ var (
 	CorednsVersion   = "unknown"
 	LocalPathVersion = "unknown"
 
-	// ImageRegistry is the namespace every bundled manifest pulls from; no upstream registry.
+	// The namespace every bundled manifest pulls from; unstamped builds resolve nowhere, on purpose.
 	ImageRegistry = "unknown"
 )
 

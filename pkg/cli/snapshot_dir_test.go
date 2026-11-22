@@ -39,7 +39,7 @@ func realTempDir(t *testing.T) string {
 	return dir
 }
 
-// The commands print with fmt.Printf to the process stdout, so a pipe swap is the only capture.
+// Prints with fmt.Printf to process stdout; the reader goroutine avoids a full-pipe deadlock.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()

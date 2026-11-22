@@ -39,7 +39,7 @@ var (
 	interfaceAddrs = net.InterfaceAddrs
 )
 
-// The error names no source to pin: each caller's hint names the sources it reads.
+// The UDP dial sends no packet; it only makes the kernel pick the default route's source address.
 func detectIPv4() (string, error) {
 	conn, err := dialUDP("udp", "8.8.8.8:80")
 	if err == nil {
@@ -119,7 +119,7 @@ func nodeIPv6() (string, error) {
 	return "", fmt.Errorf("dual-stack requested but no routable node IPv6 found; assign a ULA/global IPv6 to the node, or pin both addresses as a v4,v6 pair")
 }
 
-// The literals live once in version; uninstall's delete list names them from here.
+// The first three alias version's paths, which uninstall's delete list names from here.
 var (
 	ModulesLoadFile = version.ModulesLoadFile
 	SysctlConf      = version.SysctlConf
@@ -129,7 +129,7 @@ var (
 	KubeletDir = "/var/lib/kubelet"
 )
 
-// The paths bring-up writes outside stratum's three roots; uninstall deletes each one.
+// Bring-up's paths outside the three roots; uninstall covers each, the kubelet dir only when empty.
 func Footprint() []string {
 	return append([]string{
 		version.ModulesLoadFile,
@@ -241,7 +241,7 @@ var runMount = func(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// With stacked mounts on /, the one no other / mount is stacked on decides, by parent ID.
+// The topmost / mount decides by parent ID, not list order; the root names itself as parent.
 func rootPrivate(mountinfo string) (private, ok bool) {
 	type rootMount struct {
 		id, parent string
@@ -275,7 +275,7 @@ func rootPrivate(mountinfo string) (private, ok bool) {
 
 const privateRootNote = "containerd refuses host-path mounts with propagation, such as Cilium's, on a private /"
 
-// Non-systemd inits leave / private; containerd refuses Cilium's mounts on it.
+// Non-systemd inits leave / private; a slave / is left alone: shared cuts it off from its mounts.
 func EnsureRootShared() {
 	mi, err := os.ReadFile(procMountinfo)
 	if err != nil {

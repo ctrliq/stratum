@@ -35,7 +35,7 @@ var errConfigChanged = errors.New("kubernetes configuration changed while loadin
 
 const configSnapshotAttempts = 3
 
-// rawConfig is nil for in-cluster; unreadable names files that digested as absent.
+// rawConfig is nil for in-cluster; unreadable tells a mid-copy rotation from a missing file.
 type resolved struct {
 	rest       *rest.Config
 	source     Source
@@ -200,7 +200,7 @@ func digestFile(h io.Writer, path string) error {
 	return err
 }
 
-// Embedded credentials ride the kubeconfig digest; a relative ref resolves against its file.
+// Embedded credentials ride the kubeconfig digest; sorted and deduped so map order cannot reach it.
 func referencedCredentialFiles(raw *clientcmdapi.Config, sources []string) []string {
 	if raw == nil {
 		return nil

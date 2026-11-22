@@ -96,7 +96,7 @@ func Preflight(target string, nodes []Node) string {
 	if cpTotal > 0 && cpReady <= cpTotal/2 {
 		return fmt.Sprintf("control-plane not quorum-healthy: %d/%d CP nodes Ready", cpReady, cpTotal)
 	}
-	// With a control plane already down, draining a Ready one must still leave a majority.
+	// Draining a Ready one must still leave a majority: the rollout reaches them in API order.
 	if cpReady < cpTotal && cpReady-1 <= cpTotal/2 {
 		return fmt.Sprintf("control-plane has no margin: %d/%d CP nodes Ready, and draining another would leave "+
 			"etcd without quorum; bring the NotReady control plane back (or upgrade it on its own with "+

@@ -23,7 +23,7 @@ type Process struct {
 	// Evaluated on each (re)start instead of Args; etcd membership may change between starts.
 	ArgsFn func() []string
 	Env    []string
-	// Gates each start; without it the apiserver crash-loops through RBAC bootstrap.
+	// Gates each start; without it apiserver clients crash-loop while the apiserver bootstraps RBAC.
 	WaitFor func(context.Context) error
 	// If the component exits while this socket is live, an orphan owns it: report Foreign.
 	Socket string
@@ -140,7 +140,7 @@ type state struct {
 	foreign     bool               // last exit left Process.Socket served by another process
 }
 
-// Time up before a foreign-socket finding clears; a var so tests can shorten it.
+// Staying up this long clears the finding without proving the child owns the socket; var for tests.
 var foreignSettle = 5 * time.Second
 
 func supervise(ctx context.Context, st *state, opts Options) {
@@ -219,7 +219,7 @@ func runOnce(ctx context.Context, st *state, opts Options) error {
 		return context.Canceled
 	}
 	st.cancelStart = cancel
-	// st.proc is swapped, never mutated, so p's slices are safe to use outside the lock.
+	// A value copy: reload swaps slice headers, never backing arrays, so p is safe outside the lock.
 	p := st.proc
 	stMu.Unlock()
 	defer func() {

@@ -687,7 +687,7 @@ func TestRemoveLegacyKubeletDir(t *testing.T) {
 	}
 }
 
-// a dir short enough that a socket below it fits sun_path (about 104 bytes).
+// t.TempDir() is too long: a socket below the dir must fit sun_path (about 104 bytes).
 func shortKubeletDir(t *testing.T, fx *hostEffects) string {
 	t.Helper()
 	d, err := os.MkdirTemp("", "kb")
@@ -3322,7 +3322,7 @@ func TestForeignRuntimesTakesARuntimeForForeignWithAKubeletOrAPod(t *testing.T) 
 			}
 		},
 	}
-	// each name alone, under system.slice and with no pod: an agent run by Docker.
+	// each name alone, under system.slice with no pod: Docker's agent, or a kubelet with no pods yet.
 	for _, comm := range []string{"kubelet", "k3s", "k3s-server", "rke2-agent", "kubelite", "k0s", "cilium-agent", "cilium-envoy"} {
 		cases[comm] = func(t *testing.T, h *datapathHost) { addProc(t, h, "900", comm) }
 	}
@@ -3562,7 +3562,7 @@ func TestRemoveKubepodsCgroupsReportsARuntimeWhenTheQueryMadeTheTree(t *testing.
 	}
 }
 
-// a bare name is looked up on the caller's PATH, which a slow entry can stall.
+// a slow entry on the caller's PATH stalls the bare-name lookup outside cmdTimeout.
 func TestToolCmdIsBuiltFromTheResolvedPath(t *testing.T) {
 	fixed := t.TempDir()
 	writeTool(t, fixed, "tool", "true")

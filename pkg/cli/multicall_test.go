@@ -52,7 +52,7 @@ func TestRunMulticallSuccessReturnsNil(t *testing.T) {
 	}
 }
 
-// the path rides in the env, not argv: these are DisableFlagParsing passthroughs.
+// the path rides in the env, not argv; the dump is a file, not stdout, to avoid a pipe deadlock.
 func writeEnvDumpBin(t *testing.T, name string) string {
 	t.Helper()
 	dir := t.TempDir()

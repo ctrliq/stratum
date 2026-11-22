@@ -162,7 +162,7 @@ func TestUpgradePlanRequiresATarget(t *testing.T) {
 	}
 }
 
-// an etcd snapshot is the whole cluster; the destination is an operator decision.
+// an etcd snapshot is the whole cluster; an endpoint would carry the object-store credentials.
 func TestSnapshotScheduleAdvertisesNoDestination(t *testing.T) {
 	tool, ok := advertised(t, tierSession(t, true, false))["snapshot_schedule"]
 	if !ok {
@@ -183,7 +183,7 @@ func TestSnapshotScheduleAdvertisesNoDestination(t *testing.T) {
 	}
 }
 
-// the join URL is published in cluster-info, so it is derived from the node, not accepted.
+// the join URL, where a joiner sends its bootstrap credential, is published in cluster-info.
 func TestTokenCreateAdvertisesNoServerURL(t *testing.T) {
 	tool, ok := advertised(t, tierSession(t, true, false))["token_create"]
 	if !ok {

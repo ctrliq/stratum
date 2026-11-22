@@ -13,7 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A worker learns the service range only from its join line.
+// A worker learns the range only from its join line, printed past the token's handover boundary.
 func TestWorkerJoinLineCarriesANonDefaultServiceCIDR(t *testing.T) {
 	orig := version.NetConfigPath
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")

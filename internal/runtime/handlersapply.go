@@ -28,7 +28,7 @@ type ApplyHandlersResult struct {
 	Unloaded  bool
 }
 
-// ApplyHandlers records the drop-in as unloaded even on a write error, so a retry restarts.
+// ApplyHandlers writes the drop-in; a caller runs RequireHandlersImport first or it is never read.
 func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (ApplyHandlersResult, error) {
 	var out ApplyHandlersResult
 	behind := loadedHandlerNames()

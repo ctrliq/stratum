@@ -59,7 +59,7 @@ var (
 	}
 )
 
-// WriteFile writes data to path, replacing whatever is there.
+// A symlink at path is replaced; a caller that must keep one checks before writing, not after.
 func WriteFile(path string, data []byte, perm os.FileMode) error {
 	return WriteFileWith(path, data, perm, Seams{})
 }
@@ -117,7 +117,7 @@ func writeSynced(tmp *os.File, data []byte, perm os.FileMode, syncFile func(*os.
 	return tmp.Close()
 }
 
-// CreateExclusive links instead of renaming: a rename would replace a key that appeared since.
+// Links (a rename would replace a key); FileInfo survives failed syncs, naming the inode to remove.
 func CreateExclusive(path string, data []byte, perm os.FileMode) (os.FileInfo, error) {
 	return CreateExclusiveWith(path, data, perm, Seams{})
 }

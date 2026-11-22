@@ -83,7 +83,7 @@ func withFakeKubectl(t *testing.T, f *fakeKubectl) *restoreEffects {
 	return fx
 }
 
-// seedEffects wires the production kubectl chain, so a test runs the real kubectl binary.
+// seedEffects wires the production kubectl chain: k8sutil.KubectlContext, --server on the seed.
 func seedEffects(fx *restoreEffects) {
 	fx.baseKubectl = k8sutil.KubectlContext
 	fx.kubectlCallTimeout = defaultKubectlCallTimeout
@@ -230,7 +230,7 @@ func TestCoreDNSSkippedWhenTheClusterHasNone(t *testing.T) {
 	}
 }
 
-// The local-path provisioner watches PVCs; it lives only where default storage is local-path.
+// The local-path provisioner watches PVCs; a restored claim stays unprovisioned until it restarts.
 func TestLocalPathProvisionerIsRestartedInItsOwnNamespace(t *testing.T) {
 	f := &fakeKubectl{}
 	fx := withFakeKubectl(t, f)

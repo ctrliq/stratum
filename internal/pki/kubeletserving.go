@@ -78,7 +78,7 @@ func SignedByAny(leaf *x509.Certificate, cas []*x509.Certificate) bool {
 	return false
 }
 
-// Moves a serving cert no CA in roots signed aside; the apiserver would refuse it anyway.
+// Moves aside a cert no root signed (the apiserver refuses it); no roots or unreadable: no move.
 func HealKubeletServingCert(certDir string, roots []*x509.Certificate) (string, error) {
 	if len(roots) == 0 {
 		return "", nil

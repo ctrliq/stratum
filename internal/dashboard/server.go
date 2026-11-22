@@ -1,4 +1,4 @@
-// Package dashboard serves the embedded SPA, an apiserver reverse proxy, and bearer-token sessions.
+// Package dashboard serves the SPA, an apiserver proxy, and sessions; each user acts as themselves.
 package dashboard
 
 import (
@@ -33,7 +33,7 @@ type server struct {
 	origin   originPolicy
 
 	nodeShell bool
-	// The payload image the SPA must use for the node-shell debug pod.
+	// The payload image the SPA must use for the node-shell debug pod; empty when the feature is off.
 	nodeShellImage string
 	// True when the browser reaches the dashboard over TLS, whichever side terminates it.
 	https   bool

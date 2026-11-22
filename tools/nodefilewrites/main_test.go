@@ -112,7 +112,7 @@ func (c *captured) all() string { return c.stdout.String() + c.stderr.String() }
 
 func TestPlainWriteFileInWriterPackageFailsLint(t *testing.T) {
 	withGuarded(t, "internal/pki")
-	// writer.go, not pki.go: the real pki.go is in the package-level allowlist.
+	// writer.go, not pki.go: the real pki.go is in the per-file allowlist.
 	writeTree(t, map[string]string{"internal/pki/writer.go": rawWriteFile})
 
 	var out captured
@@ -460,7 +460,7 @@ func TestArgvForms(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			withGuarded(t, "internal/pki")
-			// writer.go, not pki.go: the real pki.go is in the package-level allowlist.
+			// writer.go, not pki.go: the real pki.go is in the per-file allowlist.
 			writeTree(t, map[string]string{
 				"internal/pki/writer.go": rawWriteFile,
 				"internal/pki/clean.go":  atomicWrite,

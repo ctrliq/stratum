@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-// An independent fixture: regenerating the golden cannot silently update it.
+// An independent fixture the golden cannot update: compilation only, not runtime or compatibility.
 func TestReleasedPkgCLIConsumerStillCompiles(t *testing.T) {
 	cmd := exec.Command("go", "build", "-o", filepath.Join(t.TempDir(), "consumer.a"),
 		filepath.Join("testdata", "released_consumer.go"))

@@ -34,14 +34,14 @@ const cuNamespace = "kube-system"
 // Held beside upgradeLeaseName so the --cluster maintenance operations exclude one another.
 const maintenanceLeaseName = "stratum-cluster-maintenance"
 
-// The Job's deadline adds a best-effort slice for the stamp and backstop uncordon.
+// Best-effort +5 for stamp/uncordon; past the budget the Job can fail though the upgrade landed.
 const (
 	upgradeWorkBudget  = 15 * time.Minute
 	upgradeJobDeadline = upgradeWorkBudget + 5*time.Minute
 	upgradeJobPolls    = int(upgradeJobDeadline / (5 * time.Second))
 )
 
-// The import itself waits up to three minutes for containerd, then reads the payload's archives.
+// Up to 3 min on containerd; each Job loads only its own node; the bound limits Job creation only.
 const (
 	imageImportDeadline    = 10 * time.Minute
 	imageImportPolls       = int(imageImportDeadline / (5 * time.Second))
@@ -351,7 +351,7 @@ func pinStagedBinary(o *ClusterOptions) error {
 	return nil
 }
 
-// The first control plane's add-on manifests roll out to every node at once, Cilium included.
+// Nodes cannot pull the images: no anonymous pulls from the mirror, no registry when airgapped.
 func importImagesOnEveryNode(ctx context.Context, w io.Writer, cs kubernetes.Interface, nodes []Node, o ClusterOptions) error {
 	k8sutil.Step(w, "Importing the upgrade binary's images on every node")
 	ok, err := stagedImportsImages(ctx, o.From)
@@ -501,7 +501,7 @@ func upgradeOneNode(w io.Writer, ctx context.Context, cs kubernetes.Interface, n
 		if err != nil {
 			return nodeUpgraded, fmt.Errorf("check %s's stratum build: %w (not drained)", n.Name, err)
 		}
-		// The annotation alone decides; the Node status can still show the old kubelet version.
+		// The annotation alone decides; a leftover one refuses later upgrades to another target.
 		switch {
 		case current && n.InProgress != o.Target:
 			// Not the full path, which would drain a node already on the target build.
@@ -586,7 +586,7 @@ func upgradeOneNode(w io.Writer, ctx context.Context, cs kubernetes.Interface, n
 		ActiveDeadline: upgradeJobDeadline,
 		PollAttempts:   upgradeJobPolls,
 		Kind:           "per-node upgrade",
-		// Drained by now, so a critical pod may evict only DaemonSets; evicted, the check fails closed.
+		// Drained by now, so a critical pod may evict only what the drain left: DaemonSets.
 		Critical: true,
 	})
 	if err == nil {
@@ -650,7 +650,7 @@ func legacyJobName(node string) string {
 	return n
 }
 
-// By label, not name: an older binary left its Job under the previous truncated name.
+// By label; older binaries predate the lease, so the fence is the node lock, not this sweep.
 func clearStaleUpgradeJobs(w io.Writer, ctx context.Context, cs kubernetes.Interface, node string) error {
 	mine := jobName(node)
 	list, err := cs.BatchV1().Jobs(cuNamespace).List(ctx, metav1.ListOptions{
@@ -764,7 +764,7 @@ func preflightNodePrereqs(ctx context.Context, w io.Writer, cs kubernetes.Interf
 			Kind:           "prerequisite check",
 		})
 		if errors.Is(err, nodejob.ErrLogUnread) {
-			// The exit status still answers; an untrusted kubelet serving certificate stops only the log.
+			// The exit status still answers: a kubelet cert the upgrade itself repairs stops only the log.
 			fmt.Fprintf(w, "  WARN: %s: %v; any warnings its check printed are not shown\n", n.Name, err)
 		} else if err != nil {
 			return fmt.Errorf("prerequisite check on %s: %w (logs: kubectl -n %s logs job/%s)", n.Name, err, cuNamespace, jobName(n.Name))
@@ -841,7 +841,7 @@ var runExitCodeLogs = nodejob.RunExitCodeLogs
 // nodejob.Run; a var so a test can answer for a node.
 var runImageImport = nodejob.Run
 
-// Only "unknown flag" means no; a probe failing otherwise would skip an import the binary can do.
+// Only "unknown flag" means no; the rollout pins one build, so this node's copy answers for all.
 var stagedImportsImages = func(ctx context.Context, path string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

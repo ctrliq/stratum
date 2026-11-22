@@ -410,7 +410,7 @@ func TestHelmFlowRecoverFailedUninstallIsReportedAndRetried(t *testing.T) {
 	wantDeployed(t, dyn, 1, "1.0.0")
 }
 
-// The first storage query is the release lookup, the second the history read.
+// Query 2 reads history; a failure must not count as empty: it would uninstall a serving release.
 func TestHelmFlowRecoverFailedHistoryReadNeverUninstalls(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,

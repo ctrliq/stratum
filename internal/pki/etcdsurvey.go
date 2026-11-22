@@ -1,4 +1,4 @@
-// PROCESS-derived survey: one TLS 1.2 handshake reads the live client CA pool and the served leaf.
+// Process-derived survey: files read an unrestarted peer as ready; drop-root on that loses quorum.
 package pki
 
 import (
@@ -55,7 +55,7 @@ func (p EtcdRemoteTrust) State() string {
 	case !p.TrustsRoot && p.LeafUnderEtcdCA:
 		return EtcdStateMigrated
 	default:
-		// Trust and leaves disagree; as a surveyed resting state that is a broken node.
+		// EtcdTrust.State calls this shape not-migrated (a follower mid-phase); surveyed, a broken node.
 		return EtcdStateUnknown
 	}
 }

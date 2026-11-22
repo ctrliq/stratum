@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// The origin check is the ONLY gate on a WebSocket handshake: no CSRF header can be added.
+// A browser cannot add the CSRF header to a WebSocket handshake, so origin is the only gate.
 func TestAllowedOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name         string

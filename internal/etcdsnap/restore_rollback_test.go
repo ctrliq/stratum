@@ -702,7 +702,7 @@ func newFakeEffects(t *testing.T) (*restoreEffects, *fakeNode) {
 		restoreMoveDir: os.Rename,
 	}
 	n.fx = fx
-	// seedKubectl, baseKubectl, compsStatus and compsRestart stay unset on purpose.
+	// seedKubectl, baseKubectl, compsStatus, compsRestart unset on purpose; the sentinel catches a use.
 	return fx, n
 }
 
@@ -755,7 +755,7 @@ func TestUnsetRefusalProbesFailClosed(t *testing.T) {
 	}
 }
 
-// the start gate refuses before anything else; the data lock is released on the way out.
+// The snapshot is deliberately absent: reaching it would mean the gate ran late.
 func TestRestoreRunnerRefusesAStartInProgress(t *testing.T) {
 	t.Parallel()
 	released := false

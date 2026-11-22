@@ -1,6 +1,6 @@
 package upgrade
 
-// Nodes on the old release must hold the new images before the first control plane rolls out.
+// Old-release nodes must hold the images first: the mirror is unreachable from an airgapped node.
 
 import (
 	"context"
@@ -159,7 +159,7 @@ func TestUpgradeClusterSkipsTheImportForAnUpgradeBinaryWithoutIt(t *testing.T) {
 	}
 }
 
-// A failed probe says nothing about the step; stop rather than run without the images.
+// A probe failing other than by flag rejection says nothing; stop rather than run without images.
 func TestUpgradeClusterStopsWhenTheProbeFails(t *testing.T) {
 	cs := fake.NewSimpleClientset(upgradeNodesFixture()...)
 	log := recordJobs(t, nil)

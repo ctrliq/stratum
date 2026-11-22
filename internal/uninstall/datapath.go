@@ -24,7 +24,7 @@ import (
 	"github.com/ctrliq/stratum/internal/toolenv"
 )
 
-// Variables, not constants: tests shorten them.
+// Never written once a Run starts, so two Runs cannot race over them; tests shorten them.
 var (
 	cgroupRemoveWait = 10 * time.Second
 
@@ -62,7 +62,7 @@ func execCmd(stdin, name string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// Built from the resolved path: a bare name is looked up on the caller's PATH.
+// Built from the resolved path: exec resolves a bare name on the caller's PATH, beyond cmdTimeout.
 func toolCmd(ctx context.Context, name string, args ...string) *exec.Cmd {
 	path, err := lookTool(name)
 	cmd := exec.CommandContext(ctx, path, args...)
@@ -114,7 +114,7 @@ func teardownDatapath(w io.Writer, fx *hostEffects) error {
 	return errors.Join(errs...)
 }
 
-// the saved record could not be read, so what is left to detach is not known.
+// marks a failure after which Run keeps DataDir (it may still say what to detach) and carries on.
 var errKeepState = errors.New("keeping the node state")
 
 type netnsRecord struct {
@@ -139,7 +139,7 @@ func goneFromListing(fx *hostEffects, ids func(string) []string, id string, list
 	return err == nil && !slices.Contains(ids(out), id), err
 }
 
-// Saved before any container is stopped, so ownership outlives the containers.
+// Ownership saved before containers stop; a timeout ends the loop: later calls would wait as long.
 func recordStratumNetns(fx *hostEffects, namespaces []string) error {
 	if fx.ctrRun == nil {
 		return unsetEffect("ctrRun")
@@ -274,7 +274,7 @@ func containerNetnsPaths(info string) ([]string, error) {
 	return paths, nil
 }
 
-// containerd's own metadata extension, not an API: anything but the v1 shape is an error.
+// containerd's own record, not an API: anything but v1 errors; "" means a host-network sandbox.
 func sandboxNetnsPath(info string) (string, error) {
 	var sb struct {
 		Extensions map[string]struct {
@@ -479,7 +479,7 @@ func ciliumTCFilters(dump string) [][4]string {
 	return out
 }
 
-// a missing tc is an error: a node with none cannot be told from one that has them.
+// without tcx, clsact filters survive pin deletion; a missing tc is an error, not proof none exist.
 func removeCiliumTCFilters(fx *hostEffects) error {
 	if fx.runCmd == nil {
 		return unsetEffect("runCmd")
@@ -680,7 +680,7 @@ var kubeletFixedSockets = []string{"device-plugins/kubelet.sock"}
 // kubelet's fixed --cert-dir default; its certificate pairs outlive the DataDir wipe.
 const kubeletCertDirRel = "pki"
 
-// only a positive proof removes: unreadable or foreign-signed files are kept.
+// only a positive proof removes; the caller checked nothing below the kubelet dir is mounted.
 func removeStratumSignedKubeletCerts(w io.Writer, certDir string) error {
 	roots, err := pki.KubeletServingRoots()
 	if err != nil || len(roots) == 0 {
@@ -843,7 +843,7 @@ func ciliumCgroupPrograms(show string) [][2]string {
 	return out
 }
 
-// the kernel releases a pinned link from a work queue; re-list before reporting.
+// pre-5.7 agents attach without links (pin deletion detaches nothing); a work queue frees links
 func removeCiliumCgroupPrograms(fx *hostEffects) error {
 	if fx.runCmd == nil {
 		return unsetEffect("runCmd")
@@ -891,7 +891,7 @@ func listCiliumCgroupPrograms(fx *hostEffects) ([][2]string, error) {
 	return ciliumCgroupPrograms(string(out)), nil
 }
 
-// bpftool 7.4 and 7.5 cannot list the root cgroup against newer kernels; fixed in 7.6.
+// bpftool 7.4 fails against tcx/netkit kernels, 7.5.0 against older ones; both fixed in 7.6.
 var errCgroupShowBug = errors.New("this bpftool cannot list the root cgroup's programs")
 
 func cgroupShowBug(err error) bool {
@@ -1230,7 +1230,7 @@ func cgroupExists(root string) (bool, error) {
 	return false, err
 }
 
-// `systemctl is-active` exits 0 for active, 3 for inactive, 4 for no such unit.
+// `systemctl is-active` exits 0 active, 3 inactive (also failed, activating), 4 no such unit.
 func sliceActive(fx *hostEffects, name string) (bool, error) {
 	if fx.runCmd == nil {
 		return false, unsetEffect("runCmd")

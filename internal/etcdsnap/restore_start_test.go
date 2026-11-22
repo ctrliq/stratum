@@ -13,7 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// stratum up drops the data lock before its supervisor is visible; restore refuses in that gap.
+// stratum up drops the data lock before its supervisor shows; the absent snapshot is deliberate.
 func TestRestoreRefusesANodeStartInProgress(t *testing.T) {
 	swap(t, &version.ControlSocket, filepath.Join(t.TempDir(), "absent.sock"))
 	swap(t, &version.DataDir, filepath.Join(t.TempDir(), "stratum"))

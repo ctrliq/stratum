@@ -95,7 +95,7 @@ func existing(data map[string]string) *fakeConfigMaps {
 	}}
 }
 
-// A wholesale replace would destroy keys other writers own; this function owns one key.
+// A wholesale replace would destroy keys others own; this function owns one key, drops jws-*.
 func TestPutClusterInfoKubeconfigPreservesUnknownKeys(t *testing.T) {
 	f := existing(map[string]string{
 		kcKey:           "old kubeconfig",

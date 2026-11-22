@@ -40,7 +40,7 @@ type SnapshotSaveOut struct {
 	Warnings []string `json:"warnings,omitempty" jsonschema:"prune failures the save's prune step returned, as data beside the note; the snapshot itself succeeded"`
 }
 
-// etcdsnap.Save joins name onto dir without confining it; this server usually runs as root.
+// Save joins unconfined; this server usually runs as root; .db-only spares other files in the dir.
 func checkSnapshotName(name, dir string) error {
 	if name == "" {
 		return nil // Save generates a timestamped scheduled name.
@@ -254,7 +254,7 @@ type TokenCreateOut struct {
 	CertKey    string `json:"certKey,omitempty" jsonschema:"control-plane join key, present only when control_plane was set. Also a credential"`
 	// A worker learns these only from its join line; this result is that line's only source.
 	JoinFlags token.JoinFlags `json:"joinFlags"`
-	// token.Issue revokes a minted token unless delivery is reported here.
+	// token.Issue revokes a token unless delivery is reported here; then cleanup is the caller's.
 	Delivered bool   `json:"delivered" jsonschema:"the credentials in this result were handed to the caller and are not revoked"`
 	Note      string `json:"note"`
 }
@@ -308,7 +308,7 @@ func tokenDepsFor(buildClient func() (kubernetes.Interface, error)) tokenDeps {
 	}
 }
 
-// The mint writes what the server's credential must never write, so it rides admin.conf.
+// The mint writes what the server's credential must never write, so it rides super-admin.conf.
 func TokenCreateHandler() sdk.ToolHandlerFor[TokenCreateIn, TokenCreateOut] {
 	return tokenCreateWith(defaultTokenDeps())
 }

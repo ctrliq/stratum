@@ -342,7 +342,7 @@ func TestProxyForwardsTheSessionTokenAndScrubsCallerHeaders(t *testing.T) {
 	req.Header.Set("X-Forwarded-For-Extra", "10.0.0.2")
 	req.Header.Set("Forwarded", "for=10.0.0.1")
 	req.Header.Set(csrfHeader, h.csrf)
-	// Stored non-canonically: Header.Del canonicalises before deleting.
+	// Stored non-canonically: a Del-based prefix scrub would leave this one in place.
 	req.Header["impersonate-uid"] = []string{"1234"}
 
 	resp, err := h.dash.Client().Do(req)
@@ -504,7 +504,7 @@ const (
 const ordinaryPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"ordinary"},` +
 	`"spec":{"containers":[{"name":"c","image":"alpine:3.20"}]}}`
 
-// The shell is a Job whose template carries the same pod; exec/attach match Job-derived pods too.
+// A Job's pods take its generateName plus a suffix, so exec/attach still match by prefix.
 
 // The Job the SPA's NodeShell POSTs.
 const nodeShellJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"generateName":"stratum-node-shell-",` +

@@ -13,7 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Acquire takes the node maintenance lock for op and refuses rather than waits when held.
+// Acquire flocks the lock file for op; the kernel drops the lock when its holder dies.
 func Acquire(op string) (release func(), err error) {
 	f, err := os.OpenFile(version.NodeUpgradeLockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

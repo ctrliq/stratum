@@ -49,7 +49,7 @@ type NodeOptions struct {
 	From         string
 	SoakSec      int
 	SkipSnapshot bool
-	// Check: nil when the node already runs this binary's build, ErrUpgradeNeeded if not.
+	// Check: nil under the installed stratum or an unreplaceable supervisor; else ErrUpgradeNeeded.
 	Check bool
 	// Imports the payload images only, so a node still on the old release holds the new add-on images.
 	ImportImages bool
@@ -153,7 +153,7 @@ func runningSupervisorArgv() ([]string, string, error) {
 	return strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00"), cwd, nil
 }
 
-// The handover restarts stratum up on this config; refuse before the upgraded build would.
+// RollbackNode hands over unguarded: the older build it restores starts on a missing --config.
 func restartConfigMissing(st *nodestate.NodeState) error {
 	if st.Role != "controller" {
 		return nil
@@ -215,7 +215,7 @@ func restartConfigMissing(st *nodestate.NodeState) error {
 	return nil
 }
 
-// A var so a test can keep it off the host's default config.
+// The load only, not `stratum up`'s later profile checks; a var so a test can keep it off the host.
 var restartConfigLoads = func(path string) error {
 	_, err := cluster.LoadConfig(path)
 	return err
@@ -281,7 +281,7 @@ func hostProcsFrom(units []string) []string {
 	return out
 }
 
-// Applies changed args to running host processes without a reboot.
+// Returns which run the new argv; the rest keep the old, gating the legacy-config heal.
 func reloadHostProcs(st *nodestate.NodeState) (map[string]bool, error) {
 	specs := map[string]supervisor.ProcSpec{}
 	for _, p := range cluster.Processes(st, false) {
@@ -328,7 +328,7 @@ func applyHostConfigs(w io.Writer, st *nodestate.NodeState) error {
 	return nil
 }
 
-// Any reload error but ErrReloadUnsupported may mean the new process is not running.
+// Only ErrReloadUnsupported defers; other errors may mean the old process still runs the old argv.
 func hostReloadResult(w io.Writer, err error) error {
 	if errors.Is(err, supervisor.ErrReloadUnsupported) {
 		fmt.Fprintf(w, "  WARN: reload host-process args after upgrade: %v\n         new host-process args apply on the next `stratum up` or reboot\n", err)
@@ -406,7 +406,7 @@ func newestSet(sets map[string][]backupItem) (string, []backupItem) {
 	return best, sets[best]
 }
 
-// A resume restores exactly what this returns, so errors refuse rather than skip.
+// Only NowStamp-shaped stamps count: a stray .bak-zzz cannot become the newest set; errors refuse.
 func scanBackupSets() (map[string][]backupItem, error) {
 	byTS := map[string][]backupItem{}
 	add := func(ts string, it backupItem) { byTS[ts] = append(byTS[ts], it) }
@@ -671,7 +671,7 @@ func stageAndRename(w io.Writer, dst string, mode os.FileMode, write func(io.Wri
 
 func atomicInstall(w io.Writer, src, dst string) error { return copyFile(w, src, dst, 0o755) }
 
-// A backup kept from an earlier run under the same stamp is the original; a resume must keep it.
+// A kept backup is the original; returns "" when dst was absent — the caller records exactly that.
 func backupAndInstall(w io.Writer, dst, src, ts string) (string, error) {
 	bak := dst + ".bak-" + ts
 	kept, err := keptBackup(bak, false)
@@ -721,7 +721,7 @@ func profileConfigBakDir(ts string) string {
 	return filepath.Join(version.DataDir, "upgrade", "cisconfig-bak-"+ts)
 }
 
-// Names the paths the backup considered, so restore knows absent from never-known.
+// Dot-prefixed so no config can collide with it; an older release's rollback reads this record.
 const profileConfigRecordName = ".cisconfig-paths"
 
 // Staged under a name no scan recognises, and renamed in only once every copy succeeded.
@@ -1004,7 +1004,7 @@ func manifestBackup(items []backupItem) string {
 	return ""
 }
 
-// Best-effort: stopping at the first failure would widen the damage INCOMPLETE reports.
+// Best-effort; profile configs first, so the older apiserver finds its own admission configs.
 func restoreAll(w io.Writer, items []backupItem) (failed []string) {
 	for _, it := range restoreOrder(items) {
 		var err error
@@ -1259,7 +1259,7 @@ func targetMismatch(target, from string) error {
 		target, version.K8sVersion, target)
 }
 
-// Refuses an upgrade binary that is not the one the cluster upgrade is rolling out.
+// Reports whether the binary at path carries a payload; a var so tests can answer for a fake one.
 var stagedPayload = func(path string) error {
 	_, err := assets.Names(path)
 	return err
@@ -1301,7 +1301,7 @@ func checkPinnedBuild(o NodeOptions) error {
 	return nil
 }
 
-// Uncordons only a cordon the cluster upgrade made, via the installed binary's path.
+// The suggested command's absolute path survives sudo's secure_path, which finds no bare `stratum`.
 func uncordonWarning(node string, err error) string {
 	return fmt.Sprintf("  WARN: could not check whether %s is still cordoned: %v; "+
 		"if the cluster upgrade cordoned it (you did not cordon it yourself before the upgrade), run: %s kubectl uncordon %s\n",
@@ -1860,7 +1860,7 @@ func RollbackNode(w io.Writer, o RollbackOptions) error {
 		return fmt.Errorf("no .bak-<ts> backup set found (looked in %s, %s, and %s) — nothing to roll back",
 			filepath.Dir(stratumInstallPath), version.BinDir, filepath.Join(version.DataDir, "upgrade"))
 	}
-	// No host backup cannot recover a down unit, and an etcd restore needs kubelet: full guard.
+	// A set with no host backup cannot recover a down unit; an etcd restore needs kubelet: full guard.
 	if !hasHostBackup(items) && !o.DryRun {
 		if err := ensureNodeUp("rollback"); err != nil {
 			return err

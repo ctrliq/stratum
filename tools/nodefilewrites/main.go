@@ -1,4 +1,4 @@
-// Command nodefilewrites is the node-file write rule's lint guard for make lint.
+// Exit 0 clean, 1 raw write found, 2 cannot run: a file the guard cannot vouch for fails the run.
 package main
 
 import (

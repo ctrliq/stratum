@@ -10,7 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// reports whether RemoveContexts would delete anything, so uninstall can say so.
+// reports whether RemoveContexts would delete anything; a policy it cannot list counts as yes.
 func Registered() bool {
 	rs, es, err := removable()
 	if errors.Is(err, errNotInstalled) {
@@ -19,7 +19,7 @@ func Registered() bool {
 	return err != nil || len(rs)+len(es) > 0
 }
 
-// deletes the file contexts and equivalences Stratum registered.
+// deletes each entry only while still exactly as registered; rules first, as semanage requires.
 func RemoveContexts() error { return RemoveContextsWithWriter(os.Stdout) }
 
 // RemoveContextsWithWriter removes owned contexts and reports progress to w.

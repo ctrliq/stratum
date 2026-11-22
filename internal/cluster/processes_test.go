@@ -49,7 +49,7 @@ func TestWorkerKubeletBootstrapFlagsSurviveRestart(t *testing.T) {
 	}
 }
 
-// A controller launches with no --cert-dir: its kubelet keeps the kubelet default.
+// A controller launches with no --cert-dir; --root-dir does not move the kubelet's pki default.
 func TestKubeletServingCertDirFollowsTheLaunchFlags(t *testing.T) {
 	dir := t.TempDir()
 	pki := func(name string) string { return filepath.Join(dir, "pki", name) }

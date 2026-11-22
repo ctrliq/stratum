@@ -1008,7 +1008,7 @@ func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testi
 					t.Errorf("refusal missing %q: %v", want, err)
 				}
 			}
-			// ch value in its role: a swap would tell the user to keep the wrong range.
+			// Each value in its role: a swap would tell the user to keep the wrong range.
 			for _, want := range []string{fmt.Sprintf("%s %q", tc.field, tc.given), fmt.Sprintf("set it to %q", tc.recorded)} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("refusal does not give %q in its role: %v", want, err)
@@ -1605,7 +1605,7 @@ func TestControlPlaneJoinWritesTheIntentBeforeTheMemberAdd(t *testing.T) {
 	if post.Phase != "added" {
 		t.Errorf("post-add intent phase = %q, want \"added\"", post.Phase)
 	}
-	// The journal outlives the save: a crash before etcd's first WAL would leave nothing to recover.
+	// The journal outlives the save: without it a crash before etcd's first WAL is unrecoverable.
 	kept, readErr := os.ReadFile(joinIntentPath)
 	if readErr != nil {
 		t.Fatalf("the journal did not survive a completed join: %v", readErr)
@@ -1758,7 +1758,7 @@ func TestControlPlaneJoinCompensatesForPostAddFailures(t *testing.T) {
 	}
 }
 
-// A refused or failed compensation keeps the intent file and names how recovery proceeds.
+// The gate fails closed, keeping the intent: removing a member the cluster may still need is worse.
 func TestControlPlaneJoinKeepsTheIntentWhenCompensationIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

@@ -1,6 +1,6 @@
 package upgrade
 
-// Both released identities are pinned: each test holds from one side and refuses from the other.
+// Old-release binaries meet this build on the lease name and the node lock path; both are pinned.
 
 import (
 	"io"

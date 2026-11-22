@@ -99,7 +99,7 @@ var (
 	AuditLogDir         = "/var/log/stratum"
 	AuditLogPath        = "/var/log/stratum/audit.log"
 	AdmissionConfigPath string
-	// No var for the derived admission file: it follows K8sConfDir, resolved at each call.
+	// Holds the at-rest key; under PKIDir it rides the stratum-certs channel to every HA control plane.
 	EncryptionConfigPath string
 
 	RegistriesConfig string
@@ -164,7 +164,7 @@ func SetRoots(dataDir, confDir, runDir string) {
 
 func init() { SetRoots(DataDir, ConfDir, RunDir) }
 
-// NodeFileOwners maps each node file or directory of files to its one owning package.
+// Each node file's owner writes it through internal/atomicfile; an owner absent here is unguarded.
 var NodeFileOwners map[string]string
 
 func nodeFileOwners() map[string]string {
@@ -248,7 +248,7 @@ func AdmissionWebhookConfig() string {
 	return filepath.Join(K8sConfDir, "admission-webhook.yaml")
 }
 
-// The system:masters kubeconfig Stratum's own clients use.
+// The system:masters kubeconfig for Stratum's own clients; AdminConf is RBAC-revocable.
 func SuperAdminConf() string {
 	return filepath.Join(KubeconfigDir, "super-admin.conf")
 }

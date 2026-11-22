@@ -69,7 +69,7 @@ func etcdHasManifest() bool {
 
 const localEtcd = "127.0.0.1"
 
-// A newer etcd migrates its storage version at once, so the older manifest alone crash-loops.
+// A newer etcd migrates storage at once; its own downgrade keeps every write, a single member only.
 func prepareEtcdForRollback(w io.Writer, manifestBak string, dryRun bool) error {
 	if manifestBak == "" {
 		return nil

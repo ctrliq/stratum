@@ -26,7 +26,7 @@ type Config struct {
 	PodCIDR     string
 	ServiceCIDR string
 
-	// Derived: the kubernetes Service IP is the service range's first host, DNS its tenth.
+	// Derived: Service IP is the range's first host, DNS its tenth, or legacy 10.96.0.10 when inside.
 	ServiceIPv4 string
 	DNSIPv4     string
 	ServiceIPv6 string
@@ -80,7 +80,7 @@ func Save(podCIDR, serviceCIDR, domain string) error {
 	return atomicfile.WriteFile(version.NetConfigPath, c.Encode(), 0o644)
 }
 
-// A default-domain cluster keeps the two-line format, so an upgraded cluster can roll back.
+// A default domain keeps two lines for pre-domain binaries; a third line cannot roll back.
 func (c Config) Encode() []byte {
 	b := c.PodCIDR + "\n" + c.ServiceCIDR + "\n"
 	if c.ClusterDomain != "" && c.ClusterDomain != netdefault.ClusterDomain {

@@ -16,7 +16,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Points the state paths PrepareController reads and writes at temporary ones.
+// Points the state paths at temporary ones; stub the assembly per test, or its host effects run.
 func assemblyFixture(t *testing.T) {
 	t.Helper()
 	origConf, origPKI := version.K8sConfDir, version.PKIDir

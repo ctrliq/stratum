@@ -14,7 +14,7 @@ const contentSecurityPolicy = "default-src 'self'; " +
 	"form-action 'self'; " +
 	"frame-ancestors 'none'"
 
-// Applied as middleware so a new route cannot forget the headers that matter.
+// Middleware so no route forgets; Set, not Add, before the handler runs, so it may override.
 func securityHeaders(tlsTerminated bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

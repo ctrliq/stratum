@@ -12,7 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/profile/profiletest"
 )
 
-// The cis profile is registered as the binary does: a renderer refuses an unregistered profile.
+// Registers the cis profile; the stubs keep this host's stratum unit, supervisor and config out.
 func TestMain(m *testing.M) {
 	unitArgv = func() ([]string, error) { return nil, fs.ErrNotExist }
 	supervisorArgv = func() ([]string, string, error) { return nil, "", fs.ErrNotExist }

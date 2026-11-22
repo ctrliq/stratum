@@ -12,7 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// container-selinux labels this directory container_file_t; only the directory is relabelled.
+// container_file_t from container-selinux; volumes inherit it, so only the directory is relabelled.
 var LocalPathDir = "/opt/local-path-provisioner"
 
 // files of kind ftype (as semanage names it) matching spec get type typ.
@@ -372,7 +372,7 @@ func managedRules() []rule {
 	return out
 }
 
-// a local equivalence never matches the real path, so source rules are copied to the target.
+// the distro's rewrite makes the equivalence never match the path; the source rules are copied.
 func mirrored(e equivalence, policy listing) []rule {
 	target := canonical(e.target, policy.distro)
 	if target == e.target {

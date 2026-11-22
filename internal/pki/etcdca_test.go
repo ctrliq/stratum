@@ -239,7 +239,7 @@ func TestPhasesRefuseOutOfOrder(t *testing.T) {
 	}
 }
 
-// A RotateLeaves caller re-signing etcd's leaves with the root locks out each apiserver.
+// A migrated cluster: re-signing etcd's leaves with the root locks the apiserver out of its etcd.
 func TestRotateCAKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -298,7 +298,7 @@ func TestRotateCARollbackKeepsEtcdLeavesOnEtcdCA(t *testing.T) {
 	if err := RollbackCA(); err != nil {
 		t.Fatalf("RollbackCA: %v", err)
 	}
-	// RollbackCA reissues under the restored root when sign-new was reached.
+	// certs.RollbackCA reissues under the restored root after sign-new; this test reproduces that call.
 	if err := RotateLeaves(tHost, tIP, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +465,7 @@ func TestTrustStateIsOneAnswer(t *testing.T) {
 	}
 }
 
-// etcd trusts etcd-ca-bundle.crt, which the rotation does not maintain; sign-new is an outage.
+// etcd-ca-bundle.crt is derived at every ca-bundle writer; sign-new that skips it is the outage.
 func TestRootRotationOnUnmigratedClusterKeepsEtcdWorking(t *testing.T) {
 	unmigratedNode(t)
 	if err := GenerateAll(tHost, tIP, nil); err != nil { // lands in trust-both

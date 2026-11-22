@@ -54,7 +54,7 @@ func maintenanceHolder() string {
 	return fmt.Sprintf("%s/%d/%d", h, os.Getpid(), time.Now().UnixNano())
 }
 
-// rides the current admin client so lease renewal survives mid-run client rebuilds.
+// rides the current client; maintlease only calls CoordinationV1, never the nil embedded Interface
 type leaseRider struct {
 	kubernetes.Interface
 	mu  sync.Mutex
@@ -337,7 +337,7 @@ func (c *caCluster) run() error {
 		return completionHalt(err)
 	}
 	if resumedAt == PhaseSignNew {
-		// the resumed run staged no root; the one it finished was the earlier run's.
+		// this run staged no root: it resumed at finalize and finished the root the earlier run staged
 		c.step("CA rotation run %s complete: this run resumed it at finalize and staged no new root, so the cluster is on the root that run staged. "+
 			"Run `stratum certs rotate-ca --cluster --yes` again to rotate", runID)
 		return nil
@@ -592,7 +592,7 @@ func (d *prodCADriver) CleanupStagedKey(runID string) {
 	cleanupOwnCarotateKey(cctx, d.w, d.cs, runID, "")
 }
 
-// build to a temporary: a failed build yields nil, and the deferred cleanup would nil-deref.
+// build to a temporary; on failure cs keeps its last valid client for the deferred key cleanup.
 func (d *prodCADriver) RebuildClient() error { return d.rebuild() }
 
 func (d *prodCADriver) rebuild() error {
@@ -692,7 +692,7 @@ func RotateCAClusterContext(ctx context.Context, w io.Writer, o CARotateOptions,
 			version.PKIDir, pki.ErrNoOldPublicHalf)
 	}
 
-	// held so an upgrade or an etcd-CA migration cannot start beside this rotation.
+	// held before the first mutating act (earlier checks only read) to exclude upgrades and migrations.
 	holder := maintenanceHolder()
 	rider, maintGuard, releaseMaintenance, err := acquireMaintenanceLease(ctx, cs, holder)
 	if err != nil {
@@ -1062,7 +1062,7 @@ func splitCP(nodes []cnode) (cps, workers []cnode) {
 	return cps, workers
 }
 
-// must outlast the worst-case control-plane restart sequence (~16.5m), not a flat ten minutes.
+// must outlast the worst-case restart sequence (~16.5m); 240 polls at nodejob's 5s = the same 20m
 const (
 	caJobDeadline     = 20 * time.Minute
 	caJobPollAttempts = 240
@@ -1207,7 +1207,7 @@ func (o stagedKeyOwner) annotations() map[string]string {
 	}
 }
 
-// a legacy key with a run but no operation annotation belongs to rotate-ca.
+// a legacy run-only key is rotate-ca's; a same-operation leftover is replaceable under the lease.
 func stagedKeyForeign(owner stagedKeyOwner, sec *corev1.Secret) (string, bool) {
 	op := sec.Annotations[carotateOperationAnnotation]
 	if op == "" && stagedByRotation(sec) {
@@ -1344,7 +1344,7 @@ func cleanupOwnCarotateKey(ctx context.Context, w io.Writer, cs kubernetes.Inter
 	_ = cleanupCarotateKeySnapshot(ctx, w, cs, snap)
 }
 
-// removes only snap, the object the caller vetted; a Conflict means a newer run's key.
+// removes only the vetted snap (Conflict = a newer run's key); the caller gated before reading it
 func cleanupCarotateKeySnapshot(ctx context.Context, w io.Writer, cs kubernetes.Interface, snap *corev1.Secret) bool {
 	// a defer must never panic; guard anyway and still name the manual command.
 	if cs == nil {

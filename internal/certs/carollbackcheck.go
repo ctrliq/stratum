@@ -16,7 +16,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// lets the cluster-wide check tell a refusal apart from a Job that failed to run.
+// the node CLI exits with this on refusal; the cluster-wide check tells a refusal from a failed Job
 const ExitRollbackUnsafe = 11
 
 const rollbackCheck = "rollback-check"
@@ -68,7 +68,7 @@ func parseRollbackState(log string) (s rollbackState, ok bool) {
 	return rollbackState{}, false
 }
 
-// on a worker the refresh may have stopped partway, so every widened file must check.
+// trust-new writes old+new, finalize collapses it; a refresh may stop partway, so check every file
 func trustsNewCA(worker bool) bool {
 	if worker {
 		return checkWorkerTrustWidened(workerTrustPaths()) == nil
@@ -129,7 +129,7 @@ func cpRollbackCheck() error {
 	return nil
 }
 
-// prints the node's rollbackState first; the cluster-wide check reads it from the Job log.
+// prints the node's rollbackState, then reports whether this node can roll back; it changes nothing
 func CheckRollback(w io.Writer) error {
 	if isWorker() {
 		fmt.Fprintln(w, rollbackState{trustsNew: trustsNewCA(true)})
@@ -176,7 +176,7 @@ var runRollbackCheckJob = func(ctx context.Context, w io.Writer, cs kubernetes.I
 // a var so a test can answer for a node's Job.
 var runExitCodeLogs = nodejob.RunExitCodeLogs
 
-// finds a node that lost an old key first: rolling back without it splits the cluster.
+// takes no lease and changes nothing on any node; it finds a lost old key before rollback
 func CheckRollbackCluster(ctx context.Context, w io.Writer, buildClient ...clientBuilder) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("certs: rollback check not started: %w", err)

@@ -24,7 +24,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// PrepareNodeConfigs writes what kubelet+containerd need; the change flag is dropped on purpose.
+// PrepareNodeConfigs drops the change flag on purpose: a join runs before any supervisor exists.
 func PrepareNodeConfigs(st *nodestate.NodeState) error {
 	if _, err := EnsureContainerdConfigs(os.Stdout, st); err != nil {
 		return err
@@ -106,7 +106,7 @@ tlsCipherSuites: [%s]
 	pkiFile := func(f string) string { return pkiDir + "/" + f }
 	b.WriteString(prof.KubeletLines(version.ProfileLocations(pkiFile)))
 	b.WriteString(enginesettings.ServingLines(servingBootstrapped(prof, pkiDir), pkiFile))
-	// A worker's TLS-bootstrap client cert is renewed only when the kubelet asks.
+	// A worker's client cert renews only when the kubelet asks; internal/certs rotates a controller's.
 	if st.Role == "worker" {
 		b.WriteString("rotateCertificates: true\n")
 	}
@@ -142,7 +142,7 @@ func DropInImported(tar string) bool {
 	return err == nil && string(b) == ImportStampValue(fi)
 }
 
-// The exemption covers a whole repository, so an archive is exempted only once imported.
+// The exemption covers a whole repository; an unimported archive would exempt unpinned images.
 func payloadImagePullPolicy() (string, error) {
 	var allow []string
 	r := addons.ImageRegistry
@@ -206,7 +206,7 @@ func WriteKubeletConfig(st *nodestate.NodeState) error { return writeKubeletConf
 
 func KubeletConfigPath() string { return filepath.Join(version.K8sConfDir, "kubelet.conf") }
 
-// ServingBootstrapped resolves the profile as the renderer does.
+// True when the kubelet gets its serving cert by CSR; no kubelet.crt means a token-joined worker.
 func ServingBootstrapped(st *nodestate.NodeState, pkiDir string) (bool, error) {
 	prof, err := profile.ForNode(st.ProfileName())
 	if err != nil {

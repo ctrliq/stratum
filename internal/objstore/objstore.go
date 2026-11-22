@@ -92,7 +92,7 @@ func (t *Target) Upload(ctx context.Context, localPath, name string) error {
 	return nil
 }
 
-// Download writes name into root 0600, atomically: a symlink at name is replaced, never followed.
+// Download writes name into root 0600, atomically; root is a handle, immune to a path-name swap.
 func (t *Target) Download(ctx context.Context, root *os.Root, name string) error {
 	cli, err := t.client(ctx)
 	if err != nil {
@@ -156,7 +156,7 @@ func writeAtomic(root *os.Root, name string, fill func(*os.File) error) (err err
 	return root.Rename(tmp, name)
 }
 
-// RemoveStaleTemps removes Download's stale temp files: what a SIGKILL mid-download leaves.
+// RemoveStaleTemps removes Download's stale temp files; younger ones may be a live download's.
 func RemoveStaleTemps(root *os.Root, name string, olderThan time.Duration) error {
 	d, err := root.Open(".")
 	if err != nil {

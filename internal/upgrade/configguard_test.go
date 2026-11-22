@@ -18,7 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The handover would restart onto the missing config, leaving the node down with no rollback.
+// The seeded marker catches a guard placed too late: a real upgrade clears it before staging.
 func TestUpgradeRefusesAControlPlaneThatWouldRestartOnAMissingConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name string

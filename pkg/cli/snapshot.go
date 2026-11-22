@@ -37,7 +37,7 @@ func newSnapshotCommand() *cobra.Command {
 	)
 }
 
-// Test seam; save, list and prune take the dir from the config, not the scheduled loop's place.
+// Test seam for restore's bare names; save, list and prune take the dir the scheduled loop owns.
 var snapshotDir = cluster.LoadSnapshotDir
 
 // Test seams: tests must not touch the host's snapshot.conf or etcd.
@@ -156,7 +156,7 @@ func newSnapshotPruneCommand() *cobra.Command {
 	return cmd
 }
 
-// Not cleaned: Clean folds ".." lexically, which past a symlink names a different file.
+// Absolute so a leading - never reaches etcdutl; not cleaned: Clean folds .. past a symlink.
 func resolveSnapshotArg(arg string) (string, error) {
 	if arg == "." || arg == ".." || strings.HasPrefix(arg, "s3://") {
 		return arg, nil
@@ -195,7 +195,7 @@ var restoreLocalSeed = etcdsnap.RestoreLocalSeed
 // A live download rewrites its temp file continuously, so only stale ones are removed.
 const staleTempAge = 15 * time.Minute
 
-// Refuses a dir other users could swap files in: the snapshot holds every Secret.
+// Refuses a dir others could swap files in (snapshots hold every Secret); never chmods one as root.
 func openSnapshotDir(dir string) (_ *os.Root, err error) {
 	dir = filepath.Clean(dir)
 	if !filepath.IsAbs(dir) {

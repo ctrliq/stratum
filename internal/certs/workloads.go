@@ -235,7 +235,7 @@ func (o owner) guidance() string {
 type clientWorkload struct {
 	Owner owner
 	Pods  []*corev1.Pod
-	// when a pod that has not started can still read the old ca.crt; nil unless staleClients made it
+	// the deadline past which the pod cannot start on the old CA; nil unless staleClients made it
 	Settling map[*corev1.Pod]time.Time
 	// why a template change does not recreate all of the owner's pods, or "" when it does
 	Held string
@@ -765,7 +765,7 @@ func clientRollerWithFence(ctx context.Context, roller rollout.Roller, confirm f
 	return roller
 }
 
-// a container that started before the republish still holds only the old CA
+// started before the republish means the old CA; add-ons count too: --phase does not roll them
 func checkClientsRestarted(ctx context.Context, cs kubernetes.Interface, ca *x509.Certificate, exempt map[owner]bool) error {
 	stale, err := staleClients(ctx, cs, ca, exempt)
 	if err != nil || len(stale) == 0 {

@@ -553,7 +553,7 @@ func TestResumedJoinRecordsTheControllerStartsServer(t *testing.T) {
 			opts := freshJoinOpts()
 			opts.Server = "https://10.0.0.11:6443"
 			opts.VIP = tc.vip
-			// the first run fails its state save, so the journal survives as the recovery record
+			// the first run fails its state save without confirmed quorum, so the journal survives
 			r1 := &recordedJoin{listMembers: listedMembers(), failSaveState: errors.New("disk full"),
 				quorumHeldErr: errors.New("no quorum")}
 			if _, err := prepareControlPlaneJoin(context.Background(), opts, etcdDir, fakeJoinEffects(r1)); err == nil {

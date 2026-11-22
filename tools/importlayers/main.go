@@ -324,6 +324,7 @@ func scan(root, module string, rules []layerRule) (map[edgeKey][]occurrence, []s
 			errs = append(errs, fmt.Errorf("internal package %s is assigned no layer in the layer table: add the rule that states the package's layer, or drop the package", pkgPath))
 		}
 
+		// No build-tag filtering: a file gated to another platform still names the package's imports.
 		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", rel, err))

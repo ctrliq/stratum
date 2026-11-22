@@ -85,7 +85,7 @@ func install() error {
 	return fmt.Errorf("containerd missing from %s — the payload was not staged (run `stratum stage`, or this is an EMBEDDED_BINS=none build)", version.BinDir)
 }
 
-// SandboxImage is the mirrored pause pin; containerd's default points at registry.k8s.io.
+// SandboxImage is the Makefile-stamped pause pin; it cannot drift from the payload image set.
 var SandboxImage = "ghcr.io/ctrliq/stratum/pause:unknown"
 
 // sandboxImageLine matches every version's spelling; `sandboxer = 'podsandbox'` must not match.
@@ -184,7 +184,7 @@ func enableSELinuxAssign(on bool) string {
 	return "enable_selinux = false"
 }
 
-// ensureConfig renders the kubelet config from the same CgroupDriver() so the two cannot disagree.
+// ensureConfig renders the containerd config; writeKubeletConfig uses the same CgroupDriver().
 func ensureConfig() (bool, error) { return ensureConfigWithWriter(os.Stdout) }
 
 func ensureConfigWithWriter(w io.Writer) (bool, error) {
@@ -276,7 +276,7 @@ func rewriteContainerdConfig(defaultTOML, cgroup string, confine bool) string {
 // legacyHostConfig is a var, not a const, so a test can redirect it.
 var legacyHostConfig = "/etc/containerd/config.toml"
 
-// isStratumConfig parses the TOML; a substring match could satisfy a host's own config.
+// Parses the TOML, not substrings: root and state both stratum's, or the file is never deleted.
 func isStratumConfig(b []byte) bool {
 	var cfg struct {
 		Root  string `toml:"root"`
@@ -348,7 +348,7 @@ func EnsureConfig() (bool, error) {
 	return WriteConfig()
 }
 
-// WriteConfig skips the heal: a predating supervisor keeps the legacy --config argv.
+// WriteConfig skips the heal; its caller removes the legacy file once nothing still passes it.
 func WriteConfig() (bool, error) { return WriteConfigWithWriter(os.Stdout) }
 
 func WriteConfigWithWriter(w io.Writer) (bool, error) {

@@ -49,7 +49,7 @@ func (s *Supervisor) serveControl(ctx context.Context, path string) (func(), err
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	// The lock lives outside the socket dir (uninstall removes it) and is never unlinked.
+	// The lock sits outside the socket dir (uninstall removes it); never unlinked, its close frees it.
 	lockPath := filepath.Dir(path) + "." + filepath.Base(path) + ".lock"
 	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -219,7 +219,7 @@ func (s *Supervisor) apply(op, name string) error {
 func (st *state) restart() {
 	stMu.Lock()
 	st.wanted = true
-	// Abort an in-flight start so it re-runs with the current st.proc, not pre-reload args.
+	// Abort an in-flight start to re-run on current args; runOnce re-checks startCtx.Err() under stMu.
 	if st.cancelStart != nil {
 		st.cancelStart()
 	}

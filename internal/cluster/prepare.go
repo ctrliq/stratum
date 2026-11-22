@@ -335,7 +335,7 @@ func clearPartialPreparationJournal() {
 	_ = os.Remove(partialPreparationPath())
 }
 
-// The kubelet applies taints only when it creates the Node, so a change never reaches it.
+// The kubelet applies taints only when it registers the Node; an existing Node keeps its taints.
 func warnChangedTaints(w io.Writer, st, prev *NodeState) {
 	if prev == nil || sameTaints(st.NodeTaints, prev.NodeTaints) {
 		return
@@ -387,7 +387,7 @@ func recordedServer(prev, st *NodeState) string {
 	return prev.Server
 }
 
-// Deliberately without kube-vip's kubeconfig and the join's bootstrap.conf.
+// Kube-vip's kubeconfig targets the local apiserver; bootstrap.conf the join's discovery endpoint.
 func recordKubeconfigs() []string {
 	files := []string{version.AdminConf}
 	for _, f := range []string{"admin.kubeconfig", "controller-manager.kubeconfig", "scheduler.kubeconfig", "kubelet.kubeconfig"} {

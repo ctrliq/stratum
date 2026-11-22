@@ -315,7 +315,7 @@ func TestCiliumRenderAnchorsAreUnique(t *testing.T) {
 	}
 }
 
-// Left empty, Cilium answers NodePorts on each device's primary address only, not the VIP.
+// Cilium must answer NodePorts wherever kube-proxy did; left empty it serves primaries only.
 func TestCiliumNodePortsAnswerOnEveryAddress(t *testing.T) {
 	for name, m := range map[string][]byte{
 		"shipped":       ciliumKPRTrueYAML,
