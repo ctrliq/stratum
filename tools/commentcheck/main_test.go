@@ -112,6 +112,7 @@ func TestExampleOutputIsTestDataFromItsMarkerOn(t *testing.T) {
 		{"unordered output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Unordered output:\n\t// two\n\t// one\n}\n", nil},
 		{"lowercase output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// output:\n\t// one\n\t// two\n}\n", nil},
 		{"lowercase unordered output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// unordered output:\n\t// two\n\t// one\n}\n", nil},
+		{"block comment output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t/* Output:\n\tone\n\ttwo\n\t*/\n}\n", nil},
 		{"lines before the marker are checked", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// TODO: drop.\n\t// Output:\n\t// one\n}\n", []string{`5: task note "TODO"`}},
 		{"not a test file", "p.go", "package p\n\nfunc F() {\n\t// Output:\n\t// one\n}\n", []string{"4: comment is 2 lines"}},
 	}
