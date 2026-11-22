@@ -42,8 +42,6 @@ func TestCheckFile(t *testing.T) {
 		{"step fails", "package p\n\nfunc P() {\n\t// Step 2: dial.\n}\n", []string{`4: step-by-step narration; extract named functions "// Step 2"`}},
 		{"block step fails", "package p\n\nfunc P() {\n\t/* Step 2: dial. */\n}\n", []string{`4: step-by-step narration; extract named functions "/* Step 2"`}},
 		{"block step on a later line fails", "package p\n\nfunc P() {\n\t/* Dial.\n\t * Step 3: read. */\n}\n", []string{`5: step-by-step narration; extract named functions "* Step 3"`, "4: comment is 2 lines"}},
-		{"example output passes", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Output:\n\t// one\n\t// two\n}\n", nil},
-		{"unordered output passes", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Unordered output:\n\t// two\n\t// one\n}\n", nil},
 		{"strings are not comments", "package p\n\nvar P = \"§1 KUB-" + "1 #2 TODO red until\"\n", nil},
 		{"SHA-256 is not a tracker", "package p\n\n// P is a SHA-256 sum.\nvar P int\n", nil},
 	}
@@ -86,6 +84,34 @@ func TestPublicAPIExportedDocsMayRunSeveralLines(t *testing.T) {
 		{"other package", "internal/x/x.go", "package x\n\n// F one.\n// F two.\nfunc F() {}\n", []string{"3: comment is 2 lines"}},
 		{"subpackage", "pkg/cli/sub/x.go", "package sub\n\n// F one.\n// F two.\nfunc F() {}\n", []string{"3: comment is 2 lines"}},
 		{"banned phrase still fails", "pkg/cli/x.go", "package cli\n\n// F one.\n// See §2.\nfunc F() {}\n", []string{`4: spec section reference "§"`}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := checkFile(c.path, []byte(c.src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("got %d findings %v, want %d %v", len(got), got, len(c.want), c.want)
+			}
+			for i, w := range c.want {
+				if s := fmt.Sprintf("%d: %s", got[i].pos.Line, got[i].msg); !strings.HasPrefix(s, w) {
+					t.Errorf("finding %d = %q, want prefix %q", i, s, w)
+				}
+			}
+		})
+	}
+}
+
+func TestExampleOutputIsTestDataFromItsMarkerOn(t *testing.T) {
+	cases := []struct {
+		name, path, src string
+		want            []string
+	}{
+		{"output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Output:\n\t// one\n\t// two\n}\n", nil},
+		{"unordered output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// Unordered output:\n\t// two\n\t// one\n}\n", nil},
+		{"lines before the marker are checked", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// TODO: drop.\n\t// Output:\n\t// one\n}\n", []string{`5: task note "TODO"`}},
+		{"not a test file", "p.go", "package p\n\nfunc F() {\n\t// Output:\n\t// one\n}\n", []string{"4: comment is 2 lines"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

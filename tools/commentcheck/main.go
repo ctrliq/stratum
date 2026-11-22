@@ -118,9 +118,10 @@ func checkFile(path string, src []byte) ([]finding, error) {
 	if publicAPIFile(path) {
 		multiLine = exportedDocs(file)
 	}
+	isTest := strings.HasSuffix(filepath.ToSlash(path), "_test.go")
 	var out []finding
 	for _, g := range file.Comments {
-		out = append(out, checkGroup(fset, g, multiLine[g])...)
+		out = append(out, checkGroup(fset, g, multiLine[g], isTest)...)
 	}
 	return out, nil
 }
@@ -218,15 +219,13 @@ func specDoc(spec ast.Spec) *ast.CommentGroup {
 	return nil
 }
 
-func checkGroup(fset *token.FileSet, g *ast.CommentGroup, multiLine bool) []finding {
-	for _, c := range g.List {
-		if exampleOutput.MatchString(c.Text) {
-			return nil
-		}
-	}
+func checkGroup(fset *token.FileSet, g *ast.CommentGroup, multiLine, isTest bool) []finding {
 	var out []finding
 	lines := 0
 	for _, c := range g.List {
+		if isTest && exampleOutput.MatchString(c.Text) {
+			break
+		}
 		if c.Text == "//" || directive.MatchString(c.Text) || generated.MatchString(c.Text) {
 			continue
 		}
