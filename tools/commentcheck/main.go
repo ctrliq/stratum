@@ -118,12 +118,40 @@ func checkFile(path string, src []byte) ([]finding, error) {
 	if publicAPIFile(path) {
 		multiLine = exportedDocs(file)
 	}
-	isTest := strings.HasSuffix(filepath.ToSlash(path), "_test.go")
+	outputs := map[*ast.CommentGroup]bool{}
+	if strings.HasSuffix(filepath.ToSlash(path), "_test.go") {
+		outputs = exampleOutputs(file)
+	}
 	var out []finding
 	for _, g := range file.Comments {
-		out = append(out, checkGroup(fset, g, multiLine[g], isTest)...)
+		out = append(out, checkGroup(fset, g, multiLine[g], outputs[g])...)
 	}
 	return out, nil
+}
+
+// Mirrors go/doc: only the last comment group in an Example function's body is its output.
+func exampleOutputs(file *ast.File) map[*ast.CommentGroup]bool {
+	groups := map[*ast.CommentGroup]bool{}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Body == nil || !strings.HasPrefix(fn.Name.Name, "Example") {
+			continue
+		}
+		var last *ast.CommentGroup
+		for _, g := range file.Comments {
+			if g.Pos() < fn.Body.Pos() {
+				continue
+			}
+			if g.End() > fn.Body.End() {
+				break
+			}
+			last = g
+		}
+		if last != nil {
+			groups[last] = true
+		}
+	}
+	return groups
 }
 
 // Importers build against these packages and read their exported docs in full.
@@ -219,11 +247,11 @@ func specDoc(spec ast.Spec) *ast.CommentGroup {
 	return nil
 }
 
-func checkGroup(fset *token.FileSet, g *ast.CommentGroup, multiLine, isTest bool) []finding {
+func checkGroup(fset *token.FileSet, g *ast.CommentGroup, multiLine, isOutput bool) []finding {
 	var out []finding
 	lines := 0
 	for _, c := range g.List {
-		if isTest && exampleOutput.MatchString(c.Text) {
+		if isOutput && exampleOutput.MatchString(c.Text) {
 			break
 		}
 		if c.Text == "//" || directive.MatchString(c.Text) || generated.MatchString(c.Text) {

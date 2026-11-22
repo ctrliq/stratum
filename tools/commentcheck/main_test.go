@@ -115,6 +115,9 @@ func TestExampleOutputIsTestDataFromItsMarkerOn(t *testing.T) {
 		{"block comment output", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t/* Output:\n\tone\n\ttwo\n\t*/\n}\n", nil},
 		{"lines before the marker are checked", "p_test.go", "package p\n\nfunc ExampleP() {\n\tP()\n\t// TODO: drop.\n\t// Output:\n\t// one\n}\n", []string{`5: task note "TODO"`}},
 		{"not a test file", "p.go", "package p\n\nfunc F() {\n\t// Output:\n\t// one\n}\n", []string{"4: comment is 2 lines"}},
+		{"ordinary test function", "p_test.go", "package p\n\nfunc TestP(t *testing.T) {\n\t// Output:\n\t// one\n}\n", []string{"4: comment is 2 lines"}},
+		{"package level", "p_test.go", "package p\n\n// Output:\n// one\nvar P int\n", []string{"3: comment is 2 lines"}},
+		{"not the last group in the Example", "p_test.go", "package p\n\nfunc ExampleP() {\n\t// Output:\n\t// one\n\tP()\n\t// Output:\n\t// two\n}\n", []string{"4: comment is 2 lines"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
