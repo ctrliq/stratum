@@ -30,7 +30,7 @@ var directive = regexp.MustCompile(`^//(go:|line |export |nolint|lint:|\+build )
 var generated = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
 
 // go test compares an Example's output block line by line, so the block is test data.
-var exampleOutput = regexp.MustCompile(`^//\s*(Unordered output|Output):`)
+var exampleOutput = regexp.MustCompile(`(?i)^//\s*(unordered )?output:`)
 
 var banned = []struct {
 	re  *regexp.Regexp
