@@ -66,7 +66,7 @@ runs the upgrade binary's version and build. It changes nothing.
 |---|---|---|
 | `0` | the node already runs this version and build | leaves the node alone |
 | `10` | the node needs the upgrade | upgrades it |
-| `11` | the node refuses the upgrade: see [SELinux prerequisites](#selinux-prerequisites) | refuses to start, before any node is drained |
+| `11` | the node refuses the upgrade: see [SELinux prerequisites](#selinux-prerequisites) and [AppArmor prerequisite](#apparmor-prerequisite) | refuses to start, before any node is drained |
 | `1` | it cannot tell, for example while another upgrade or rollback runs on the node | stops at that node without draining it |
 
 ## Plan states
@@ -506,8 +506,10 @@ image outside the payload registry's namespace, as described in
 After the upgrade, a pod whose image you loaded by hand, for example with
 `ctr images import`, fails the next time its container starts on an airgapped
 node. It fails with `ErrImagePull` if its `imagePullPolicy` is `IfNotPresent`, or
-`ErrImageNeverPull` if it is `Never`. Before you upgrade, push those images to a
-registry the nodes can reach, through a
+`ErrImageNeverPull` if it is `Never`. Before you upgrade, put those images'
+archives in `/etc/stratum/images.d` on each node, as described in
+[Images you stage on a node](../runtime/index.md#images-you-stage-on-a-node), or
+push them to a registry the nodes can reach, through a
 [registry mirror](../runtime/index.md#registry-mirrors) if they are airgapped.
 
 ### SELinux confinement
@@ -572,6 +574,31 @@ node run unconfined. A profile that requires SELinux combined with
 - `--dry-run` with `--cluster` does not run the check. On one node,
   `sudo /usr/local/bin/stratum upgrade --from <binary> --dry-run` does run it, and a node that
   needs the upgrade and fails it exits 11 instead of printing the plan.
+
+#### AppArmor prerequisite
+
+Where `kernel.apparmor_restrict_unprivileged_unconfined` is `1`, as on Ubuntu
+26.04, `stratum up` gives Stratum's runc the AppArmor profile `runc` (see
+[AppArmor](../installation/configuration.md#apparmor)). Before it drains any
+node, `upgrade --cluster` checks on each node that still needs this build that
+the upgrade binary can build that profile and compile it, loading nothing. A
+node where it cannot, because `apparmor_parser` is missing or the profile does
+not compile, is refused with exit code `11`, and its reason is relayed as a
+`WARN` line.
+
+- Install the `apparmor` package on that node, or fix what the reason names,
+  and re-run. Setting the restriction to `0` in a file under `/etc/sysctl.d`
+  also lets the node through, and turns that hardening off.
+- Before you upgrade, add `signal (receive) peer=runc,` to each `Localhost`
+  profile of your own that has `signal` rules, on every node that loads it.
+  Once a node runs this build, runc stops containers as `runc`, and a pod
+  under such a profile without the rule can no longer be deleted. The upgrade
+  does not show it: the next rollout, or the next drain of that node, does.
+  See "Localhost profiles" under
+  [AppArmor](../installation/configuration.md#apparmor).
+- Containers that started before the upgrade keep a stacked label. The drain
+  recreates the node's ordinary pods; recreate DaemonSet and static pods as in
+  [Recreating pods that still run unconfined](#recreating-pods-that-still-run-unconfined).
 
 #### Recreating pods that still run unconfined
 

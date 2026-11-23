@@ -294,10 +294,12 @@ export async function fetchMe() {
 // The exec WebSocket cannot see its handshake status. Its follow-up /me
 // probe must distinguish an ended session from a transient server or network
 // failure, while preserving the current identity unless a 401 confirms expiry.
-export async function probeMe() {
+// An optional abort signal bounds the read: apiGet never throws, so an
+// aborted probe resolves as a network failure, never a rejection.
+export async function probeMe({ signal } = {}) {
   const revision = currentSessionRevision();
   const cookie = cookieRevision;
-  const r = await apiGet('/api/v1/me', { quiet401: true });
+  const r = await apiGet('/api/v1/me', { quiet401: true, signal });
   if (!isSessionCurrent(revision) || cookie !== cookieRevision) return { ...r, stale: true };
   if (r.status === 401) setIdentity(null);
   if (r.ok) {

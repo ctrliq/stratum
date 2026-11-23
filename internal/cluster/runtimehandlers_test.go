@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/runtime"
 	"github.com/ctrliq/stratum/internal/version"
@@ -26,10 +28,12 @@ func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 		t.Fatal(err)
 	}
 	var written []map[string]string
-	old, oldLabels, oldImport, oldConfD, oldOwn := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD, requireOwnDropIn
+	old, oldLabels, oldImport, oldConfD, oldOwn, oldAppArmor, oldStacked := applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD, requireOwnDropIn, checkAppArmor, stackedAppArmor
 	t.Cleanup(func() {
-		applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD, requireOwnDropIn = old, oldLabels, oldImport, oldConfD, oldOwn
+		applyHandlers, reconcileOwnNodeLabels, requireHandlersImport, requireSharedConfD, requireOwnDropIn, checkAppArmor, stackedAppArmor = old, oldLabels, oldImport, oldConfD, oldOwn, oldAppArmor, oldStacked
 	})
+	checkAppArmor = func() error { return nil }
+	stackedAppArmor = func() ([]apparmor.StackedProcess, error) { return nil, nil }
 	requireHandlersImport = func() error { return nil }
 	requireSharedConfD = func() error { return nil }
 	requireOwnDropIn = func(map[string]string) error { return nil }
@@ -201,6 +205,55 @@ func TestCheckRuntimeHandlersReportsAControlPlaneConfigDrift(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(errs, "\n"), "spec.node.runtimeHandlers in "+path+" differ") {
 		t.Errorf("errors %q do not report the config file's drift", errs)
+	}
+}
+
+// A kernel that would stack the default handler's container profile fails
+// the check on any node, the worker included.
+func TestCheckRuntimeHandlersReportsAnUncoveredRunc(t *testing.T) {
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
+	for _, tc := range []struct {
+		err      error
+		severity runtime.Severity
+	}{
+		{fmt.Errorf("/var/lib/stratum/bin/runc: %w", apparmor.ErrNotCovered), runtime.SeverityError},
+		{fmt.Errorf("/etc/apparmor.d/runc has 2 profile runc lines naming an attachment, want 1: %w", apparmor.ErrHostProfileNotWidened), runtime.SeverityWarn},
+		// A label it cannot read is a warning: the check does not know.
+		{errors.New("operation not permitted"), runtime.SeverityWarn},
+	} {
+		checkAppArmor = func() error { return tc.err }
+		r, err := CheckRuntimeHandlers(io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(r.Findings, func(f runtime.HandlerFinding) bool { return strings.Contains(f.Message, tc.err.Error()) })
+		if i < 0 || r.Findings[i].Severity != tc.severity {
+			t.Errorf("findings %+v, want a %s carrying %q", r.Findings, tc.severity, tc.err)
+		}
+	}
+}
+
+// Containers the kernel stacked keep their label once the profile is back, so
+// the check names them and how to recreate them, listing the first few.
+func TestCheckRuntimeHandlersReportsStackedProcesses(t *testing.T) {
+	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
+	var procs []apparmor.StackedProcess
+	for pid := 100; pid < 107; pid++ {
+		procs = append(procs, apparmor.StackedProcess{PID: pid, Comm: "etcd", Label: "cri-containerd.apparmor.d//&unconfined"})
+	}
+	stackedAppArmor = func() ([]apparmor.StackedProcess, error) { return procs, nil }
+	r, err := CheckRuntimeHandlers(io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(r.Findings, func(f runtime.HandlerFinding) bool { return strings.Contains(f.Message, "stacked on unconfined") })
+	if i < 0 || r.Findings[i].Severity != runtime.SeverityError {
+		t.Fatalf("findings %+v, want an error naming the stacked processes", r.Findings)
+	}
+	for _, want := range []string{"7 container processes", "etcd (pid 100, cri-containerd.apparmor.d//&unconfined)", "and 2 more", "reboot", "/etc/apparmor.d/runc"} {
+		if !strings.Contains(r.Findings[i].Message, want) {
+			t.Errorf("finding %q does not say %q", r.Findings[i].Message, want)
+		}
 	}
 }
 

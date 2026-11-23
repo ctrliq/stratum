@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/ctrliq/stratum/internal/apparmor"
 	"github.com/ctrliq/stratum/internal/assets"
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/certinputs"
@@ -1745,7 +1746,9 @@ func uncordonWarning(node string, err error) string {
 
 // checkNodePrereqs reports whether this node may take the upgrade at all,
 // with Ensure's rules for a new node: an enforcing or CIS node without
-// container-selinux would run unconfined, so it refuses. It reads the node's
+// container-selinux would run unconfined, and a node whose kernel would stack
+// every container's AppArmor profile, but whose runc profile cannot be built,
+// would not start; it refuses both. It reads the node's
 // SELinux settings itself; one it cannot read is a question the upgrade
 // cannot ask, so it warns and lets the node through — and so is a policy
 // check whose tools failed rather than went missing, which Prerequisite
@@ -1753,6 +1756,25 @@ func uncordonWarning(node string, err error) string {
 // already been changed by the interrupted run, so it warns instead of
 // refusing. A var so a test can answer for it.
 var checkNodePrereqs = func(w io.Writer, resuming bool) error {
+	if err := checkSELinuxPrereqs(w, resuming); err != nil {
+		return err
+	}
+	if err := nodeAppArmorPrereq(); err != nil {
+		if resuming {
+			fmt.Fprintf(w, "  WARN: %v; resuming the interrupted upgrade anyway\n", err)
+			return nil
+		}
+		// A cluster upgrade relays only a node's WARN lines, so the reason
+		// reaches whoever ran it, from this release's orchestrator or an
+		// earlier one.
+		fmt.Fprintf(w, "  WARN: refusing the upgrade: %v\n", err)
+		return fmt.Errorf("%w: %w", ErrPrereqMissing, err)
+	}
+	return nil
+}
+
+// checkSELinuxPrereqs is checkNodePrereqs's SELinux half.
+func checkSELinuxPrereqs(w io.Writer, resuming bool) error {
 	opts, err := nodeSELinuxOptions()
 	if err != nil {
 		fmt.Fprintf(w, "  WARN: could not read this node's SELinux settings: %v; not checking the SELinux prerequisites\n", err)
@@ -1778,6 +1800,10 @@ var checkNodePrereqs = func(w io.Writer, resuming bool) error {
 // nodePrereq is selinux.Prerequisite; a var so a test can answer for the
 // policy check, whose host state it cannot fake from this package.
 var nodePrereq = selinux.Prerequisite
+
+// nodeAppArmorPrereq is apparmor.Prerequisite; a var so a test can answer for
+// the host's AppArmor.
+var nodeAppArmorPrereq = apparmor.Prerequisite
 
 // nodeSELinuxOptions is cluster.NodeSELinuxOptions; a var so a test can make
 // the node's settings unreadable.

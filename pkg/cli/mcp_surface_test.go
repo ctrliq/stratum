@@ -18,6 +18,7 @@ import (
 
 // shippedReadTools is every tool advertised with no flags.
 var shippedReadTools = []string{
+	"backup_evidence",
 	"certs_check",
 	"cluster_status",
 	"context_list",
@@ -179,10 +180,10 @@ func TestShippedSurfaceCounts(t *testing.T) {
 		write, destructive bool
 		want               int
 	}{
-		{"read tier advertises 19 tools", false, false, 19},
-		{"--allow-write advertises 28", true, false, 28},
-		{"--allow-destructive advertises 30", false, true, 30},
-		{"both advertise 39", true, true, 39},
+		{"read tier advertises 20 tools", false, false, 20},
+		{"--allow-write advertises 29", true, false, 29},
+		{"--allow-destructive advertises 31", false, true, 31},
+		{"both advertise 40", true, true, 40},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := len(shippedSurface(t, tc.write, tc.destructive)); got != tc.want {

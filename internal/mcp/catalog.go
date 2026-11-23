@@ -187,7 +187,8 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			Name: "runtime_check",
 			Description: "Report whether containerd will run this node's runtime handlers: the drop-in against the " +
 				"handlers the node saved, each handler's binary, containerd's import of the drop-in, CDI specs, " +
-				"and other containerd drop-ins that define the same runtime or change the default runtime.",
+				"and other containerd drop-ins that define the same runtime or change the default runtime; and, where " +
+				"kernel.apparmor_restrict_unprivileged_unconfined is set, whether runc runs under the AppArmor runc profile.",
 			Tier:       TierRead,
 			Credential: CredentialNone,
 			Add: func(srv *sdk.Server, t *sdk.Tool) {
@@ -215,6 +216,20 @@ func Catalog(version string, conn, nodeConn *kube.Connector, policy WritePolicy)
 			Credential: CredentialNone,
 			Add: func(srv *sdk.Server, t *sdk.Tool) {
 				sdk.AddTool(srv, t, SnapshotRestoreCopiesHandler())
+			},
+		},
+		{
+			Name: "backup_evidence",
+			Description: "Report the engine's own backup evidence in one bounded read: the effective snapshot policy " +
+				"with every value's provenance, the local snapshot artifacts, the remote copies, the deduplicated " +
+				"census counting each backup once across both locations, and the maintenance diagnostics — the latest " +
+				"save, upload and prune attempts as typed outcomes, with when each last succeeded. A stage the bounds " +
+				"stop is a floor, never an exact total. No credentials, executable paths or raw storage errors are " +
+				"returned. The same rows `stratum snapshot list -o json` prints.",
+			Tier:       TierRead,
+			Credential: CredentialNone,
+			Add: func(srv *sdk.Server, t *sdk.Tool) {
+				sdk.AddTool(srv, t, BackupEvidenceHandler())
 			},
 		},
 		{

@@ -624,8 +624,8 @@ func TestDepotWorkflowConfigurationLint(t *testing.T) {
 			if string(depot.Needs) != `"conformance-guard"` || !strings.Contains(depot.If, "startsWith(github.event.release.tag_name, 'v')") {
 				t.Fatal("prod publication bypasses conformance or accepts dev prereleases")
 			}
-			if workflow.Jobs["channels"].If != "needs.conformance-guard.outputs.final == 'true'" {
-				t.Fatal("existing stable channel condition changed")
+			if _, ok := workflow.Jobs["channels"]; ok {
+				t.Fatal("release-publish runs a channels job again")
 			}
 			if depot.Env["RELEASE_CHANNEL"] != "${{ needs.conformance-guard.outputs.final == 'true' && 'stable' || 'rc' }}" {
 				t.Fatal("Depot release channel disagrees with conformance classifier")

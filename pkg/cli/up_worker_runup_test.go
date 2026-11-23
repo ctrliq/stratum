@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/ctrliq/stratum/internal/cluster"
+	"github.com/ctrliq/stratum/internal/host"
+	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -62,10 +64,17 @@ func runUpWorker(t *testing.T, o runUpOptions, config string, saved *cluster.Nod
 		t.Fatal(err)
 	}
 
-	oldInstall, oldRun, oldJoin := installUnit, runWorkerFn, prepareWorkerFn
-	t.Cleanup(func() { installUnit, runWorkerFn, prepareWorkerFn = oldInstall, oldRun, oldJoin })
+	oldInstall, oldRun, oldJoin, oldResolve := installUnit, runWorkerFn, prepareWorkerFn, resolveJoinNodeIP
+	t.Cleanup(func() {
+		installUnit, runWorkerFn, prepareWorkerFn, resolveJoinNodeIP = oldInstall, oldRun, oldJoin, oldResolve
+	})
 	installUnit = func([]string) error { return nil }
 	runWorkerFn = func(context.Context, *cluster.NodeState) error { return nil }
+	// The pre-stage check accepts every address here, so these wiring tests
+	// do not depend on the runner's $NODE_IP or network.
+	resolveJoinNodeIP = func(string, string, bool) (host.NodeIPChoice, error) {
+		return host.NodeIPChoice{IP: "192.0.2.1"}, nil
+	}
 	call := &joinCall{}
 	prepareWorkerFn = func(_ context.Context, w cluster.WorkerOptions) (*cluster.NodeState, error) {
 		*call = joinCall{called: true, server: w.Server, token: w.Token, caHash: w.CAHash, nodeIP: w.NodeIP, configNodeIP: w.ConfigNodeIP, serviceCIDR: w.ServiceCIDR, podCIDR: w.PodCIDR, domain: w.ClusterDomain, profile: w.Profile, dual: w.DualStack, selinuxOptOut: w.SELinuxOptOut, node: w.Node, configNode: w.ConfigNode}
@@ -92,7 +101,7 @@ func TestRunUpWorkerJoinReadsTheConfig(t *testing.T) {
 	}{
 		{name: "config nodeIP", config: nodeIPConfig, want: "|10.50.0.4"},
 		{name: "flag and config both passed", config: nodeIPConfig, flag: "10.9.9.9", want: "10.9.9.9|10.50.0.4"},
-		{name: "no nodeIP leaves $NODE_IP and detection to the join", config: "spec: {}\n", want: "|"},
+		{name: "no nodeIP hands the join neither address", config: "spec: {}\n", want: "|"},
 		{name: "zero-valued field refused", config: nodeIPConfig + "  operator: false\n", want: "-", wantErr: "spec.operator"},
 		{name: "refused even with the flag", config: nodeIPConfig + "  snapshots:\n    retain: 0\n", flag: "10.9.9.9", want: "-", wantErr: "spec.snapshots.retain"},
 		{name: "misspelled key refused", config: "spec:\n  network:\n    nodeAddr: 10.50.0.4\n", want: "-", wantErr: "nodeAddr"},
@@ -118,9 +127,10 @@ func TestRunUpWorkerJoinReadsTheConfig(t *testing.T) {
 	}
 }
 
-// A restart resumes from the saved node state: the config is not read, so a
-// file a join would refuse cannot stop a reboot, and its nodeIP is not passed on.
-func TestRunUpWorkerRestartDoesNotReadTheConfig(t *testing.T) {
+// A restart resumes from the saved node state: the config is not validated as
+// a join validates it, so a file a join would refuse cannot stop a reboot, and
+// its nodeIP is not passed on.
+func TestRunUpWorkerRestartDoesNotValidateTheWholeConfig(t *testing.T) {
 	saved := &cluster.NodeState{Role: "worker", Hostname: "w1", NodeIP: "10.50.0.4", Server: "https://10.50.0.3:6443"}
 	call, err := runUpWorker(t, runUpOptions{}, nodeIPConfig+"  operator: false\n", saved)
 	if err != nil {
@@ -255,7 +265,8 @@ func TestRunUpHandsTheWorkerJoinEveryFlagInItsPlace(t *testing.T) {
 }
 
 // A worker join takes spec.selinux from the config, and so does a restart,
-// which reads nothing else from the file; a file a restart cannot read leaves
+// which reads only it and, to refuse a change of profile, spec.profile and
+// spec.cis; a file a restart cannot read leaves
 // the saved setting in place rather than stopping the start.
 func TestRunUpWorkerReadsTheSELinuxOptOut(t *testing.T) {
 	o := runUpOptions{server: "https://10.50.0.3:6443", token: "abcdef.0123456789abcdef", caHash: "sha256:aa"}
@@ -377,5 +388,82 @@ func TestStageOptOutValidatesAJoinsWholeConfig(t *testing.T) {
 	}
 	if !stageOptOut(join) {
 		t.Error("a valid join config's spec.selinux: false not seen before staging")
+	}
+}
+
+// A worker restart takes its profile from --profile, --cis, spec.profile or
+// spec.cis, and refuses two that disagree before PrepareWorker runs.
+func TestRunUpWorkerRestartHandsTheConfigProfileToTheRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, config, want, wantErr string
+	}{
+		{"spec.profile alone", "", "spec:\n  profile: cis\n", "cis", ""},
+		{"spec.cis alone", "", "spec:\n  cis: true\n", "cis", ""},
+		{"the flag alone", "cis", "", "cis", ""},
+		{"neither", "", "", "", ""},
+		{"the flag and spec.profile disagree", "fips", "spec:\n  profile: cis\n", "", "--profile fips and the config's spec.profile cis name two profiles"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			registerProfilesForTest(t, profile.Profile{Name: "cis"}, profile.Profile{Name: "fips"})
+			call, err := runUpWorker(t, runUpOptions{profile: tc.flag}, tc.config,
+				&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443", Profile: tc.want})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("runUp = %v, want a refusal containing %q", err, tc.wantErr)
+				}
+				if call.called {
+					t.Error("the restart ran after the profiles disagreed")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runUp = %v", err)
+			}
+			if !call.called || call.profile != tc.want {
+				t.Errorf("the restart got profile %q (ran: %v), want %q", call.profile, call.called, tc.want)
+			}
+		})
+	}
+}
+
+// A worker restart that names a profile other than its saved one is refused
+// before anything on the host changes: no SELinux label reset, no staging, no
+// prepare.
+func TestRunUpRefusesAWorkerProfileChangeBeforeTouchingTheHost(t *testing.T) {
+	registerProfilesForTest(t, profile.Profile{Name: "cis", RequiresSELinux: true})
+	oldForget := forgetSELinuxLabels
+	t.Cleanup(func() { forgetSELinuxLabels = oldForget })
+	forgot := false
+	forgetSELinuxLabels = func() error { forgot = true; return nil }
+	roots := stubStagePayload(t, nil, nil)
+	call, err := runUpWorker(t, runUpOptions{}, "spec:\n  profile: cis\n  selinux: false\n",
+		&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443"})
+	if err == nil || !strings.Contains(err.Error(), `cannot change it to profile "cis"`) || !strings.Contains(err.Error(), "remove spec.profile and spec.cis") {
+		t.Fatalf("runUp = %v, want the profile refusal naming the config fields to remove", err)
+	}
+	if forgot || len(*roots) > 0 || call.called {
+		t.Errorf("the refused restart changed the host first: SELinux labels reset %v, staged %v, prepared %v", forgot, *roots, call.called)
+	}
+}
+
+// A config file a restart cannot read does not stop a reboot: the worker keeps
+// its saved profile, even when the file names another one, and the warning
+// says the profile fields went unread too.
+func TestRunUpWorkerRestartWarnsWhenItCannotReadTheProfile(t *testing.T) {
+	registerProfilesForTest(t, profile.Profile{Name: "cis"})
+	var call *joinCall
+	var err error
+	out := captureStdout(t, func() {
+		call, err = runUpWorker(t, runUpOptions{}, "spec:\n  profile: cis\n  selinx: false\n",
+			&cluster.NodeState{Role: "worker", Hostname: "n1", Server: "https://10.0.0.1:6443"})
+	})
+	if err != nil {
+		t.Fatalf("runUp = %v, want the restart to run on its saved profile", err)
+	}
+	if !call.called || call.profile != "" {
+		t.Errorf("the restart got profile %q (ran: %v), want the saved no-profile", call.profile, call.called)
+	}
+	if !strings.Contains(out, "spec.profile and spec.cis not read") || !strings.Contains(out, "the profile this worker saved") {
+		t.Errorf("output %q does not warn that the profile was not read", out)
 	}
 }

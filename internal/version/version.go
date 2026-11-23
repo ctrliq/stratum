@@ -226,6 +226,12 @@ var (
 	CertsDir         = "/etc/containerd/certs.d"
 	ContainerdConfD  = "/etc/containerd/conf.d/stratum-registry.toml"
 
+	// ImagesDropInDir holds the operator's own image archives. Every start
+	// imports them beside the payload's and exempts their repositories from
+	// kubelet's pull-credential check, so an image staged for a node with no
+	// registry access is used from the node.
+	ImagesDropInDir string
+
 	// NetConfigPath persists the cluster's effective pod/service CIDRs (chosen at
 	// cluster-init) so HA joins and cert rotation inherit the exact same values
 	// (incl. IPv6 families under dual-stack). Lives UNDER PKIDir so it rides the
@@ -301,6 +307,7 @@ func SetRoots(dataDir, confDir, runDir string) {
 	AdmissionConfigPath = filepath.Join(K8sConfDir, "admission-config.yaml")
 	EncryptionConfigPath = filepath.Join(PKIDir, "encryption-config.yaml")
 	RegistriesConfig = filepath.Join(ConfDir, "registries.yaml")
+	ImagesDropInDir = filepath.Join(ConfDir, "images.d")
 	NetConfigPath = filepath.Join(PKIDir, "netconfig")
 	CiliumSettingsPath = filepath.Join(PKIDir, "cilium.json")
 	ControllerManagerManifest = filepath.Join(K8sConfDir, "manifests", "kube-controller-manager.yaml")
@@ -348,6 +355,23 @@ func nodeFileOwners() map[string]string {
 		K8sConfDir + "/renewal.yaml":        "internal/certs",
 		K8sConfDir + "/rotation-incomplete": "internal/certs",
 		PKIDir + "/carotate-run-id":         "internal/certs",
+
+		// The scheduled snapshot loop's durable attempt record: what its
+		// last save, upload and prune attempts did and when the save and
+		// upload last succeeded. The loop's writer sits in
+		// internal/etcdsnap — the scheduled save records its attempts
+		// through it — and the reader and the record's shape in
+		// internal/backupevidence, which the writer cannot import: the
+		// file is the contract between the two, pinned together by the
+		// recording tests. The owner here is the writer, the package
+		// whose writes the node-file rule must scan.
+		K8sConfDir + "/snapshot-evidence.yaml": "internal/etcdsnap",
+
+		// The node-owned backup-evidence publisher's durable record: what
+		// its last sample of the engine's backup evidence said and when it
+		// was taken. The publisher (publishEvidenceLoop) sits in
+		// internal/cluster, which owns the record's contract and writes it.
+		K8sConfDir + "/backup-evidence.yaml": "internal/cluster",
 
 		// The component kubeconfigs (admin, kubelet, controller-manager, ...),
 		// the kubectl admin.conf, and the bootstrap kubeconfig — which

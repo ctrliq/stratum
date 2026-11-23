@@ -25,12 +25,12 @@ var (
 // resets the restart backoff to the floor.
 const runGroupUpReset = 30 * time.Second
 
-// runGroup owns the controller's in-process tasks the way internal/supervisor
-// owns its child processes: each task runs with the controller's context
-// until that context is cancelled, a panicking or early-returning task is
-// recovered, logged by name, and restarted with backoff instead of taking the
-// controller down or dying silently, and wait joins every task before
-// RunController returns. Without that join, `stratum up` could
+// runGroup owns a node's in-process tasks the way internal/supervisor owns
+// its child processes: each task runs with the node's context until that
+// context is cancelled, a panicking or early-returning task is recovered,
+// logged by name, and restarted with backoff instead of taking the node down
+// or dying silently, and wait joins every task before RunController or
+// RunWorker returns. Without that join, `stratum up` could
 // print "stratum: stopped" and release the node-start lock while a cert
 // rotation or an etcd snapshot save was still mid-flight, and systemd's
 // KillMode=process could cut that work down.

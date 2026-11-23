@@ -9,6 +9,7 @@
 package cluster
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ctrliq/stratum/internal/addons"
+	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/netcfg"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/profile"
@@ -273,7 +275,16 @@ const DefaultConfigPath = "/etc/stratum/config.yaml"
 // LoadConfig reads the cluster config; a missing file yields pure defaults, so
 // `stratum up` with no config at all still brings up a sane single node.
 func LoadConfig(path string) (*ClusterConfig, error) {
-	c, _, err := parseConfig(path)
+	return loadConfig(path, os.ReadFile)
+}
+
+// LoadConfigContext uses the same parser and defaults with bounded metadata I/O.
+func LoadConfigContext(ctx context.Context, path string) (*ClusterConfig, error) {
+	return loadConfig(path, func(path string) ([]byte, error) { return boundedfile.Read(ctx, path) })
+}
+
+func loadConfig(path string, read func(string) ([]byte, error)) (*ClusterConfig, error) {
+	c, _, err := parseConfigWithRead(path, read)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +327,8 @@ func workerField(p string) bool {
 }
 
 // WorkerSELinux reads spec.selinux from a worker's config file on a restart,
-// which reads nothing else from it. set is false when the file is missing or
+// which reads only it and, to refuse a change of profile, WorkerProfile's
+// fields. set is false when the file is missing or
 // does not set spec.selinux, and the worker keeps the setting it saved. Other
 // fields are not checked here: a worker's join already refused a file that
 // set them.
@@ -340,6 +352,21 @@ func WorkerSELinux(path string) (optOut, set bool, err error) {
 		}
 	}
 	return false, false, nil
+}
+
+// WorkerProfile is the profile a worker's config file names in spec.profile
+// or spec.cis, "" when it names none. A worker restart reads it only to refuse
+// a profile other than the one the worker joined with, and that refusal stops
+// the start at boot too, as it does a start by hand.
+func WorkerProfile(path string) (string, error) {
+	c, _, err := parseConfig(path)
+	if err != nil {
+		return "", err
+	}
+	if err := c.resolveProfile(); err != nil {
+		return "", fmt.Errorf("%s: %w", path, err)
+	}
+	return c.ProfileName(), nil
 }
 
 // LoadWorkerConfig is the config a --worker honours: spec.network.nodeIP,
@@ -413,8 +440,12 @@ func (c *ClusterConfig) validateNode() error {
 // parseConfig reads and strictly parses path without applying defaults, and
 // returns the raw document with it. A missing file is an empty config.
 func parseConfig(path string) (*ClusterConfig, []byte, error) {
+	return parseConfigWithRead(path, os.ReadFile)
+}
+
+func parseConfigWithRead(path string, read func(string) ([]byte, error)) (*ClusterConfig, []byte, error) {
 	c := &ClusterConfig{path: path}
-	b, err := os.ReadFile(path)
+	b, err := read(path)
 	if os.IsNotExist(err) {
 		return c, nil, nil
 	}
