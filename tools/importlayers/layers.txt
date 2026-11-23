@@ -18,6 +18,7 @@
 # these; a layer-1 package may import only other layer-1 packages, and none
 # reaches higher.
 layer1 github.com/ctrliq/stratum/internal/bootstrap/clusterinfo
+layer1 github.com/ctrliq/stratum/internal/boundedfile
 layer1 github.com/ctrliq/stratum/internal/enginesettings
 layer1 github.com/ctrliq/stratum/internal/interrupt
 layer1 github.com/ctrliq/stratum/internal/k8sver
@@ -30,14 +31,15 @@ layer1 github.com/ctrliq/stratum/internal/toolenv
 
 # Layer 2 — primitives: small stamped helpers over the foundations —
 # ldflags-stamped version and the /var/lib/stratum path layout, SELinux
-# labels, the atomic file writer, PID identification, the node lock, etcd
-# data-dir paths, node-Job manifests, the registry config reader, the
-# supervisor state reader, component supervision, embedded payload
-# extraction. A layer-1 rule for profile/profiletest sits above this
+# labels, the AppArmor runc profile, the atomic file writer, PID
+# identification, the node lock, etcd data-dir paths, node-Job manifests,
+# the registry config reader, the supervisor state reader, component
+# supervision, embedded payload extraction. A layer-1 rule for profile/profiletest sits above this
 # comment's packages only because the test fixture imports profile and
 # nothing else.
 layer2 github.com/ctrliq/stratum/internal/version
 layer2 github.com/ctrliq/stratum/internal/selinux
+layer2 github.com/ctrliq/stratum/internal/apparmor
 layer2 github.com/ctrliq/stratum/internal/atomicfile
 layer2 github.com/ctrliq/stratum/internal/procid
 layer2 github.com/ctrliq/stratum/internal/nodelock
@@ -84,6 +86,7 @@ layer4 github.com/ctrliq/stratum/internal/etcdsnap
 layer4 github.com/ctrliq/stratum/internal/uninstall
 layer4 github.com/ctrliq/stratum/internal/operator
 layer4 github.com/ctrliq/stratum/internal/cluster
+layer4 github.com/ctrliq/stratum/internal/backupevidence
 layer4 github.com/ctrliq/stratum/internal/upgrade
 
 # Layer 5 — interfaces: the user- and program-facing servers. They may

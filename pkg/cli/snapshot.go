@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -20,6 +21,7 @@ import (
 	"github.com/ctrliq/stratum/internal/ha"
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/interrupt"
+	mcpsrv "github.com/ctrliq/stratum/internal/mcp"
 	"github.com/ctrliq/stratum/internal/objstore"
 )
 
@@ -96,12 +98,28 @@ func newSnapshotSaveCommand() *cobra.Command {
 	return cmd
 }
 
+// snapshotListJSONOutput is the one machine-readable output format `snapshot list`
+// takes: the engine's backup evidence, the same rows the backup_evidence MCP
+// tool serves.
+const snapshotListJSONOutput = "json"
+
 func newSnapshotListCommand() *cobra.Command {
-	return &cobra.Command{
+	var output string
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List local + S3 snapshots",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if output != "" {
+				if output != snapshotListJSONOutput {
+					return fmt.Errorf("unknown output format %q: %q or the default text table", output, snapshotListJSONOutput)
+				}
+				// One bounded read through the supported surface — the same
+				// rows the backup_evidence tool serves, so the two surfaces
+				// cannot drift.
+				out := backupEvidenceRows(cmd.Context(), mcpsrv.BackupEvidenceIn{})
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
+			}
 			cfg, _ := loadSnapshotConfig()
 			items, err := etcdsnap.List(cfg.Dir, cfg.S3Target())
 			if err != nil {
@@ -115,6 +133,9 @@ func newSnapshotListCommand() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVarP(&output, "output", "o", "",
+		"output format: json emits the engine's backup evidence as machine-readable rows (policy, local and remote catalogs, deduplicated census, maintenance); the default text table is unchanged")
+	return cmd
 }
 
 func newSnapshotPruneCommand() *cobra.Command {
@@ -475,19 +496,68 @@ func newSnapshotScheduleCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read snapshot config (not overwriting it): %w", err)
 			}
+			// Each S3 flag applies only when it was passed: an unset flag means
+			// "not stated", not "set to empty", so a lone --s3-bucket must not wipe
+			// the configured endpoint/region/prefix/path-style. Key on Changed, not
+			// on values: an explicit --s3-path-style=false must override a
+			// configured true even though false is also the flag's default.
+			var detailFlags []string
+			if cmd.Flags().Changed("s3-endpoint") {
+				detailFlags = append(detailFlags, "--s3-endpoint")
+			}
+			if cmd.Flags().Changed("s3-region") {
+				detailFlags = append(detailFlags, "--s3-region")
+			}
+			if cmd.Flags().Changed("s3-prefix") {
+				detailFlags = append(detailFlags, "--s3-prefix")
+			}
+			if cmd.Flags().Changed("s3-path-style") {
+				detailFlags = append(detailFlags, "--s3-path-style")
+			}
+			// An explicitly empty --s3-bucket is refused before anything is
+			// saved: saving it would clear the configured bucket and with it the
+			// omitted S3 details (SaveConfig writes the S3_* keys only while a
+			// bucket is set), while the way to stop S3 uploads is to drop the
+			// S3 target from the snapshot config file.
+			if cmd.Flags().Changed("s3-bucket") && strings.TrimSpace(bucket) == "" {
+				return fmt.Errorf("snapshot schedule: --s3-bucket was passed empty: an empty bucket is refused; to stop S3 uploads instead, remove the S3_BUCKET line from %s", etcdsnap.ConfigPath)
+			}
+			// An S3 detail flag configures nothing without a bucket: refuse rather
+			// than silently save a no-op. Either --s3-bucket in this call or a
+			// bucket already in the loaded config is enough; the empty value above
+			// is already refused, so the passed bucket is a real target.
+			effectiveBucket := cfg.S3.Bucket
+			if cmd.Flags().Changed("s3-bucket") {
+				effectiveBucket = bucket
+			}
+			if len(detailFlags) > 0 && effectiveBucket == "" {
+				verb := "needs"
+				if len(detailFlags) > 1 {
+					verb = "need"
+				}
+				return fmt.Errorf("snapshot schedule: %s %s an S3 bucket: pass --s3-bucket (no bucket is configured)", strings.Join(detailFlags, ", "), verb)
+			}
 			if retain > 0 {
 				cfg.Retain = retain
 			}
-			if bucket != "" {
+			if cmd.Flags().Changed("s3-bucket") {
 				cfg.S3.Bucket = bucket
-				cfg.S3.Endpoint = endpoint
-				cfg.S3.Region = region
-				cfg.S3.Prefix = prefix
-				cfg.S3.PathStyle = pathStyle
-				// credentials come from the environment (STRATUM_S3_*/AWS_*) — never
-				// argv; LoadConfig already overlaid them onto cfg.S3. SaveConfig
-				// will not write them back out.
 			}
+			if cmd.Flags().Changed("s3-endpoint") {
+				cfg.S3.Endpoint = endpoint
+			}
+			if cmd.Flags().Changed("s3-region") {
+				cfg.S3.Region = region
+			}
+			if cmd.Flags().Changed("s3-prefix") {
+				cfg.S3.Prefix = prefix
+			}
+			if cmd.Flags().Changed("s3-path-style") {
+				cfg.S3.PathStyle = pathStyle
+			}
+			// credentials come from the environment (STRATUM_S3_*/AWS_*) — never
+			// argv; LoadConfig already overlaid them onto cfg.S3. SaveConfig
+			// will not write them back out.
 			if err := scheduleSaveConfig(os.Stdout, cfg); err != nil {
 				return err
 			}
@@ -514,4 +584,164 @@ func newSnapshotScheduleCommand() *cobra.Command {
 	fs.BoolVar(&pathStyle, "s3-path-style", false, "path-style addressing (typical for non-AWS)")
 	fs.BoolVar(&snaps, "snapshots", true, "false prints how to disable scheduled snapshots instead of the update confirmation; it does not disable them, and the config is saved either way")
 	return cmd
+}
+
+// ------------------------------------------------------------ backup evidence
+
+func init() {
+	// The engine's MCP package cannot import this one — this one imports it —
+	// so the backup_evidence tool gets its evidence reader the same way the
+	// controller gets its evidence sampler: a seam wired from here, at
+	// startup, never an import. What it serves is the supported surface, the
+	// same BackupEvidence read an external pinned binary calls.
+	mcpsrv.BackupEvidenceRead = backupEvidenceRows
+}
+
+// backupEvidenceRows restates one bounded read from the supported surface —
+// BackupEvidence, the same call an external pinned binary makes — as the
+// shared machine-readable rows: the document `snapshot list -o json` prints
+// and the backup_evidence tool serves, so the two surfaces cannot drift.
+// Stamps are RFC 3339 UTC and durations whole seconds; nil lists become
+// empty ones so the document's shape never moves.
+func backupEvidenceRows(ctx context.Context, in mcpsrv.BackupEvidenceIn) mcpsrv.BackupEvidenceOut {
+	res := BackupEvidence(ctx,
+		WithBackupEvidenceMaxEntries(in.MaxEntries),
+		WithBackupEvidenceMaxBytes(in.MaxBytes),
+		WithBackupEvidenceMaxTime(time.Duration(in.MaxSeconds)*time.Second),
+	)
+	return mcpsrv.BackupEvidenceOut{
+		Policy:      backupPolicyRow(res.Policy),
+		Node:        res.Node,
+		NodeUID:     res.NodeUID,
+		Local:       backupLocalRow(res.Local),
+		Remote:      backupRemoteRow(res.Remote),
+		Backups:     backupCensusRow(res.Backups),
+		Maintenance: backupMaintenanceRow(res.Maintenance),
+		Complete:    res.Complete,
+		Warnings:    backupRowStrings(res.Warnings),
+	}
+}
+
+// backupEvidenceStamp renders one evidence timestamp: RFC 3339 UTC, empty for
+// the zero time, which the contract reads as an absent value.
+func backupEvidenceStamp(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+// backupRowStrings keeps the document's shape still: a nil list becomes an
+// empty one, never JSON null.
+func backupRowStrings(ss []string) []string {
+	if ss == nil {
+		return []string{}
+	}
+	return ss
+}
+
+// backupPolicyRow restates the effective policy, pairing every value with its
+// provenance as the stable strings the machine-readable contract pins.
+func backupPolicyRow(p BackupPolicy) mcpsrv.BackupPolicyRow {
+	return mcpsrv.BackupPolicyRow{
+		State:           string(p.State),
+		IntervalSeconds: int64(p.Interval / time.Second),
+		IntervalFrom:    string(p.IntervalFrom),
+		Retain:          p.Retain,
+		RetainFrom:      string(p.RetainFrom),
+		Copy:            string(p.Copy),
+		CopyFrom:        string(p.CopyFrom),
+		Dir:             p.Dir,
+		DirFrom:         string(p.DirFrom),
+		Warnings:        backupRowStrings(p.Warnings),
+	}
+}
+
+// backupArtifactRow restates one enumerated artifact.
+func backupArtifactRow(a BackupArtifact) mcpsrv.BackupArtifactRow {
+	return mcpsrv.BackupArtifactRow{
+		ID:         a.ID,
+		Location:   a.Location,
+		LocationID: a.LocationID,
+		CopyID:     a.CopyID,
+		Created:    backupEvidenceStamp(a.Created),
+		Size:       a.Size,
+		Digest:     a.Digest,
+	}
+}
+
+// backupArtifactRows restates a catalog half's artifacts.
+func backupArtifactRows(as []BackupArtifact) []mcpsrv.BackupArtifactRow {
+	out := make([]mcpsrv.BackupArtifactRow, 0, len(as))
+	for _, a := range as {
+		out = append(out, backupArtifactRow(a))
+	}
+	return out
+}
+
+// backupLocalRow restates the bounded local catalog.
+func backupLocalRow(l BackupLocalCatalog) mcpsrv.BackupLocalRow {
+	return mcpsrv.BackupLocalRow{
+		Node:      l.Node,
+		Artifacts: backupArtifactRows(l.Artifacts),
+		Complete:  l.Complete,
+		Warnings:  backupRowStrings(l.Warnings),
+	}
+}
+
+// backupRemoteRow restates the bounded remote catalog.
+func backupRemoteRow(r BackupRemoteCatalog) mcpsrv.BackupRemoteRow {
+	return mcpsrv.BackupRemoteRow{
+		Copies:   backupArtifactRows(r.Copies),
+		Old:      backupArtifactRows(r.Old),
+		Complete: r.Complete,
+		Warnings: backupRowStrings(r.Warnings),
+	}
+}
+
+// backupCensusRow restates the deduplicated census, giving each entry its own
+// artifact values so no pointer reaches back into the surface's result.
+func backupCensusRow(c BackupCensus) mcpsrv.BackupCensusRow {
+	entries := make([]mcpsrv.BackupCensusEntryRow, 0, len(c.Entries))
+	for _, e := range c.Entries {
+		row := mcpsrv.BackupCensusEntryRow{ID: e.ID, OldRemote: e.OldRemote}
+		if e.Local != nil {
+			local := backupArtifactRow(*e.Local)
+			row.Local = &local
+		}
+		if e.Remote != nil {
+			remote := backupArtifactRow(*e.Remote)
+			row.Remote = &remote
+		}
+		entries = append(entries, row)
+	}
+	return mcpsrv.BackupCensusRow{
+		Node:      c.Node,
+		Entries:   entries,
+		Complete:  c.Complete,
+		Warnings:  backupRowStrings(c.Warnings),
+		Retention: backupRowStrings(c.Retention),
+	}
+}
+
+// backupMaintenanceRow restates the loop's durable maintenance state, with
+// each attempt's typed outcome.
+func backupMaintenanceRow(m BackupMaintenance) mcpsrv.BackupMaintenanceRow {
+	return mcpsrv.BackupMaintenanceRow{
+		Save:              backupAttemptRow(m.Save),
+		Upload:            backupAttemptRow(m.Upload),
+		Prune:             backupAttemptRow(m.Prune),
+		LastSaveSuccess:   backupEvidenceStamp(m.LastSaveSuccess),
+		LastUploadSuccess: backupEvidenceStamp(m.LastUploadSuccess),
+		Warnings:          backupRowStrings(m.Warnings),
+		AttemptsKnown:     m.AttemptsKnown,
+	}
+}
+
+// backupAttemptRow restates one recorded attempt with its typed outcome.
+func backupAttemptRow(a BackupAttempt) mcpsrv.BackupAttemptRow {
+	return mcpsrv.BackupAttemptRow{
+		AttemptedAt: backupEvidenceStamp(a.AttemptedAt),
+		Outcome:     string(a.Outcome),
+	}
 }

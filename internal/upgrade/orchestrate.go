@@ -26,6 +26,9 @@ import (
 // the cluster preflight's refusal and a node's own --check refusal.
 const selinuxPrereqDetail = "(container-selinux, policycoreutils, policycoreutils-python-utils or libselinux-utils missing on an enforcing node or one whose profile requires SELinux, or spec.selinux: false combined with such a profile)"
 
+// apparmorPrereqDetail is the AppArmor prerequisite, worded for the refusal.
+const apparmorPrereqDetail = "or the AppArmor one: where kernel.apparmor_restrict_unprivileged_unconfined is set, Stratum's runc needs the AppArmor profile runc, and it could not be built"
+
 const cuNamespace = "kube-system"
 
 // maintenanceLeaseName is the shared cluster-wide maintenance Lease, held by
@@ -945,7 +948,7 @@ func preflightNodePrereqs(ctx context.Context, w io.Writer, cs kubernetes.Interf
 		}
 		if !n.Ready {
 			from := shellQuote(o.From)
-			fmt.Fprintf(w, "  WARN: %s is NotReady, so the SELinux prerequisite check cannot run on it; check it with sudo %s upgrade --from %s --check\n", n.Name, from, from)
+			fmt.Fprintf(w, "  WARN: %s is NotReady, so the SELinux and AppArmor prerequisite checks cannot run on it; check it with sudo %s upgrade --from %s --check\n", n.Name, from, from)
 			continue
 		}
 		code, log, err := runExitCodeLogs(ctx, cs, nodejob.Spec{
@@ -986,7 +989,7 @@ func preflightNodePrereqs(ctx context.Context, w io.Writer, cs kubernetes.Interf
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("preflight: node(s) %s: each failed the SELinux prerequisite `stratum up` enforces "+selinuxPrereqDetail+". "+
+		return fmt.Errorf("preflight: node(s) %s: each failed a prerequisite `stratum up` enforces: the SELinux one "+selinuxPrereqDetail+", "+apparmorPrereqDetail+". "+
 			"Nothing was cordoned or drained. Run sudo %s upgrade --from %s --check on each node for its exact reason",
 			strings.Join(missing, ", "), shellQuote(o.From), shellQuote(o.From))
 	}
@@ -1026,7 +1029,7 @@ func nodeRunsThisBuild(ctx context.Context, w io.Writer, cs kubernetes.Interface
 	case ExitUpgradeNeeded:
 		return false, nil
 	case ExitPrereqMissing:
-		return false, fmt.Errorf("%w: the node failed the SELinux prerequisite `stratum up` enforces "+selinuxPrereqDetail+"; the node was not drained. Run sudo %s upgrade --from %s --check on it for its exact reason (logs: kubectl -n %s logs job/%s)",
+		return false, fmt.Errorf("%w: the node failed a prerequisite `stratum up` enforces: the SELinux one "+selinuxPrereqDetail+", "+apparmorPrereqDetail+"; the node was not drained. Run sudo %s upgrade --from %s --check on it for its exact reason (logs: kubectl -n %s logs job/%s)",
 			ErrPrereqMissing, shellQuote(o.From), shellQuote(o.From), cuNamespace, jobName(n.Name))
 	default:
 		return false, fmt.Errorf("build check exited %d (logs: kubectl -n %s logs job/%s)", code, cuNamespace, jobName(n.Name))
