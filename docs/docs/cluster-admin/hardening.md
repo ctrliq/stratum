@@ -47,7 +47,7 @@ work on Stratum as follows.
 | `privileged`, `capabilities`, `allowPrivilegeEscalation`, `readOnlyRootFilesystem` | Applied. |
 | `seccompProfile: RuntimeDefault`, `Unconfined` | Applied. |
 | `seccompProfile: Localhost` | Applied. Profiles live under the kubelet's root directory, which on Stratum is `/var/lib/stratum/kubelet/seccomp/`, not `/var/lib/kubelet/seccomp/`. |
-| `appArmorProfile` | Only on hosts whose kernel has AppArmor, such as Ubuntu; Rocky Linux and RHEL use SELinux instead. Not verified on an AppArmor host. |
+| `appArmorProfile` | Only on hosts whose kernel has AppArmor, such as Ubuntu; Rocky Linux and RHEL use SELinux instead. Not verified on an AppArmor host. On a host with `kernel.apparmor_restrict_unprivileged_unconfined` set, as on Ubuntu 26.04, see [AppArmor](../installation/configuration.md#apparmor). |
 | `procMount` | Applied: `Unmasked` (which needs `hostUsers: false`) leaves `/proc` paths such as `/proc/kcore` unmasked; `Default` masks them. |
 | `hostUsers: false` (user namespaces) | Applied where the kernel and the filesystem under `/var/lib/stratum` support ID-mapped mounts (verified on kernel 6.8). |
 | `seLinuxOptions` | Applied on a labelled SELinux node, where containers run as `container_t` with their own categories (see [Containers](../installation/configuration.md#containers)). On a host without SELinux, or a node that opted out or lacks the policy packages, accepted but not applied. |

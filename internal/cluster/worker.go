@@ -67,7 +67,8 @@ type WorkerOptions struct {
 	ServiceCIDR   string
 	PodCIDR       string
 	ClusterDomain string
-	// Profile selects the named node profile on a join.
+	// Profile selects the named node profile on a join. On a restart, a
+	// profile other than the saved one is refused.
 	Profile string
 	// SELinuxOptOut is spec.selinux: false from the config file, nil when a
 	// restart's file does not set it; a restart saves a changed setting.
@@ -80,6 +81,27 @@ type WorkerOptions struct {
 	Node NodeSpec
 	// ConfigNode is spec.node from the config file, which only a join reads.
 	ConfigNode NodeSpec
+}
+
+// ResolveJoinNodeIP resolves and checks the node IP of a new worker join. A
+// join is a new registration, so an address an earlier join saved on this
+// host is not a source: --node-ip, then spec.network.nodeIP, then $NODE_IP,
+// then detection. The join saves this address and every later start reuses
+// it, so it is checked before anything on the host or the cluster is
+// touched — which is why the up command runs this same function before it
+// stages the payload, so a refusal writes nothing. The stack is read from
+// the value, as the restart reads it from the saved one: a pair given
+// without --dual-stack registers both families, and one address given with
+// it registers only that one, as before the check.
+func ResolveJoinNodeIP(nodeIP, configNodeIP string, dual bool) (host.NodeIPChoice, error) {
+	choice, err := host.ResolveNodeIP(nodeIP, configNodeIP, "", func() (string, error) { return hostDetectNodeIPs(dual) })
+	if err != nil {
+		return host.NodeIPChoice{}, err
+	}
+	if err := host.CheckNodeIP(choice.IP, strings.Contains(choice.IP, ",")); err != nil {
+		return host.NodeIPChoice{}, fmt.Errorf("worker join: %s %q cannot be this worker's node IP: %w", choice.Source, choice.IP, err)
+	}
+	return choice, nil
 }
 
 // PrepareWorker runs the worker join flow: discover + pin the CA,
@@ -114,6 +136,9 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		p, err := profile.Select(st.ProfileName())
 		if err != nil {
 			return nil, fmt.Errorf("this worker's saved state names a %w; run it with a binary that registers the profile", err)
+		}
+		if err := RefuseWorkerProfileChange(st, profileName); err != nil {
+			return nil, err
 		}
 		// Every refusal comes before the restart saves a setting or prepares
 		// the host, so a refused start leaves node.yaml and the host as they
@@ -297,19 +322,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		return nil, err
 	}
 	// A join is a new registration, so an address an earlier join saved on
-	// this host is not a source: --node-ip, then spec.network.nodeIP, then
-	// $NODE_IP, then detection.
-	choice, err := host.ResolveNodeIP(o.NodeIP, o.ConfigNodeIP, "", func() (string, error) { return hostDetectNodeIPs(o.DualStack) })
+	// this host is not a source; ResolveJoinNodeIP names the order.
+	choice, err := ResolveJoinNodeIP(o.NodeIP, o.ConfigNodeIP, o.DualStack)
 	if err != nil {
 		return nil, err
-	}
-	// The join saves this address and every later start reuses it, so it is
-	// checked before anything on the host or the cluster is touched. The
-	// stack is read from the value, as the restart reads it from the saved
-	// one: a pair given without --dual-stack registers both families, and one
-	// address given with it registers only that one, as before the check.
-	if err := host.CheckNodeIP(choice.IP, strings.Contains(choice.IP, ",")); err != nil {
-		return nil, fmt.Errorf("worker join: %s %q cannot be this worker's node IP: %w", choice.Source, choice.IP, err)
 	}
 	fmt.Printf("stratum: node IP %s (%s)\n", choice.IP, choice.Source)
 	nodeIP := choice.IP
@@ -428,4 +444,28 @@ func FormatKeyValues(m map[string]string) string {
 		out = append(out, k+"="+m[k])
 	}
 	return strings.Join(out, ",")
+}
+
+// RefuseWorkerProfileChange refuses a worker restart that names a profile
+// other than the one st, the worker's saved state, records. No profile named
+// keeps the saved one.
+func RefuseWorkerProfileChange(st *NodeState, want string) error {
+	if want == "" || want == st.ProfileName() {
+		return nil
+	}
+	return fmt.Errorf("worker restart: this worker joined with %s, and a restart cannot change it to profile %q: "+
+		"a worker takes its profile from its join. To move it, remove spec.profile and spec.cis from this worker's "+
+		"config file, which a worker join refuses, then run `stratum token create` on a control plane and run the "+
+		"worker join line it prints on this node with its --profile set to %s, adding one if the line has none. "+
+		"The join replaces this worker's saved state with what that line and the config file give, so also add "+
+		"the --node-ip, --dual-stack, --node-label, --node-taint and --runtime-handler settings that %s records "+
+		"and the config file does not set. Then restart the worker as before. Nothing was changed",
+		describeProfile(st.ProfileName()), want, want, nodestate.StatePath())
+}
+
+func describeProfile(name string) string {
+	if name == "" {
+		return "no profile"
+	}
+	return fmt.Sprintf("profile %q", name)
 }

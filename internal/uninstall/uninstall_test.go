@@ -358,6 +358,7 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		"EncryptionConfigPath":      version.EncryptionConfigPath,
 		"EtcdDataDir":               version.EtcdDataDir,
 		"HelmCacheDir":              version.HelmCacheDir,
+		"ImagesDropInDir":           version.ImagesDropInDir,
 		"ModulesLoadFile":           version.ModulesLoadFile,
 		"LegacyHelmCacheDir":        version.LegacyHelmCacheDir,
 		"K8sConfDir":                version.K8sConfDir,
@@ -1447,10 +1448,10 @@ func TestDryRunListsEveryTargetAndEachConditionalItem(t *testing.T) {
 //   - preview.go declares PreviewItem{Kind, Path, Detail, Unknown string},
 //     PreviewReport{Targets []string, Items []PreviewItem} and
 //     Preview() PreviewReport.
-//   - Preview consults the package variable PreviewProbes — a struct of four
+//   - Preview consults the package variable PreviewProbes — a struct of five
 //     read-only host probes (LegacyHostConfig, TrustedPodCIDRs,
-//     OwnedFirewalldInterfaces, SELinuxRegistered) with the production
-//     implementations wired as its default — because the MCP handler builds no
+//     OwnedFirewalldInterfaces, SELinuxRegistered, AppArmorWidened) with the
+//     production implementations wired as its default — because the MCP handler builds no
 //     hostEffects, and a package variable is the seam both this package's and
 //     internal/mcp's tests can stub.
 //   - The layout paths the dry run names today (/run/netns, /run/cilium,
@@ -1482,6 +1483,7 @@ func TestPreviewEnumeratesTargetsAndConditionals(t *testing.T) {
 	}
 	PreviewProbes.OwnedFirewalldInterfaces = func() ([]string, error) { return []string{"lxc+"}, nil }
 	PreviewProbes.SELinuxRegistered = func() bool { return true }
+	PreviewProbes.AppArmorWidened = func() bool { return true }
 
 	var p PreviewReport
 	printed := captureStdout(t, func() { p = Preview() })
@@ -1532,6 +1534,9 @@ func TestPreviewEnumeratesTargetsAndConditionals(t *testing.T) {
 	if selinux := previewItemsByKind(p.Items, "selinux-contexts"); len(selinux) != 1 {
 		t.Errorf("Preview() items of kind selinux-contexts = %+v, want one when contexts are registered", selinux)
 	}
+	if runc := previewItemsByKind(p.Items, "apparmor-runc-profile"); len(runc) != 1 {
+		t.Errorf("Preview() items of kind apparmor-runc-profile = %+v, want one when the runc profile covers stratum's runc", runc)
+	}
 	for _, it := range p.Items {
 		if it.Unknown != "" {
 			t.Errorf("Preview() item %+v reports an unknown; every probe answered", it)
@@ -1550,6 +1555,7 @@ func TestPreviewReportsAnUnanswerableProbe(t *testing.T) {
 	PreviewProbes.TrustedPodCIDRs = func() ([]string, error) { return nil, fmt.Errorf("record unreadable") }
 	PreviewProbes.OwnedFirewalldInterfaces = func() ([]string, error) { return nil, fmt.Errorf("firewall-cmd failed") }
 	PreviewProbes.SELinuxRegistered = func() bool { return false }
+	PreviewProbes.AppArmorWidened = func() bool { return false }
 
 	p := Preview()
 	if got := previewItemsByKind(p.Items, "firewalld-source"); len(got) != 1 || got[0].Path != "" || !strings.Contains(got[0].Unknown, "record unreadable") {
@@ -1559,7 +1565,7 @@ func TestPreviewReportsAnUnanswerableProbe(t *testing.T) {
 		t.Errorf("Preview() items of kind firewalld-interface = %+v, want one carrying the probe's error as Unknown and no path", got)
 	}
 	// Absent probes answer nothing, and nothing stands in for them.
-	for _, kind := range []string{"legacy-containerd-config", "selinux-contexts"} {
+	for _, kind := range []string{"legacy-containerd-config", "selinux-contexts", "apparmor-runc-profile"} {
 		if got := previewItemsByKind(p.Items, kind); len(got) != 0 {
 			t.Errorf("Preview() items of kind %q = %+v, want none when the probe reports the effect absent", kind, got)
 		}
@@ -1577,6 +1583,7 @@ func TestPreviewKeepsTheFixedItemsOnAPlainHost(t *testing.T) {
 	PreviewProbes.TrustedPodCIDRs = func() ([]string, error) { return nil, nil }
 	PreviewProbes.OwnedFirewalldInterfaces = func() ([]string, error) { return nil, nil }
 	PreviewProbes.SELinuxRegistered = func() bool { return false }
+	PreviewProbes.AppArmorWidened = func() bool { return false }
 
 	p := Preview()
 	var kinds []string
@@ -1607,6 +1614,7 @@ func TestDryRunDisclosesTheSharedPreviewConditionals(t *testing.T) {
 	PreviewProbes.TrustedPodCIDRs = func() ([]string, error) { return []string{"10.245.0.0/16"}, nil }
 	PreviewProbes.OwnedFirewalldInterfaces = func() ([]string, error) { return []string{"lxc+"}, nil }
 	PreviewProbes.SELinuxRegistered = func() bool { return true }
+	PreviewProbes.AppArmorWidened = func() bool { return true }
 
 	fx := &hostEffects{
 		netnsDir:         "/run/netns",
@@ -1628,6 +1636,7 @@ func TestDryRunDisclosesTheSharedPreviewConditionals(t *testing.T) {
 		"10.245.0.0/16",
 		"lxc+",
 		"SELinux",
+		"AppArmor",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the dry run does not disclose %q; it must render the shared preview's conditional items:\n%s", want, out)
@@ -1822,6 +1831,7 @@ func TestHostEffectsCoverTheInventory(t *testing.T) {
 		"allowRestartFn",
 		"untrustPodCIDRs",
 		"removeSELinuxContexts",
+		"restoreAppArmor",
 		"unmountStateFn",
 		"unmountFn",
 		"putManifestFn",
@@ -2662,6 +2672,16 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 				fx.removeSELinuxContexts = func() error { return errors.New("semanage failed") }
 			},
 			wantText: []string{"were not all removed", stateRemovedHint},
+		},
+		{
+			name:  "the AppArmor restore accumulates",
+			phase: "removeState",
+			class: "accumulated",
+			role:  "worker",
+			fail: func(t *testing.T, fx *hostEffects, _ *[]string) {
+				fx.restoreAppArmor = func() error { return errors.New("apparmor_parser failed") }
+			},
+			wantText: []string{"runc AppArmor profile was not restored", stateRemovedHint},
 		},
 		{
 			name:  "a failed target removal accumulates",

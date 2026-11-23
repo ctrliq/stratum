@@ -128,6 +128,7 @@ func stubTeardown(t *testing.T, fx *hostEffects, events *[]string) {
 	// a real firewalld on whatever host runs it.
 	fx.untrustPodCIDRs = func() error { record("untrust pod cidrs"); return nil }
 	fx.removeSELinuxContexts = func() error { return nil }
+	fx.restoreAppArmor = func() error { return nil }
 	fx.pidNamespaceFn = func() (string, error) { return initPIDNamespace, nil }
 	fx.foreignRuntimesFn = func() ([]string, []string, error) { return nil, nil, nil }
 }
@@ -1362,6 +1363,28 @@ func TestRunRemovesTheSELinuxContextsBeforeTheData(t *testing.T) {
 	}
 	if !slices.Contains(removed, version.DataDir) {
 		t.Errorf("removed = %q; a SELinux failure must not keep the node's data", removed)
+	}
+}
+
+// The runc AppArmor profile is put back as the host has it once, with every
+// container stopped, and a failure is reported without keeping the rest of
+// the node.
+func TestRunRestoresTheAppArmorProfileOnce(t *testing.T) {
+	events, fx := runNode(t, "worker")
+	restores := 0
+	fx.restoreAppArmor = func() error {
+		restores++
+		*events = append(*events, "restore apparmor")
+		return nil
+	}
+	if err := runUninstall(io.Discard, true, fx); err != nil {
+		t.Fatal(err)
+	}
+	if restores != 1 {
+		t.Errorf("restoreAppArmor ran %d times, want once", restores)
+	}
+	if restore, stop := slices.Index(*events, "restore apparmor"), slices.Index(*events, "stop containers"); stop < 0 || restore < stop {
+		t.Errorf("events = %q, want the AppArmor profile restored after the containers stop", *events)
 	}
 }
 

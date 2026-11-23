@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	"github.com/ctrliq/stratum/internal/assets"
+	"github.com/ctrliq/stratum/internal/backupevidence"
 	"github.com/ctrliq/stratum/internal/bootstrap/clusterinfo"
 	"github.com/ctrliq/stratum/internal/cluster"
 	"github.com/ctrliq/stratum/internal/comps"
@@ -68,7 +69,7 @@ func newUpCommand(cfg rootConfig) *cobra.Command {
 	fs := cmd.Flags()
 	fs.StringVar(&o.configPath, "config", cluster.DefaultConfigPath, "cluster config file (only the default path may be missing, meaning defaults)")
 	fs.BoolVar(&o.worker, "worker", false, "run a workload-only node (no control plane)")
-	fs.StringVar(&o.profile, "profile", "", "node profile to run, by name (the binary must register it; a worker gets it from its join line)")
+	fs.StringVar(&o.profile, "profile", "", "node profile to run, by name (the binary must register it; a worker gets it from its join line, and a worker restart refuses a different one)")
 	fs.BoolVar(&o.cis, "cis", false, "the cis profile; the spelling every release reads, which the restart unit keeps (prefer --profile cis)")
 	_ = fs.MarkHidden("cis")
 	fs.StringVar(&o.join, "join", "", "HA join: existing control-plane URL (https://host:6443)")
@@ -269,8 +270,23 @@ func runUp(parent context.Context, o runUpOptions) error {
 	if err := ctx.Err(); err != nil {
 		return cleanStopOr(err, ctx)
 	}
+	if err := refuseWorkerRestartProfileChange(o); err != nil {
+		return err
+	}
 	if err := preStageProfile(o); err != nil {
 		return err
+	}
+	// A fresh worker join is refused before the payload is staged, so a bad
+	// --node-ip changes nothing on the host: staging writes the binaries and
+	// images under DataDir, and a refusal after them leaves them behind. The
+	// same resolve + check the join itself runs (cluster.ResolveJoinNodeIP,
+	// shared with PrepareWorker's join path, same inputs and error text)
+	// runs here. A restart is not gated by this — its address comes from
+	// saved node state and its check runs in PrepareWorker as before.
+	if o.worker && o.server != "" {
+		if _, err := resolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
+			return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+		}
 	}
 	// Uninstall takes the same data lock before removing DataDir. Keep staging
 	// outside its deletion window, including for worker starts.
@@ -283,7 +299,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		return cleanStopOr(err, ctx)
 	}
 	if stageOptOut(o) {
-		if err := selinux.ForgetLabels(); err != nil {
+		if err := forgetSELinuxLabels(); err != nil {
 			releaseStageLock()
 			return err
 		}
@@ -292,7 +308,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		releaseStageLock()
 		return cleanStopOr(err, ctx)
 	}
-	_, stageErr := assets.Stage(version.DataDir)
+	_, stageErr := stagePayload(version.DataDir)
 	releaseStageLock()
 	if stageErr != nil && !errors.Is(stageErr, assets.ErrNoPayload) {
 		return fmt.Errorf("staging payload: %w", stageErr)
@@ -311,7 +327,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		var selinuxOptOut *bool
 		if o.server == "" {
 			if v, set, err := cluster.WorkerSELinux(o.configPath); err != nil {
-				fmt.Printf("  WARN: spec.selinux not read: %v; keeping the setting this worker saved\n", err)
+				fmt.Printf("  WARN: spec.selinux, spec.profile and spec.cis not read: %v; keeping the SELinux setting and the profile this worker saved\n", err)
 			} else if set {
 				selinuxOptOut = &v
 			}
@@ -322,13 +338,14 @@ func runUp(parent context.Context, o runUpOptions) error {
 				return err
 			}
 			// Only a join reads and validates the whole config. A restart
-			// reads just spec.selinux, above, and passes --node-ip, which can
+			// reads spec.selinux, above, and spec.profile and spec.cis only
+			// to refuse a change of profile. It passes --node-ip, which can
 			// move the address saved in node.yaml; PrepareWorker's fast path
 			// keeps the rest of the settings node.yaml saved.
 			wcfg = joinCfg
 			selinuxOptOut = &wcfg.SELinuxOptOut
 		}
-		profileName, err := o.profileName()
+		profileName, err := workerProfileName(o)
 		if err != nil {
 			return err
 		}
@@ -620,11 +637,13 @@ func missingSharedSecret(prof profile.Profile) bool {
 // blocking supervisor call and the host-mutating prepare step (real PKI
 // generation, host.Prereqs' sysctls/modprobe/swapoff — not something a unit
 // test may run) and observe the exact argv InstallUnit was given, without
-// starting a real supervisor or faking a systemd host.
+// starting a real supervisor or faking a systemd host. runControllerFn wraps
+// the controller call to hand it the backup-evidence sampler below — the one
+// thing it cannot take by import.
 var (
 	installUnit         = host.InstallUnit
 	runWorkerFn         = cluster.RunWorker
-	runControllerFn     = cluster.RunController
+	runControllerFn     = runControllerWithEvidenceSampler
 	prepareControllerFn = cluster.PrepareControllerWithLease
 	// prepareWorkerFn is the worker setup seam for runUp wiring tests.
 	prepareWorkerFn = cluster.PrepareWorker
@@ -632,7 +651,39 @@ var (
 	// prepareControlPlaneJoinFn is the HA join seam, so a wiring test sees the
 	// JoinOptions runUp builds from the flags and the config without a join.
 	prepareControlPlaneJoinFn = ha.PrepareControlPlaneJoin
+	// resolveJoinNodeIP is the pre-stage node-IP check's seam: the real one
+	// reads $NODE_IP and detects the host's address, so wiring tests stub it.
+	resolveJoinNodeIP = cluster.ResolveJoinNodeIP
 )
+
+// runControllerWithEvidenceSampler runs the controller with the engine's
+// backup-evidence reader wired into its publisher: the reader's package
+// (internal/backupevidence) imports internal/cluster — the engine's config
+// resolution lives there — so this is the one place above both that can join
+// them, and the controller takes the reader as the sampler function it
+// samples its publisher on.
+func runControllerWithEvidenceSampler(ctx context.Context, cfg *cluster.ClusterConfig, st *cluster.NodeState) error {
+	return cluster.RunController(ctx, cfg, st, backupEvidenceSampler)
+}
+
+// backupEvidenceSampler adapts the engine's assembled backup-evidence reader
+// to the controller's sampler seam, carrying the reader's bounded summary
+// into the publisher's durable record. The read runs on the engine's
+// built-in bounds — the publisher is a heartbeat, not a full fetch: the
+// supported surfaces (BackupEvidence below, the MCP tool) serve whole reads.
+var backupEvidenceSampler = func(ctx context.Context) (cluster.EvidenceSample, bool) {
+	res := backupevidence.Evidence(ctx, backupevidence.EvidenceOptions{})
+	return cluster.EvidenceSample{
+		Node:           res.Node,
+		NodeUID:        res.NodeUID,
+		Complete:       res.Complete,
+		LocalArtifacts: len(res.Local.Artifacts),
+		RemoteCopies:   len(res.Remote.Copies),
+		Backups:        len(res.Backups.Entries),
+		Exact:          res.Backups.Complete,
+		Warnings:       res.Warnings,
+	}, true
+}
 
 // selfExePath is the absolute path the reboot-persistence unit's ExecStart
 // re-execs — os.Args[0] is not reliably absolute (a relative "./stratum" or a
@@ -722,6 +773,46 @@ func preStageProfile(o runUpOptions) error {
 		}
 	}
 	return nil
+}
+
+// workerProfileName is the profile a worker start names: --profile or --cis,
+// and on a restart also spec.profile or spec.cis from its config file, which
+// must agree. A config file that cannot be read names none here; the start
+// warns where it reads spec.selinux that it read neither field.
+func workerProfileName(o runUpOptions) (string, error) {
+	name, err := o.profileName()
+	if err != nil || o.server != "" {
+		return name, err
+	}
+	if _, _, err := cluster.WorkerSELinux(o.configPath); err != nil {
+		return name, nil
+	}
+	fromConfig, err := cluster.WorkerProfile(o.configPath)
+	if err != nil || fromConfig == "" {
+		return name, err
+	}
+	if name != "" && name != fromConfig {
+		return "", fmt.Errorf("--profile %s and the config's spec.profile %s name two profiles", name, fromConfig)
+	}
+	return fromConfig, nil
+}
+
+// refuseWorkerRestartProfileChange refuses, before anything on the host
+// changes, a worker restart that names a profile other than the one its
+// saved state records.
+func refuseWorkerRestartProfileChange(o runUpOptions) error {
+	if !o.worker || o.server != "" {
+		return nil
+	}
+	st, err := cluster.LoadState()
+	if err != nil || st.Role != "worker" {
+		return nil
+	}
+	name, err := workerProfileName(o)
+	if err != nil {
+		return err
+	}
+	return cluster.RefuseWorkerProfileChange(st, name)
 }
 
 // upConfigPath resolves --config to an absolute path and refuses one that
@@ -867,6 +958,9 @@ func upFlagConflict(o runUpOptions) error {
 // uninstall may remove RunDir while the old start still holds its descriptor.
 // Never remove the coordination inode; closing the descriptor releases the lock.
 var startLockPath = version.StartLockPath
+
+// forgetSELinuxLabels is selinux.ForgetLabels, a seam for tests.
+var forgetSELinuxLabels = selinux.ForgetLabels
 
 // preflightNoRunningNode refuses to start when this node already has a stratum
 // node running. Two cases: a live supervisor already serving the control socket

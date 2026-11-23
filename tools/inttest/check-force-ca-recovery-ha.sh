@@ -19,8 +19,18 @@ wait_for "cp1 to start" 600 node_started cp1 || { node_log cp1; exit 1; }
 wait_for "the VIP to answer" 300 api_via "$HA_VIP" cp1 || { node_log cp1; exit 1; }
 pass "cp1 up"
 
-out=$(on cp1 "/dist/stratum token create --control-plane --server https://$HA_VIP:6443")
-parse_join "$(grep -F -- '--join' <<<"$out" | head -1)" || { fail "no parseable --join line in token output"; done_testing; exit 1; }
+# The API answering does not mean kube-controller-manager has settled: it can
+# still be restarting or waiting for its leader lease, and token create refuses
+# until the bootstrapsigner has signed cluster-info. Retry while it takes over.
+for _ in 1 2 3 4 5 6; do
+  out=$(on cp1 "/dist/stratum token create --control-plane --server https://$HA_VIP:6443" 2>&1) && break
+  sleep 10
+done
+# `|| true`: under pipefail a grep that finds no --join line would end the
+# script here, before the error below could say why.
+line=$(grep -F -- '--join' <<<"$out" | head -1 || true)
+[[ -n $line ]] || { fail "token create never succeeded: $out"; done_testing; exit 1; }
+parse_join "$line" || { fail "no parseable --join line in token output"; done_testing; exit 1; }
 on cp1 "cat -- '$JOIN_KEY_FILE'" | on cp2 "mkdir -p '$(dirname "$JOIN_KEY_FILE")' && umask 077 && cat > '$JOIN_KEY_FILE'"
 node_up cp2 --join "https://$HA_VIP:6443" --token "$JOIN_TOKEN" \
   --discovery-token-ca-cert-hash "$JOIN_CAHASH" --certificate-key-file "$JOIN_KEY_FILE"

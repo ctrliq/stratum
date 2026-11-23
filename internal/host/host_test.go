@@ -157,6 +157,23 @@ func TestPrereqsWritesTheBootCriticalFilesThroughTheAtomicWriter(t *testing.T) {
 	}
 }
 
+// Prereqs gives runc its AppArmor profile only after sysctl --system, which
+// sets kernel.apparmor_restrict_unprivileged_unconfined from the host's own
+// sysctl.d files: decided before it, a start reads the value an operator set
+// by hand, and leaves runc without the profile the host's files require.
+func TestPrereqsLoadsTheAppArmorProfileAfterTheSysctls(t *testing.T) {
+	src, err := os.ReadFile("host.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)[strings.Index(string(src), "func Prereqs("):]
+	body = body[:strings.Index(body, "\n}\n")]
+	sysctls, apparmor := strings.Index(body, "applySysctls("), strings.Index(body, "apparmor.Ensure(")
+	if sysctls < 0 || apparmor < 0 || apparmor < sysctls {
+		t.Errorf("Prereqs calls applySysctls at %d and apparmor.Ensure at %d; want both, the AppArmor profile after the sysctls", sysctls, apparmor)
+	}
+}
+
 func TestFootprintAndUninstallCoverEveryProfilesSysctlDropIn(t *testing.T) {
 	prev := profile.All()
 	t.Cleanup(func() { _ = profile.SetRegistered(prev) })

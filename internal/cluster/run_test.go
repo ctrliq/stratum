@@ -104,7 +104,7 @@ func stubLoops(t *testing.T, tick time.Duration) (renewals, snapshots func() int
 	var renewN, snapN atomic.Int32
 	certRenewRotate = func(context.Context) error { renewN.Add(1); return nil }
 	snapshotInterval = func(*ClusterConfig) time.Duration { return tick }
-	snapshotSave = func(context.Context, *ClusterConfig) error { snapN.Add(1); return nil }
+	snapshotSave = func(context.Context, *ClusterConfig) (string, error) { snapN.Add(1); return "", nil }
 	return renewN.Load, snapN.Load
 }
 
@@ -289,7 +289,7 @@ func TestPostStartsLoopsAreRunGroupTasks(t *testing.T) {
 	oldRenew, oldSnap := certRenewRotate, snapshotSave
 	t.Cleanup(func() { certRenewRotate, snapshotSave = oldRenew, oldSnap })
 	certRenewRotate = func(context.Context) error { parkedRenew.Add(1); <-release; return nil }
-	snapshotSave = func(context.Context, *ClusterConfig) error { parkedSnap.Add(1); <-release; return nil }
+	snapshotSave = func(context.Context, *ClusterConfig) (string, error) { parkedSnap.Add(1); <-release; return "", nil }
 
 	synctest.Test(t, func(t *testing.T) {
 		release = make(chan struct{})
@@ -1061,16 +1061,21 @@ func TestTheRenewalSeamStopsItsRotationWhenTheContextEnds(t *testing.T) {
 // its run starts, writes the .part file used by real etcdctl, and then
 // lingers: the abort provably hits a run that is in flight, and the written
 // file proves the aborted save removed the truncated snapshot it left
-// behind instead of counting it. Same real-time
+// behind instead of counting it. The aborted save is a scheduled one, so it
+// records its failed attempt into the snapshot evidence record through the
+// same redirected evidence area the recording tests use — the tick's
+// evidence outlives the run it died in, and nothing lands under the host's
+// real config area. Same real-time
 // shape as internal/k8sutil's TestWaitHealthzContextEndsWithItsContext.
 func TestTheSnapshotSeamAbortsItsEtcdctlRunWhenTheContextEnds(t *testing.T) {
+	redirectEvidenceArea(t)
 	snapDir := t.TempDir()
 	fakeEtcdctl(t, ": > \"$3.part\"\ntouch \"$3.started\"\nexec sleep 60")
 	cfg := loadClusterConfig(t, "spec:\n  snapshots:\n    dir: "+snapDir+"\n")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- snapshotSave(ctx, cfg) }()
+	go func() { _, err := snapshotSave(ctx, cfg); done <- err }()
 
 	started := filepath.Join(snapDir, "*.started")
 	deadline := time.Now().Add(10 * time.Second)
@@ -1102,6 +1107,15 @@ func TestTheSnapshotSeamAbortsItsEtcdctlRunWhenTheContextEnds(t *testing.T) {
 	}
 	if part, _ := filepath.Glob(filepath.Join(snapDir, "*.part")); len(part) > 0 {
 		t.Errorf("partial snapshot remains after cancellation: %v", part)
+	}
+	// The aborted tick is still evidence: the failed save attempt sits in
+	// the redirected record, named by the cancellation that killed it.
+	rec := readEvidence(t)
+	if rec.Save.AttemptedAt.IsZero() || rec.Save.Result == "" {
+		t.Errorf("the aborted save was not recorded: %+v", rec.Save)
+	}
+	if !rec.LastSaveSuccess.IsZero() {
+		t.Errorf("an aborted save moved the last-success stamp to %v", rec.LastSaveSuccess)
 	}
 }
 
