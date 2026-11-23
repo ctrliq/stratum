@@ -268,6 +268,10 @@ func runUp(parent context.Context, o runUpOptions) error {
 	// runs here. A restart is not gated by this — its address comes from
 	// saved node state and its check runs in PrepareWorker as before.
 	if o.worker && o.server != "" {
+		joinCfg, err := workerConfig(o.configPath)
+		if err != nil {
+			return err
+		}
 		if _, err := resolveJoinNodeIP(o.nodeIP, joinCfg.NodeIP, o.dual); err != nil {
 			return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
 		}
