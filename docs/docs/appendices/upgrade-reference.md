@@ -410,9 +410,9 @@ run cannot see the Job finish within a minute of its deadline, for example
 during an API server outage.
 
 Before the error, the run prints the last 20 lines of the check's log, each as
-`<node> check <name>: <line>`, or
-`WARN: could not read check <name>'s log on <node>: <error>` when the log
-cannot be read.
+`<node> check <name>: <line>`. A check that printed nothing gives
+`<node> check <name> printed nothing`, and one whose log cannot be read gives
+`WARN: could not read check <name>'s log on <node>: <error>`.
 
 - The node runs the new version, but the run does not record it as upgraded:
   the node keeps its `upgrade-in-progress` annotation, so the next run treats

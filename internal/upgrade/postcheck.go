@@ -273,6 +273,10 @@ func relayPostCheckLog(ctx context.Context, w io.Writer, cs kubernetes.Interface
 		fmt.Fprintf(w, "  WARN: could not read check %s's log on %s: %v\n", check, node, err)
 		return
 	}
+	if strings.TrimSpace(log) == "" {
+		fmt.Fprintf(w, "  %s check %s printed nothing\n", node, check)
+		return
+	}
 	lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
 	if len(lines) > postCheckLogTail {
 		lines = lines[len(lines)-postCheckLogTail:]

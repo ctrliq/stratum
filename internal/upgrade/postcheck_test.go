@@ -652,6 +652,15 @@ func TestAFailedPostCheckRelaysItsLogAndNamesACheckingRerun(t *testing.T) {
 		t.Errorf("recovery steps re-run with the upgrade binary:\n%s", steps)
 	}
 
+	swap(t, &readPostCheckLog, func(context.Context, kubernetes.Interface, nodejob.Spec) (string, error) { return "\n", nil })
+	out.Reset()
+	if err := runPostChecks(context.Background(), &out, cs, n, jobName(n.Name), o); !errors.Is(err, errPostCheckFailed) {
+		t.Fatalf("err = %v, want the failed check", err)
+	}
+	if !strings.Contains(out.String(), "  w1 check accel-diag printed nothing\n") || strings.Contains(out.String(), "check accel-diag: \n") {
+		t.Errorf("an empty log is relayed as a blank line:\n%s", out.String())
+	}
+
 	swap(t, &readPostCheckLog, func(context.Context, kubernetes.Interface, nodejob.Spec) (string, error) {
 		return "", errors.New("the Job has no Pod")
 	})
