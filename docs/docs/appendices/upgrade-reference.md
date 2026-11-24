@@ -791,3 +791,29 @@ not declare the field, so the API server drops it.
   must keep into `spec.valuesContent` or `spec.set`, where anyone who can read
   the `HelmChart` can read them, or reapply `spec.valuesSecrets` after rolling
   forward.
+
+### Node labels a node can no longer declare
+
+This applies when a node declares `failure-domain.beta.kubernetes.io/zone`,
+`failure-domain.beta.kubernetes.io/region` or `beta.kubernetes.io/instance-type`,
+in a control plane's `spec.node.labels` or a worker's saved `--node-label`. Earlier
+builds accepted them. The API server's NodeRestriction does not let a node set
+them on itself, so this release refuses them.
+
+!!! warning "A node that declares one of these labels does not come back"
+    After the upgrade, a control plane whose config file declares one fails its
+    config check at start:
+
+    ``node label failure-domain.beta.kubernetes.io/zone is in a namespace a node may not label itself with (the API server's NodeRestriction); label the Node from a control plane with `stratum kubectl label node` instead``
+
+    A worker that saved one refuses to restart, including when
+    `stratum.service` starts it after a reboot:
+
+    `worker restart: the labels this worker saved: …; replace them with --node-label or remove them with --clear-node-labels; nothing was saved`
+
+Before you upgrade, check the config file on every control plane (by default
+`/etc/stratum/config.yaml`), and move these keys in `spec.node.labels` to
+`topology.kubernetes.io/zone` or `topology.kubernetes.io/region`; set an
+instance type from a control plane with `stratum kubectl label node`. On a
+worker that saved one, restart it after the upgrade with `--node-label` giving
+the labels it should keep, or with `--clear-node-labels`.

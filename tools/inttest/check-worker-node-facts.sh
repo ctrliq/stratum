@@ -143,13 +143,18 @@ assert_contains "…and the verified record" "inttest@" "$(annotation verified)"
 # --- labels the worker stopped declaring leave its Node -------------------------
 # A label another writer set is not the worker's, so neither a replacement nor
 # a clear removes it; node.yaml's record of the labels the worker applied
-# follows what it declares.
+# follows what it declares. A failed read of node.yaml fails, never reads as
+# an empty record, and the record is trimmed only after the prune lands, so
+# its checks wait for it.
 applied() {
-  on cp2 "cat $ROOT/config/node.yaml" 2>/dev/null |
-    awk '/^appliedNodeLabels:/ { f = 1; next } f && /^- / { print $2; next } { f = 0 }' | paste -sd, -
+  local rec
+  rec=$(on cp2 "cat $ROOT/config/node.yaml") || return 1
+  awk '/^appliedNodeLabels:/ { f = 1; next } f && /^- / { print $2; next } { f = 0 }' <<<"$rec" | paste -sd, -
 }
+records() { local got; got=$(applied) && [[ $got == "$1" ]]; }
+record=$(applied) || unreadable "cp2's node.yaml"
 on cp1 "$K label node cp2 inttest.stratum.ciq.com/owner=other --overwrite" >/dev/null || fail "could not label cp2 from cp1"
-assert_eq "node.yaml records the zone label the worker applied" "topology.kubernetes.io/zone" "$(applied)"
+assert_eq "node.yaml records the zone label the worker applied" "topology.kubernetes.io/zone" "$record"
 
 restart_worker --node-label inttest.stratum.ciq.com/pool=a
 has_pool() { labels | grep -q '"inttest.stratum.ciq.com/pool":"a"'; }
@@ -159,13 +164,17 @@ lacks() { local l; l=$(labels) && [[ -n $l ]] && ! grep -qF "\"$1\"" <<<"$l"; }
 zone_gone() { lacks topology.kubernetes.io/zone; }
 wait_for "the replaced zone label to leave the Node" 120 zone_gone || fail "the zone label stayed after --node-label replaced it: $(labels)"
 assert_contains "a replacement keeps the label another writer set" '"inttest.stratum.ciq.com/owner":"other"' "$(labels)"
-assert_eq "node.yaml records only the replacement" "inttest.stratum.ciq.com/pool" "$(applied)"
+wait_for "node.yaml to record only the replacement" 60 records inttest.stratum.ciq.com/pool || true
+record=$(applied) || unreadable "cp2's node.yaml"
+assert_eq "node.yaml records only the replacement" "inttest.stratum.ciq.com/pool" "$record"
 
 restart_worker --clear-node-labels
 pool_gone() { lacks inttest.stratum.ciq.com/pool; }
 wait_for "the cleared label to leave the Node" 120 pool_gone || fail "the pool label stayed after --clear-node-labels: $(labels)"
 assert_contains "a clear keeps the label another writer set" '"inttest.stratum.ciq.com/owner":"other"' "$(labels)"
 assert_contains "…and the runtime handler label" '"runtime.stratum.ciq.com/fake":"true"' "$(labels)"
-assert_eq "node.yaml records no applied labels after a clear" "" "$(applied)"
+wait_for "node.yaml to record no applied labels" 60 records "" || true
+record=$(applied) || unreadable "cp2's node.yaml"
+assert_eq "node.yaml records no applied labels after a clear" "" "$record"
 
 done_testing

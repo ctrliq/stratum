@@ -31,12 +31,14 @@ import (
 // when this call restarted a running containerd, so a caller reports the
 // restart from Restarted, never Changed. Unloaded means the running
 // containerd was already running at the drop-in's latest change, by this
-// call or an earlier one that did not restart it.
+// call or an earlier one that did not restart it. Pending says why the
+// running containerd needed a restart, whether or not it got one.
 type ApplyHandlersResult struct {
 	Changed   bool
 	Written   bool
 	Restarted bool
 	Unloaded  bool
+	Pending   string
 }
 
 // ApplyHandlers writes the runtime-handler drop-in for handlers and, with
@@ -54,13 +56,22 @@ func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (Apply
 		return out, err
 	}
 	out.Written = true
-	if !Active() || (!changed && !handlersPending(handlers)) {
+	if !Active() {
+		return out, nil
+	}
+	if changed {
+		out.Pending = "the runtime-handler drop-in changed"
+	} else {
+		out.Pending = handlersPending(handlers)
+	}
+	if out.Pending == "" {
 		return out, nil
 	}
 	if !restart {
 		out.Unloaded = true
 		return out, nil
 	}
+	fmt.Fprintf(w, "restarting containerd: %s\n", out.Pending)
 	restarted, err := restartContainerd(" after a runtime handler change")
 	out.Restarted = restarted
 	out.Unloaded = !restarted
@@ -70,18 +81,23 @@ func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (Apply
 // criTimeout bounds one CRI status call to the running containerd.
 const criTimeout = 10 * time.Second
 
+// criEndpoint is the CRI socket criRuntimeHandlers asks.
+var criEndpoint = version.ContainerdSock
+
 // criRuntimeHandlers is the named runtime handlers the running containerd
 // reports through the CRI status the kubelet reads; the default handler has
-// no name and is left out.
+// no name and is left out. The call waits, within criTimeout, for a socket
+// not yet served: a containerd the supervisor reports active restores its
+// containers before it listens.
 var criRuntimeHandlers = func(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, criTimeout)
 	defer cancel()
-	conn, err := grpc.NewClient(version.ContainerdSock, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(criEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
-	resp, err := runtimeapi.NewRuntimeServiceClient(conn).Status(ctx, &runtimeapi.StatusRequest{})
+	resp, err := runtimeapi.NewRuntimeServiceClient(conn).Status(ctx, &runtimeapi.StatusRequest{}, grpc.WaitForReady(true))
 	if err != nil {
 		return nil, err
 	}
@@ -109,21 +125,31 @@ func loadedRuntimeHandlers(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-// handlersPending reports whether the running containerd needs a restart to
-// run exactly handlers: one of them is not loaded, or it still runs a handler
-// stratum declared before, one that is neither runc nor defined by another
-// file in the shared conf.d, or it was running when the drop-in last changed.
-// A containerd that cannot say is pending.
-func handlersPending(handlers map[string]string) bool {
+// handlersPending says why the running containerd needs a restart to run
+// exactly handlers, and is empty when it needs none: one of them is not
+// loaded, or it still runs a handler stratum declared before, one that is
+// neither runc nor defined by another file in the shared conf.d, or it was
+// running when the drop-in last changed. A containerd that cannot say is
+// pending, and the reason carries the error.
+func handlersPending(handlers map[string]string) string {
 	loaded, err := loadedRuntimeHandlers(context.Background())
 	if err != nil {
-		return true
+		return fmt.Sprintf("it cannot say which runtime handlers it loaded (%v)", err)
 	}
-	if len(missingHandlers(handlers, loaded)) > 0 || len(staleHandlers(handlers, loaded)) > 0 {
-		return true
+	if missing := missingHandlers(handlers, loaded); len(missing) > 0 {
+		return "it has not loaded " + strings.Join(missing, ", ")
+	}
+	if stale := staleHandlers(handlers, loaded); len(stale) > 0 {
+		return "it still runs " + strings.Join(stale, ", ")
 	}
 	unloaded, err := dropInUnloaded()
-	return err != nil || unloaded
+	if err != nil {
+		return fmt.Sprintf("it cannot say whether it read the drop-in's latest change (%v)", err)
+	}
+	if unloaded {
+		return "it was running when the drop-in last changed"
+	}
+	return ""
 }
 
 // containerdInstance names the supervisor's running containerd process by its

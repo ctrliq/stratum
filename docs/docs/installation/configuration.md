@@ -136,7 +136,10 @@ name=/path` flags add to it: a flag replaces the file's label or handler of the
 same name, and its taint with the same key and effect. A worker restart reads
 no `spec.node`. It keeps what the join saved, and `--node-label` or
 `--runtime-handler` given on a restart replaces that whole field.
-`--clear-node-labels` on a restart removes every saved label. A node
+`--clear-node-labels` on a restart removes every saved label. A restart
+refuses saved labels a node can no longer declare, such as
+`failure-domain.beta.kubernetes.io/zone` saved by an earlier release: replace
+them with `--node-label`, or remove them with `--clear-node-labels`. A node
 registers its taints once, when it joins, so a restart refuses a `--node-taint`
 that changes them; change a joined node's taints from a control plane with
 `stratum kubectl taint node`.

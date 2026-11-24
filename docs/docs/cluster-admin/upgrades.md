@@ -38,6 +38,7 @@ link gives the check to run before you upgrade.
 | joins control planes with join tokens | [HA join tokens and the shared certs](../appendices/upgrade-reference.md#ha-join-tokens-and-the-shared-certs) |
 | joins new workers during the upgrade | [Node client certificate approval](../appendices/upgrade-reference.md#node-client-certificate-approval) |
 | has a `HelmChart` with `spec.valuesSecrets` | [HelmCharts that take values from Secrets](../appendices/upgrade-reference.md#helmcharts-that-take-values-from-secrets) |
+| has nodes that declare `failure-domain.beta.kubernetes.io` or `beta.kubernetes.io/instance-type` labels | [Node labels a node can no longer declare](../appendices/upgrade-reference.md#node-labels-a-node-can-no-longer-declare) |
 
 ## Stage the upgrade binary
 

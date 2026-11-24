@@ -592,6 +592,7 @@ type RuntimeApplyOut struct {
 	Source    string            `json:"source" jsonschema:"where the handlers came from: a worker's saved handlers, or a control plane's config file"`
 	Changed   bool              `json:"changed" jsonschema:"the containerd drop-in changed"`
 	Unloaded  bool              `json:"unloaded" jsonschema:"the running containerd has not loaded the drop-in, after this call or an earlier one, so it must be restarted before the change takes effect"`
+	Pending   string            `json:"pending,omitempty" jsonschema:"why the running containerd must be restarted, when it must"`
 	Restarted bool              `json:"restarted" jsonschema:"always false: this tool writes the drop-in only and leaves the containerd restart to the operator"`
 	Warnings  []string          `json:"warnings,omitempty"`
 	Note      string            `json:"note"`
@@ -609,7 +610,7 @@ func RuntimeApplyHandler() sdk.ToolHandlerFor[RuntimeApplyIn, RuntimeApplyOut] {
 		if err != nil {
 			return nil, RuntimeApplyOut{}, fmt.Errorf("apply runtime handlers: %w", err)
 		}
-		out := RuntimeApplyOut{Handlers: res.Handlers, Source: res.Source, Changed: res.Changed, Unloaded: res.Unloaded, Restarted: false}
+		out := RuntimeApplyOut{Handlers: res.Handlers, Source: res.Source, Changed: res.Changed, Unloaded: res.Unloaded, Pending: res.Pending, Restarted: false}
 		for _, line := range strings.Split(progress.String(), "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				out.Warnings = append(out.Warnings, line)

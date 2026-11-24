@@ -157,8 +157,9 @@ the node's `runtime.stratum.ciq.com/<handler>` labels. Running containers keep
 running while containerd restarts. An `apply` that stops after saving the
 handlers and before writing the file leaves them saved, and the node's next
 start or `apply` writes the file. Two changes to a node's handlers never run at
-once: `apply`, `runtime restart` and the label update that follows a containerd
-start each wait for the one in progress.
+once. A second `apply` or `runtime restart` started while one runs is refused
+and changes nothing, as during an upgrade. The label update that follows a
+containerd start waits for an `apply` or `runtime restart` in progress.
 
 The node carries a handler's label only once its running containerd reports
 the handler loaded, so a RuntimeClass never schedules a pod onto a node that

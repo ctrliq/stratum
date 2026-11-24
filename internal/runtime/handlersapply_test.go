@@ -12,6 +12,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/version"
@@ -421,6 +425,9 @@ func TestApplyHandlersRestartsAContainerdThatStillRunsARemovedHandler(t *testing
 	if res.Changed || !res.Restarted || restarts() != 2 {
 		t.Errorf("apply = %+v after %d restarts, want the restart that unloads kata", res, restarts())
 	}
+	if res.Pending != "it still runs kata" {
+		t.Errorf("apply Pending = %q, want the handler containerd still runs", res.Pending)
+	}
 }
 
 // A runtime another conf.d file defines is containerd's, not a stale stratum
@@ -465,12 +472,16 @@ func TestAContainerdThatCannotSayIsPending(t *testing.T) {
 	if got, err := LoadedHandlers(context.Background(), []string{"gvisor"}); err == nil {
 		t.Errorf("LoadedHandlers = %v with containerd unable to say, want an error", got)
 	}
-	res, err := ApplyHandlers(io.Discard, h, true)
+	var out strings.Builder
+	res, err := ApplyHandlers(&out, h, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Restarted || restarts() != 2 {
 		t.Errorf("apply = %+v after %d restarts, want a restart", res, restarts())
+	}
+	if want := "restarting containerd: it cannot say which runtime handlers it loaded ("; !strings.Contains(out.String(), want) || !strings.HasPrefix(res.Pending, want[len("restarting containerd: "):]) {
+		t.Errorf("apply printed %q with Pending %q, want the restart's reason with containerd's error", out.String(), res.Pending)
 	}
 	if r := CheckHandlers(h); !strings.Contains(findings(r, SeverityWarn), "cannot tell whether it runs the saved handlers") {
 		t.Errorf("check = %+v, want a warning that containerd could not say", r.Findings)
@@ -697,5 +708,45 @@ func TestWriteHandlersRefusesWhenTheSupervisorCannotSay(t *testing.T) {
 	}
 	if _, err := dropInUnloaded(); err == nil {
 		t.Error("dropInUnloaded with a supervisor that cannot say returned no error")
+	}
+}
+
+type lateCRI struct {
+	runtimeapi.UnimplementedRuntimeServiceServer
+}
+
+func (lateCRI) Status(context.Context, *runtimeapi.StatusRequest) (*runtimeapi.StatusResponse, error) {
+	return &runtimeapi.StatusResponse{RuntimeHandlers: []*runtimeapi.RuntimeHandler{{Name: ""}, {Name: "gvisor"}}}, nil
+}
+
+// A containerd the supervisor reports active restores its containers before
+// it serves the CRI socket, so the status call waits for the socket rather
+// than reading a refused connection as containerd unable to say.
+func TestTheCRIStatusWaitsForASocketNotYetServed(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "cri")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "c.sock")
+	old := criEndpoint
+	t.Cleanup(func() { criEndpoint = old })
+	criEndpoint = "unix://" + sock
+
+	srv := grpc.NewServer()
+	runtimeapi.RegisterRuntimeServiceServer(srv, lateCRI{})
+	t.Cleanup(srv.Stop)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		l, err := net.Listen("unix", sock)
+		if err != nil {
+			return
+		}
+		_ = srv.Serve(l)
+	}()
+
+	names, err := criRuntimeHandlers(context.Background())
+	if err != nil || !slices.Equal(names, []string{"gvisor"}) {
+		t.Fatalf("criRuntimeHandlers = %v, %v; want gvisor once the socket is served", names, err)
 	}
 }

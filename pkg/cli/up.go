@@ -877,7 +877,13 @@ var unitConfigHint = "`sudo systemctl stop stratum`, then `sudo " + version.Stra
 // alike, and the node would come up on a network its operator did not ask for.
 // --node-label, --node-taint and --runtime-handler are worker flags for the
 // same reason: a control plane reads spec.node from its config file.
+// --clear-node-labels has no value to move there, and a join refuses it, so
+// it is refused on its own with the remedy that works.
 func upFlagConflict(o runUpOptions) error {
+	if !o.worker && o.clearNodeLabels {
+		return errors.New("--clear-node-labels is for a --worker restart: a control plane takes its labels from " +
+			"spec.node.labels in its --config file; remove them there, and its next start takes them off its Node")
+	}
 	if !o.worker {
 		var bad []string
 		for _, f := range []struct{ flag, value, field string }{
@@ -887,7 +893,6 @@ func upFlagConflict(o runUpOptions) error {
 			{"--node-label", strings.Join(o.nodeLabels, ","), "spec.node.labels"},
 			{"--node-taint", strings.Join(o.nodeTaints, ","), "spec.node.taints"},
 			{"--runtime-handler", strings.Join(o.runtimeHandlers, ","), "spec.node.runtimeHandlers"},
-			{"--clear-node-labels", map[bool]string{true: "true"}[o.clearNodeLabels], "spec.node.labels"},
 		} {
 			if f.value != "" {
 				bad = append(bad, fmt.Sprintf("%s %q (%s)", f.flag, f.value, f.field))

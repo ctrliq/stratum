@@ -416,7 +416,7 @@ func TestUpFlagConflict(t *testing.T) {
 		{"worker and join", runUpOptions{worker: true, join: "https://10.0.0.11:6443", server: "https://10.0.0.11:6443"}, []string{"--join"}},
 		{"worker and a certificate key", runUpOptions{worker: true, certKey: "k"}, []string{"--certificate-key"}},
 		{"worker and all three", runUpOptions{worker: true, join: "x", certKey: "k", certKeyFile: "/k"}, []string{"--join", "--certificate-key", "--certificate-key-file"}},
-		{"clear-node-labels without worker", runUpOptions{clearNodeLabels: true}, []string{"--clear-node-labels", "spec.node.labels"}},
+		{"clear-node-labels without worker", runUpOptions{clearNodeLabels: true}, []string{"--clear-node-labels is for a --worker restart", "remove them there, and its next start takes them off its Node"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := upFlagConflict(tc.o)
