@@ -403,13 +403,28 @@ func Run(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 		}
 		if j.Status.Failed >= 1 {
 			// The failed Job is left in place for inspection; a re-run replaces it.
-			return notPassed{fmt.Errorf("%s Job %s failed (logs: kubectl -n %s logs job/%s)", s.Kind, s.Name, s.Namespace, s.Name)}
+			return notPassed{fmt.Errorf("%s Job %s %s (logs: kubectl -n %s logs job/%s)", s.Kind, s.Name, failedWhy(j), s.Namespace, s.Name)}
 		}
 		if err := wait(ctx, pollInterval-time.Since(started)); err != nil {
 			return err
 		}
 	}
 	return notPassed{timedOut(s, lastErr)}
+}
+
+// failedWhy is "failed", with the reason the Job controller recorded when it
+// gave one, such as DeadlineExceeded: a Job stopped at its deadline has had
+// its Pod deleted, so its log may say nothing.
+func failedWhy(j *batchv1.Job) string {
+	for _, c := range j.Status.Conditions {
+		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue && c.Reason != "" {
+			if c.Message != "" {
+				return fmt.Sprintf("failed (%s: %s)", c.Reason, c.Message)
+			}
+			return fmt.Sprintf("failed (%s)", c.Reason)
+		}
+	}
+	return "failed"
 }
 
 // ErrNotPassed marks a Run error for a Job that Run created and that then

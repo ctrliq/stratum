@@ -98,6 +98,12 @@ type ClusterOptions struct {
 	SkipSnapshot bool
 	DryRun       bool
 
+	// NodeChecks names the checks PostCheckConfigMap declares that the operator
+	// expects this run to execute. A check runs a command as root on the nodes
+	// it selects, so a run refuses a declared check this list does not name,
+	// and a name the ConfigMap does not declare.
+	NodeChecks []string
+
 	// VerifyStagedOnNode has each node check the staged binary before it runs
 	// it: neither the file nor its directory may be a symlink, both must be
 	// owned by root and writable by no one else, and on a node of this
@@ -122,6 +128,10 @@ type ClusterOptions struct {
 	// postChecks are the checks PostCheckConfigMap declares, read once at the
 	// start of the run.
 	postChecks []postCheck
+	// self is this orchestrator's own binary, the one a re-run after a failed
+	// check must use: the upgrade binary may predate the checks and would
+	// finish the node without them. Empty when it cannot be found.
+	self string
 	// keepCPCordon has a control plane's upgrade Job leave its cordon for this
 	// run to undo once the node's checks pass. A cluster with one control plane
 	// keeps the Job's own uncordon, as this run may not outlive that node's
@@ -229,6 +239,9 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 		return err
 	}
 	o.keepCPCordon = keepsCPCordon(o.postChecks, ordered)
+	if self, err := selfExecutable(); err == nil {
+		o.self = self
+	}
 
 	// The dry run renders the plan — the same classification and ordering the
 	// MCP upgrade_plan tool reports, so the two cannot disagree about which
@@ -246,10 +259,17 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 	}
 	fmt.Fprintln(w, "  first, import the upgrade binary's images on every Ready node: the add-ons roll out to every node as soon as the first control plane is upgraded")
 	printPostChecks(w, o.postChecks)
+	nodeChecksErr := acceptedPostChecks(o.postChecks, o.NodeChecks)
+	if o.DryRun && nodeChecksErr != nil {
+		fmt.Fprintf(w, "  this run would refuse: %v\n", nodeChecksErr)
+	}
 	warnUntrustedKubeletServing(w, ctx, ordered)
 	if o.DryRun {
 		fmt.Fprintln(w, "\n(dry-run; no changes) — ensure the upgrade binary is staged at", o.From, "on every node.")
 		return nil
+	}
+	if nodeChecksErr != nil {
+		return fmt.Errorf("%w (no node was cordoned or upgraded)", nodeChecksErr)
 	}
 	if o.keepCPCordon {
 		ok, err := stagedKeepsCordon(ctx, o.From)
@@ -874,9 +894,9 @@ func recoverySteps(n Node, job string, o ClusterOptions) string {
 		"       already finished and was cleaned up)\n",
 		n.Name, state, from, cuNamespace, job)
 	if len(o.postChecks) > 0 {
-		return steps + fmt.Sprintf("    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node, and runs its\n"+
+		return steps + fmt.Sprintf("    2. %s    (finishes the node, and runs its\n"+
 			"       post-upgrade checks before it uncordons it)",
-			from, o.Target, from)
+			rerunCommand(o))
 	}
 	return steps + fmt.Sprintf("    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node)\n"+
 		"       or, if the node is at the target and healthy, and this run cordoned it (you did not cordon it yourself\n"+

@@ -334,7 +334,9 @@ grant itself more than you gave it:
 - **Writing `kube-system/stratum-upgrade-node-checks`** — a cluster upgrade
   runs the commands it names as root on the nodes it selects; see
   [Post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks).
-  It is refused for apply and delete.
+  It is refused for apply and delete. `upgrade_apply` with `scope: cluster`
+  runs only the checks its `node_checks` input names, and refuses a declared
+  check it does not name.
 - **Applying a pod spec that escapes its namespace** — `hostPath` volumes,
   `hostNetwork`, `hostPID`, `hostIPC`, `privileged`, added Linux capabilities
   and an unmasked `procMount`. Each reaches the node itself.

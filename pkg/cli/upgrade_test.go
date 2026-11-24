@@ -3,6 +3,7 @@ package cli
 import (
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -209,5 +210,35 @@ func TestUpgradeKeepCordonReachesTheNodeUpgrade(t *testing.T) {
 				t.Errorf("NodeOptions = %+v, want KeepCordon=%v SoakSec=5", *got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUpgradeNodeChecksReachTheClusterUpgrade(t *testing.T) {
+	oldVersion := version.K8sVersion
+	version.K8sVersion = "v1.37.1"
+	t.Cleanup(func() { version.K8sVersion = oldVersion })
+	var got *upgrade.ClusterOptions
+	old := upgradeCluster
+	upgradeCluster = func(_ io.Writer, o upgrade.ClusterOptions) error { got = &o; return nil }
+	t.Cleanup(func() { upgradeCluster = old })
+
+	root := NewRootCommand()
+	root.SetArgs([]string{"upgrade", "--cluster", "--dry-run", "--from", "/var/lib/stratum/upgrade/stratum-next",
+		"--node-checks", "accel-diag,fw-match", "--node-checks", "nccl"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !slices.Equal(got.NodeChecks, []string{"accel-diag", "fw-match", "nccl"}) {
+		t.Fatalf("ClusterOptions = %+v, want NodeChecks accel-diag, fw-match, nccl", got)
+	}
+
+	root = NewRootCommand()
+	root.SetArgs([]string{"upgrade", "--node-checks", "accel-diag"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "--node-checks names the post-upgrade checks a cluster upgrade runs; it needs --cluster") {
+		t.Errorf("--node-checks without --cluster = %v, want it refused", err)
 	}
 }

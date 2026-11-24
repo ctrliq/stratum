@@ -191,7 +191,18 @@ ConfigMap `kube-system/stratum-upgrade-node-checks`, and every later
 `--cluster`, runs no checks.
 
 A check runs a binary that is already installed on the node, as root, in the
-host's namespaces. It passes when the binary exits `0`.
+host's namespaces. It passes when the binary exits `0`. A run executes only the
+checks you name with `--node-checks`, and refuses a declared check you did
+not name.
+
+!!! warning "Writing this ConfigMap is root on the nodes it selects"
+    Anyone who can create, update or patch ConfigMaps in `kube-system` can
+    declare a command that a cluster upgrade runs as root. `--node-checks`
+    stops a run that finds a check you did not name, but not a named check
+    whose command someone else changed, so review the plan's check lines
+    before you confirm. Treat that write access as cluster-admin, and check
+    who has it with
+    `stratum kubectl auth can-i update configmaps -n kube-system --as=<subject>`.
 
 1. Install the check binary on every node the check selects, at the same
    absolute path.
@@ -213,8 +224,7 @@ host's namespaces. It passes when the binary exits `0`.
 
     `nodeSelector` picks the nodes, `command` is the binary and its arguments,
     and `timeoutSeconds` is how long the check may run in seconds, 900 if you
-    leave it out. The fields
-    and their rules are in
+    leave it out. The fields and their rules are in
     [Post-upgrade node checks](../appendices/upgrade-reference.md#post-upgrade-node-checks).
 
 3. Apply it from a control-plane node:
@@ -232,20 +242,25 @@ host's namespaces. It passes when the binary exits `0`.
     ```
 
     A malformed entry stops the preview with an error that names the check, and
-    a real run refuses the same way before it cordons any node.
+    a real run refuses the same way before it cordons any node. A preview
+    without `--node-checks` naming every check also prints
+    `this run would refuse: …`.
 
-5. Run the rollout. For each node the check selects, the run prints
+5. Run the rollout with `--node-checks` naming each check you expect, comma
+   separated, for example `--node-checks accel-diag` added to the
+   `upgrade --cluster` command. For each node the check selects, the run prints
    `==> Post-upgrade check accel-diag on <node>` and, once the check passes,
    `<node> passed check accel-diag`. The check runs as the node's
    `stratum-upgrade-<node>` Job, so follow it with the commands in step 3 of
    [Upgrade a whole cluster](#upgrade-a-whole-cluster).
 
 A check that fails stops the run. The node keeps the new version, but stays
-cordoned and is not recorded as upgraded. The error names the check and the
-command that shows the check's log. Fix the node, then run the same
-`upgrade --cluster` command again: it finishes the node, runs its checks again
-and uncordons it once they pass. Do not uncordon the node by hand, which
-returns it to service without its checks.
+cordoned and its upgrade is not finished. The run prints the last 20 lines of
+the check's log, and the error names the check and the re-run command. Fix the
+node, then run that command: it finishes the node, runs its checks again and
+uncordons it once they pass. It runs the binary that ran this rollout, not the
+upgrade binary, which may predate the checks. Do not uncordon the node by hand,
+which returns it to service without its checks.
 
 !!! warning "A cluster with one control plane"
     On a cluster with one control plane, that node is uncordoned by its own

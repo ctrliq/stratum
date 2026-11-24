@@ -468,7 +468,7 @@ func TestUpgradeClusterKeepsEachControlPlaneCordonedForItsChecks(t *testing.T) {
 			})
 
 			out, err := runWriter(t, func(w io.Writer) error {
-				return UpgradeCluster(w, ClusterOptions{Target: "v1.37.1", From: stagedBinary(t), Client: cs})
+				return UpgradeCluster(w, ClusterOptions{Target: "v1.37.1", From: stagedBinary(t), Client: cs, NodeChecks: []string{"accel-diag"}})
 			})
 			if err != nil {
 				t.Fatalf("UpgradeCluster: %v", err)
@@ -509,4 +509,157 @@ func getNodeNamed(t *testing.T, cs kubernetes.Interface, name string) *corev1.No
 		t.Fatal(err)
 	}
 	return n
+}
+
+func TestAcceptedPostChecks(t *testing.T) {
+	checks, err := parsePostChecks(postCheckCM(map[string]string{
+		"accel-diag": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag]\n",
+		"fw-match":   "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/fw]\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		checks []postCheck
+		named  []string
+		want   string
+	}{
+		{"no checks, none named", nil, nil, ""},
+		{"every check named", checks, []string{"fw-match", "accel-diag"}, ""},
+		{"a check not named", checks, []string{"accel-diag"}, "declares the post-upgrade check(s) fw-match, which --node-checks does not name"},
+		{"none named", checks, nil, "check(s) accel-diag, fw-match, which --node-checks does not name"},
+		{"a name not declared", checks, []string{"accel-diag", "fw-match", "nccl"}, "--node-checks names nccl, which kube-system/stratum-upgrade-node-checks does not declare"},
+		{"a name with no ConfigMap", nil, []string{"accel-diag"}, "--node-checks names accel-diag"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := acceptedPostChecks(tc.checks, tc.named)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want none", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Whoever can write the ConfigMap chooses a root command on nodes, so a check
+// the operator did not name refuses the run before anything changes; the dry
+// run still lists it and says the run would refuse.
+func TestUpgradeClusterRefusesAnUnnamedPostCheckBeforeAnyChange(t *testing.T) {
+	objs := append(upgradeNodesFixture(), postCheckCM(map[string]string{
+		"accel-diag": "nodeSelector: example.com/accel=true\ncommand: [/bin/sh, -c, id]\n",
+	}))
+	cs := fake.NewSimpleClientset(objs...)
+	err := UpgradeCluster(io.Discard, ClusterOptions{Target: "v1.37.1", From: "/staged/stratum", Client: cs})
+	if err == nil || !strings.Contains(err.Error(), "accel-diag, which --node-checks does not name") || !strings.Contains(err.Error(), "no node was cordoned or upgraded") {
+		t.Fatalf("err = %v, want the unnamed check refused before any change", err)
+	}
+	for _, a := range cs.Actions() {
+		if a.GetVerb() != "get" && a.GetVerb() != "list" && a.GetVerb() != "watch" {
+			t.Errorf("the refused run wrote: %s %s", a.GetVerb(), a.GetResource().Resource)
+		}
+	}
+	out, err := runWriter(t, func(w io.Writer) error {
+		return UpgradeCluster(w, ClusterOptions{Target: "v1.37.1", From: "/staged/stratum", Client: cs, DryRun: true})
+	})
+	if err != nil {
+		t.Fatalf("UpgradeCluster --dry-run: %v", err)
+	}
+	if !strings.Contains(out, "check accel-diag on nodes matching example.com/accel=true: /bin/sh -c id\n") ||
+		!strings.Contains(out, "  this run would refuse: kube-system/stratum-upgrade-node-checks declares the post-upgrade check(s) accel-diag") {
+		t.Errorf("the dry run does not list the check and the refusal:\n%s", out)
+	}
+}
+
+// The lease's cached state can lag a takeover, so each check first renews
+// both leases: a successor that took the lease after the first check stops
+// the run before the second, though the cached state still says held.
+func TestPostChecksConfirmTheLeaseBeforeEachCheck(t *testing.T) {
+	checks, err := parsePostChecks(postCheckCM(map[string]string{
+		"a-first":  "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, one]\n",
+		"b-second": "nodeSelector: example.com/accel=true\ncommand: [/usr/bin/diag, two]\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, n := postCheckNode(t)
+	renewals := 0
+	g := &leaseGuard{lastRenew: time.Now(), renew: func(context.Context) error {
+		renewals++
+		if renewals > 1 {
+			return fmt.Errorf("%w: held by another run", errLeaseTaken)
+		}
+		return nil
+	}}
+	var ran []string
+	stubPostCheck(t, func(_ context.Context, _ kubernetes.Interface, s nodejob.Spec) error {
+		ran = append(ran, s.Kind)
+		if err := g.Err(); err != nil {
+			t.Errorf("the cached lease state is %v during the first check, want held, so only a renewal can see the takeover", err)
+		}
+		return nil
+	})
+	o := ClusterOptions{Target: "v1.37.1", postChecks: checks, lease: g}
+	err = runPostChecks(context.Background(), io.Discard, cs, n, jobName(n.Name), o)
+	if !errors.Is(err, errLeaseTaken) || errors.Is(err, errPostCheckFailed) {
+		t.Fatalf("err = %v, want the takeover and not a failed check", err)
+	}
+	if !slices.Equal(ran, []string{"post-upgrade check a-first"}) || renewals != 2 {
+		t.Errorf("checks run = %q after %d renewals, want only the first after two", ran, renewals)
+	}
+}
+
+// A failed check prints the end of its log, and a re-run is told to use this
+// orchestrator, which runs the checks, not an upgrade binary that may predate
+// them; the names the operator gave carry over.
+func TestAFailedPostCheckRelaysItsLogAndNamesACheckingRerun(t *testing.T) {
+	cs, n := postCheckNode(t)
+	stubPostCheck(t, func(context.Context, kubernetes.Interface, nodejob.Spec) error {
+		return fmt.Errorf("post-upgrade check accel-diag Job stratum-upgrade-w1 failed: %w", nodejob.ErrNotPassed)
+	})
+	var lines []string
+	for i := 1; i <= 25; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	swap(t, &readPostCheckLog, func(_ context.Context, _ kubernetes.Interface, s nodejob.Spec) (string, error) {
+		if s.Name != "stratum-upgrade-w1" || s.Container != "check" {
+			t.Errorf("log read for Job %s container %s, want stratum-upgrade-w1 check", s.Name, s.Container)
+		}
+		return strings.Join(lines, "\n") + "\n", nil
+	})
+	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-next", self: "/usr/local/bin/stratum",
+		postChecks: []postCheck{gpuCheck(t)}, NodeChecks: []string{"accel-diag"}}
+	var out strings.Builder
+	err := runPostChecks(context.Background(), &out, cs, n, jobName(n.Name), o)
+	if !errors.Is(err, errPostCheckFailed) {
+		t.Fatalf("err = %v, want the failed check", err)
+	}
+	if strings.Contains(out.String(), "check accel-diag: line 5\n") || !strings.Contains(out.String(), "  w1 check accel-diag: line 6\n") ||
+		!strings.Contains(out.String(), "  w1 check accel-diag: line 25\n") {
+		t.Errorf("relayed log, want its last 20 lines:\n%s", out.String())
+	}
+	held := holdFailedNode(context.Background(), cs, n, jobName(n.Name), o, err)
+	want := "re-run /usr/local/bin/stratum upgrade --cluster --target v1.37.1 --from /var/lib/stratum/upgrade/stratum-next --node-checks accel-diag --yes"
+	if !strings.Contains(held.Error(), want) {
+		t.Errorf("held error:\n%v\nwant %q", held, want)
+	}
+	if steps := recoverySteps(n, jobName(n.Name), o); !strings.Contains(steps, "2. /usr/local/bin/stratum upgrade --cluster") {
+		t.Errorf("recovery steps re-run with the upgrade binary:\n%s", steps)
+	}
+
+	swap(t, &readPostCheckLog, func(context.Context, kubernetes.Interface, nodejob.Spec) (string, error) {
+		return "", errors.New("the Job has no Pod")
+	})
+	out.Reset()
+	if err := runPostChecks(context.Background(), &out, cs, n, jobName(n.Name), o); !errors.Is(err, errPostCheckFailed) {
+		t.Fatalf("err = %v, want the failed check", err)
+	}
+	if !strings.Contains(out.String(), "WARN: could not read check accel-diag's log on w1: the Job has no Pod") {
+		t.Errorf("an unreadable log is not reported:\n%s", out.String())
+	}
 }

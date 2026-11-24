@@ -311,7 +311,7 @@ fields and no others:
 |---|---|---|
 | `nodeSelector` | none; required | a label selector, in `kubectl get -l` syntax, matched against the node's labels when its checks start, after its upgrade |
 | `command` | none; required | a list: a binary and its arguments. The first element is an absolute path to a binary on the node. It runs without a shell |
-| `timeoutSeconds` | `900` | how long the check's Job may run, `1` to `86400`. `0` is the default |
+| `timeoutSeconds` | `900` | how long the check's Job may run, `1` to `86400`. `0`, or leaving it out, means `900` |
 
 The run refuses the whole ConfigMap, and changes nothing, when any entry breaks
 these rules. The error names the check:
@@ -329,6 +329,26 @@ these rules. The error names the check:
 A ConfigMap with `binaryData` set is refused too, with
 `binaryData is set; each check is a YAML document under data`.
 
+### Naming the checks a run executes
+
+Whoever can create, update or patch ConfigMaps in `kube-system` chooses a
+command that a cluster upgrade runs as root on the nodes it selects, so a run
+executes only the checks its operator names: `--node-checks <name>,…` on
+`upgrade --cluster`, or `node_checks` on the MCP `upgrade_apply` tool. A real
+run refuses, before it cordons any node, when:
+
+| Error | Cause |
+|---|---|
+| `kube-system/stratum-upgrade-node-checks declares the post-upgrade check(s) <names>, which --node-checks does not name; …` | the ConfigMap declares a check the operator did not name |
+| `--node-checks names <names>, which kube-system/stratum-upgrade-node-checks does not declare` | a named check is not in the ConfigMap, or there is no ConfigMap |
+
+The dry run never refuses for this; it prints `this run would refuse: <error>`
+after the check lines. `--node-checks` catches a check created without the
+operator, not a named check whose command someone with update rights changed:
+read the plan's check lines before you confirm, and treat write access to
+this ConfigMap as cluster-admin. `--node-checks` without `--cluster` is
+refused.
+
 ### When the checks run
 
 - The run reads the ConfigMap once, after the preflight and before it changes
@@ -341,8 +361,9 @@ A ConfigMap with `binaryData` set is refused too, with
 - For each node, the checks start once the node is Ready and, on a control
   plane, the API server is healthy. The run reads the node's labels then, and
   runs every check whose selector matches, one at a time, in the order of
-  their keys. Before each check, it stops if it has lost either
-  [upgrade lease](#what-a-cluster-upgrade-creates).
+  their keys. Before each check, it renews both
+  [upgrade leases](#what-a-cluster-upgrade-creates), and stops if either is
+  no longer its own.
 - Each check prints `==> Post-upgrade check <name> on <node>`, and
   `<node> passed check <name>` when its command exits `0`. Once every
   matching check has passed, the run records the node as upgraded and
@@ -377,11 +398,21 @@ A check whose Job fails, or does not finish within its deadline, stops the run
 as any node failure does:
 
 ```text
-post-upgrade node check failed: <name> on <node>: post-upgrade check <name> Job stratum-upgrade-<node> failed (logs: kubectl -n kube-system logs job/stratum-upgrade-<node>). <node> runs <target>, but it is not recorded as upgraded, and it is left cordoned. Read why: <path> kubectl -n kube-system logs job/stratum-upgrade-<node>. Once the node is fixed, re-run <path> upgrade --cluster --target <target> --from <path> --yes, which runs the check again before it uncordons the node
+post-upgrade node check failed: <name> on <node>: post-upgrade check <name> Job stratum-upgrade-<node> failed (logs: kubectl -n kube-system logs job/stratum-upgrade-<node>). <node> runs <target>, but it is not recorded as upgraded, and it is left cordoned. Read why: <path> kubectl -n kube-system logs job/stratum-upgrade-<node>. Once the node is fixed, re-run <orchestrator> upgrade --cluster --target <target> --from <path> --node-checks <names> --yes, which runs the check again before it uncordons the node
 ```
 
-For a check that does not finish within its deadline, the
-`failed (logs: …)` part reads `did not complete in time` instead.
+A check that runs past `timeoutSeconds` is stopped by its Job's deadline and
+reported the same way, with the Job controller's reason after `failed`:
+`failed (DeadlineExceeded: Job was active longer than specified deadline)`.
+The Job controller deletes the check's Pod then, so its log may be empty. The
+message reads `did not complete in time` in place of `failed (…)` only when the
+run cannot see the Job finish within a minute of its deadline, for example
+during an API server outage.
+
+Before the error, the run prints the last 20 lines of the check's log, each as
+`<node> check <name>: <line>`, or
+`WARN: could not read check <name>'s log on <node>: <error>` when the log
+cannot be read.
 
 - The node runs the new version, but the run does not record it as upgraded:
   the node keeps its `upgrade-in-progress` annotation, so the next run treats
@@ -390,7 +421,10 @@ For a check that does not finish within its deadline, the
   already cordoned stays cordoned. If that cordon fails, the message says so
   and gives the `kubectl cordon` command to run instead of
   `it is left cordoned`.
-- The failed Job stays for inspection. `<path>` is the run's `--from` binary.
+- The failed Job stays for inspection. `<path>` is the run's `--from` binary,
+  and `<orchestrator>` the binary that ran the rollout: an upgrade binary that
+  predates the checks would finish the node without them. `--node-checks`
+  repeats the names the run was given.
 - A re-run plans the node as `finish (interrupted after its kubelet swap)`,
   takes it through the upgrade again, runs its checks again, and uncordons it
   once they pass.
@@ -426,8 +460,9 @@ With checks declared, those steps offer only the re-run.
   on the host starts it.
 - **The MCP `upgrade_plan` tool does not show the checks.** It neither lists
   the declared checks nor reports a malformed ConfigMap. `upgrade_apply` with
-  `scope: cluster` reads the ConfigMap like `upgrade --cluster` does, and
-  refuses a malformed one before it changes anything.
+  `scope: cluster` reads the ConfigMap like `upgrade --cluster` does, runs only
+  the checks its `node_checks` names, and refuses a malformed ConfigMap, or a
+  check it does not name, before it changes anything.
 - **Only cluster upgrades run checks.** A one-node `stratum upgrade` and
   `stratum rollback` run none.
 

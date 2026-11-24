@@ -238,11 +238,36 @@ func TestRun(t *testing.T) {
 			t.Errorf("a refused create = %v, want an error not marked ErrNotPassed", err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
+		defer cancel()
 		cs = fake.NewSimpleClientset()
-		cs.PrependReactor("get", "jobs", statusReactor(batchv1.JobStatus{}))
+		created := false
+		cs.PrependReactor("create", "jobs", func(clienttesting.Action) (bool, runtime.Object, error) {
+			created = true
+			return false, nil, nil
+		})
+		cs.PrependReactor("get", "jobs", func(a clienttesting.Action) (bool, runtime.Object, error) {
+			if created {
+				cancel()
+			}
+			return statusReactor(batchv1.JobStatus{})(a)
+		})
 		if err := Run(ctx, cs, testSpec()); !errors.Is(err, context.Canceled) || errors.Is(err, ErrNotPassed) {
-			t.Errorf("a cancelled run = %v, want context.Canceled, not marked ErrNotPassed", err)
+			t.Errorf("a run cancelled while it polls = %v, want context.Canceled, not marked ErrNotPassed", err)
+		}
+		if !created {
+			t.Error("the run was cancelled before it created the Job, so the poll loop was not reached")
+		}
+	})
+
+	t.Run("a Job stopped at its deadline says so", func(t *testing.T) {
+		cs := fake.NewSimpleClientset()
+		cs.PrependReactor("get", "jobs", statusReactor(batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: "DeadlineExceeded", Message: "Job was active longer than specified deadline",
+		}}}))
+		err := Run(context.Background(), cs, testSpec())
+		want := "per-node upgrade Job stratum-upgrade-node1 failed (DeadlineExceeded: Job was active longer than specified deadline) (logs: kubectl -n kube-system logs job/stratum-upgrade-node1)"
+		if !errors.Is(err, ErrNotPassed) || err.Error() != want {
+			t.Errorf("Run = %v, want %q", err, want)
 		}
 	})
 }
