@@ -30,6 +30,7 @@ import (
 	"github.com/ctrliq/stratum/internal/bootstrap/clusterinfo"
 	"github.com/ctrliq/stratum/internal/cluster"
 	"github.com/ctrliq/stratum/internal/ha"
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/version"
@@ -717,10 +718,17 @@ func TestUpRefusesTheNetworkFlagsWithoutWorker(t *testing.T) {
 
 			oldInstall, oldRunWorker, oldRunController := installUnit, runWorkerFn, runControllerFn
 			oldPrepareWorker, oldPrepareController, oldPrepareJoin := prepareWorkerFn, prepareControllerFn, prepareControlPlaneJoinFn
+			oldResolve := resolveJoinNodeIP
 			t.Cleanup(func() {
 				installUnit, runWorkerFn, runControllerFn = oldInstall, oldRunWorker, oldRunController
 				prepareWorkerFn, prepareControllerFn, prepareControlPlaneJoinFn = oldPrepareWorker, oldPrepareController, oldPrepareJoin
+				resolveJoinNodeIP = oldResolve
 			})
+			// The worker join's pre-stage node-IP check accepts every address,
+			// so this test does not depend on the runner's $NODE_IP or network.
+			resolveJoinNodeIP = func(string, string, bool) (host.NodeIPChoice, error) {
+				return host.NodeIPChoice{IP: "192.0.2.1"}, nil
+			}
 			var calls []string
 			var gotWorker *cluster.WorkerOptions
 			installUnit = func([]string) error { calls = append(calls, "installUnit"); return nil }
