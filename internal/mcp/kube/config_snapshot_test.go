@@ -11,9 +11,7 @@ import (
 	"time"
 )
 
-// Replace an input after its reader opens it, but before that read completes.
-// The open reader receives the old bytes; every later read sees the replacement.
-// This pins rotations during resolution without depending on a scheduler delay.
+// Replaces an input between the reader's open and its read, pinning a rotation mid-load.
 func clusterAcrossReplacement(t *testing.T, conn *Connector, path, old, replacement string) *Cluster {
 	t.Helper()
 	if err := syscall.Mkfifo(path, 0o600); err != nil {

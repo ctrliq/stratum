@@ -23,8 +23,7 @@ func TestRekeyRefusesARecordedPartialFinalizeWithoutAStagedKey(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "rotation") {
 			t.Fatalf("mint allowed during recorded partial finalize: %v", err)
 		}
-		// Nothing is running, so the refusal must name the ways out: the
-		// resume, and the record to clear once a rollback has succeeded.
+		// Nothing is running, so the refusal must name the ways out.
 		for _, want := range []string{"rotate-ca --cluster --yes", "delete configmap stratum-ca-rotation"} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("refusal %q does not name %q", err, want)

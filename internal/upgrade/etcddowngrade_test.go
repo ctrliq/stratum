@@ -20,7 +20,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// etcdManifest is an etcd static pod running image, as the render writes it.
 func etcdManifest(image string) string {
 	return "apiVersion: v1\nkind: Pod\nmetadata:\n  name: etcd\n  namespace: kube-system\nspec:\n  containers:\n" +
 		"  - name: etcd\n    image: " + image + "\n    command: [etcd]\n"
@@ -91,9 +90,7 @@ func TestBackedUpEtcdMinor(t *testing.T) {
 	}
 }
 
-// etcdDowngradeFixture stands in for the local etcd: storage is what each
-// read returns, in turn (the last repeats), and the downgrade calls are
-// recorded.
+// Storage is what each read returns, in turn, the last repeating; downgrades are recorded.
 type etcdDowngradeFixture struct {
 	storage   []ha.EtcdStorage
 	reads     int
@@ -149,9 +146,7 @@ func oldManifestBackup(t *testing.T) string {
 	return dir
 }
 
-// TestPrepareEtcdForRollback: the restored etcd must be able to open the
-// data. A single member is downgraded first; a larger cluster, or data that
-// only a running etcd could downgrade, is refused before anything changes.
+// The restored etcd must open the data; a single member is downgraded, a larger cluster refused.
 func TestPrepareEtcdForRollback(t *testing.T) {
 	single := func(v string) ha.EtcdStorage { return ha.EtcdStorage{StorageVersion: v, Members: 1} }
 
@@ -404,9 +399,7 @@ func TestPrepareEtcdForRollback(t *testing.T) {
 	})
 }
 
-// TestRollbackDowngradesEtcdBeforeRestoringIt: the older manifest goes back
-// only after the data is at a version its etcd can open; restored first, it
-// crash-loops. Refused, nothing is restored.
+// The older manifest goes back only once the data is at a version its etcd can open.
 func TestRollbackDowngradesEtcdBeforeRestoringIt(t *testing.T) {
 	setup := func(t *testing.T) (live string, backups []backupItem) {
 		backupFixture(t)
@@ -453,9 +446,7 @@ func TestRollbackDowngradesEtcdBeforeRestoringIt(t *testing.T) {
 	}
 }
 
-// rollbackRefusalCase is a rollback whose backup restores an older etcd over
-// data a larger cluster stores above it. The check reads the backup, not the
-// role node.yaml records, which may be missing or wrong.
+// The check reads the backup, not the role node.yaml records, which may be missing or wrong.
 func rollbackRefusalCase(t *testing.T, role string) {
 	t.Helper()
 	newEtcdDowngradeFixture(t, ha.EtcdStorage{StorageVersion: "3.7.0", Members: 3})
@@ -479,7 +470,7 @@ func rollbackRefusalCase(t *testing.T, role string) {
 	}
 }
 
-// TestOfflineEtcdStorageVersion reads a database written by the pinned etcd.
+// Reads a database written by the pinned etcd.
 func TestOfflineEtcdStorageVersion(t *testing.T) {
 	b, err := os.ReadFile("../cluster/testdata/etcd/members.db")
 	if err != nil {
@@ -501,9 +492,6 @@ func TestOfflineEtcdStorageVersion(t *testing.T) {
 	}
 }
 
-// TestRollbackNodeDowngradesASingleMemberFirst: `stratum rollback` itself, not
-// only the upgrade's own rollback, downgrades a single member's etcd before
-// restoring the older manifest, and its dry run does neither.
 func TestRollbackNodeDowngradesASingleMemberFirst(t *testing.T) {
 	setup := func(t *testing.T) (string, *etcdDowngradeFixture) {
 		f := newEtcdDowngradeFixture(t, ha.EtcdStorage{StorageVersion: "3.7.0", Members: 1},
@@ -551,8 +539,6 @@ func TestRollbackNodeDowngradesASingleMemberFirst(t *testing.T) {
 	})
 }
 
-// TestStoppedEtcdNote: a restore that fails while etcd is stopped for the
-// rollback says so, and where its manifest is kept.
 func TestStoppedEtcdNote(t *testing.T) {
 	redirect(t, &version.DataDir, t.TempDir())
 	if n := stoppedEtcdNote(); n != "" {
@@ -581,8 +567,6 @@ func TestStoppedEtcdNote(t *testing.T) {
 	}
 }
 
-// TestSettleStoppedEtcdManifestReportsAFailedRemove: a kept manifest that
-// cannot be removed once etcd's is restored is reported, not left silently.
 func TestSettleStoppedEtcdManifestReportsAFailedRemove(t *testing.T) {
 	redirect(t, &version.DataDir, t.TempDir())
 	redirect(t, &version.K8sConfDir, t.TempDir())
@@ -593,9 +577,7 @@ func TestSettleStoppedEtcdManifestReportsAFailedRemove(t *testing.T) {
 	}
 }
 
-// TestOfflineEtcdStorageVersionOnACorruptDatabase: bbolt panics on a corrupt
-// page; the read returns an error instead, so a refusal can put etcd's
-// manifest back.
+// bbolt panics on a corrupt page; the read must error so a refusal can put the manifest back.
 func TestOfflineEtcdStorageVersionOnACorruptDatabase(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "db")
 	db, err := bolt.Open(src, 0o600, nil)

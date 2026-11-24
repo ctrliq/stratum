@@ -63,21 +63,10 @@ func TestBadFlagReturnsErrUsage(t *testing.T) {
 	}
 }
 
-// TestNewGroupCommand exercises newGroupCommand directly, rather than one of
-// the five group names hardcoded elsewhere in this file — so this coverage
-// doesn't silently stop applying to whichever group a future author adds,
-// the way five hand-copied `Args`/`RunE` assignments could.
 func TestNewGroupCommand(t *testing.T) {
 	child := &cobra.Command{Use: "child", RunE: func(*cobra.Command, []string) error { return nil }}
 	group := newGroupCommand("group", "a test group", child)
-	// Cobra only suppresses its OWN automatic usage-on-error printing when
-	// SilenceUsage is true on both the resolved command and whatever
-	// Execute() was actually called on. In production, group is always
-	// reached via root.Execute(), and NewRootCommand sets SilenceUsage on
-	// root — so unknownCommand's manual cmd.Help() call is the only thing
-	// producing output. Calling group.Execute() directly, as this test
-	// does, makes group itself the Execute() target; without this, cobra's
-	// own default printing would mask a broken unknownCommand entirely.
+	// group is the Execute target here: SilenceUsage keeps cobra's own printing from masking the test.
 	group.SilenceUsage = true
 
 	t.Run("bare group requires a subcommand", func(t *testing.T) {
@@ -156,11 +145,6 @@ func TestCommandGroupsRequireSubcommand(t *testing.T) {
 	}
 }
 
-// TestStampedVersionsReturnsTheEngineStampsReadOnly is the stamp guard's
-// second case: an importer cannot see internal/version, so pkg/cli exports
-// the engine's stamped component versions read-only — a value copy, so
-// mutating what comes back cannot reach the package state behind it. FAILS
-// WITHOUT THE FIX: StampedVersions does not exist.
 func TestStampedVersionsReturnsTheEngineStampsReadOnly(t *testing.T) {
 	for _, sw := range []struct {
 		p    *string
@@ -186,21 +170,13 @@ func TestStampedVersionsReturnsTheEngineStampsReadOnly(t *testing.T) {
 		t.Fatalf("StampedVersions() = %+v, want the internal/version stamps %+v", got, want)
 	}
 
-	// Read-only: the caller gets a copy. A pointer or map handed out would
-	// let an importer rewrite the engine's stamps.
+	// A pointer or map handed out would let an importer rewrite the engine's stamps.
 	got.Containerd = "mutated"
 	if version.ContainerdVersion != "v1.37.1" {
 		t.Fatalf("mutating the returned ComponentVersions rewrote version.ContainerdVersion to %q", version.ContainerdVersion)
 	}
 }
 
-// TestCommandsReturnTheirSentinels pins which sentinel each command returns
-// for the outcomes an embedding binary (and any hand copy of the exit-code
-// mapping) depends on: `upgrade --check` answers ErrUpgradeNeeded
-// as *ErrExitCode 10, and the kubectl/etcdctl passthroughs propagate the
-// child's exact exit code. upgrade calls its operation through the
-// upgradeNode seam, which is the only way a test can reach that path without
-// a live node.
 func TestCommandsReturnTheirSentinels(t *testing.T) {
 	t.Run("upgrade --check answers ErrUpgradeNeeded as exit code 10", func(t *testing.T) {
 		old := upgradeNode
@@ -215,13 +191,11 @@ func TestCommandsReturnTheirSentinels(t *testing.T) {
 		if !errors.As(err, &ec) {
 			t.Fatalf("upgrade --check = %v (%T), want *ErrExitCode", err, err)
 		}
-		// 10 is upgrade.ExitUpgradeNeeded, the status the cluster orchestrator
-		// reads from the Job's pod before deciding to drain the node.
+		// The cluster orchestrator reads this status from the Job's pod before draining the node.
 		if ec.Code != 10 {
 			t.Errorf("exit code = %d, want 10", ec.Code)
 		}
-		// ErrExitCode's contract is that whoever returns it has already told
-		// the operator what it needed to.
+		// Whoever returns ErrExitCode has already told the operator what it needed to.
 		if !strings.Contains(out, "needs the upgrade") {
 			t.Errorf("nothing told the operator before the exit status; stdout:\n%s", out)
 		}
@@ -242,8 +216,7 @@ func TestCommandsReturnTheirSentinels(t *testing.T) {
 		if !errors.As(err, &ec) {
 			t.Fatalf("upgrade --check = %v (%T), want *ErrExitCode", err, err)
 		}
-		// 11 is upgrade.ExitPrereqMissing, the status that says the node
-		// refused rather than that it can be drained.
+		// The status says the node refused, not that it can be drained.
 		if ec.Code != upgrade.ExitPrereqMissing {
 			t.Errorf("exit code = %d, want %d", ec.Code, upgrade.ExitPrereqMissing)
 		}

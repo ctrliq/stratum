@@ -46,8 +46,7 @@ func run(directory, releaseID, channel string, arches []string, environment, sou
 	if (environment != "dev" && environment != "prod") || (environment == "prod" && channel == "dev") {
 		return fmt.Errorf("dev builds must target dev; rc/stable releases may target dev or prod")
 	}
-	// An rc/stable release is the same signed release wherever it lands, so the
-	// tag and checksum checks follow the channel, not the destination.
+	// Tag and checksum checks follow the channel, not the publication destination.
 	if channel != "dev" && !strings.HasPrefix(releaseID, "v") {
 		return fmt.Errorf("rc/stable publication requires a release tag")
 	}

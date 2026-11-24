@@ -1,12 +1,6 @@
 package etcdsnap
 
-// The record's concurrency discipline, proven on the writer the loop
-// actually uses: every recording re-reads the record under the etcd data
-// lock before it writes, so concurrent recordings — the save, the upload
-// and the prune of one tick, or a slow tick's recording racing the next
-// tick's — each land their change on what the previous writer recorded, and
-// none loses another's record. A writer that saved a copy it loaded earlier
-// would keep only the last writer's record and lose the rest.
+// Every recording re-reads the record under the etcd data lock, so concurrent writers lose none.
 
 import (
 	"errors"
@@ -20,9 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirectRecord points the snapshot evidence record and the etcd data
-// lock at one temp tree: the recording takes the lock on the data dir, so
-// a test must redirect both or the lock file lands in /var/lib/stratum.
+// redirectRecord points the evidence record and the etcd data lock at one temp tree.
 func redirectRecord(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
@@ -31,10 +23,6 @@ func redirectRecord(t *testing.T) {
 	swap(t, &version.EtcdDataDir, filepath.Join(root, "etcd"))
 }
 
-// TestRecordConcurrentRecordingsLoseNoRecord is the concurrent-update
-// proof: the save, upload and prune recordings plus three warning appends —
-// six writers, none holding the lock itself — all land on the one file, and
-// the load a later read makes carries every one of them.
 func TestRecordConcurrentRecordingsLoseNoRecord(t *testing.T) {
 	redirectRecord(t)
 	saveAt := time.Date(2026, 11, 12, 8, 0, 0, 0, time.UTC)
@@ -66,8 +54,7 @@ func TestRecordConcurrentRecordingsLoseNoRecord(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Contention on the lock refuses rather than blocks (LOCK_NB);
-			// retry the way the loop's next tick does.
+			// LOCK_NB contention refuses rather than blocks; retry like the loop's next tick.
 			for try := 0; ; try++ {
 				if err := mutateEvidence(w.set); err == nil {
 					return

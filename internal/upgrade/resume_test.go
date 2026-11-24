@@ -37,17 +37,13 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-// TestResumedInstallKeepsTheOriginalBackup guards the resume case: the
-// interrupted run installed the new binary, and the resumed run must not back
-// that up as the version to roll back to; doing so would make a rollback
-// restore the new binary.
 func TestResumedInstallKeepsTheOriginalBackup(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "stratum"), filepath.Join(dir, "next")
 	writeFile(t, dst, "old", 0o755)
 	writeFile(t, src, "new", 0o755)
 
-	for run := 1; run <= 2; run++ { // run 2 is the resume, same stamp
+	for run := 1; run <= 2; run++ {
 		if _, err := backupAndInstall(io.Discard, dst, src, resumeTS); err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
@@ -60,8 +56,6 @@ func TestResumedInstallKeepsTheOriginalBackup(t *testing.T) {
 	}
 }
 
-// TestResumedManifestBackupKeepsTheOriginal: the interrupted run had already
-// re-rendered a manifest; the resume's backup must still hold the old one.
 func TestResumedManifestBackupKeepsTheOriginal(t *testing.T) {
 	dir := t.TempDir()
 	redirect(t, &version.K8sConfDir, dir)
@@ -82,9 +76,6 @@ func TestResumedManifestBackupKeepsTheOriginal(t *testing.T) {
 	}
 }
 
-// TestManifestBackupIsCompleteOrAbsent: a resume keeps whatever backup exists,
-// so an interrupted one must not exist under its final name — kept, it would
-// restore a control plane missing a manifest.
 func TestManifestBackupIsCompleteOrAbsent(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode-000 file")
@@ -107,13 +98,11 @@ func TestManifestBackupIsCompleteOrAbsent(t *testing.T) {
 	}
 }
 
-// TestResumedProfileBackupKeepsTheOriginal: the same for the CIS configs, which
-// the interrupted run had already rewritten.
 func TestResumedProfileBackupKeepsTheOriginal(t *testing.T) {
 	withCISConfigs(t)
 	writeFile(t, version.AdmissionConfigPath, "old", 0o644)
 
-	if _, err := refreshProfileConfigs(io.Discard, resumeTS, cisProfile()); err != nil { // writes "new"
+	if _, err := refreshProfileConfigs(io.Discard, resumeTS, cisProfile()); err != nil {
 		t.Fatal(err)
 	}
 	items, err := refreshProfileConfigs(io.Discard, resumeTS, cisProfile())
@@ -128,9 +117,6 @@ func TestResumedProfileBackupKeepsTheOriginal(t *testing.T) {
 	}
 }
 
-// TestBackupScanIgnoresInFlightWrites: a backup is written through copyBytes'
-// hidden ".<name>.bak-<ts>.tmp-*" file. A crash can leave one behind, and its
-// stamp — "<ts>.tmp-123" — is what keeps it out of every set.
 func TestBackupScanIgnoresInFlightWrites(t *testing.T) {
 	_, binDir, _ := backupFixture(t)
 	writeFile(t, filepath.Join(binDir, "kubelet.bak-"+resumeTS), "old", 0o755)
@@ -142,9 +128,6 @@ func TestBackupScanIgnoresInFlightWrites(t *testing.T) {
 	}
 }
 
-// TestResumeStartsFromTheInterruptedRunsBackups: a resume that fails before
-// revisiting something the interrupted run changed — here a host binary it had
-// already swapped — must still restore it, and bounce the host processes.
 func TestResumeStartsFromTheInterruptedRunsBackups(t *testing.T) {
 	stratumDir, binDir, _ := backupFixture(t)
 	writeFile(t, filepath.Join(stratumDir, "stratum.bak-"+resumeTS), "old", 0o755)
@@ -191,7 +174,6 @@ func TestResumeStartsFromTheInterruptedRunsBackups(t *testing.T) {
 		}
 	}
 
-	// And a fresh upgrade records itself before it changes anything.
 	clearUpgradeMarker(io.Discard)
 	ts, backups, _, err = startBackupSet(io.Discard, nil, "v1.37.9", sets)
 	if err != nil {
@@ -203,9 +185,6 @@ func TestResumeStartsFromTheInterruptedRunsBackups(t *testing.T) {
 	}
 }
 
-// TestAddBackupDoesNotDuplicateASeededItem: the resumed run revisits what it
-// was seeded with, and restoring one item twice would be harmless but a
-// doubled INCOMPLETE message is not.
 func TestAddBackupDoesNotDuplicateASeededItem(t *testing.T) {
 	it := backupItem{name: "stratum", bak: "/x/stratum.bak-" + resumeTS}
 	if got := addBackup(addBackup(nil, it), it); len(got) != 1 {
@@ -213,9 +192,6 @@ func TestAddBackupDoesNotDuplicateASeededItem(t *testing.T) {
 	}
 }
 
-// TestRollbackEndsTheUpgradeOnlyWhenComplete: a complete automatic rollback
-// puts the node back, so the upgrade is over. An INCOMPLETE one must keep the
-// marker, so the retry keeps the original baseline.
 func TestRollbackEndsTheUpgradeOnlyWhenComplete(t *testing.T) {
 	_, _, _ = backupFixture(t)
 	dir := t.TempDir()
@@ -242,14 +218,11 @@ func TestRollbackEndsTheUpgradeOnlyWhenComplete(t *testing.T) {
 	}
 }
 
-// fakeKubelet puts a kubelet reporting ver at version.BinDir: the node
-// version marker.
 func fakeKubelet(t *testing.T, ver string) {
 	t.Helper()
 	writeFile(t, filepath.Join(version.BinDir, "kubelet"), "#!/bin/sh\necho Kubernetes "+ver+"-stratum\n", 0o755)
 }
 
-// resumeFixture is a node that passes the guard and the lock, with node state.
 func resumeFixture(t *testing.T) {
 	t.Helper()
 	backupFixture(t)
@@ -264,8 +237,6 @@ func resumeFixture(t *testing.T) {
 	swap(t, &bootClock, func() (staticpod.Mark, error) { return staticpod.Mark{}, nil })
 }
 
-// interruptedAt records an upgrade to target that got as far as backing up
-// the stratum binary under resumeTS — one that changed something.
 func interruptedAt(t *testing.T, target string) {
 	t.Helper()
 	writeFile(t, stratumInstallPath+".bak-"+resumeTS, "old", 0o755)
@@ -274,8 +245,6 @@ func interruptedAt(t *testing.T, target string) {
 	}
 }
 
-// TestUpgradeRefusesADifferentInterruptedUpgrade: its baseline is the node
-// before THAT upgrade; neither adopting nor discarding it is safe to guess.
 func TestUpgradeRefusesADifferentInterruptedUpgrade(t *testing.T) {
 	resumeFixture(t)
 	interruptedAt(t, "v1.37.8")
@@ -287,18 +256,11 @@ func TestUpgradeRefusesADifferentInterruptedUpgrade(t *testing.T) {
 	}
 }
 
-// TestUpgradeAtTargetFinishesAnInterruptedOne: killed after the kubelet swap,
-// the node reports the target but the upgrade never finished. That is not
-// "nothing to do" — left there, the marker outlives the upgrade and the next
-// one's rollback lands two versions back.
 func TestUpgradeAtTargetFinishesAnInterruptedOne(t *testing.T) {
-	// setRoots runs before resumeFixture: a SetRoots after it would recompute
-	// every derived path (BinDir, K8sConfDir, StageDir) from the new roots and
-	// step over the fixture's own per-var redirects, leaving the node state it
-	// staged where the test no longer reads it.
+	// setRoots recomputes every derived path, so it must run before resumeFixture.
 	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
 	resumeFixture(t)
-	redirect(t, &version.K8sVersion, "v1.37.9") // an unstamped test binary says "unknown"
+	redirect(t, &version.K8sVersion, "v1.37.9")
 	fakeKubelet(t, version.K8sVersion)
 	installedBuild(t, "this build", "this build")
 
@@ -312,16 +274,11 @@ func TestUpgradeAtTargetFinishesAnInterruptedOne(t *testing.T) {
 	if strings.Contains(out, "nothing to do") || !strings.Contains(out, "resuming the interrupted upgrade") {
 		t.Errorf("an interrupted upgrade at target must resume, not stop:\n%s", out)
 	}
-	// Past the at-target check and on into the upgrade itself, which stops at
-	// the payload this test binary does not carry.
 	if err == nil || !strings.Contains(err.Error(), "carries no payload") {
 		t.Errorf("the resume should reach the payload, got: %v", err)
 	}
 }
 
-// TestUnusableMarkerIsRefused: treating it as absent would start a fresh
-// baseline over the backups it exists to protect, and its stamp is joined into
-// paths that are removed and restored from, so it must be one NowStamp wrote.
 func TestUnusableMarkerIsRefused(t *testing.T) {
 	resumeFixture(t)
 	for content, want := range map[string]string{
@@ -346,10 +303,6 @@ func TestUnusableMarkerIsRefused(t *testing.T) {
 	}
 }
 
-// TestMarkerThatChangedNothingIsDropped: an upgrade stopped after recording
-// itself and before its first backup changed nothing, so it neither blocks a
-// different upgrade nor becomes the baseline of this one. A dry run says so
-// and leaves the marker.
 func TestMarkerThatChangedNothingIsDropped(t *testing.T) {
 	resumeFixture(t)
 	if err := writeUpgradeMarker(io.Discard, upgradeMarker{TS: resumeTS, Target: "v1.37.8"}); err != nil {
@@ -376,10 +329,6 @@ func TestMarkerThatChangedNothingIsDropped(t *testing.T) {
 	}
 }
 
-// TestRollbackOfAnUpgradeThatChangedNothing: the newest set on disk is then
-// the upgrade BEFORE the interrupted one. Restoring it would take the node a
-// version further back than the run it was asked to undo; it removes the
-// marker, restores nothing, and says how to go further.
 func TestRollbackOfAnUpgradeThatChangedNothing(t *testing.T) {
 	resumeFixture(t)
 	dst := filepath.Join(version.BinDir, "containerd")
@@ -406,8 +355,6 @@ func TestRollbackOfAnUpgradeThatChangedNothing(t *testing.T) {
 	}
 }
 
-// TestRollbackRestoresTheInterruptedSet: with an upgrade in progress, its set
-// is the one to restore, not whichever happens to be newest.
 func TestRollbackRestoresTheInterruptedSet(t *testing.T) {
 	resumeFixture(t)
 	interruptedAt(t, "v1.37.9")
@@ -422,9 +369,6 @@ func TestRollbackRestoresTheInterruptedSet(t *testing.T) {
 	}
 }
 
-// TestUnreadableBackupDirIsRefused: a resume restores exactly the set the scan
-// returns, so a directory it cannot read must stop the run rather than shrink
-// the set and let a rollback claim the whole node.
 func TestUnreadableBackupDirIsRefused(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode-000 directory")
@@ -447,9 +391,6 @@ func TestUnreadableBackupDirIsRefused(t *testing.T) {
 	}
 }
 
-// runWriter runs fn on a fresh buffer and returns what it wrote. The ops
-// under test take the writer themselves now, so the capture is the buffer,
-// not an os.Stdout redirect.
 func runWriter(t *testing.T, fn func(io.Writer) error) (string, error) {
 	t.Helper()
 	var b bytes.Buffer
@@ -476,9 +417,6 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	return <-done, ferr
 }
 
-// TestBackupScanRequiresARealStamp: pruning only ever recognised NowStamp
-// names, and the scan must agree — any other suffix sorts as the newest set
-// and a rollback would restore it.
 func TestBackupScanRequiresARealStamp(t *testing.T) {
 	stratumDir, binDir, dataDir := backupFixture(t)
 	writeFile(t, filepath.Join(stratumDir, "stratum.bak-"+resumeTS), "old", 0o755)
@@ -497,9 +435,6 @@ func TestBackupScanRequiresARealStamp(t *testing.T) {
 	}
 }
 
-// TestFreshUpgradeNeverTakesAStampInUse: stamps have one-second precision, so
-// a run started in the same second as another run's would otherwise adopt
-// that run's backups as its own originals.
 func TestFreshUpgradeNeverTakesAStampInUse(t *testing.T) {
 	backupFixture(t)
 	stamps := []string{resumeTS, resumeTS, "20260928-100001"}
@@ -517,11 +452,6 @@ func TestFreshUpgradeNeverTakesAStampInUse(t *testing.T) {
 	}
 }
 
-// TestSnapshotRollbackKeepsTheMarkerUntilEtcdIsRestored: the marker goes only
-// once the whole rollback, etcd included, has succeeded. Removed before an
-// etcd restore that then fails, a retry would find no marker and roll back
-// the upgrade before this one. This fixture's etcd step
-// fails (no node IP), so the marker must survive.
 func TestSnapshotRollbackKeepsTheMarkerUntilEtcdIsRestored(t *testing.T) {
 	resumeFixture(t)
 	if err := writeUpgradeMarker(io.Discard, upgradeMarker{TS: resumeTS, Target: "v1.37.9"}); err != nil {
@@ -539,9 +469,6 @@ func TestSnapshotRollbackKeepsTheMarkerUntilEtcdIsRestored(t *testing.T) {
 	}
 }
 
-// etcdRollbackFixture stands in for the node IP, the single-member guard and
-// the etcd restore that RollbackNode's snapshot step calls, and leaves a marker
-// for the rollback to clear.
 func etcdRollbackFixture(t *testing.T, restore func(io.Writer, etcdsnap.RestoreOptions) error) {
 	t.Helper()
 	resumeFixture(t)
@@ -555,8 +482,7 @@ func etcdRollbackFixture(t *testing.T, restore func(io.Writer, etcdsnap.RestoreO
 	t.Cleanup(func() { rollbackNodeIP, rollbackMemberIPs, rollbackEtcdRestore = oldIP, oldMembers, oldRestore })
 }
 
-// Snapshot rollback must give etcdutl the same bracketed IPv6 peer URL used
-// by the running member and its single-member initial cluster.
+// etcdutl needs the same bracketed IPv6 peer URL the running member uses.
 func TestSnapshotRollbackUsesAnIPv6PeerURL(t *testing.T) {
 	stop := errors.New("stop after inspecting the restore arguments")
 	called := false
@@ -581,10 +507,6 @@ func TestSnapshotRollbackUsesAnIPv6PeerURL(t *testing.T) {
 	}
 }
 
-// TestSnapshotRollbackWarnsWhenOnlyTheWatchersWereNotRestarted: the
-// data is restored, so the rollback is finished: it warns, succeeds and clears
-// the marker. Failing here would leave the marker and have a retry restore the
-// snapshot again.
 func TestSnapshotRollbackWarnsWhenOnlyTheWatchersWereNotRestarted(t *testing.T) {
 	etcdRollbackFixture(t, func(_ io.Writer, _ etcdsnap.RestoreOptions) error {
 		return fmt.Errorf("%w: kubelet", etcdsnap.ErrWatchersNotRestarted)
@@ -602,10 +524,6 @@ func TestSnapshotRollbackWarnsWhenOnlyTheWatchersWereNotRestarted(t *testing.T) 
 	}
 }
 
-// otherNodeSteps asserts out carries the list of what is left on the other nodes
-// that `stratum snapshot restore` prints: the worker
-// kubelets and the controllers the operator installed. A rollback restores a
-// single-member cluster, so the control-plane rejoin items are not in it.
 func otherNodeSteps(t *testing.T, out string) {
 	t.Helper()
 	for _, want := range []string{"Still to do:", "sudo pkill -x kubelet", "stratum kubectl get pods -A -o wide",
@@ -621,9 +539,6 @@ func otherNodeSteps(t *testing.T, out string) {
 	}
 }
 
-// TestSnapshotRollbackPrintsTheOtherNodeStepsAfterACleanRestore: a restore that
-// restarted everything still leaves the other nodes' kubelets and third-party
-// controllers, and said nothing about them on the rollback path before.
 func TestSnapshotRollbackPrintsTheOtherNodeStepsAfterACleanRestore(t *testing.T) {
 	etcdRollbackFixture(t, func(_ io.Writer, _ etcdsnap.RestoreOptions) error { return nil })
 	out, err := runWriter(t, func(w io.Writer) error { return RollbackNode(w, RollbackOptions{EtcdSnapshot: "/snap.db"}) })
@@ -636,8 +551,6 @@ func TestSnapshotRollbackPrintsTheOtherNodeStepsAfterACleanRestore(t *testing.T)
 	}
 }
 
-// TestSnapshotRollbackFailsOnAnyOtherRestoreError: an ordinary restore failure
-// fails the rollback and keeps the marker, so a retry restores the same set.
 func TestSnapshotRollbackFailsOnAnyOtherRestoreError(t *testing.T) {
 	etcdRollbackFixture(t, func(_ io.Writer, _ etcdsnap.RestoreOptions) error { return errors.New("etcdutl exploded") })
 	out, err := runWriter(t, func(w io.Writer) error { return RollbackNode(w, RollbackOptions{EtcdSnapshot: "/snap.db"}) })
@@ -652,10 +565,6 @@ func TestSnapshotRollbackFailsOnAnyOtherRestoreError(t *testing.T) {
 	}
 }
 
-// TestMarkerThatWillNotGoIsReported: past the health gate a marker that
-// survives would make the next run resume a finished upgrade into a
-// rollback under new configs, so its removal must be able to fail loudly.
-// A non-empty directory in its place cannot be removed.
 func TestMarkerThatWillNotGoIsReported(t *testing.T) {
 	backupFixture(t)
 	writeFile(t, filepath.Join(upgradeMarkerPath(), "stuck"), "x", 0o600)
@@ -670,9 +579,6 @@ func TestMarkerThatWillNotGoIsReported(t *testing.T) {
 	}
 }
 
-// TestKeptBackupMustBeABackup: a path that exists is kept only if a rollback
-// can restore from it — a regular file, or a real, readable directory. Kept
-// otherwise, the run would change the node and the rollback fail.
 func TestKeptBackupMustBeABackup(t *testing.T) {
 	dir := t.TempDir()
 	file, sub := filepath.Join(dir, "file"), filepath.Join(dir, "sub")
@@ -706,8 +612,6 @@ func TestKeptBackupMustBeABackup(t *testing.T) {
 			t.Errorf("%s: keptBackup = %v, %v; want kept=%v err=%v", c.name, kept, err, c.kept, c.wantErr)
 		}
 	}
-	// A backup directory is usable only if everything in it is: a restore
-	// copies each entry.
 	withLink, withDir := filepath.Join(dir, "with-link"), filepath.Join(dir, "with-dir")
 	writeFile(t, filepath.Join(withLink, "etcd.yaml"), "x", 0o600)
 	if err := os.Symlink("/etc/passwd", filepath.Join(withLink, "kube-apiserver.yaml")); err != nil {
@@ -742,8 +646,6 @@ func TestKeptBackupMustBeABackup(t *testing.T) {
 	}
 }
 
-// TestInstallRefusesAnUnusableBackupPath: rather than keep it and install
-// over the live binary with nothing to restore.
 func TestInstallRefusesAnUnusableBackupPath(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "stratum"), filepath.Join(dir, "next")
@@ -760,8 +662,6 @@ func TestInstallRefusesAnUnusableBackupPath(t *testing.T) {
 	}
 }
 
-// TestResumeRefusesAnUnreadableKeptBackup: checked before anything changes,
-// not discovered as an INCOMPLETE rollback after.
 func TestResumeRefusesAnUnreadableKeptBackup(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode-000 directory")
@@ -788,7 +688,6 @@ func TestResumeRefusesAnUnreadableKeptBackup(t *testing.T) {
 	}
 }
 
-// TestSnapshotRollbackDryRunRemovesNothing: a preview says what it would do.
 func TestSnapshotRollbackDryRunRemovesNothing(t *testing.T) {
 	resumeFixture(t)
 	if err := writeUpgradeMarker(io.Discard, upgradeMarker{TS: resumeTS, Target: "v1.37.9"}); err != nil {
@@ -805,9 +704,6 @@ func TestSnapshotRollbackDryRunRemovesNothing(t *testing.T) {
 	}
 }
 
-// TestRollbackRefusesAnUnusableBackupBeforeRestoring: found part-way through,
-// the backups before it would already be restored and the node left mixed;
-// checked first, nothing changes.
 func TestRollbackRefusesAnUnusableBackupBeforeRestoring(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode-000 directory")
@@ -833,10 +729,6 @@ func TestRollbackRefusesAnUnusableBackupBeforeRestoring(t *testing.T) {
 	}
 }
 
-// TestScanRefusesAWrongKindOfBackup: an entry named as a backup, with a real
-// stamp, that is the wrong kind is refused, not skipped. Skipped, the marker's
-// set could come out empty, read as an upgrade that changed nothing, and have
-// its marker and baseline discarded.
 func TestScanRefusesAWrongKindOfBackup(t *testing.T) {
 	for name, plant := range map[string]func(stratumDir, binDir, dataDir string) error{
 		"directory as the stratum backup": func(s, _, _ string) error { return os.MkdirAll(filepath.Join(s, "stratum.bak-"+resumeTS), 0o700) },
@@ -879,9 +771,6 @@ func TestScanRefusesAWrongKindOfBackup(t *testing.T) {
 	}
 }
 
-// TestInstallRefusesAnUnreadableLiveFile: only an absent file has nothing to
-// back up; any other read error must stop the install, or the file is
-// replaced with no way back.
 func TestInstallRefusesAnUnreadableLiveFile(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a mode-000 file")
@@ -907,16 +796,11 @@ func TestInstallRefusesAnUnreadableLiveFile(t *testing.T) {
 	}
 }
 
-// TestRollbackSaysSoWhenTheMarkerWillNotGo: "removed its marker", and "run it
-// again", are only true once it is gone; otherwise the next run lands in the
-// same place. A read-only upgrade dir keeps the marker
-// readable and unremovable.
 func TestRollbackSaysSoWhenTheMarkerWillNotGo(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root removes from a read-only directory")
 	}
-	// Without a snapshot: with one, the marker goes only after an etcd
-	// restore, which no unit test reaches.
+	// With a snapshot the marker goes only after an etcd restore, which no unit test reaches.
 	for name, opts := range map[string]RollbackOptions{
 		"no snapshot": {},
 	} {
@@ -944,9 +828,6 @@ func TestRollbackSaysSoWhenTheMarkerWillNotGo(t *testing.T) {
 	}
 }
 
-// TestFreshMarkerWriteFailureChangesNothing: the marker is written before the
-// first change, so a failure to write it says so, like every other refusal
-// before one.
 func TestFreshMarkerWriteFailureChangesNothing(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a read-only directory")
@@ -965,16 +846,13 @@ func TestFreshMarkerWriteFailureChangesNothing(t *testing.T) {
 	}
 }
 
-// TestInstallReportsTheBackupItTook: the caller records exactly the backup
-// backupAndInstall reports — taken or kept — rather than asking the
-// filesystem again.
 func TestInstallReportsTheBackupItTook(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "kubelet"), filepath.Join(dir, "next")
 	writeFile(t, dst, "old", 0o755)
 	writeFile(t, src, "new", 0o755)
 	want := dst + ".bak-" + resumeTS
-	for run := 1; run <= 2; run++ { // taken, then kept
+	for run := 1; run <= 2; run++ {
 		bak, err := backupAndInstall(io.Discard, dst, src, resumeTS)
 		if err != nil || bak != want {
 			t.Errorf("run %d: backupAndInstall = %q, %v; want %q", run, bak, err, want)

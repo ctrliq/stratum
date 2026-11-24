@@ -10,16 +10,12 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-// KubeletClientUser is the CN of apiserver-kubelet-client.
 const KubeletClientUser = "kube-apiserver-kubelet-client"
 
-// KubeletAPIAdminBinding binds KubeletClientUser to system:kubelet-api-admin.
 const KubeletAPIAdminBinding = "stratum:kube-apiserver-kubelet-admin"
 
 const kubeletAPIAdminRole = "system:kubelet-api-admin"
 
-// KubeletAPIAdminBindingAPI is the part of the ClusterRoleBinding client
-// EnsureKubeletAPIAdminBinding needs.
 type KubeletAPIAdminBindingAPI interface {
 	Get(context.Context, string, metav1.GetOptions) (*rbacv1.ClusterRoleBinding, error)
 	Create(context.Context, *rbacv1.ClusterRoleBinding, metav1.CreateOptions) (*rbacv1.ClusterRoleBinding, error)
@@ -35,9 +31,7 @@ func wantKubeletAPIAdminBinding() *rbacv1.ClusterRoleBinding {
 	}
 }
 
-// EnsureKubeletAPIAdminBinding makes KubeletAPIAdminBinding bind exactly
-// KubeletClientUser to system:kubelet-api-admin, recreating it when the
-// immutable roleRef differs.
+// Recreates the binding when its immutable roleRef differs.
 func EnsureKubeletAPIAdminBinding(ctx context.Context, crbs KubeletAPIAdminBindingAPI) error {
 	want := wantKubeletAPIAdminBinding()
 	return retry.OnError(retry.DefaultRetry, func(err error) bool {

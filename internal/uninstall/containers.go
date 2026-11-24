@@ -23,26 +23,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A node with running pods could never be uninstalled. The
-// supervisor stopped containerd, but a runtime-v2 shim outlives containerd by
-// design and keeps its containers running, so the shims survived and the
-// host-process check refused every attempt. Killing a shim that still has
-// containers is not the fix: a shim is the parent of its containers, which
-// would be left running under init. So kubelet is stopped first, so nothing
-// recreates a container, and then every container is stopped and its task
-// deleted, and every pod sandbox removed, through this node's own containerd
-// while it is still up. In containerd 2 a shim belongs to its pod sandbox and
-// exits when the sandbox is shut down, not when its tasks are deleted:
-// measured, deleting every task left every workload shim running. Removing the
-// sandboxes ends most shims; the few left idle once containerd stops are
-// stopped by stopIdleShims (shims.go).
-
-// The wait durations here are read, never written, once the package is
-// initialized, so two Runs in one process cannot race over them; tests shorten
-// them, which is why they stay variables. Every probe the teardown consults
-// (the process table, the node state) and every effect are fields on the run's
-// hostEffects value, built in Run; there is no package-level one to fall back
-// to.
+// Read-only after init, so two Runs cannot race; tests shorten them, hence variables.
 var (
 	kubeletStopWait = 60 * time.Second
 	containerGrace  = 30 * time.Second
@@ -54,11 +35,7 @@ var (
 	pollInterval        = 500 * time.Millisecond
 )
 
-// stopKubelet stops kubelet through the supervisor and waits for its process
-// to be gone, so it cannot recreate the containers stopped next. The stop, and
-// the process-table probe that waits on it, are the run's effects: a zero
-// hostEffects answers with the unset-effect sentinel instead of dialing the
-// supervisor's control socket.
+// Stops kubelet so it cannot recreate the containers stopped next.
 func stopKubelet(fx *hostEffects) error {
 	if fx.stopSupervisedUnit == nil {
 		return unsetEffect("stopSupervisedUnit")
@@ -85,22 +62,12 @@ func stopKubelet(fx *hostEffects) error {
 	}
 }
 
-// stopPods stops the pods' containers, which would otherwise keep their
-// runtime shims alive after containerd stops, so the uninstall could never
-// finish on a node running pods. kubelet goes first so
-// nothing recreates them, and containerd must be up to stop them. Each step is
-// recorded in undo before it is taken, so an abort knows what it has to put
-// back and what it cannot. Its own effects are read from fx, the run's
-// host-effects value, the same way the runner reads them.
+// A running container keeps its shim alive past containerd, so an uninstall could never finish.
 func stopPods(w io.Writer, fx *hostEffects, undo *teardownUndo, status map[string]supervisor.ProcStatus) error {
 	if fx.hostProcessRunning == nil {
 		return unsetEffect("hostProcessRunning")
 	}
-	// Wanted as well as running: a kubelet waiting out a restart backoff is
-	// not running, and would come back mid-teardown and recreate its pods.
-	// Before containerd is started below, too, or kubelet could use it to
-	// recreate them first. And a live kubelet process, whatever the
-	// supervisor's status says.
+	// A backoff kubelet returns mid-teardown; stop it before containerd starts, or it recreates pods.
 	kubeletLive, err := fx.hostProcessRunning("kubelet")
 	if err != nil {
 		return fmt.Errorf("check for a running kubelet: %w", err)
@@ -116,10 +83,7 @@ func stopPods(w io.Writer, fx *hostEffects, undo *teardownUndo, status map[strin
 		}
 	}
 	if !status["containerd"].Running {
-		// A node a refused uninstall leaves with containerd stopped and the
-		// shims still holding their containers: containerd is started again
-		// to stop them, since nothing has been deleted and it reattaches to the
-		// shims it left. With no shim left there is nothing to stop.
+		// A refused uninstall leaves shims holding containers; a restarted containerd reattaches to them.
 		shims, err := fx.hostProcessRunning("runtime-shim")
 		if err != nil {
 			return fmt.Errorf("check for runtime shims: %w", err)
@@ -146,10 +110,7 @@ func stopPods(w io.Writer, fx *hostEffects, undo *teardownUndo, status map[strin
 	return nil
 }
 
-// startContainerd starts containerd through the supervisor and waits until it
-// answers. Running is not serving: the supervisor reports it active once the
-// process exists, before its socket does (measured: the first ctr call found
-// no socket). Its start, and every ctr call, are effects of the run.
+// The supervisor reports containerd active before its socket answers, so the start waits for ctr.
 func startContainerd(fx *hostEffects) error {
 	if fx.startAndWaitActive == nil {
 		return unsetEffect("startAndWaitActive")
@@ -173,10 +134,7 @@ func startContainerd(fx *hostEffects) error {
 	}
 }
 
-// stopContainerd stops containerd through the supervisor and waits for its
-// process to be gone: the stop only signals it. A supervisor that cannot be
-// asked is no failure once the process has gone anyway. The stop is the run's
-// effect, read from fx like every other.
+// The stop only signals, so the process is waited out; a failed ask is no failure once it is gone.
 func stopContainerd(fx *hostEffects) error {
 	if fx.stopSupervisedUnit == nil {
 		return unsetEffect("stopSupervisedUnit")
@@ -204,13 +162,7 @@ func stopContainerd(fx *hostEffects) error {
 	}
 }
 
-// kubeletNodeMarker reads kubelet's credential, certificates included, into
-// memory and returns what annotates this worker's own Node with it: the Node
-// authorizer lets a node update Nodes, NodeRestriction limits that to its own
-// and leaves annotations alone, and the stratum-node-uninstall-mark admission
-// policy lets nobody else write the mark. In memory because the mark is
-// written only after the state directory, which holds the kubeconfig, the
-// certificates and kubectl, has been removed.
+// Kubelet's credential may annotate its own Node; held in memory because the state dir goes first.
 func kubeletNodeMarker() (func(host string, at time.Time) error, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", filepath.Join(version.KubeconfigDir, "kubelet.kubeconfig"))
 	if err != nil {
@@ -234,10 +186,7 @@ func kubeletNodeMarker() (func(host string, at time.Time) error, error) {
 	}, nil
 }
 
-// runCtr runs the payload's ctr against this node's containerd. Only
-// Stratum's containerd socket is ever addressed, never a host containerd.
-// Every call is bounded: a wedged containerd or shim would otherwise hang the
-// uninstall with the node half torn down and no abort to put it back.
+// Bounded: a wedge would hang a half-torn-down node; only Stratum's containerd, never a host one.
 func runCtr(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ctrTimeout)
 	defer cancel()
@@ -254,7 +203,6 @@ func runCtr(args ...string) (string, error) {
 	return string(out), nil
 }
 
-// errCtrTimeout is runCtr's answer when containerd did not respond in time.
 var errCtrTimeout = errors.New("no answer from containerd")
 
 type task struct {
@@ -262,10 +210,7 @@ type task struct {
 	live   bool
 }
 
-// stopContainers stops every container this node's containerd runs, in every
-// namespace: SIGTERM, a grace period, SIGKILL for anything still running, then
-// the task is deleted. Then every pod sandbox is removed, which ends most
-// shims. Every ctr call is an effect of the run, read from fx.
+// Removing the pod sandboxes ends most shims; deleting tasks alone does not.
 func stopContainers(w io.Writer, fx *hostEffects) error {
 	if fx.ctrRun == nil {
 		return unsetEffect("ctrRun")
@@ -275,11 +220,7 @@ func stopContainers(w io.Writer, fx *hostEffects) error {
 		return fmt.Errorf("list containerd namespaces: %w", err)
 	}
 	namespaces := strings.Fields(out)
-	// Before anything is stopped or removed: the network namespaces are read
-	// from the containers' specs and the pod sandboxes' metadata, which go with
-	// them, and saved, so
-	// that a record that cannot be saved stops the uninstall with nothing torn
-	// down (datapath.go).
+	// Recorded before anything is removed: the netns specs go with the containers they describe.
 	if err := recordStratumNetns(fx, namespaces); err != nil {
 		return err
 	}
@@ -289,10 +230,7 @@ func stopContainers(w io.Writer, fx *hostEffects) error {
 	return removeSandboxes(w, fx, namespaces)
 }
 
-// stopTasks gives every task that may have a process SIGTERM and a grace
-// period, SIGKILLs what is still not stopped, and deletes them all. A task
-// already STOPPED has no process to signal, and signalling it is an error, so
-// it is only deleted.
+// A STOPPED task has no process to signal, and signalling it is an error, so it is only deleted.
 func stopTasks(w io.Writer, fx *hostEffects, namespaces []string) error {
 	var tasks, live []task
 	for _, ns := range namespaces {
@@ -314,10 +252,7 @@ func stopTasks(w io.Writer, fx *hostEffects, namespaces []string) error {
 	slices.SortFunc(tasks, func(a, b task) int { return cmp.Compare(a.ns+"/"+a.id, b.ns+"/"+b.id) })
 	slices.SortFunc(live, func(a, b task) int { return cmp.Compare(a.ns+"/"+a.id, b.ns+"/"+b.id) })
 	fmt.Fprintf(w, "  stopping %d containers\n", len(tasks))
-	// A task that exited on its own since the listing is not a failure, but
-	// any other failure to signal one is, before any task is deleted: a forced
-	// delete of a task whose process never got the signal can leave that
-	// process running with nothing supervising it.
+	// A forced delete of a task whose process never got the signal leaves it running unsupervised.
 	if err := signalTasks(fx, live, "SIGTERM"); err != nil {
 		return err
 	}
@@ -341,14 +276,11 @@ func stopTasks(w io.Writer, fx *hostEffects, namespaces []string) error {
 	return nil
 }
 
-// signalTasks sends sig to every task and reports those it could not signal
-// for a reason other than the task being gone.
+// Sends sig to every task; reports those it could not signal for any reason but the task gone.
 func signalTasks(fx *hostEffects, tasks []task, sig string) error {
 	var failed []string
 	for _, t := range tasks {
-		// Only NotFound: a shim that drops its connection mid-kill ("ttrpc:
-		// closed") may leave its container running, and a forced delete
-		// would then leave it unsupervised.
+		// Only NotFound: a shim dropping its connection mid-kill may leave the container running.
 		if _, err := fx.ctrRun("-n", t.ns, "tasks", "kill", "--all", "--signal", sig, t.id); err != nil && !taskNotFound(err) {
 			failed = append(failed, fmt.Sprintf("%s/%s: %v", t.ns, t.id, err))
 		}
@@ -359,10 +291,7 @@ func signalTasks(fx *hostEffects, tasks []task, sig string) error {
 	return nil
 }
 
-// removeSandboxes removes every pod sandbox, which usually shuts its shim down.
-// `ctr sandboxes rm` only logs a sandbox it failed to load, stop or shut down
-// and still exits 0, so each namespace is listed again afterwards and a
-// sandbox still there is a failure.
+// `ctr sandboxes rm` exits 0 even when it fails to remove a sandbox, so each list is rechecked.
 func removeSandboxes(w io.Writer, fx *hostEffects, namespaces []string) error {
 	var failed []string
 	removed := 0
@@ -406,7 +335,7 @@ func removeSandboxes(w io.Writer, fx *hostEffects, namespaces []string) error {
 	return nil
 }
 
-// sandboxIDs is the ID column of `ctr sandboxes ls`, which has no quiet flag.
+// `ctr sandboxes ls` has no quiet flag.
 func sandboxIDs(out string) []string {
 	var ids []string
 	for i, line := range strings.Split(out, "\n") {
@@ -419,8 +348,6 @@ func sandboxIDs(out string) []string {
 	return ids
 }
 
-// waitStopped polls until none of tasks is running, or timeout, and returns
-// those still running.
 func waitStopped(fx *hostEffects, tasks []task, timeout time.Duration) []task {
 	deadline := time.Now().Add(timeout)
 	for {
@@ -441,11 +368,7 @@ func waitStopped(fx *hostEffects, tasks []task, timeout time.Duration) []task {
 	}
 }
 
-// runningTasks is the set of task IDs in ns that ctr does not report STOPPED:
-// PAUSED, UNKNOWN and anything else may still own a process, so only the one
-// terminal status counts as stopped. A listing that fails — or an unset ctr
-// effect, which the caller reads the same way — is read as "all still
-// running", so the caller escalates rather than assuming they stopped.
+// Only STOPPED counts as stopped; PAUSED and UNKNOWN may still own a process.
 func runningTasks(fx *hostEffects, ns string) map[string]bool {
 	if fx.ctrRun == nil {
 		return map[string]bool{"*": true}
@@ -464,7 +387,6 @@ func runningTasks(fx *hostEffects, ns string) map[string]bool {
 	return running
 }
 
-// taskStatuses is `ctr tasks ls` as task ID -> STATUS, header skipped.
 func taskStatuses(out string) map[string]string {
 	st := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
@@ -477,37 +399,22 @@ func taskStatuses(out string) map[string]string {
 	return st
 }
 
-// taskGone reports whether a ctr error is containerd saying the task or
-// sandbox no longer exists. A "ttrpc: closed" is the shim's connection going
-// away mid-delete because the shim itself exited, which is the outcome being
-// asked for (measured on a worker: the last task in a sandbox reported it).
-// Not "no such": ctr failing to reach containerd at all says "no such file or
-// directory", and is never "gone".
+// "ttrpc: closed" is the shim exiting, the asked outcome; "no such file or directory" is not gone.
 func taskGone(err error) bool {
 	return taskNotFound(err) || strings.Contains(strings.ToLower(err.Error()), "ttrpc: closed")
 }
 
-// taskNotFound reports whether a ctr error is containerd's NotFound for the
-// task or sandbox itself.
 func taskNotFound(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }
 
-// waitHostExit waits for the host processes the supervisor was just asked to
-// stop, then gives the runtime shims time to exit once their sandboxes are
-// removed and containerd has stopped. The supervisor's stop only signals: a
-// containerd 2.4 still shutting down failed the host-process check that
-// follows. It only waits; stopIdleShims and then that check deal
-// with anything that remains.
+// The stop only signals, so containerd is waited out; shims exit once their sandbox is removed.
 func waitHostExit(fx *hostEffects) {
 	waitGone(fx, units, hostExitWait)
 	waitGone(fx, []string{"runtime-shim"}, shimExitWait)
 }
 
-// waitGone polls until none of names is running, wait elapses, or the process
-// table cannot be read. A nil probe ends the wait the same way an unreadable
-// table does: it only ever shortens a best-effort wait, and the sweeps that
-// follow it refuse the run if anything survived.
+// Only a best-effort wait; the sweeps that follow refuse the run if anything survived.
 func waitGone(fx *hostEffects, names []string, wait time.Duration) {
 	if fx.hostProcessRunning == nil {
 		return

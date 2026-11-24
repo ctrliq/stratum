@@ -15,29 +15,22 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// fakeSecrets is a hand-rolled secretAPI, for the same reason fakeConfigMaps
-// exists instead of client-go's fake clientset: this package adds no new
-// modules, test-only ones included.
+// Hand-rolled for the same reason as fakeConfigMaps: no new modules in this package.
 type fakeSecrets struct {
 	created   []string
 	deleted   []string
 	existing  bool  // Create reports AlreadyExists
 	createErr error // Create fails with this
 	deleteErr error // Delete fails with this
-	// hangUntilCtxDone models a wedged apiserver: Delete blocks until the caller's
-	// context is done.
+	// Models a wedged apiserver: Delete blocks until the caller's context is done.
 	hangUntilCtxDone bool
-	// stored is what a Get returns, modelling server-side state. An AMBIGUOUS
-	// create — committed by the apiserver, surfaced to the client as an error —
-	// is createErr set AND stored populated.
+	// An ambiguous create (committed, but an error surfaced) is createErr set AND stored set.
 	stored   *corev1.Secret
 	getErr   error
 	getCalls int
-	// uid, when set, is stamped on the Secret Create returns, modelling the UID the
-	// apiserver assigns — so the ownerRef path can be exercised.
+	// Stamped on the Secret Create returns, so the ownerRef path can be exercised.
 	uid string
-	// lastCreated is the object handed to the most recent Create, so a test can
-	// assert on the StringData (e.g. the expiration key) it minted.
+	// The most recent Create's object, so a test can assert on the StringData.
 	lastCreated *corev1.Secret
 }
 
@@ -94,22 +87,7 @@ const (
 	mintName   = "bootstrap-token-abcdef"
 )
 
-// TestCreateTokenRevokesTheCredentialOnPostMintFailure is a regression test for the
-// signed cluster-info work.
-//
-// Bootstrap tokens never expire and tokencleaner is not running on the clusters
-// where the signing post-condition fires, so a failed `stratum token create` used
-// to leave a live join credential in kube-system that the operator was never told
-// about — the command had reported failure. The documented migration is "run,
-// fail, restart the controller-manager, re-run", so they accumulate.
-//
-// Three of these four subtests would also fail on code that predates cluster-info
-// signing: the RBAC, cluster-info and CA-hash paths could already fail after the
-// mint. Signing added the fourth and made it routine rather than fault-only.
-//
-// Every post-mint step is covered, not just the one that was reported: the
-// guarantee is "an error returns no credential", not "this particular step
-// cleans up".
+// Every post-mint step is covered: the guarantee is an error returns no credential.
 func TestCreateTokenRevokesTheCredentialOnPostMintFailure(t *testing.T) {
 	boom := errors.New("boom")
 	steps := map[string]func(tokenSteps) tokenSteps{
@@ -157,9 +135,7 @@ func TestCreateTokenRevokesTheCredentialOnPostMintFailure(t *testing.T) {
 	}
 }
 
-// TestCreateTokenNarrowsTheCertsReaderGrant: every mint, worker or control
-// plane, drops a worker grant on stratum-certs left by an earlier release, so an
-// upgraded cluster that only mints worker tokens still closes it.
+// Every mint drops a worker grant on stratum-certs left by an earlier release.
 func TestCreateTokenNarrowsTheCertsReaderGrant(t *testing.T) {
 	for _, controlPlane := range []bool{false, true} {
 		narrowed := false
@@ -174,8 +150,7 @@ func TestCreateTokenNarrowsTheCertsReaderGrant(t *testing.T) {
 	}
 }
 
-// TestCreateTokenKeepsTheCredentialOnSuccess is the counterweight — cleanup that
-// also fires on success would be a worse bug than the one it fixes.
+// Cleanup that also fires on success would be a worse bug than the one it prevents.
 func TestCreateTokenKeepsTheCredentialOnSuccess(t *testing.T) {
 	f := &fakeSecrets{}
 	tok, hash, _, err := createToken(context.Background(), f, mintID, mintSecret, DefaultTokenTTL, false, okSteps())
@@ -190,10 +165,7 @@ func TestCreateTokenKeepsTheCredentialOnSuccess(t *testing.T) {
 	}
 }
 
-// TestCreateTokenReportsAnUnremovableCredential: if the delete itself fails the
-// operator must be told, because nothing else will ever remove it — bootstrap
-// tokens do not expire. Swallowing this would recreate the original defect with
-// an extra step.
+// Nothing else will ever remove the credential, so a failed delete must be told.
 func TestCreateTokenReportsAnUnremovableCredential(t *testing.T) {
 	boom := errors.New("boom")
 	f := &fakeSecrets{deleteErr: errors.New("apiserver said no")}
@@ -207,10 +179,7 @@ func TestCreateTokenReportsAnUnremovableCredential(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Errorf("original cause lost behind the cleanup failure: %v", err)
 	}
-	// Each of these must be independently falsifiable: bare mintID is a
-	// substring of mintName, so that element could never fail on its own, and a
-	// WARNING that dropped the token id entirely would still pass. Assert the
-	// rendered fragment instead.
+	// bare mintID is a substring of mintName; assert the rendered fragment.
 	for _, want := range []string{
 		"WARNING",
 		fmt.Sprintf("bootstrap token %q", mintID),
@@ -223,13 +192,7 @@ func TestCreateTokenReportsAnUnremovableCredential(t *testing.T) {
 	}
 }
 
-// TestCreateTokenRefusesARandomIDCollision: ids are 6 random characters drawn
-// fresh per call, so AlreadyExists is an accident, not an idempotent re-run.
-//
-// Update-on-collision would take ownership of the colliding Secret's contents
-// (and drop any expiration it carried) while reporting created=false, so the
-// cleanup skips it — the stranded non-expiring credential createToken exists
-// to prevent, reached by a different door. Refusing costs one re-run.
+// Update-on-collision would own a credential it reports created=false for; refuse instead.
 func TestCreateTokenRefusesARandomIDCollision(t *testing.T) {
 	f := &fakeSecrets{existing: true}
 
@@ -245,8 +208,7 @@ func TestCreateTokenRefusesARandomIDCollision(t *testing.T) {
 	}
 }
 
-// TestCreateTokenPropagatesAMintFailure: a failure to mint has nothing to clean
-// up, and must not be dressed up as a cleanup problem.
+// A failure to mint has nothing to clean up.
 func TestCreateTokenPropagatesAMintFailure(t *testing.T) {
 	f := &fakeSecrets{createErr: errors.New("quota exceeded")}
 	_, _, _, err := createToken(context.Background(), f, mintID, mintSecret, DefaultTokenTTL, false, okSteps())
@@ -261,7 +223,7 @@ func TestCreateTokenPropagatesAMintFailure(t *testing.T) {
 	}
 }
 
-// ourSecret is what the apiserver would hold after committing this run's write.
+// What the apiserver would hold after committing this run's write.
 func ourSecret(id, secret string) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: bootstrapSecretName(id), Namespace: "kube-system"},
@@ -273,16 +235,7 @@ func ourSecret(id, secret string) *corev1.Secret {
 	}
 }
 
-// TestCreateTokenCleansUpAnAmbiguousCreate is a regression test.
-//
-// A Create can be committed by the apiserver and still surface to the client as
-// an error — a timeout after persistence, a dropped response. Reporting
-// created=false there skipped the deferred revoke and left a valid non-expiring
-// credential behind a command that reported failure: the same defect the revoke
-// exists to prevent, reached through the write path instead of the failure path.
-//
-// The guarantee is "this command owns what it creates", so it has to hold when
-// the command does not know whether it created.
+// A committed-but-errored create must still be cleaned up.
 func TestCreateTokenCleansUpAnAmbiguousCreate(t *testing.T) {
 	cause := errors.New("etcdserver: request timed out")
 	f := &fakeSecrets{createErr: cause, stored: ourSecret(mintID, mintSecret)}
@@ -299,17 +252,13 @@ func TestCreateTokenCleansUpAnAmbiguousCreate(t *testing.T) {
 	}
 }
 
-// TestCreateTokenNeverDeletesOnAGuess: the read-back is what makes the claim
-// safe. Without it the command would be deleting a name, not a credential it
-// owns.
+// The read-back is what makes the claim safe to delete on.
 func TestCreateTokenNeverDeletesOnAGuess(t *testing.T) {
 	cause := errors.New("connection refused")
 	other := ourSecret(mintID, mintSecret)
 	other.Data["token-secret"] = []byte("ffffffffffffffff") // same name, not our secret
 
-	// The claim is token-id AND token-secret. Both conjuncts need a case that
-	// falsifies them independently, or one is dead weight: the idMismatch row
-	// is what makes the token-id comparison falsifiable.
+	// Both conjuncts need a case that falsifies them independently, or one is dead weight.
 	idMismatch := ourSecret(mintID, mintSecret)
 	idMismatch.Data["token-id"] = []byte("zzzzzz") // right name, wrong id field
 
@@ -328,9 +277,7 @@ func TestCreateTokenNeverDeletesOnAGuess(t *testing.T) {
 			if len(f.deleted) != 0 {
 				t.Errorf("deleted %v without establishing ownership", f.deleted)
 			}
-			// Declining to delete is right. Staying silent is not, when the create
-			// may have committed and this run cannot tell — that is the same
-			// uncertainty revokeMintedSecret goes out of its way to report.
+			// Only an unproven outcome should warn.
 			warned := strings.Contains(err.Error(), "may exist as a valid join credential")
 			if unknown := f.getErr != nil; warned != unknown {
 				t.Errorf("warned = %v, want %v (only an UNPROVEN outcome should warn)\ngot: %v",
@@ -340,8 +287,7 @@ func TestCreateTokenNeverDeletesOnAGuess(t *testing.T) {
 	}
 }
 
-// TestCreateTokenDoesNotReadBackOnACleanCreate: the extra Get is for the
-// ambiguous path only; a successful create already knows what it made.
+// The extra Get is for the ambiguous path only.
 func TestCreateTokenDoesNotReadBackOnACleanCreate(t *testing.T) {
 	f := &fakeSecrets{}
 	if _, _, _, err := createToken(context.Background(), f, mintID, mintSecret, DefaultTokenTTL, false, okSteps()); err != nil {
@@ -352,9 +298,7 @@ func TestCreateTokenDoesNotReadBackOnACleanCreate(t *testing.T) {
 	}
 }
 
-// TestRevokeTokenRemovesTheCredentialByTokenString covers the seam cmd/stratum uses
-// to extend the ownership window past createToken: `stratum token create
-// --control-plane` still has work to do after the mint returns.
+// The seam cmd/stratum uses to extend the ownership window past createToken.
 func TestRevokeTokenRemovesTheCredentialByTokenString(t *testing.T) {
 	cause := errors.New("uploading shared certs failed")
 
@@ -398,9 +342,7 @@ func TestRevokeTokenRemovesTheCredentialByTokenString(t *testing.T) {
 	})
 }
 
-// TestRevokeTokenBoundedDoesNotHangOnAWedgedApiserver: the rollback's likely
-// trigger IS a wedged apiserver, so an unbounded Delete turns a reported stranded
-// credential into a hung command with no output at all.
+// The rollback's trigger is usually the apiserver it now has to talk to.
 func TestRevokeTokenBoundedDoesNotHangOnAWedgedApiserver(t *testing.T) {
 	restore := waitForSigningTimeout
 	waitForSigningTimeout = 30 * time.Millisecond

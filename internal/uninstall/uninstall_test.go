@@ -31,35 +31,11 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The tests below pin per-run discovery: the probes, the discovered namespace
-// state (stratumNetns, stratumNetnsErr and netnsEnumerated, with the netns
-// record paths and the filesystem layout reads) are per-run values carried
-// alongside the effects value, and the remaining shared mutation is gone, so
-// two Runs in one process cannot race over it. They replace
-// TestRunResetsSharedDiscoveryBeforeTheHostLock, which pinned the shared-state
-// window these per-run values remove: a second Run can no longer clear or
-// inherit what a first one discovered, because no run's discovery is shared.
-// The names asserted here are the contract the implementation builds against.
-
-// errStopAtTheHostLock stops a run at the etcd data lock, the first gate the
-// forced path reaches, so the runs below exercise the discovery reset and the
-// entry path and no teardown step after it.
 var errStopAtTheHostLock = errors.New("stop at the host lock before any teardown")
 
-// TestRunDiscoveryIsItsOwn: what one invocation learned about the node's
-// network namespaces is its own. Run can be called again in a persistent
-// process (the MCP server), so a run must reach the host lock with discovery
-// seeded fresh — never an ownership record, error or enumeration flag a
-// previous call left, on this value or another. The earlier call's discovery
-// is learned here through the production enumeration path on the same effects
-// value, and read back inside the run through the per-run fields.
 func TestRunDiscoveryIsItsOwn(t *testing.T) {
 	t.Parallel()
 	fx := &hostEffects{}
-	// One container whose spec names a namespace outside the netns directory,
-	// so the enumeration records nothing to save and no record file is written:
-	// what it leaves behind is exactly the per-run state a later call must not
-	// inherit, the enumerated flag above all.
 	fx.ctrRun = func(args ...string) (string, error) {
 		switch strings.Join(args, " ") {
 		case "-n k8s.io containers ls -q":
@@ -97,12 +73,6 @@ func TestRunDiscoveryIsItsOwn(t *testing.T) {
 	}
 }
 
-// TestTwoRunsShareNoDiscovery runs two uninstalls in one process at the same
-// time, the way an MCP server can. Each marks itself t.Parallel-eligible, so
-// the pair is the representative Run test the -race gate runs: while the
-// discovery state is still shared at package level, the two entry resets race
-// and this test fails under -race; with per-run values the resets touch only
-// each run's own, and the pair passes. Neither call reaches host teardown.
 func TestTwoRunsShareNoDiscovery(t *testing.T) {
 	t.Parallel()
 	arrived := make(chan struct{}, 2)
@@ -140,10 +110,6 @@ func TestTwoRunsShareNoDiscovery(t *testing.T) {
 	runs.Wait()
 }
 
-// TestRunDiscoveryIsPinnedInParallel keeps the two Run tests above marked
-// t.Parallel: they are the representative parallel Run tests the -race gate
-// runs, and a future edit that drops the marker would quietly return the
-// package to sequential-only coverage without anything else failing.
 func TestRunDiscoveryIsPinnedInParallel(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fset := token.NewFileSet()
@@ -177,13 +143,6 @@ func TestRunDiscoveryIsPinnedInParallel(t *testing.T) {
 	}
 }
 
-// TestHostEffectsCarriesThePerRunValues pins where the probes, the discovered
-// namespace state and the filesystem layout reads live: as fields on the one
-// hostEffects value, built in Run, so a second run never inherits them and a
-// forgotten stub cannot fall back to a package variable. The names are the
-// ones the probes and discovery state carry today, so the migration stays
-// mechanical and the phase pins keep matching them through the value. Extra
-// fields beyond this list are allowed.
 func TestHostEffectsCarriesThePerRunValues(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	probes := []string{
@@ -244,12 +203,6 @@ func TestHostEffectsCarriesThePerRunValues(t *testing.T) {
 	}
 }
 
-// TestPerRunValuesAreNotPackageState parses the package's production files and
-// pins the other half of the step: none of the per-run probes, discovery state
-// or filesystem layout reads remains a package-level variable, and the
-// shared-mutation helper that reset them is gone with them. A variable left
-// behind here is state two Runs in one process race over, whatever the effects
-// value carries.
 func TestPerRunValuesAreNotPackageState(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	perRun := map[string]bool{
@@ -313,27 +266,10 @@ func TestPerRunValuesAreNotPackageState(t *testing.T) {
 	}
 }
 
-// TestTargetsOutsideEveryRootAreListed replaces TestTargetsCoverInstallerLayout.
-// It fails when a path internal/version's layout variables or host.Footprint()
-// declare lies outside every root uninstall removes — version.DataDir,
-// version.ConfDir and version.RunDir, which Targets() deletes wholesale, so
-// anything under them is covered implicitly — and is not covered by an
-// explicit target of its own, using the same covering rule as
-// TestTargetsCoverTheEnvironmentFile: the path is a target, or lies under one.
-// The deliberate exceptions — the live stratum binary that uninstall runs
-// from and keeps (see stratumBinaryBackups: only its .bak- sets are targets),
-// and the footprint's kubelet dir, which the teardown's removeLegacyKubeletDir
-// removes under its keep-foreign-state contract instead of the plain delete
-// loop — are named in the kept sets so each exception is a decision the test
-// can see, not an accident it forgives. The set of version variables is parsed
-// from version.go's own declarations and cross-checked both ways against the
-// values this test reads, so a new layout variable fails here until the test
-// classifies it, and a removed one fails until the test drops it.
 func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 
-	// values names every layout variable version.go declares and the value it
-	// carries as the tests stand; the guard checks each against Targets().
+	// every layout variable version.go declares; the guard checks each against Targets().
 	values := map[string]string{
 		"AdmissionConfigPath":       version.AdmissionConfigPath,
 		"AdminConf":                 version.AdminConf,
@@ -379,9 +315,7 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		"UpgradeStageDir":           version.UpgradeStageDir,
 	}
 
-	// The layout variables, parsed from version.go: every name in the var
-	// block that declares DataDir, plus ControllerManagerManifest, which is
-	// declared on its own.
+	// every name in the var block declaring DataDir, plus ControllerManagerManifest, declared alone.
 	fset := token.NewFileSet()
 	vf, err := parser.ParseFile(fset, "../version/version.go", nil, 0)
 	if err != nil {
@@ -443,26 +377,15 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		return false
 	}
 
-	// The roots are targets themselves: uninstall removes each wholesale, so a
-	// root missing from the delete list would leave the whole tree behind.
 	for _, r := range roots {
 		if !slices.Contains(targets, r) {
 			t.Errorf("Targets() does not list root %q, which uninstall removes wholesale", r)
 		}
 	}
 
-	// kept excuses version paths outside every root that uninstall
-	// deliberately does not remove, each carrying the reason it was decided.
 	kept := map[string]string{
 		version.StratumInstallPath: "the live binary uninstall runs from; stratumBinaryBackups removes only its .bak- sets",
-		// Both locks are deliberately NOT targets (sanctioned by the human): a
-		// running or crashed `stratum up` holds the start lock, and pkg/cli's
-		// committed TestStartLockSurvivesUninstall pins that a concurrent
-		// uninstall must leave it in place, so that process stays excluded
-		// while the node is wiped; removing the lock files would break that
-		// exclusion. They are runtime transients beside RunDir
-		// (version.go: SetRoots derives both as RunDir + "-start.lock"/
-		// "-upgrade.lock"), not node state, and /run is tmpfs a reboot clears.
+		// not targets: a live `stratum up`'s exclusion lock, a runtime transient /run clears at reboot.
 		version.StartLockPath:       "the node-start exclusion lock; pkg/cli's TestStartLockSurvivesUninstall pins it outside every uninstall target so a live `stratum up` stays excluded during a wipe — a runtime transient, not node state",
 		version.NodeUpgradeLockPath: "the node-upgrade exclusion lock, derived beside the start lock for the same reason; a runtime transient, not node state",
 	}
@@ -481,14 +404,6 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 		t.Errorf("version.%s = %q lies outside every root uninstall removes (%s, %s, %s) and no target covers it; uninstall would leave it on the node it wipes — name it in dirsAndFiles or excuse it in this test's kept set", name, p, version.DataDir, version.ConfDir, version.RunDir)
 	}
 
-	// footprintKept excuses host.Footprint() paths outside every root that
-	// uninstall deliberately does not target, each carrying the reason it was
-	// decided. The kubelet dir is the one: the datapath teardown's
-	// removeLegacyKubeletDir is the directory's only remover, keeping whatever
-	// is not Stratum's kubelet's (its stale sockets and stratum-CA-signed cert
-	// pairs go), so a co-hosted kubelet's state survives the wipe — a plain
-	// delete target would os.RemoveAll the directory right after that teardown
-	// promised to keep it (mirrored in host_test's footprint coupling).
 	footprintKept := map[string]string{
 		host.KubeletDir: "not a delete target: removeLegacyKubeletDir is the directory's only remover, and it keeps whatever is not Stratum's kubelet's",
 	}
@@ -503,16 +418,6 @@ func TestTargetsOutsideEveryRootAreListed(t *testing.T) {
 	}
 }
 
-// TestTargetsCoverTheEnvironmentFile is a regression test:
-// InstallUnit's reboot-persistence unit points systemd's
-// EnvironmentFile= at /etc/stratum/stratum.env, an operator-owned file for
-// environment-only S3 credentials. This uninstall treats it the
-// same as every other operator-owned file already under version.ConfDir
-// (config.yaml, registries.yaml): no dedicated entry of its own, just swept
-// up wholesale when version.ConfDir itself is removed. The wholesale sweep is
-// what covers it: if ConfDir were ever narrowed to a subset of its own
-// directory instead of the whole thing, stratum.env would survive an
-// uninstall that is supposed to wipe the node's Stratum footprint.
 func TestTargetsCoverTheEnvironmentFile(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	envFile := filepath.Join(version.ConfDir, "stratum.env")
@@ -524,8 +429,6 @@ func TestTargetsCoverTheEnvironmentFile(t *testing.T) {
 	t.Errorf("no target in %q covers %q", Targets(), envFile)
 }
 
-// TestTargetsAreAbsolute keeps a relative path from ever sneaking into the
-// destructive delete loop.
 func TestTargetsAreAbsolute(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	for _, p := range Targets() {
@@ -535,9 +438,6 @@ func TestTargetsAreAbsolute(t *testing.T) {
 	}
 }
 
-// TestOrphanRefusal covers the fail-closed gate: uninstall refuses
-// whenever it cannot manage still-running control-plane or host components —
-// the state where it must not proceed to delete their state.
 func TestOrphanRefusal(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	for _, tc := range []struct {
@@ -571,8 +471,6 @@ func TestOrphanRefusal(t *testing.T) {
 	}
 }
 
-// TestOrphanPreflightUsesProcessLiveness stubs the probes on a run of its own:
-// the preflight reads them from the run's effects value, never a shared var.
 func TestOrphanPreflightUsesProcessLiveness(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fx := &hostEffects{
@@ -767,14 +665,8 @@ func TestRunRefusesShimOrFailedStop(t *testing.T) {
 	}
 }
 
-// freeNodeLock is a node maintenance lock no other operation holds.
 func freeNodeLock() (func(), error) { return func() {}, nil }
 
-// TestRunRefusesBesideANodeMaintenanceOperation: an uninstall run beside a CA
-// rotation on the same node removed the PKI and state the rotation was
-// changing, and the rotation carried on, renewing its cluster leases. The node
-// maintenance lock, held by the other operation, refuses the run before the
-// data lock and before anything is stopped.
 func TestRunRefusesBesideANodeMaintenanceOperation(t *testing.T) {
 	swap(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "stratum-upgrade.lock"))
 	releaseRotation, err := nodelock.Acquire("certs rotate-ca")
@@ -796,9 +688,6 @@ func TestRunRefusesBesideANodeMaintenanceOperation(t *testing.T) {
 	}
 }
 
-// TestRunTakesTheNodeLockBeforeTheDataLock: the node lock first, the order
-// rejoin and restore take them in, and both held until the run ends; a data
-// lock that refuses gives the node lock back.
 func TestRunTakesTheNodeLockBeforeTheDataLock(t *testing.T) {
 	t.Run("both are held until the run ends", func(t *testing.T) {
 		events, fx := runNode(t, "worker")
@@ -842,8 +731,7 @@ func TestRunRefusesBusyEtcdDataBeforeStoppingAnything(t *testing.T) {
 }
 
 func TestStartLockHeld(t *testing.T) {
-	// Sequential by swap's stated exception: the start-lock path is shared
-	// package state in internal/version, redirected here for the whole binary.
+	// sequential: version.StartLockPath is shared package state, redirected here for the binary.
 	oldPath := version.StartLockPath
 	version.StartLockPath = filepath.Join(t.TempDir(), "start.lock")
 	t.Cleanup(func() { version.StartLockPath = oldPath })
@@ -877,19 +765,6 @@ func TestRunRefusesNodeStartBeforeStoppingAnything(t *testing.T) {
 	}
 }
 
-// TestRunDisablesUnitBeforeTeardownAndStopsItOnlyAfter is an
-// ordering test, in the same style as TestRunStopsContainersBeforeHostProcesses:
-// the reboot-persistence unit is DISABLED before anything else (left enabled,
-// it would restart everything Run is about to tear down), and STOPPED only
-// once the static pods, host processes and shims are all confirmed down —
-// stopping it any earlier SIGTERMs the top-level `stratum up` process, which
-// cascades into stopping kubelet through its own shutdown path before the
-// static pods have been reaped (the bug being guarded: staticpod.Stop
-// timing out because kubelet died first).
-// It also covers drop-in cleanup: a successful
-// uninstall must call allowRestartFn (removing the Restart=no override) right
-// after stopping the unit, not just on the abort path — otherwise a same-boot
-// reinstall before the next real reboot inherits a stale override.
 func TestRunDisablesUnitBeforeTeardownAndStopsItOnlyAfter(t *testing.T) {
 	fx := &hostEffects{}
 	events, fx := runNode(t, "worker")
@@ -906,16 +781,6 @@ func TestRunDisablesUnitBeforeTeardownAndStopsItOnlyAfter(t *testing.T) {
 	}
 }
 
-// TestRunStopsAManuallyLaunchedTopLevelProcess is a regression test: a node
-// started by hand (not through systemd) has its unit loaded but
-// ActiveState=inactive — systemctl stop is a real no-op there, since systemd
-// never tracked an active instance to signal — so uninstall must find and stop
-// the actual `stratum up` process on its own, and confirm it is really gone: no
-// top-level process left behind, and the start lock it held released. Uses the
-// real start lock (internal/etcddata's flock) so "released" is a genuine
-// OS-level fact, not just a mocked bookkeeping flag. Stopping at
-// stopSystemdUnit's no-op would leave the process (and its start lock)
-// surviving the whole teardown.
 func TestRunStopsAManuallyLaunchedTopLevelProcess(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.stopTopLevelFn = func() error { return stopTopLevelProcess(fx) } // undo stubTeardown's no-op: exercise the real logic
@@ -944,9 +809,7 @@ func TestRunStopsAManuallyLaunchedTopLevelProcess(t *testing.T) {
 		if pid == fakePID && sig == syscall.SIGTERM {
 			terminated = true
 			alive = nil
-			// The real effect of SIGTERM reaching stratum up: the process
-			// exits and the OS releases every flock it held — simulated here
-			// by closing the same fd the "process" was holding.
+			// SIGTERM exits the process and releases its flocks; simulated by closing the same fd.
 			lockFile.Close()
 		}
 		return nil
@@ -967,13 +830,9 @@ func TestRunStopsAManuallyLaunchedTopLevelProcess(t *testing.T) {
 	}
 }
 
-// withTopLevelSignals stubs the run's topLevelPIDs probe and signalPID effect,
-// recording every signal — mirroring shims_test.go's withShimSignals for
-// stopTopLevelProcess.
 func withTopLevelSignals(t *testing.T, alive *[]int, onSignal func(pid int, sig syscall.Signal)) (*[]string, *hostEffects) {
 	t.Helper()
-	// Sequential by swap's stated exception: it shortens the shared
-	// topLevel waits and pollInterval.
+	// sequential by swap's exception: it shortens the shared waits and pollInterval.
 	fx := &hostEffects{}
 	var signals []string
 	swap(t, &topLevelStopWait, 20*time.Millisecond)
@@ -990,25 +849,13 @@ func withTopLevelSignals(t *testing.T, alive *[]int, onSignal func(pid int, sig 
 	return &signals, fx
 }
 
-// TestStopTopLevelProcessDoesNotSignalAReusedPID is a regression test: the PID
-// stopTopLevelProcess found at scan time can be reused by an unrelated process
-// before the SIGKILL that follows a SIGTERM which the original process ignored,
-// or one that took its time exiting — signalTopLevel/stillTopLevel must recheck
-// the start time immediately before each signal, the same technique shims.go
-// already uses, and refuse to signal a PID whose start time no longer matches.
-// A plain PID check alone would see pid 500 still
-// present (LoadState never asks who) and send it the SIGKILL meant for the
-// original process.
 func TestStopTopLevelProcessDoesNotSignalAReusedPID(t *testing.T) {
 	alive := []int{500}
-	// fx is assigned before the onSignal closure below can ever run: the
-	// closure only fires once stopTopLevelProcess, after fakeProc, is called.
+	// assigned before the onSignal closure below can ever fire.
 	var fx *hostEffects
 	signals, created := withTopLevelSignals(t, &alive, func(pid int, sig syscall.Signal) {
 		if sig == syscall.SIGTERM && pid == 500 {
-			// The original process exits, and something else is assigned
-			// the same PID number before the wait below re-checks it — same
-			// pid, different start time.
+			// same pid reused by another process: different start time.
 			writeStat(t, fx, 500, "S 1", "2000")
 		}
 	})
@@ -1024,9 +871,6 @@ func TestStopTopLevelProcessDoesNotSignalAReusedPID(t *testing.T) {
 	}
 }
 
-// TestStopTopLevelProcessEscalatesToSigkillForTheSamePID is the other half:
-// when the SAME process (same PID, same start time) is still there after
-// SIGTERM, escalating to SIGKILL must still work.
 func TestStopTopLevelProcessEscalatesToSigkillForTheSamePID(t *testing.T) {
 	alive := []int{500}
 	signals, fx := withTopLevelSignals(t, &alive, func(pid int, sig syscall.Signal) {
@@ -1045,12 +889,6 @@ func TestStopTopLevelProcessEscalatesToSigkillForTheSamePID(t *testing.T) {
 	}
 }
 
-// TestScanTopLevelFailsClosedOnAnUnreadableStartTime is a regression test: a
-// start-time read that fails for a reason OTHER than the pid genuinely having
-// exited (a malformed stat line here; a permission error in production) must
-// surface as an error, never be silently dropped the way a real exit is. An
-// unconditional "continue" on any startTime error would read this as
-// "nothing to stop" and return an empty, error-free result.
 func TestScanTopLevelFailsClosedOnAnUnreadableStartTime(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	dir := t.TempDir()
@@ -1058,8 +896,7 @@ func TestScanTopLevelFailsClosedOnAnUnreadableStartTime(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "500"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Too few fields after the command name for startTime to reach field 22
-	// (the start time) — a read failure that is not "the process is gone".
+	// too few fields for startTime to reach the start time at field 22: not a real exit.
 	if err := os.WriteFile(filepath.Join(dir, "500", "stat"), []byte("500 (weird) name) S 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1070,12 +907,6 @@ func TestScanTopLevelFailsClosedOnAnUnreadableStartTime(t *testing.T) {
 	}
 }
 
-// TestStillTopLevelFailsClosedOnATopLevelPIDsError is the other half: a
-// topLevelPIDs failure inside stillTopLevel must also surface as an error,
-// never an empty ("gone") result — this is what waitTopLevelGone and
-// signalTopLevel both rely on to abort rather than proceed on an unconfirmed
-// case. A nil return on any topLevelPIDs error is indistinguishable from
-// every tracked process being confirmed gone.
 func TestStillTopLevelFailsClosedOnATopLevelPIDsError(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fx := &hostEffects{
@@ -1087,12 +918,6 @@ func TestStillTopLevelFailsClosedOnATopLevelPIDsError(t *testing.T) {
 	}
 }
 
-// TestRunAbortsWhenTheStartLockCannotBeQueriedBeforeStopping is a regression
-// test for the PRE-stop probe: a start-lock query failure here happens before
-// stopSystemdUnit/stopTopLevelFn have run, so undo.abort can still fully
-// restore what this uninstall has stopped so far — unlike the two POST-stop
-// cases below, where the top-level process is already gone and there is nothing
-// left to put back.
 func TestRunAbortsWhenTheStartLockCannotBeQueriedBeforeStopping(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.startInProgress = func() (bool, error) { return false, errors.New("dbus wedged") }
@@ -1105,17 +930,6 @@ func TestRunAbortsWhenTheStartLockCannotBeQueriedBeforeStopping(t *testing.T) {
 	}
 }
 
-// TestRunKeepsStateWhenTheStartLockCannotBeQueriedAfterStopping is a
-// regression test for the POST-stop gate's own query
-// failure: by this point stopSystemdUnit and stopTopLevelFn have both
-// already succeeded, so the top-level process this uninstall could find,
-// and every static pod and host process it manages, are already confirmed
-// down — there is nothing left running for undo.abort to restore, the same
-// reasoning as the allowRestartFn warning elsewhere in this window. Unlike
-// that warning, this still refuses rather than proceeding to delete state:
-// it returns the refusal directly instead of going through undo.abort.
-// Going through undo.abort would put abort's "Nothing was deleted"
-// account in Run's error instead of this refusal's own.
 func TestRunKeepsStateWhenTheStartLockCannotBeQueriedAfterStopping(t *testing.T) {
 	fx := &hostEffects{}
 	events, fx := runNode(t, "worker")
@@ -1143,15 +957,6 @@ func TestRunKeepsStateWhenTheStartLockCannotBeQueriedAfterStopping(t *testing.T)
 	}
 }
 
-// TestRunKeepsStateWhenTheStartLockIsStillHeldAfterStopping is a
-// regression test for the start-lock gate itself: a `stratum up`
-// running from a different copy of the binary than this `stratum uninstall`
-// is not recognized by the exe check in isStratumTopLevel (different file,
-// same process), so stopTopLevelFn can report success — nothing it could
-// identify was left running — while the real process, and the start lock it
-// holds, are still there. This checks that fact directly rather than
-// widening the process matcher. Handled the same way as the query failure
-// above: no undo.abort (nothing left to restore), state kept, not deleted.
 func TestRunKeepsStateWhenTheStartLockIsStillHeldAfterStopping(t *testing.T) {
 	fx := &hostEffects{}
 	events, fx := runNode(t, "worker")
@@ -1172,8 +977,6 @@ func TestRunKeepsStateWhenTheStartLockIsStillHeldAfterStopping(t *testing.T) {
 	}
 }
 
-// TestRunAbortsWhenDisableUnitFails: a real disable failure must abort before
-// Run touches anything, not be papered over.
 func TestRunAbortsWhenDisableUnitFails(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.disableSystemdUnit = func() error { return fmt.Errorf("systemctl disable: dbus wedged") }
@@ -1183,9 +986,6 @@ func TestRunAbortsWhenDisableUnitFails(t *testing.T) {
 	}
 }
 
-// TestRunAbortsBeforeDeletingWhenStopUnitFails: a real stop failure must not
-// be papered over either — proceeding to delete state while the unit could
-// still be armed to restart everything just torn down is exactly the gap this guards.
 func TestRunAbortsBeforeDeletingWhenStopUnitFails(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.stopSystemdUnit = func() error { return fmt.Errorf("systemctl stop: dbus wedged") }
@@ -1195,14 +995,6 @@ func TestRunAbortsBeforeDeletingWhenStopUnitFails(t *testing.T) {
 	}
 }
 
-// TestRunWarnsButDoesNotAbortWhenAllowRestartFailsAfterStop is a regression
-// test: once StopUnit has already succeeded, the unit and every host process
-// this uninstall manages are already confirmed down, so a failure only to
-// remove the now-inert Restart=no drop-in must not unwind all of that back into
-// a running node — the drop-in only matters to a future InstallUnit, which
-// always strips it itself (internal/host.InstallUnit), so uninstall itself only
-// needs to warn and keep going. An abort there would return undo.abort's
-// error instead of finishing the teardown.
 func TestRunWarnsButDoesNotAbortWhenAllowRestartFailsAfterStop(t *testing.T) {
 	fx := &hostEffects{}
 	events, fx := runNode(t, "worker")
@@ -1219,11 +1011,6 @@ func TestRunWarnsButDoesNotAbortWhenAllowRestartFailsAfterStop(t *testing.T) {
 	}
 }
 
-// TestRunFoldsAReloadSystemdFailureIntoItsError is a regression test:
-// the unit file is already deleted by that point, so a reload failure
-// leaves systemd still serving the just-deleted unit's last-loaded definition —
-// that must surface as part of Run's own error rather than being reported
-// as a clean "stratum uninstalled".
 func TestRunFoldsAReloadSystemdFailureIntoItsError(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.reloadSystemd = func() error { return errors.New("dbus wedged") }
@@ -1232,11 +1019,6 @@ func TestRunFoldsAReloadSystemdFailureIntoItsError(t *testing.T) {
 	}
 }
 
-// TestRunFailsClosedWhenUnitEnabledFnFails is a regression
-// test for the caller side of UnitEnabled's own fail-closed fix: a query
-// failure captured before anything is touched must stop uninstall right
-// there, not silently treat "cannot tell whether it's enabled" as either
-// answer and proceed to disable the unit anyway.
 func TestRunFailsClosedWhenUnitEnabledFnFails(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.unitEnabledFn = func() (bool, error) { return false, errors.New("dbus wedged") }
@@ -1249,12 +1031,6 @@ func TestRunFailsClosedWhenUnitEnabledFnFails(t *testing.T) {
 	}
 }
 
-// TestAbortRestoresTheUnitsEnablement is a regression test:
-// teardownUndo.abort restarts this node's components, but a node put back
-// running is worth nothing if it can no longer come back after a reboot.
-// An abort that restored the components but left the unit disabled (and its
-// Restart= suppressed) would silently strip reboot persistence from a node
-// that otherwise looks fully recovered.
 func TestAbortRestoresTheUnitsEnablement(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.unitEnabledFn = func() (bool, error) { return true, nil }
@@ -1278,10 +1054,6 @@ func TestAbortRestoresTheUnitsEnablement(t *testing.T) {
 	}
 }
 
-// TestAbortLeavesAnAlreadyDisabledUnitDisabled: abort must restore what
-// uninstall found, not force the unit enabled — an operator who had already
-// disabled it (e.g. to keep the node from starting at boot) must not have
-// that choice silently reversed by a failed uninstall.
 func TestAbortLeavesAnAlreadyDisabledUnitDisabled(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	fx.unitEnabledFn = func() (bool, error) { return false, nil }
@@ -1293,14 +1065,6 @@ func TestAbortLeavesAnAlreadyDisabledUnitDisabled(t *testing.T) {
 	}
 }
 
-// TestUninstallOnAMaskedUnit is a regression test:
-// host.UnitEnabled reports a masked unit (an operator's own `systemctl
-// mask`) as "not enabled" rather than an error, so
-// uninstall must be able to tear a masked node down — not refuse it — and it
-// must never try to touch the mask itself: DisableUnit only removes boot
-// -enablement symlinks, a different systemctl operation from mask/unmask,
-// and EnableUnit is exactly the call that would refuse to run against a
-// masked unit, so abort must not call it just because it saw "not enabled".
 func TestUninstallOnAMaskedUnit(t *testing.T) {
 	t.Run("teardown proceeds, and disable never touches the mask", func(t *testing.T) {
 		events, fx := runNode(t, "worker")
@@ -1338,16 +1102,6 @@ func TestUninstallOnAMaskedUnit(t *testing.T) {
 	})
 }
 
-// TestTargetsKeepEveryPathUninstallRemovesToday pins today's removal set as
-// literals, so the refactor that moves these paths into internal/version
-// cannot change what uninstall removes without this test saying so. The list
-// is internal/uninstall/uninstall.go's dirsAndFiles as it stands; Targets()
-// returns a clone of it. Each pinned path must be a
-// target itself, or lie under a target that is a directory root (the covering
-// rule of TestTargetsCoverTheEnvironmentFile). The CIS sysctl file
-// /etc/sysctl.d/99-stratum-cis.conf is written by host.Prereqs under --cis,
-// so the file is asserted as covered like every other path: an uninstall of a
-// --cis node must leave behind as little as one of a plain node.
 func TestTargetsKeepEveryPathUninstallRemovesToday(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	want := []string{
@@ -1378,7 +1132,6 @@ func TestTargetsKeepEveryPathUninstallRemovesToday(t *testing.T) {
 	}
 }
 
-// Targets and both previews must follow the roots used by the writers.
 func TestTargetsFollowSetRoots(t *testing.T) {
 	data, conf, run := version.DataDir, version.ConfDir, version.RunDir
 	t.Cleanup(func() { version.SetRoots(data, conf, run) })
@@ -1399,17 +1152,8 @@ func TestTargetsFollowSetRoots(t *testing.T) {
 	}
 }
 
-// TestDryRunListsEveryTargetAndEachConditionalItem pins the dry run's
-// preview: one line per target in Targets(), plus the conditional items that
-// are not targets — the CNI network-namespace mounts, the kubepods cgroups
-// and the legacy /var/lib/kubelet — so a shared preview function cannot drop
-// one from the CLI while keeping it elsewhere. Checked with strings.Contains,
-// so lines that depend on the host (a legacy containerd config, firewalld
-// sources) do not make it flaky.
 func TestDryRunListsEveryTargetAndEachConditionalItem(t *testing.T) {
 	fx := &hostEffects{
-		// The layout the disclosure names, as Run wires it: the dry run reads
-		// the paths from the run's own value.
 		netnsDir:         "/run/netns",
 		ciliumRunDir:     "/run/cilium",
 		cgroupRoot:       "/sys/fs/cgroup",
@@ -1436,34 +1180,8 @@ func TestDryRunListsEveryTargetAndEachConditionalItem(t *testing.T) {
 	}
 }
 
-// The tests below pin that one preview function in this package
-// returns what an uninstall would do as data — Targets() plus the conditional
-// effects, each as a PreviewItem carrying what it is (Kind), what path, CIDR
-// or interface it touches (Path), the one explanation both surfaces render
-// (Detail), and, when a probe could not answer, that error (Unknown) — so the
-// CLI dry run's prose and the MCP uninstall_preview's structured output are
-// rendered from the same value and cannot enumerate different effects. The
-// contract the implementation builds against:
-//
-//   - preview.go declares PreviewItem{Kind, Path, Detail, Unknown string},
-//     PreviewReport{Targets []string, Items []PreviewItem} and
-//     Preview() PreviewReport.
-//   - Preview consults the package variable PreviewProbes — a struct of five
-//     read-only host probes (LegacyHostConfig, TrustedPodCIDRs,
-//     OwnedFirewalldInterfaces, SELinuxRegistered, AppArmorWidened) with the
-//     production implementations wired as its default — because the MCP handler builds no
-//     hostEffects, and a package variable is the seam both this package's and
-//     internal/mcp's tests can stub.
-//   - The layout paths the dry run names today (/run/netns, /run/cilium,
-//     /sys/fs/cgroup, /var/lib/kubelet) come back as fixed items, so
-//     TestDryRunListsEveryTargetAndEachConditionalItem's items survive the
-//     shared function.
-//
-// The Kind strings are data both surfaces and callers read; they are pinned
-// here as literals, not Go constants, so a rename has to change this test on
-// purpose.
+// the Kind strings are pinned as literals, not constants, so a rename changes this test on purpose.
 
-// previewItemsByKind returns the items of one kind, in order.
 func previewItemsByKind(items []PreviewItem, kind string) []PreviewItem {
 	var got []PreviewItem
 	for _, it := range items {
@@ -1495,8 +1213,6 @@ func TestPreviewEnumeratesTargetsAndConditionals(t *testing.T) {
 		t.Errorf("Preview.Targets = %q, want Targets() unchanged so both previews delete exactly what the runner deletes", p.Targets)
 	}
 
-	// The four layout items the dry run names today are unconditional: the
-	// datapath teardown always runs, so the preview always says so.
 	for _, want := range []struct{ kind, path string }{
 		{"netns", "/run/netns"},
 		{"cilium", "/run/cilium"},
@@ -1513,7 +1229,6 @@ func TestPreviewEnumeratesTargetsAndConditionals(t *testing.T) {
 		}
 	}
 
-	// The host-dependent conditionals appear exactly as the probes answered.
 	legacy := previewItemsByKind(p.Items, "legacy-containerd-config")
 	if len(legacy) != 1 || legacy[0].Path != "/etc/containerd/config.toml" {
 		t.Errorf("Preview() items of kind legacy-containerd-config = %+v, want one naming the config the probe reported present", legacy)
@@ -1544,10 +1259,6 @@ func TestPreviewEnumeratesTargetsAndConditionals(t *testing.T) {
 	}
 }
 
-// TestPreviewReportsAnUnanswerableProbe pins the unknown state: a probe that
-// cannot answer becomes an item whose Unknown carries the error and whose Path
-// is empty, so the preview says what it could not learn instead of staying
-// silent while the effect would be left in place.
 func TestPreviewReportsAnUnanswerableProbe(t *testing.T) {
 	saved := PreviewProbes
 	t.Cleanup(func() { PreviewProbes = saved })
@@ -1564,7 +1275,7 @@ func TestPreviewReportsAnUnanswerableProbe(t *testing.T) {
 	if got := previewItemsByKind(p.Items, "firewalld-interface"); len(got) != 1 || got[0].Path != "" || !strings.Contains(got[0].Unknown, "firewall-cmd failed") {
 		t.Errorf("Preview() items of kind firewalld-interface = %+v, want one carrying the probe's error as Unknown and no path", got)
 	}
-	// Absent probes answer nothing, and nothing stands in for them.
+
 	for _, kind := range []string{"legacy-containerd-config", "selinux-contexts", "apparmor-runc-profile"} {
 		if got := previewItemsByKind(p.Items, kind); len(got) != 0 {
 			t.Errorf("Preview() items of kind %q = %+v, want none when the probe reports the effect absent", kind, got)
@@ -1572,10 +1283,6 @@ func TestPreviewReportsAnUnanswerableProbe(t *testing.T) {
 	}
 }
 
-// TestPreviewKeepsTheFixedItemsOnAPlainHost pins the floor: with every
-// host-dependent probe answering "none", the preview still returns the five
-// fixed layout items, so a surface rendering only Preview() can never drop
-// what TestDryRunListsEveryTargetAndEachConditionalItem pins.
 func TestPreviewKeepsTheFixedItemsOnAPlainHost(t *testing.T) {
 	saved := PreviewProbes
 	t.Cleanup(func() { PreviewProbes = saved })
@@ -1602,11 +1309,6 @@ func TestPreviewKeepsTheFixedItemsOnAPlainHost(t *testing.T) {
 	}
 }
 
-// TestDryRunDisclosesTheSharedPreviewConditionals pins the CLI side of the one
-// preview: with the probes stubbed, the dry run's prose names every
-// conditional item Preview() returns — the legacy containerd config, the
-// firewalld bindings and the registered SELinux contexts — so the two surfaces
-// enumerate the same effects because they render the same value.
 func TestDryRunDisclosesTheSharedPreviewConditionals(t *testing.T) {
 	saved := PreviewProbes
 	t.Cleanup(func() { PreviewProbes = saved })
@@ -1644,11 +1346,6 @@ func TestDryRunDisclosesTheSharedPreviewConditionals(t *testing.T) {
 	}
 }
 
-// TestDryRunReachesNoEffect pins the dry run free of effects: runUninstall(io.Discard, false, fx)
-// returns nil having touched nothing — no lock, no stop, no disable, no
-// removal, no untrust. Every effect is swapped for one that fails the test if
-// it is ever reached, so a probe or effect moved ahead of the dry-run branch
-// fails here instead of changing the host.
 func TestDryRunReachesNoEffect(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	var reached []string
@@ -1679,14 +1376,6 @@ func TestDryRunReachesNoEffect(t *testing.T) {
 	}
 }
 
-// TestStubTeardownsDefangKeepsRunOffTheHostConfig pins the one thing that keeps
-// every Run test off the host's /etc/containerd/config.toml today: stubTeardown
-// redirects the legacy-config heal seam with a counted no-op, so no test reads
-// or deletes that file, whatever the host keeps there. This pin holds before
-// and after the seam replaced the version.ContainerdConfig defang trick. The
-// heal's removal semantics themselves are pinned in internal/runtime's own
-// suite (TestRemoveLegacyHostConfig); this pin covers what the uninstall
-// boundary must keep off the host path.
 func TestStubTeardownsDefangKeepsRunOffTheHostConfig(t *testing.T) {
 	swap(t, &version.ContainerdConfig, "/etc/containerd/config.toml")
 
@@ -1733,15 +1422,6 @@ func TestStubTeardownsDefangKeepsRunOffTheHostConfig(t *testing.T) {
 	})
 }
 
-// TestHealKeepsAHostConfigItCannotProveIsStratums pins the heal's attribution
-// gate at the exported entry the forced path calls. With version's containerd
-// root and state redirected to temp paths, no file at the host's legacy path
-// can prove stratum's, so the real runtime.RemoveLegacyHostConfig must leave
-// /etc/containerd/config.toml exactly as it found it and log no removal —
-// whatever the host keeps there (nothing, a distro config, or an older
-// stratum's own file). The version-path redirect keeps the call read-only on
-// the real host in every one of those cases, and the live-config redirect off
-// the legacy path keeps the guard from standing in for the attribution gate.
 func TestHealKeepsAHostConfigItCannotProveIsStratums(t *testing.T) {
 	dir := t.TempDir()
 	swap(t, &version.ContainerdRootDir, filepath.Join(dir, "containerd"))
@@ -1763,24 +1443,6 @@ func TestHealKeepsAHostConfigItCannotProveIsStratums(t *testing.T) {
 	}
 }
 
-// The tests below pin the host-effects value: the package's injected effect
-// variables, the legacy-config heal seam among them, are one complete
-// host-effects value, Run keeps its exported signature and hands a value it
-// constructs itself to an unexported runner, and a test that forgets a stub
-// fails closed on a sentinel instead of reaching the host. The names and
-// signatures asserted here are the contract the implementation builds against.
-
-// TestUnsetEffectsFailClosed is the fail-closed harness proof: a hostEffects
-// with every effect unset must make the runner return the sentinel, naming the
-// effect it stopped at, instead of reaching the host through a production
-// default or panicking through a nil function. The sentinel is what the
-// harness captures when a test forgets a stub, so it must be identifiable
-// with errors.Is and must say which field was missing; and it must fire
-// before any host call, which here is the etcd data lock — the first effect
-// the forced path reaches, ahead of every probe, stop and removal. No effect
-// may answer an unset field by falling back to its real implementation: a
-// fake that forgot a stub would then perform the very host effect it exists
-// to keep off the node.
 func TestUnsetEffectsFailClosed(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	err := runUninstall(io.Discard, true, &hostEffects{})
@@ -1795,11 +1457,6 @@ func TestUnsetEffectsFailClosed(t *testing.T) {
 	}
 }
 
-// TestDryRunNeedsNoEffects: the preview only prints what a forced run would
-// do, so it consults none of the effects, and even a zero hostEffects — every
-// one of them unset — must return nil, not the sentinel. A fail-closed guard
-// that fired on the dry-run path would make the preview fail before any effect
-// could have been reached.
 func TestDryRunNeedsNoEffects(t *testing.T) {
 	err := runUninstall(io.Discard, false, &hostEffects{})
 	if err != nil {
@@ -1807,13 +1464,6 @@ func TestDryRunNeedsNoEffects(t *testing.T) {
 	}
 }
 
-// TestHostEffectsCoverTheInventory pins one complete host-effects value: every
-// teardown effect the package injects today is a function field on it, so a
-// run's stubs cannot miss one and no effect stays behind as a package
-// variable. The read-only probes, the discovery state and the filesystem
-// layout are per-run values too (TestHostEffectsCarriesThePerRunValues pins
-// that), but they are not effects, so they are deliberately absent from this
-// list; extra fields beyond it are allowed.
 func TestHostEffectsCoverTheInventory(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	inventory := []string{
@@ -1869,18 +1519,6 @@ func TestHostEffectsCoverTheInventory(t *testing.T) {
 	}
 }
 
-// TestRunOwnsTheProductionHostEffects parses the package's production files
-// and pins the entry-point structure the seam depends on: Run keeps the
-// exported signature the CLI and MCP callers compile against — the writer
-// convention: io.Writer as the first parameter, the force flag second — calls
-// the unexported runner with that writer and the effects value, wires the
-// real local-path directory and its empty-only removal into that value, and is
-// the only place that constructs one — the production value is never a
-// package-level variable a second run could inherit, so every call gets its
-// own. The CLI passes os.Stdout, so its output stays byte-identical to what
-// it printed when the prints went straight to os.Stdout; the MCP handler
-// passes the buffer its result is built from, so the same progress reaches
-// the result as data with no stdout redirect.
 func TestRunOwnsTheProductionHostEffects(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fset := token.NewFileSet()
@@ -1982,11 +1620,6 @@ func TestRunOwnsTheProductionHostEffects(t *testing.T) {
 		t.Error("RunWithOptions never mentions runUninstall; the runner must be what the builder calls")
 	}
 
-	// Run wires the real directory and the empty-only removal into its effects
-	// value as the selectors of the packages that own them: without the path
-	// the run skips the local-path directory, and without syscall.Rmdir it
-	// fails as an unset effect. It is rmdir, not os.Remove, which would also
-	// unlink a file that replaced the directory.
 	wired := map[string]bool{}
 	ast.Inspect(run.Body, func(n ast.Node) bool {
 		kv, ok := n.(*ast.KeyValueExpr)
@@ -2019,9 +1652,6 @@ func TestRunOwnsTheProductionHostEffects(t *testing.T) {
 		}
 	}
 
-	// Production construction only in Run: every hostEffects composite literal
-	// in the production files sits inside Run's body, and no package-level
-	// variable has the type. The value is per-run, never a shared singleton.
 	for name, f := range files {
 		for _, d := range f.Decls {
 			switch d := d.(type) {
@@ -2058,8 +1688,6 @@ func TestRunOwnsTheProductionHostEffects(t *testing.T) {
 	}
 }
 
-// isIoWriter reports whether e is the type io.Writer, the parameter the writer
-// convention puts first on every operation the MCP tools call.
 func isIoWriter(e ast.Expr) bool {
 	sel, ok := e.(*ast.SelectorExpr)
 	if !ok {
@@ -2069,15 +1697,6 @@ func isIoWriter(e ast.Expr) bool {
 	return ok && id.Name == "io" && sel.Sel.Name == "Writer"
 }
 
-// TestUninstallPrintsThroughTheWriter pins the other half of the writer
-// convention over the whole package: every preview, progress and warning
-// print is a write to the run's writer, never an implicit write to the
-// process's stdout. fmt.Print* always writes os.Stdout, so none may remain in
-// a production file — each one became an fmt.Fprint* to the writer handed
-// down from Run (the census this replaced counted 36: uninstall.go 29,
-// containers.go 5, shims.go 1, datapath.go 1) — and no package-level variable
-// may carry a writer for the prints to fall back to, which two Runs in one
-// process would race over.
 func TestUninstallPrintsThroughTheWriter(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fset := token.NewFileSet()
@@ -2133,18 +1752,6 @@ func TestUninstallPrintsThroughTheWriter(t *testing.T) {
 	}
 }
 
-// The tests below pin the teardown phases: Run's teardown sequence is split
-// into named phases along its refusal, preparation, commit and removal
-// boundaries, and each step's error class and rollback behavior is declared
-// with its phase instead of decided inline where the step happens to sit. The
-// phase names asserted here are the contract the phase split builds against:
-// refuseUninstall (refusal — the fail-closed gates), prepareTeardown
-// (reversible preparation — the stops, whose failures go through undo.abort),
-// commitTeardown (commit — the post-stop start-lock gate and the Restart=
-// restore, past which nothing is left to restore) and removeState (commit and
-// removal — the deletes, whose errors accumulate and are never rolled back).
-
-// phasesOfTeardown is the declared phase list, each with the steps it owns.
 var phasesOfTeardown = []struct {
 	name  string
 	role  string
@@ -2156,14 +1763,6 @@ var phasesOfTeardown = []struct {
 	{"removeState", "commit/removal", "the datapath teardown, the firewalld untrust, the SELinux removal, the delete loop, the legacy-config heal and the systemd reload"},
 }
 
-// TestRunTeardownIsSplitIntoDeclaredPhases parses uninstall.go and pins the
-// phase structure: the named phase functions exist, the runner hands the run
-// to them in teardown order, undo.abort is called from the preparation phase
-// and from nowhere else (a rollback decision taken inline anywhere else is a
-// step without a declared boundary), the early systemd disable runs in the
-// preparation phase and not in the refusal one, the post-stop start-lock gate
-// and the Restart= restore run in the commit phase, and the legacy-config
-// heal runs in the removal phase.
 func TestRunTeardownIsSplitIntoDeclaredPhases(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fset := token.NewFileSet()
@@ -2188,8 +1787,6 @@ func TestRunTeardownIsSplitIntoDeclaredPhases(t *testing.T) {
 		t.Errorf("uninstall.go declares no %v; Run's teardown must be split into named refusal, preparation, commit and removal phases with each step's error class declared by its phase", missing)
 	}
 
-	// runUninstall hands the phases the run, in teardown order: the phases are
-	// the runner's structure, not a set of helpers it scatters.
 	if run := bodies["runUninstall"]; run != nil {
 		at := map[string]token.Pos{}
 		ast.Inspect(run, func(n ast.Node) bool {
@@ -2224,10 +1821,6 @@ func TestRunTeardownIsSplitIntoDeclaredPhases(t *testing.T) {
 		}
 	}
 
-	// undo.abort is the declared rollback of the preparation phase and of
-	// nothing else. Counting call sites per function, instead of per step,
-	// keeps the pin honest: a rollback decision that migrates to a new phase,
-	// or back into the runner's body, changes the count here.
 	aborts := map[string]int{}
 	for name, body := range bodies {
 		if name == "abort" {
@@ -2253,11 +1846,6 @@ func TestRunTeardownIsSplitIntoDeclaredPhases(t *testing.T) {
 		t.Error("no undo.abort call site in uninstall.go; the rollback-boundary pin is vacuous")
 	}
 
-	// Where the pinned steps live: the early systemd disable is preparation,
-	// not preflight (it is the run's first host change, not a gate), so its
-	// call belongs to prepareTeardown and to no earlier phase; the commit
-	// phase is the post-stop start-lock gate plus the Restart= restore; the
-	// heal is a commit/removal step.
 	uses := func(fn, ident string) bool {
 		body := bodies[fn]
 		if body == nil {
@@ -2309,49 +1897,23 @@ func TestRunTeardownIsSplitIntoDeclaredPhases(t *testing.T) {
 	}
 }
 
-// TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass is the rollback
-// boundary table: one row per teardown step, naming the phase the step runs
-// in and the error class the phase declares for it — refusal (nothing stopped
-// or removed, no undo), undo.abort (reversible preparation: what was stopped
-// is put back and nothing is deleted), accumulated (commit/removal: every
-// other target is still removed and nothing is put back) and warning-only
-// (the run continues). Each row injects a failure at its step and asserts
-// exactly the declared outcome: the host state it leaves, the error class,
-// and which undo calls ran. A step moved across a phase boundary, or a class
-// changed without this table changing with it, fails here.
 func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 	const stateRemovedHint = "The node's state was removed; fix the reported cleanup failures and re-run `stratum uninstall --yes` to finish"
 	for _, tc := range []struct {
-		name string
-		// phase is the declared phase the step runs in; class is the error
-		// class its phase declares: refusal, undo.abort, accumulated or
-		// warning.
-		phase string
-		class string
-		role  string
-		// controlPlane gives the run manifests to read and stop (an etcd and a
-		// kube-apiserver static pod), so abort's manifest restore has something
-		// to put back.
+		name         string
+		phase        string
+		class        string
+		role         string
 		controlPlane bool
-		// keepDataDir marks a row whose failure makes Run keep DataDir on
-		// purpose (the firewalld ownership record lives under it).
-		keepDataDir bool
-		// fail injects the failure at the row's step. removed is the removal
-		// recorder, for the row whose failing step is the removal itself.
-		fail func(t *testing.T, fx *hostEffects, removed *[]string)
-		// wantText is what the error must say; wantWarn, what the run must
-		// print, for the warning rows that succeed.
-		wantText []string
-		wantWarn []string
-		// wantPuts is how many manifests an abort puts back; wantStarts, the
-		// units an abort starts again, in abort's restart order.
-		wantPuts   int
-		wantStarts []string
-		// after checks cross-step facts once the run has returned.
-		after func(t *testing.T)
+		keepDataDir  bool
+		fail         func(t *testing.T, fx *hostEffects, removed *[]string)
+		wantText     []string
+		wantWarn     []string
+		wantPuts     int
+		wantStarts   []string
+		after        func(t *testing.T)
 	}{
-		// refuseUninstall: the fail-closed gates. Nothing has been touched, so
-		// a refusal restores nothing and deletes nothing.
+
 		{
 			name:  "the node maintenance lock refuses",
 			phase: "refuseUninstall",
@@ -2407,10 +1969,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			},
 			wantText: []string{"determine whether stratum.service is enabled"},
 		},
-		// prepareTeardown: the reversible stops. The early systemd disable is
-		// the phase's first step — preparation, not preflight: it is the run's
-		// first host change (boot enablement), but when it fails nothing has
-		// changed that undo could put back, so its class is refusal.
+
 		{
 			name:  "the early systemd disable refuses",
 			phase: "prepareTeardown",
@@ -2491,8 +2050,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			},
 			wantText: []string{"kubelet will not stop", "Nothing was deleted"},
 			wantPuts: 0,
-			// kubelet was recorded stopped before the stop was attempted, so
-			// the abort starts it again; the host processes were not stopped.
+
 			wantStarts: []string{"kubelet"},
 		},
 		{
@@ -2506,8 +2064,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			},
 			wantText: []string{"start containerd to stop this node's containers", "Nothing was deleted"},
 			wantPuts: 0,
-			// The containerd started for the teardown is stopped first, then
-			// containerd and kubelet are started again in roster order.
+
 			wantStarts: []string{"containerd", "kubelet"},
 		},
 		{
@@ -2533,8 +2090,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			},
 			wantText: []string{"lost stop acknowledgement", "Nothing was deleted", "services were started again (containerd, kubelet, operator)"},
 			wantPuts: 2,
-			// The supervisor was already asked to stop everything, so the abort
-			// starts every wanted unit again, containerd first.
+
 			wantStarts: []string{"containerd", "kubelet", "operator"},
 		},
 		{
@@ -2609,10 +2165,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			wantPuts:   0,
 			wantStarts: []string{"containerd", "kubelet", "operator"},
 		},
-		// commitTeardown: the post-stop start-lock gate is the commit decision.
-		// Its refusal returns directly, not through undo.abort: everything the
-		// run could find is already stopped, so there is nothing left to
-		// restore — it keeps the node stopped and its state undeleted.
+
 		{
 			name:  "the post-stop start-lock gate refuses",
 			phase: "commitTeardown",
@@ -2640,8 +2193,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			},
 			wantWarn: []string{"restore stratum.service's Restart=:"},
 		},
-		// removeState: commit and removal. Errors accumulate and the rest of
-		// the teardown still runs; nothing is rolled back.
+
 		{
 			name:  "the datapath teardown accumulates",
 			phase: "removeState",
@@ -2743,8 +2295,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			fail: func(t *testing.T, fx *hostEffects, _ *[]string) {
 				fx.removeLegacyHostConfig = func(w io.Writer) {
 					healRuns++
-					// The heal's warning travels the run's writer, like every
-					// other self-logged step's report.
+
 					fmt.Fprintln(w, "  WARN: could not remove legacy containerd config")
 				}
 			},
@@ -2760,9 +2311,7 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 			_, fx := runNode(t, tc.role)
 			var reenabled, restartAllowed bool
 			var removed, puts, started []string
-			// The unit was enabled when found, so an abort re-enables it and
-			// removes the Restart= drop-in: those are the undo calls every
-			// abort makes, and a refusal must make none of them.
+			// the undo calls every abort makes; a refusal must make none.
 			fx.unitEnabledFn = func() (bool, error) { return true, nil }
 			fx.enableSystemdUnit = func() error { reenabled = true; return nil }
 			fx.allowRestartFn = func() error { restartAllowed = true; return nil }
@@ -2855,20 +2404,6 @@ func TestRunFailureAtEachStepMatchesItsDeclaredPhaseAndClass(t *testing.T) {
 	}
 }
 
-// --------------------------- the full footprint ----------------------------
-//
-// Two parts of the node footprint sit outside the three roots but are still
-// stratum's to remove: the operator's helm cache at the legacy
-// /var/lib/stratum-helm on nodes brought up by earlier releases (today's
-// releases keep it under version.DataDir, which the DataDir target already
-// removes), and the upgrade's binary backup sets, written as
-// stratum.bak-<ts> beside version.StratumInstallPath. These tests pin both
-// node layouts across the delete list, the forced delete loop and the dry
-// run; the MCP uninstall_preview derives from the same Targets().
-
-// coveredByTargets reports whether p is a target itself or lies under a
-// target that is a directory root — the covering rule
-// TestTargetsCoverTheEnvironmentFile established.
 func coveredByTargets(p string) bool {
 	for _, target := range Targets() {
 		if p == target || strings.HasPrefix(p, strings.TrimSuffix(target, "/")+"/") {
@@ -2878,15 +2413,6 @@ func coveredByTargets(p string) bool {
 	return false
 }
 
-// TestTargetsCoverTheOperatorHelmCacheOnNewAndLegacyNodes pins the operator
-// helm cache on both layouts: a node brought up by the current release keeps
-// it under the data dir (version.HelmCacheDir, covered by the DataDir
-// target), and a node brought up by an earlier release keeps it at the
-// literal /var/lib/stratum-helm — outside the three roots, so it needs a
-// target of its own. Without that target nothing covers
-// /var/lib/stratum-helm, and an uninstalled legacy node keeps the operator's
-// whole helm cache (the repository index cache, repositories.yaml and the
-// written CA files).
 func TestTargetsCoverTheOperatorHelmCacheOnNewAndLegacyNodes(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	if !coveredByTargets(version.HelmCacheDir) {
@@ -2898,16 +2424,6 @@ func TestTargetsCoverTheOperatorHelmCacheOnNewAndLegacyNodes(t *testing.T) {
 	}
 }
 
-// TestTargetsCoverTheStratumBinaryBackupsBesideTheInstallPath pins the
-// upgrade's binary backup sets beside the installed stratum binary: an
-// upgrade saves the live binary as stratum.bak-<ts> beside version.StratumInstallPath
-// and keeps the newest sets there (internal/upgrade), outside the three
-// roots, so uninstall needs its own target for them or a node keeps every
-// old binary it ever rolled back from. The target must follow
-// version.StratumInstallPath at call time, and cover only the backup sets:
-// the live binary, its non-backup neighbours and another tool's backups in
-// the same directory are not uninstall's to remove. Without that target
-// the created .bak- files never reach Targets().
 func TestTargetsCoverTheStratumBinaryBackupsBesideTheInstallPath(t *testing.T) {
 	dir := t.TempDir()
 	install := filepath.Join(dir, "stratum")
@@ -2942,13 +2458,6 @@ func TestTargetsCoverTheStratumBinaryBackupsBesideTheInstallPath(t *testing.T) {
 	}
 }
 
-// TestRunRemovesTheLegacyHelmCacheAndStratumBackups drives the forced
-// teardown across both layouts at once: the delete loop must visit the data
-// dir (which carries the new helm cache location), the legacy
-// /var/lib/stratum-helm, and every stratum.bak-<ts> backup beside
-// version.StratumInstallPath, while leaving the live binary itself alone.
-// Without those targets the recorder never sees the legacy helm dir or
-// the backups.
 func TestRunRemovesTheLegacyHelmCacheAndStratumBackups(t *testing.T) {
 	_, fx := runNode(t, "worker")
 	dir := t.TempDir()
@@ -2976,11 +2485,6 @@ func TestRunRemovesTheLegacyHelmCacheAndStratumBackups(t *testing.T) {
 	}
 }
 
-// TestDryRunDisclosesTheLegacyHelmCacheAndStratumBackups pins the CLI
-// preview's half of the footprint derivation: the dry run prints one line per
-// target, so the legacy helm dir and the backup sets beside the install path
-// are disclosed to the operator before --yes exactly when the delete loop
-// would visit them. Without those targets neither is printed.
 func TestDryRunDisclosesTheLegacyHelmCacheAndStratumBackups(t *testing.T) {
 	dir := t.TempDir()
 	install := filepath.Join(dir, "stratum")
@@ -3004,16 +2508,12 @@ func TestDryRunDisclosesTheLegacyHelmCacheAndStratumBackups(t *testing.T) {
 	}
 }
 
-// testCA is a self-signed CA with the PEM forms the kubelet cert-pair tests
-// write: the bundle file's cert, and a cert-and-key pair file as the kubelet's
-// certificate manager keeps one.
 type testCA struct {
 	certPEM []byte
 	key     *ecdsa.PrivateKey
 	cert    *x509.Certificate
 }
 
-// newTestCA generates a throwaway self-signed CA.
 func newTestCA(t *testing.T) *testCA {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -3044,8 +2544,6 @@ func newTestCA(t *testing.T) *testCA {
 	}
 }
 
-// pairPEM writes a kubelet-style cert-and-key pair file signed by this CA,
-// named after the role the pair serves (kubelet-server-, kubelet-client-).
 func (ca *testCA) pairPEM(t *testing.T, name string) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -3073,21 +2571,13 @@ func (ca *testCA) pairPEM(t *testing.T, name string) []byte {
 	)
 }
 
-// TestRemoveLegacyKubeletDirRemovesStratumsKubeletCertPairs: stratum's kubelet
-// keeps its certificate-manager pairs in the kubelet's fixed --cert-dir
-// default (internal/pki's kubeletDefaultCertDir) although its --root-dir is
-// under DataDir, so on a stratum-only node they are the pairs stratum's CA
-// signed — removed with the stale sockets, and the emptied cert dir and kubelet
-// dir with them. The pairs are the gap the kubelet dir's footprint entry
-// covers; removeLegacyKubeletDir is the directory's only remover, which is why
-// it is not a plain delete target.
 func TestRemoveLegacyKubeletDirRemovesStratumsKubeletCertPairs(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
 	dir := shortKubeletDir(t, fx)
 	ca := newTestCA(t)
 	pkiDir := t.TempDir()
-	// Sequential by swap's stated exception: it redirects version.PKIDir.
+	// sequential by swap's exception: it redirects version.PKIDir.
 	swap(t, &version.PKIDir, pkiDir)
 	if err := os.WriteFile(filepath.Join(pkiDir, "ca-bundle.crt"), ca.certPEM, 0o644); err != nil {
 		t.Fatal(err)
@@ -3121,11 +2611,6 @@ func TestRemoveLegacyKubeletDirRemovesStratumsKubeletCertPairs(t *testing.T) {
 	}
 }
 
-// TestRemoveLegacyKubeletDirKeepsAnotherKubeletsCertPairs: a co-hosted
-// kubelet's pairs live in the same cert dir, signed by a CA stratum's bundle
-// does not carry, so they are kept and said so, and with them the cert dir and
-// the kubelet dir — while stratum's own pair beside them still goes. What
-// cannot be judged (an unreadable file, no bundle) is kept the same way.
 func TestRemoveLegacyKubeletDirKeepsAnotherKubeletsCertPairs(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -3133,7 +2618,7 @@ func TestRemoveLegacyKubeletDirKeepsAnotherKubeletsCertPairs(t *testing.T) {
 	stratum := newTestCA(t)
 	foreign := newTestCA(t)
 	pkiDir := t.TempDir()
-	// Sequential by swap's stated exception: it redirects version.PKIDir.
+	// sequential by swap's exception: it redirects version.PKIDir.
 	swap(t, &version.PKIDir, pkiDir)
 	if err := os.WriteFile(filepath.Join(pkiDir, "ca-bundle.crt"), stratum.certPEM, 0o644); err != nil {
 		t.Fatal(err)
@@ -3263,13 +2748,6 @@ func TestKubeletCertCleanupKeepsUnprovenSymlinks(t *testing.T) {
 	}
 }
 
-// TestFailedCertRemovalKeepsTheNodeState pins the recovery contract of the
-// kubelet cert-dir sweep: a verified pair whose removal fails makes the
-// datapath failure carry errKeepState, so Run keeps DataDir — the CA bundle
-// under it is what decides whose a certificate is, and deleting it would turn
-// a fixable unlink failure into a leftover no later uninstall can ever
-// identify, let alone remove. The removal here fails because the cert dir is
-// not writable (skipped under root, which bypasses the permission).
 func TestFailedCertRemovalKeepsTheNodeState(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses the directory permissions this test relies on")

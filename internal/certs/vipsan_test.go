@@ -16,11 +16,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestRenewalKeepsTheVIPSAN pins the renewal half of the VIP-SAN rule. Renewal
-// takes its SAN extras from hostNodeIP, which must carry the VIP recorded in
-// node state alongside the service-network extras; extras without the VIP
-// would reissue the apiserver certificate without it, and clients of the VIP
-// fail TLS as soon as it lands on a renewed node.
+// extras without the VIP would reissue the apiserver certificate without it
 func TestRenewalKeepsTheVIPSAN(t *testing.T) {
 	origConf, origNet := version.K8sConfDir, version.NetConfigPath
 	version.K8sConfDir = t.TempDir()
@@ -57,12 +53,7 @@ func TestRenewalKeepsTheVIPSAN(t *testing.T) {
 	}
 }
 
-// TestRenewalAddressesForADualStackNode pins renewal's certificate inputs on a
-// dual-stack node: the recorded v4,v6 pair as the node address, extras equal to
-// netc.APIServerSANs with the VIP — the list install and the join issue — and a
-// refusal that names the missing pair when the state lost it. A renewal that
-// dropped the IPv6 half, or re-detected an address for a node that already has
-// state, reissues a certificate the node's own kubelet cannot use.
+// a renewal that re-detected an address would issue a certificate the kubelet cannot use
 func TestRenewalAddressesForADualStackNode(t *testing.T) {
 	origConf, origNet := version.K8sConfDir, version.NetConfigPath
 	version.K8sConfDir = t.TempDir()
@@ -117,8 +108,7 @@ func TestRenewalAddressesForADualStackNode(t *testing.T) {
 	})
 }
 
-// A renewal reissues the apiserver certificate with the cluster domain
-// the cluster was initialised with, read from netconfig.
+// the domain comes from netconfig
 func TestRenewalKeepsTheClusterDomainSAN(t *testing.T) {
 	origConf, origNet := version.K8sConfDir, version.NetConfigPath
 	version.K8sConfDir = t.TempDir()
@@ -142,10 +132,7 @@ func TestRenewalKeepsTheClusterDomainSAN(t *testing.T) {
 	}
 }
 
-// With netconfig lost and node state on fuzz.internal, a rotation still
-// reissues apiserver.crt with the fuzz.internal SAN. Deriving the domain from
-// load alone gives cluster.local, and rotation force-reissues leaves, so the
-// SAN would be lost.
+// deriving the domain from load alone gives cluster.local; rotation would lose the SAN
 func TestRotationKeepsTheClusterDomainSANWithoutNetConfig(t *testing.T) {
 	origConf, origNet, origPKI := version.K8sConfDir, version.NetConfigPath, version.PKIDir
 	version.K8sConfDir, version.PKIDir = t.TempDir(), t.TempDir()
@@ -183,9 +170,7 @@ func TestRotationKeepsTheClusterDomainSANWithoutNetConfig(t *testing.T) {
 	}
 }
 
-// TestRotationDerivesTheServiceSANFromTheRecordedRangeWithoutNetConfig: with
-// netconfig lost on a custom-range node, rotation derives the apiserver's
-// service-IP SAN from the recorded service range, not the default 10.96.0.1.
+// rotation derives the apiserver's service-IP SAN from the recorded range, not the default
 func TestRotationDerivesTheServiceSANFromTheRecordedRangeWithoutNetConfig(t *testing.T) {
 	origConf, origNet, origPKI := version.K8sConfDir, version.NetConfigPath, version.PKIDir
 	version.K8sConfDir, version.PKIDir = t.TempDir(), t.TempDir()
@@ -228,9 +213,7 @@ func TestRotationDerivesTheServiceSANFromTheRecordedRangeWithoutNetConfig(t *tes
 	}
 }
 
-// Node state that cannot be read is not "no VIP": rotating a VIP node as one
-// without would drop the VIP SAN and leave kube-vip on the superseded leaf. A
-// node with no node state at all has no VIP.
+// rotating a VIP node as one without would drop the VIP SAN and leave kube-vip on the old leaf
 func TestNodeVIPRefusesUnreadableNodeState(t *testing.T) {
 	origConf, origNet := version.K8sConfDir, version.NetConfigPath
 	version.K8sConfDir = t.TempDir()
@@ -257,8 +240,7 @@ func TestNodeVIPRefusesUnreadableNodeState(t *testing.T) {
 	}
 }
 
-// regenFromNodeState regenerates the kubeconfigs as a CA-rotation phase does,
-// reading the hostname and VIP once.
+// as a CA-rotation phase does, reading the hostname and VIP once
 func regenFromNodeState() error {
 	hostname, _, _, vip, err := hostNodeIP()
 	if err != nil {

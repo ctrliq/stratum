@@ -19,20 +19,8 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// From here down: the node.yaml writes of `stratum up --worker` under the
-// one mutation owner. The restart fast path saves a
-// spec.selinux update and a --pod-cidr the operator passed, and the fresh
-// join saves the joined state — each as a whole-file write of a state the
-// run loaded (or built) earlier, with no data lock held (the stage lock is
-// released before the worker branch runs). They go through nodestate's
-// mutation owner: the save re-reads under the etcd data lock, so a writer
-// that changed the file in between survives, and a save while another
-// operation holds the lock refuses instead of writing between its read and
-// write.
+// Node.yaml saves re-read under the etcd data lock and refuse while it is held.
 
-// workerScratchHost redirects what the worker paths write and lock to one
-// temp tree: the node state, the PKI dir the join writes, and the etcd data
-// lock, so nothing here touches the host's /var/lib/stratum.
 func workerScratchHost(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -49,15 +37,13 @@ func workerScratchHost(t *testing.T) {
 		*sw.p = sw.v
 		t.Cleanup(func() { *sw.p = old })
 	}
-	// The join's CA writes stage inside the PKI dir; hostDirs, which would
-	// create it on a real node, is stubbed in these tests.
+	// hostDirs is stubbed here, so the PKI dir the CA writes stage into needs this.
 	if err := os.MkdirAll(version.PKIDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// stubWorkerStartHost stubs the host steps of the restart fast path, which a
-// unit test may not run: modprobe/sysctl/swapoff and the firewalld binding.
+// A unit test may not run modprobe/sysctl/swapoff or the firewalld binding.
 func stubWorkerStartHost(t *testing.T) {
 	t.Helper()
 	oldPrereqs, oldTrust := hostPrereqs, hostTrustPodCIDRs
@@ -66,9 +52,6 @@ func stubWorkerStartHost(t *testing.T) {
 	hostTrustPodCIDRs = func(string) {}
 }
 
-// TestWorkerRestartSavesGoThroughTheDataLock pins the restart fast path's
-// node.yaml writes (the spec.selinux update and the persisted --pod-cidr,
-// internal/cluster/worker.go).
 func TestWorkerRestartSavesGoThroughTheDataLock(t *testing.T) {
 	const server = "https://10.0.0.1:6443"
 	const podCIDR = "10.245.0.0/16"
@@ -103,8 +86,7 @@ func TestWorkerRestartSavesGoThroughTheDataLock(t *testing.T) {
 			t.Fatal(err)
 		}
 		stubWorkerStartHost(t)
-		// A writer lands after the start loaded its copy and before the
-		// pod-CIDR save — the interleaving the save must survive.
+		// A writer between the start's load and the save: the interleaving it must survive.
 		hostPrereqs = func(host.PrereqOptions) error {
 			cur, err := LoadState()
 			if err != nil {
@@ -166,11 +148,7 @@ func TestWorkerRestartNodeIPSaveGoesThroughTheDataLock(t *testing.T) {
 	}
 }
 
-// TestWorkerJoinStateSaveGoesThroughTheDataLock pins the fresh join's state
-// write (internal/cluster/worker.go): it goes through the mutation owner too. The save
-// refuses while the lock is held, and a join over an existing state merges
-// into it — a re-join must keep the DNS address the learner recorded, which
-// the join's own state does not carry.
+// A re-join keeps the DNS address the learner recorded; the join's state lacks it.
 func TestWorkerJoinStateSaveGoesThroughTheDataLock(t *testing.T) {
 	const (
 		server = "https://10.0.0.1:6443"
@@ -222,25 +200,14 @@ func TestWorkerJoinStateSaveGoesThroughTheDataLock(t *testing.T) {
 		if got.ClusterDNSIP != "10.96.0.10" {
 			t.Errorf("clusterDNSIP = %q, want the learned address kept — the join's save dropped it", got.ClusterDNSIP)
 		}
-		// The state this start runs with carries the same field: RunWorker
-		// renders kubelet.conf from it, and with discovery unreachable the
-		// saved resolver must win over the default.
+		// RunWorker renders kubelet.conf from this state, so the saved resolver must win.
 		if st.ClusterDNSIP != "10.96.0.10" {
 			t.Errorf("returned clusterDNSIP = %q, want the learned address the save kept", st.ClusterDNSIP)
 		}
 	})
 }
 
-// TestWorkerJoinWritesTheCABundles pins the worker join's CA writes
-// (internal/cluster/worker.go, the unexported join path) to the atomic single-file writer
-// (internal/atomicfile). ca.crt, ca-bundle.crt and the kubelet's client CA
-// bundle are the trust anchors the kubelet authenticates against and the
-// trust refresh and tooling read, so an induced failure must leave the trust
-// already on the node — never a truncated bundle — with no temp file left
-// behind; a successful write must land the discovered CA bytes at 0644, the
-// mode these writes have always used. The host, discovery and bootstrap
-// steps sit behind the seams worker_join_test.go names, so the real
-// PrepareWorker runs here against a scratch PKI directory.
+// The trust anchors the kubelet authenticates against must never be truncated.
 func TestWorkerJoinWritesTheCABundles(t *testing.T) {
 	const (
 		server = "https://cp-8.example.test:6443"
@@ -250,8 +217,7 @@ func TestWorkerJoinWritesTheCABundles(t *testing.T) {
 	ca := []byte("-----BEGIN CERTIFICATE-----\nthe discovered CA\n-----END CERTIFICATE-----\n")
 	const previous = "the trust already on the node, from the previous start\n"
 
-	// The same three paths the join writes, so the test follows the code if a
-	// path moves.
+	// The same three paths the join writes, so the test follows a path move.
 	caPaths := func() []string {
 		return []string{
 			filepath.Join(version.PKIDir, "ca.crt"),
@@ -269,16 +235,7 @@ func TestWorkerJoinWritesTheCABundles(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		// Fail the write at the file's fsync, after the temp file exists and
-		// holds the bytes: the failure the atomic writer must absorb — the
-		// trust already on the node kept, no temp left behind — with the
-		// writer's own seam. The seam is also the regression pin: if the
-		// join went back to a raw os.WriteFile, the stub would be bypassed,
-		// no failure would occur, and the error assertion below would fail.
-		// (A process-wide resource limit is the wrong injection point: its
-		// window spans the whole join, and the test framework's own
-		// bookkeeping writes inside it can fail too, failing the package
-		// with every test passing.)
+		// Fail at the fsync, after the temp file holds the bytes; a raw os.WriteFile bypasses this seam.
 		oldWrite := writeTrustFile
 		t.Cleanup(func() { writeTrustFile = oldWrite })
 		writeTrustFile = func(path string, b []byte, perm os.FileMode) error {

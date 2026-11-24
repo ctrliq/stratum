@@ -34,17 +34,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Regression tests for the restart sequence, interrupts and lock/key
-// ownership, kept apart from carotate_cleanup_test.go (leftover-key recovery).
-
 func hasMigrationLock(t *testing.T, cs *fake.Clientset) bool {
 	t.Helper()
 	_, err := cs.CoreV1().Secrets(caNamespace).Get(context.Background(), etcdMigrationLockSecret, metav1.GetOptions{})
 	return err == nil
 }
 
-// RotateCACluster's deferred cleanup passes context.Background();
-// the cleanup must still end.
 func TestBoundedCleanupCapsAnUnboundedContext(t *testing.T) {
 	ctx, cancel := boundedCleanup(context.Background())
 	defer cancel()
@@ -61,8 +56,6 @@ func TestBoundedCleanupCapsAnUnboundedContext(t *testing.T) {
 	}
 }
 
-// A failed finalize or rollback restart must not skip the
-// leftover-key cleanup or the repin, and must still be reported under its phase.
 func TestRestartThenCleanupRunsTheTailAfterAFailedRestart(t *testing.T) {
 	cause := errors.New("etcd not serving")
 	for _, phase := range []string{PhaseFinalize, "rollback"} {
@@ -90,8 +83,6 @@ func TestRestartThenCleanupRunsTheTailAfterAFailedRestart(t *testing.T) {
 	}
 }
 
-// Trust-new, like finalize, must repin after a failed restart and still
-// report it.
 func TestTrustNewRestartThenRepinsAfterAFailedRestart(t *testing.T) {
 	cause := errors.New("etcd not serving")
 	for _, tc := range []struct {
@@ -113,8 +104,6 @@ func TestTrustNewRestartThenRepinsAfterAFailedRestart(t *testing.T) {
 	}
 }
 
-// An expired cleanup context ends the retry loop at once instead
-// of sleeping out the remaining delays.
 func TestRetryDeleteStopsWhenContextIsDone(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
@@ -136,8 +125,6 @@ func TestRetryDeleteStopsWhenContextIsDone(t *testing.T) {
 	}
 }
 
-// A Create that fails AFTER the server stored the lock (the
-// caller's context expired mid-request) must not leave a lock nobody holds.
 func TestAcquireMigrationLockDropsItsOwnOrphan(t *testing.T) {
 	secrets := corev1.SchemeGroupVersion.WithResource("secrets")
 	failCreate := func(cs *fake.Clientset, persist bool) {
@@ -205,9 +192,6 @@ func TestAcquireMigrationLockDropsItsOwnOrphan(t *testing.T) {
 	})
 }
 
-// When the owner lookup after a failed Create cannot be done, the
-// lock may be stranded; say so with the way to remove it. A NotFound means
-// nothing was stored and stays silent.
 func TestRemoveOwnLockWarnsWhenItCannotCheck(t *testing.T) {
 	getErr := func(err error) func(*fake.Clientset) {
 		return func(c *fake.Clientset) {
@@ -258,8 +242,6 @@ func TestRemoveOwnLockWarnsWhenItCannotCheck(t *testing.T) {
 	})
 }
 
-// annotated is a stratum-carotate Secret as rotate-ca --cluster (runID != "") or
-// migrate-etcd-ca (runID == "") stages it.
 func annotated(runID string) *corev1.Secret {
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: caRotateKeySecret, Namespace: caNamespace},
@@ -277,8 +259,6 @@ func keyPresent(t *testing.T, cs *fake.Clientset) bool {
 	return err == nil
 }
 
-// The key Secret is shared with the etcd-CA migration, so a failed
-// stage may remove it only when it carries THIS attempt's run id.
 func TestRemoveOwnCarotateKeyOnlyRemovesItsOwnSecret(t *testing.T) {
 	t.Run("own run id: removed", func(t *testing.T) {
 		cs := fake.NewSimpleClientset(annotated("run-1"))
@@ -338,10 +318,6 @@ func TestStageCarotateKeyLeavesAnotherOperationsSecret(t *testing.T) {
 	}
 }
 
-// Cleanup goes before the repin. The repin's API calls can stall for as long
-// as their deadline allows, so a stalled one must not keep the leftover key
-// from being reaped. This drives the real RepinCA request through a server that never answers
-// until released, rather than an injected blocking function.
 func TestRestartThenCleanupRunsCleanupBeforeAStalledRepin(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -387,12 +363,6 @@ func TestRestartThenCleanupRunsCleanupBeforeAStalledRepin(t *testing.T) {
 	}
 }
 
-// TestRepinBestEffortRepublishesThroughTheAdminClientSeam: the best-effort
-// repin rides the client the package's admin seam builds, so a fixture that
-// stands a fake cluster in for admin.conf is the cluster-info it republishes.
-// A client built from admin.conf behind the seam's back dials whatever that
-// file names — under the VIP fixture, an address nothing answers, waited out
-// on every trust-new, finalize and rollback — and republishes nothing.
 func TestRepinBestEffortRepublishesThroughTheAdminClientSeam(t *testing.T) {
 	prepPinned(t)
 	old, err := os.ReadFile(filepath.Join(version.PKIDir, "ca.crt"))
@@ -440,11 +410,6 @@ func TestRepinBestEffortRepublishesThroughTheAdminClientSeam(t *testing.T) {
 	}
 }
 
-// A rollback after a halted trust-new records no run marker on this node (sign-new
-// was never reached), so it cannot prove the key is spent: another follower of the
-// same run may still be fetching it. It leaves the key and says so, with what the
-// key protects and a conditional manual step. Safe automatic removal is a lockless-cleanup
-// follow-up.
 func TestRollbackWithNoMarkerLeavesTheKeyAndWarns(t *testing.T) {
 	for _, restartErr := range []error{nil, errors.New("etcd not serving")} {
 		cs := fake.NewSimpleClientset(keyAt("k", "1", run1)) // the run's key, staged and stranded by a halted trust-new
@@ -470,8 +435,6 @@ func TestRollbackWithNoMarkerLeavesTheKeyAndWarns(t *testing.T) {
 	}
 }
 
-// wantKeyWarning checks a recovery WARN names the Secret and says what the key
-// protects, and that its manual step is conditional.
 func wantKeyWarning(t *testing.T, out string) {
 	t.Helper()
 	for _, want := range []string{"WARN:", caNamespace + "/" + caRotateKeySecret, "ca.key", "sa.key", "front-proxy-ca.key", "kubectl -n " + caNamespace + " delete secret"} {
@@ -525,9 +488,6 @@ func TestRecoveryWarningsExplainWhatTheKeyProtects(t *testing.T) {
 	}
 }
 
-// TestPublishStagedKeyGuidesEveryFailure: every exit after the initiator's
-// trust-new carries the halt guidance, including the ones before any follower job
-// runs. The publish steps run in order and each failure is guided.
 func TestPublishStagedKeyGuidesEveryFailure(t *testing.T) {
 	boom := errors.New("boom")
 	ok := stagedKeyOps{
@@ -597,9 +557,6 @@ func TestHaltedStep(t *testing.T) {
 	}
 }
 
-// TestCAJobLimitsCoverTheRestartSequence: the remote phase Job limits must
-// cover the worst case of the restart sequence they run, built from the same
-// budgets the sequence uses, so raising a gate without the Job fails here.
 func TestCAJobLimitsCoverTheRestartSequence(t *testing.T) {
 	worst := serveBudget("etcd") +
 		3*serveBudget("kube-apiserver") + // apiserver, controller-manager, scheduler
@@ -615,8 +572,6 @@ func TestCAJobLimitsCoverTheRestartSequence(t *testing.T) {
 	}
 }
 
-// TestDeleteWarningReportsTheRealAttemptCount: the delete WARN reports the
-// attempts really made when the context ends the retries early.
 func TestDeleteWarningReportsTheRealAttemptCount(t *testing.T) {
 	cs := fake.NewSimpleClientset(keyAt("k", "1", run1))
 	stubGate(t, func(context.Context, kubernetes.Interface) error { return nil })
@@ -641,12 +596,6 @@ func TestDeleteWarningReportsTheRealAttemptCount(t *testing.T) {
 	}
 }
 
-// TestHostRestartOrderIsTheUnitsWithoutContainerd pins the rotation's host
-// restart set as a relation to the canonical roster: every unit comps.Units
-// names but containerd, in Units order — so the operator, which authenticates
-// with admin.kubeconfig, is restarted last. containerd holds no rotated
-// material; a unit added to the roster that the rotation never restarts, or a
-// restart order that stops agreeing with it, fails here.
 func TestHostRestartOrderIsTheUnitsWithoutContainerd(t *testing.T) {
 	want := make([]string, 0, len(comps.Units))
 	for _, u := range comps.Units {

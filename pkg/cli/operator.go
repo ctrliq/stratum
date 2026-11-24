@@ -7,11 +7,7 @@ import (
 	"github.com/ctrliq/stratum/internal/operator"
 )
 
-// newOperatorCommand runs the in-binary operator (HelmChart + manifest
-// deployer + CSR approver). Normally a supervised child of `stratum up`;
-// runnable by hand for debugging. Flag parsing is disabled here:
-// operator.ParseFlags owns its own flag.FlagSet, and passing the
-// raw args straight through avoids cobra trying to interpret them itself.
+// DisableFlagParsing: operator.ParseFlags owns its own flag.FlagSet; pass raw args.
 func newOperatorCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:                "operator",
@@ -33,13 +29,7 @@ func newOperatorCommand() *cobra.Command {
 	}
 }
 
-// cleanStopExit is a signal-caused stop's answer to main: the stop error
-// itself, so it keeps surfacing through the CLI exactly as before (every
-// reader still sees context.Canceled), paired with the *ErrExitCode main
-// maps — the same type every other exit-code answer carries — so the stop
-// exits 0 instead of being printed and exited 1 by main's default case. A
-// host's cancellation and a real failure never become one, so both keep
-// their own meaning and exit code.
+// Unwrap pairs the stop with ErrExitCode{0} so main maps the stop to exit 0, unlogged.
 type cleanStopExit struct{ stop error }
 
 func (e *cleanStopExit) Error() string { return e.stop.Error() }

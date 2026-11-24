@@ -1,7 +1,4 @@
-// corednsspread.go — move a CoreDNS replica off a node that holds all of them.
-// The anti-affinity is preferred, so it is only consulted at scheduling time
-// and never rebalances. Eviction, not delete, so a PodDisruptionBudget is
-// honoured.
+// The anti-affinity is preferred, so it never rebalances; eviction honours a PodDisruptionBudget.
 package operator
 
 import (
@@ -22,22 +19,13 @@ import (
 const (
 	corednsNamespace  = "kube-system"
 	corednsDeployment = "coredns"
-	// spreadCooldown bounds how often a replica is moved.
-	spreadCooldown = 5 * time.Minute
+	spreadCooldown    = 5 * time.Minute
 )
 
-// corednsSpreader moves a CoreDNS replica off a node that holds all of them,
-// at most one move per spreadCooldown. One value per operator leader, built by
-// Run and driven by the leader loop's spread step: the last-move time is the
-// value's own clock state, not package state, so a fresh leader starts with a
-// cooldown that has never fired. now, the time of the pass a move is counted
-// at, is read through reconcileCoreDNSSpread.
 type corednsSpreader struct {
 	lastMove time.Time
 }
 
-// corednsToMove decides which replica, if any, to evict, and why. It moves
-// nothing while anything is in flux. Pure.
 func corednsToMove(pods []corev1.Pod, nodes []corev1.Node) (pod, reason string) {
 	var live []corev1.Pod
 	for _, p := range pods {
@@ -89,7 +77,6 @@ func podReady(p corev1.Pod) bool {
 	return false
 }
 
-// canTake reports whether a replica with these tolerations could run on n.
 func canTake(n corev1.Node, tolerations []corev1.Toleration) bool {
 	if n.Spec.Unschedulable {
 		return false
@@ -123,9 +110,7 @@ func canTake(n corev1.Node, tolerations []corev1.Toleration) bool {
 	return true
 }
 
-// managedCoreDNSSelector returns the pod selector of the CoreDNS Deployment
-// this operator's deployer applied, or "" when there is none to act on. Only
-// Stratum's own CoreDNS is ever moved.
+// managedCoreDNSSelector returns the selector; only Stratum's own CoreDNS is ever moved.
 func managedCoreDNSSelector(ctx context.Context, cs kubernetes.Interface) (string, error) {
 	d, err := cs.AppsV1().Deployments(corednsNamespace).Get(ctx, corednsDeployment, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -144,8 +129,6 @@ func managedCoreDNSSelector(ctx context.Context, cs kubernetes.Interface) (strin
 	return sel.String(), nil
 }
 
-// reconcileCoreDNSSpread runs on the operator leader. Errors are logged,
-// never fatal. now is the pass's clock reading, the time a move is counted at.
 func (s *corednsSpreader) reconcileCoreDNSSpread(ctx context.Context, cs kubernetes.Interface, now time.Time) {
 	if !s.lastMove.IsZero() && now.Sub(s.lastMove) < spreadCooldown {
 		return

@@ -11,11 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestIssueReissuesALeafMissingARequiredSAN: Issue skipped any
-// leaf that existed, so a cluster created with a custom service CIDR kept an
-// apiserver.crt without its Service IP across the upgrade that fixed the spec.
-// An existing leaf that lacks a required SAN is reissued now; one that covers
-// the spec, a superset included, is left byte-for-byte alone.
 func TestIssueReissuesALeafMissingARequiredSAN(t *testing.T) {
 	orig := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -31,7 +26,6 @@ func TestIssueReissuesALeafMissingARequiredSAN(t *testing.T) {
 	}
 	before := readFile(t, path("apiserver", "crt"))
 
-	// Same spec on restart: no churn.
 	if err := ca.Issue(spec); err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +33,6 @@ func TestIssueReissuesALeafMissingARequiredSAN(t *testing.T) {
 		t.Fatal("a leaf that already covers its spec was reissued")
 	}
 
-	// The spec now needs the custom Service IP: reissued, and it carries it.
 	grown := spec
 	grown.IPs = []string{"10.43.0.1", "127.0.0.1"}
 	if err := ca.Issue(grown); err != nil {
@@ -53,7 +46,6 @@ func TestIssueReissuesALeafMissingARequiredSAN(t *testing.T) {
 		t.Errorf("reissued apiserver.crt IPs = %v, want 10.43.0.1 among them", c.IPAddresses)
 	}
 
-	// A SAN that drops out of the spec does not churn it: a superset is fine.
 	shrunk := grown
 	shrunk.IPs = []string{"127.0.0.1"}
 	if err := ca.Issue(shrunk); err != nil {
@@ -63,7 +55,6 @@ func TestIssueReissuesALeafMissingARequiredSAN(t *testing.T) {
 		t.Error("a leaf that is a superset of its spec was reissued")
 	}
 
-	// An unreadable existing leaf is an error, never a silent overwrite.
 	if err := os.WriteFile(path("apiserver", "crt"), []byte("not a certificate"), 0o644); err != nil {
 		t.Fatal(err)
 	}

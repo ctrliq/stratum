@@ -42,20 +42,19 @@ func ExitCode(err error, stderr io.Writer) int {
 	var exitErr *ErrExitCode
 	switch {
 	case errors.Is(err, ErrNoCommand):
-		// Help has already printed; a bare invocation is a usage error.
+		// Help has already printed.
 		return 2
 	case errors.As(err, &usageErr):
 		// The flag error and usage have already printed.
 		return 2
 	case errors.Is(err, ErrCheckFailed):
-		// The report has already printed; this is a lint-style exit 1.
+		// The report has already printed.
 		return 1
 	case errors.As(err, &exitErr):
-		// The command's answer is its exit status, already reported.
+		// Whoever returned it already told the operator.
 		return exitErr.Code
 	default:
-		// No sentinel reported it: this is the one place a failing
-		// command's error prints.
+		// The one place a failing command's error prints.
 		fmt.Fprintln(stderr, "stratum:", err)
 		return 1
 	}

@@ -27,8 +27,7 @@ func newVersionCommand(cfg rootConfig) *cobra.Command {
 		Short: "Print the release version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// The build ID, alone: the cluster upgrade reads it from the
-			// staged binary to pin every node to that build.
+			// the cluster upgrade reads the build ID from the staged binary to pin every node
 			if build {
 				fmt.Println(version.BuildID)
 				return nil
@@ -37,10 +36,7 @@ func newVersionCommand(cfg rootConfig) *cobra.Command {
 			if !components {
 				return nil
 			}
-			// Each component reports the WithComponentVersions override when
-			// one is set (deprecated but still honored, field by field),
-			// otherwise the stamp internal/version carries — "unknown" only
-			// for a build linked without the engine's -X list.
+			// the WithComponentVersions override (deprecated) wins over the stamp, field by field
 			for _, c := range [][2]string{
 				{"kubernetes", strings.TrimPrefix(version.K8sVersion, "v")},
 				{"containerd", cmp.Or(cfg.components.Containerd, version.ContainerdVersion, "unknown")},
@@ -68,10 +64,7 @@ func newVersionCommand(cfg rootConfig) *cobra.Command {
 	return cmd
 }
 
-// runtimeMismatch is the running-vs-disk check: on a node whose CRI
-// socket is live, a warning when the runtime serving it is not the containerd
-// installed on disk, "" otherwise. Silent when nothing serves the socket or
-// either side cannot be read — this is a hint on a version listing, not a probe.
+// a hint on a version listing, not a probe: silent when either side cannot be read
 func runtimeMismatch(sock, bin string) string {
 	if !sockLive(sock) {
 		return ""
@@ -96,10 +89,7 @@ func runtimeMismatchWarning(serving, installed, sock string) string {
 	return fmt.Sprintf("WARN: containerd %s is installed but the runtime serving %s reports %s — another containerd, likely an orphan from an earlier run, holds the socket", installed, sock, serving)
 }
 
-// supervisorMismatch is the running-vs-installed check for the supervisor: a
-// warning when the process serving the control socket does not run the
-// installed stratum, "" otherwise. Silent when no supervisor answers or it
-// cannot be read (the control socket is root-only), as runtimeMismatch is.
+// silent when no supervisor answers or it cannot be read (a root-only socket)
 func supervisorMismatch() string {
 	cur, err := runningSupervisor()
 	if err != nil || !cur.Stale() {
@@ -114,12 +104,10 @@ func supervisorMismatchWarning(cur comps.RunningSupervisor) string {
 		cur.PID, cur.Exe, version.StratumInstallPath)
 }
 
-// runningSupervisor is comps.Supervisor, indirected for tests.
+// indirected for tests
 var runningSupervisor = comps.Supervisor
 
-// describePayload reports whether this build carries embedded binaries,
-// without extracting them — the one thing an operator wants to know before
-// running a downloaded artifact.
+// answers without extracting the payload
 func describePayload() string {
 	exe, err := os.Executable()
 	if err != nil {

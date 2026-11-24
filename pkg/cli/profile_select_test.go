@@ -33,9 +33,6 @@ func TestProfileNameFoldsTheDeprecatedCISFlag(t *testing.T) {
 	}
 }
 
-// A control plane's saved profile is not dropped by a restart that leaves the
-// flag off, and is not swapped for another; a node without one may start with
-// one, which is how a profile is turned on for a running cluster.
 func TestRefuseDroppedProfile(t *testing.T) {
 	cis := &cluster.NodeState{Role: "controller", Profile: "cis"}
 	legacy := &cluster.NodeState{Role: "controller", CIS: true}
@@ -65,9 +62,7 @@ func TestRefuseDroppedProfile(t *testing.T) {
 }
 
 func TestUpArgvCarriesTheProfile(t *testing.T) {
-	// cis keeps the spelling every release reads: an upgrade rollback
-	// re-execs the previous binary with this argv, and one that predates
-	// --profile would refuse the flag.
+	// Rollback re-execs the previous binary with this argv; one predating --profile refuses the flag.
 	got := cluster.UpArgv("/usr/local/bin/stratum", false, "/etc/stratum/config.yaml", "cis")
 	want := "/usr/local/bin/stratum up --config /etc/stratum/config.yaml --cis"
 	if strings.Join(got, " ") != want {

@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/supervisor"
 )
 
-// hostConfigFixture redirects every seam applyHostConfigs reaches and records
-// what it did, in order. reload answers per component; a component missing
-// from active is not running.
 func hostConfigFixture(t *testing.T, active map[string]bool, writeErr error, reload func(string) error) *[]string {
 	t.Helper()
 	var calls []string
@@ -44,12 +41,7 @@ func hostConfigFixture(t *testing.T, active map[string]bool, writeErr error, rel
 	return &calls
 }
 
-// TestApplyHostConfigsHealsOnlyAfterContainerdReloads pins the reload-then-heal order:
-// the legacy /etc/containerd/config.toml is deleted only once the supervisor
-// holds containerd's new argv. A supervisor that predates reload, a containerd
-// the reload skipped, a failed reload and a failed config write all leave the
-// supervisor passing the legacy path, and deleting it there left containerd
-// unable to ever start again on the upgraded node.
+// Deleting the legacy config before the reload left containerd unable ever to start.
 func TestApplyHostConfigsHealsOnlyAfterContainerdReloads(t *testing.T) {
 	both := map[string]bool{"containerd": true, "kubelet": true}
 	ok := func(string) error { return nil }
@@ -99,8 +91,7 @@ func TestApplyHostConfigsHealsOnlyAfterContainerdReloads(t *testing.T) {
 	}
 }
 
-// When the heal is withheld the operator is told the file was kept and what
-// removes it — otherwise a kept host file is as silent as the deleted one was.
+// Otherwise a kept host file is as silent as a deleted one.
 func TestApplyHostConfigsSaysWhenItKeepsTheLegacyConfig(t *testing.T) {
 	hostConfigFixture(t, map[string]bool{"containerd": true, "kubelet": true}, nil, func(string) error {
 		return fmt.Errorf("%w: unknown op \"reload\"", supervisor.ErrReloadUnsupported)

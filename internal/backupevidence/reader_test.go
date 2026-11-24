@@ -1,10 +1,3 @@
-// From here: the assembled read-only Evidence() reader — one bounded call
-// composing the effective policy (policy.go), the durable attempt record
-// (state.go) and the local and remote catalogs (local.go, remote.go) into
-// the evidence an external consumer reads. The tests prove the composed
-// result shape, the redaction (no credential, executable path or raw
-// storage error ever reaches the evidence) and the overall time, byte and
-// page budget across the combined reads.
 package backupevidence
 
 import (
@@ -31,24 +24,15 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// copyTime is a fixed UTC creation time inside the retention windows these
-// tests draw from the pinned clock.
 func copyTime(min int) time.Time {
 	return time.Date(2026, 11, 12, 11, min, 0, 0, time.UTC)
 }
 
-// oldCopyTime is a fixed UTC creation time before every retention window
-// these tests draw.
 func oldCopyTime() time.Time {
 	return time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
 }
 
-// seedAttempts writes the durable attempt record the reader loads, through
-// the redirected evidence paths, the same file the loop's recording writes:
-// the record's shape marshalled to the record's path at the record's mode.
-// It builds the file the way the reader's own contract reads it, not
-// through the loop's writer, which this package cannot reach without the
-// import the reader's design forbids.
+// Built by hand: the loop's recording is unexported, so this fixture pins the file contract itself.
 func seedAttempts(t *testing.T, seed func(*Attempts)) {
 	t.Helper()
 	withEvidencePaths(t)
@@ -67,8 +51,7 @@ func seedAttempts(t *testing.T, seed func(*Attempts)) {
 	}
 }
 
-// dumpEvidence renders the whole result — every string field included — so
-// a leak anywhere in the composed evidence shows in the dump.
+// Renders every string field, so a leak anywhere shows in the dump.
 func dumpEvidence(t *testing.T, res EvidenceResult) string {
 	t.Helper()
 	b, err := json.Marshal(res)
@@ -78,9 +61,7 @@ func dumpEvidence(t *testing.T, res EvidenceResult) string {
 	return string(b)
 }
 
-// hungRemoteStore is a store that never answers: the parked handler holds
-// every listing until its request context ends, closing sawCancel when it
-// does — the proof a caller's context reached the S3 call.
+// sawCancel closes when the handler sees its request context end.
 func hungRemoteStore(t *testing.T) (*objstore.Target, chan struct{}) {
 	t.Helper()
 	sawCancel := make(chan struct{})
@@ -93,9 +74,6 @@ func hungRemoteStore(t *testing.T) (*objstore.Target, chan struct{}) {
 	return &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}, sawCancel
 }
 
-// refusingRemoteStore answers every listing with a 403 whose body carries
-// the given marker, so the redaction test can seed a raw error the
-// evidence must never echo.
 func refusingRemoteStore(t *testing.T, marker string) *objstore.Target {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -107,15 +85,6 @@ func refusingRemoteStore(t *testing.T, marker string) *objstore.Target {
 	return &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
 }
 
-// One bounded call assembles the whole evidence view: the effective policy
-// with every value's provenance, the local artifacts with node-scoped
-// location, creation time, size and digest-or-unknown, the remote copies
-// with the same shape, the deduplicated census counting each backup once,
-// and the maintenance diagnostics — typed attempt outcomes with their
-// timestamps, the separate last-success stamps, and the scheduling and
-// retention warnings the loop's record carries, stated as typed safe
-// reasons. Every read ran whole within the default bounds, so the result
-// is complete and exact.
 func TestReaderComposesPolicyArtifactsCopiesAndMaintenance(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
@@ -243,8 +212,6 @@ func TestReaderComposesPolicyArtifactsCopiesAndMaintenance(t *testing.T) {
 	}
 }
 
-// Count-based retention permits old backups when fewer than Retain newer
-// snapshots exist. The reader must not infer a maximum age from the cadence.
 func TestReaderCountRetentionDoesNotInventAnAgeLimit(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
@@ -276,13 +243,6 @@ func TestReaderCountRetentionDoesNotInventAnAgeLimit(t *testing.T) {
 	}
 }
 
-// Nothing the evidence resolves on its way to the result ever leaks: the
-// S3 target the remote listing resolves carries credentials and never
-// appears; the attempt record's raw error text — an etcdctl executable
-// path, an upload error naming the store — never crosses; a raw local
-// read error and a raw store refusal are turned into safe diagnostics that
-// name the condition. The evidence stays usable beside every failure: the
-// readable artifact is described and the refusal is named.
 func TestReaderNeverLeaksCredentialsExecutablePathsOrRawErrors(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
@@ -325,9 +285,7 @@ func TestReaderNeverLeaksCredentialsExecutablePathsOrRawErrors(t *testing.T) {
 		}
 	}
 
-	// The evidence stays usable and named: the readable artifact stands, the
-	// failed read and the refusal are named by their conditions, and the
-	// attempts carry typed outcomes with their timestamps.
+	// The readable artifact stands and the failures are named by condition.
 	if res.Complete {
 		t.Error("Complete = true, want false: a local read failed and the store refused the listing")
 	}
@@ -359,12 +317,6 @@ func TestReaderNeverLeaksCredentialsExecutablePathsOrRawErrors(t *testing.T) {
 	}
 }
 
-// The overall time budget is one deadline across every read the call
-// makes. A hung local read is ended by the caller's deadline, and a store
-// that never answers is ended by the overall budget the caller set — the
-// store sees its request context end, so the deadline reached the S3 call
-// itself. Either way the call returns bounded, the stages that never ran
-// are unknown rather than zero, and the result says it is not complete.
 func TestReaderHonorsTheOverallDeadlineAcrossReads(t *testing.T) {
 	dir := t.TempDir()
 	s1 := etcdsnap.ScheduledName("cp-1", "20261112-110000")
@@ -432,13 +384,6 @@ func TestReaderHonorsTheOverallDeadlineAcrossReads(t *testing.T) {
 	})
 }
 
-// The overall page budget counts every backup the call describes — each
-// local artifact and each remote copy. The local walk draws from the budget
-// first; when it alone consumes the page budget the remote listing never
-// runs and says its catalog is unknown, and when the listing describes more
-// copies than the budget left, the copies that fit stand as a floor with
-// the catalog marked not a complete total — never presented as the store's
-// exact total.
 func TestReaderEnforcesTheOverallPageBudgetAcrossReads(t *testing.T) {
 	t.Run("the local walk alone consumes the page budget", func(t *testing.T) {
 		withEvidencePaths(t)
@@ -501,9 +446,6 @@ func TestReaderEnforcesTheOverallPageBudgetAcrossReads(t *testing.T) {
 		if w := strings.Join(res.Remote.Warnings, "\n"); !strings.Contains(w, "page budget") {
 			t.Errorf("the remote warnings do not name the overall page budget: %q", w)
 		}
-		// The old-copy flags follow the copies that survived the budget: a
-		// dropped copy is flagged nowhere, least of all on an entry whose
-		// remote half no longer exists.
 		if len(res.Remote.Old) != 0 {
 			t.Errorf("Remote.Old = %+v, want none: both old copies were dropped by the budget", res.Remote.Old)
 		}
@@ -524,11 +466,6 @@ func TestReaderEnforcesTheOverallPageBudgetAcrossReads(t *testing.T) {
 	})
 }
 
-// The page budget's remaining entries bound the listing's pages, not just
-// its results: a store's page carries at most objstore.ListKeysPerPage keys,
-// so the entries left to the remote half need at most one page per
-// ListKeysPerPage of them. A listing that asked for one page per entry would
-// fetch a thousand times the budget's keys to keep a handful of entries.
 func TestReaderBoundsTheRemoteListingPagesByTheRemainingEntryBudget(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
@@ -546,9 +483,7 @@ func TestReaderBoundsTheRemoteListingPagesByTheRemainingEntryBudget(t *testing.T
 	recordedConfig(t, "spec:\n  snapshots:\n    retain: 3\n    intervalHours: 24\n    dir: "+dir+"\n")
 	snapshotConfSupplies(t, etcdsnap.Config{Retain: 3, S3: *tgt})
 
-	// Two of the four entries the budget names are left to the remote
-	// listing: one page carries them, so the listing asks for that page
-	// alone — never a page per entry.
+	// Two of the four budget entries remain for the remote listing: one page.
 	res := Evidence(context.Background(), EvidenceOptions{Node: "cp-1", MaxEntries: 4})
 
 	if got := listings(); got != 1 {
@@ -562,11 +497,6 @@ func TestReaderBoundsTheRemoteListingPagesByTheRemainingEntryBudget(t *testing.T
 	}
 }
 
-// The overall byte budget counts the artifact bytes both walks account
-// for. The local walk draws first; when it alone consumes the byte budget
-// the remote listing never runs, and the listing that does run gets what
-// remains — a copy that would fit the full budget but not the remainder
-// stops it, so the combined reads never account past the cap.
 func TestReaderEnforcesTheOverallByteBudgetAcrossReads(t *testing.T) {
 	t.Run("the local walk alone consumes the byte budget", func(t *testing.T) {
 		withEvidencePaths(t)
@@ -623,10 +553,6 @@ func TestReaderEnforcesTheOverallByteBudgetAcrossReads(t *testing.T) {
 	})
 }
 
-// A node whose loop has never run and whose store has never held a
-// snapshot is a complete exact zero through the whole assembled read — the
-// empty local store, the unconfigured remote, the absent attempt record —
-// never an unknown, and never a warning.
 func TestReaderOnAFreshNodeIsACompleteExactZero(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
@@ -664,11 +590,6 @@ func TestReaderOnAFreshNodeIsACompleteExactZero(t *testing.T) {
 	}
 }
 
-// A cluster config the controller was started with but can no longer be
-// read leaves the snapshot directory unknown, and the reader invents no
-// directory to walk: the local catalog is unknown and not a complete
-// total — never an exact zero — while the stages that could run (a
-// readable conf's target, the attempt record) still report.
 func TestReaderWithAnUnknownSnapshotDirectoryReportsAnUnknownLocalCatalog(t *testing.T) {
 	withEvidencePaths(t)
 	recordedConfig(t, "spec: [not a mapping\n")
@@ -699,16 +620,8 @@ func TestReaderWithAnUnknownSnapshotDirectoryReportsAnUnknownLocalCatalog(t *tes
 	}
 }
 
-// An unscoped request whose local walk never runs still names the node:
-// the reader resolves this host's short name itself — the same resolution
-// the walk would have made — and the name reaches the local catalog the
-// document reads (its local.node), not just the census's node: a result
-// that named the node only in Backups.Node would leave the document's local
-// half saying whose store it describes nowhere.
 func TestReaderResolvesTheNodeForAnUnscopedRequestWhoseWalkNeverRan(t *testing.T) {
 	withEvidencePaths(t)
-	// An unreadable cluster config and no conf: the snapshot directory is
-	// unknown, so the local walk never runs.
 	recordedConfig(t, "spec: [not a mapping\n")
 	noSnapshotConf(t)
 	old := localHostname
@@ -728,20 +641,8 @@ func TestReaderResolvesTheNodeForAnUnscopedRequestWhoseWalkNeverRan(t *testing.T
 	}
 }
 
-// The read's own diagnostics live in the stage they describe, never in a
-// group of their own at the top level: the shipped fixtures and the
-// consumer page pin the document's top-level warnings to exactly the
-// policy's, the census's and the maintenance record's, in that order, so
-// a warning the read itself produces — a policy resolution a cancellation
-// stopped, a node name that could not be resolved when the walk never ran —
-// must land in that stage's warnings like every other diagnostic the
-// stages carry, or the document grows a fourth composition no consumer is
-// told about and no fixture may ship.
 func TestReaderFoldsItsOwnWarningsIntoTheStagesTheyDescribe(t *testing.T) {
 	withEvidencePaths(t)
-	// A request that already ended — no stage ran, so the read's own
-	// diagnostics are the only ones it produces — with a hostname that
-	// cannot be resolved, so the non-walked node path warns too.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	old := localHostname
@@ -761,14 +662,6 @@ func TestReaderFoldsItsOwnWarningsIntoTheStagesTheyDescribe(t *testing.T) {
 	}
 }
 
-// A snapshot.conf that was readable for months with an S3 target and then
-// broke leaves the target undeterminable — while the copies it already
-// uploaded still sit on the store, the record's last successful upload
-// says so. The reader must not report that store as a complete exact zero:
-// a target that could not be determined is an unknown remote catalog with a
-// safe warning, the same refusal the local half makes about a directory it
-// cannot determine, while the stages that could run (the local walk in the
-// readable cluster config's directory, the attempt record) still report.
 func TestReaderWithAnUnreadableConfReportsAnUnknownRemoteCatalog(t *testing.T) {
 	withEvidencePaths(t)
 	dir := t.TempDir()
@@ -813,14 +706,6 @@ func TestReaderWithAnUnreadableConfReportsAnUnknownRemoteCatalog(t *testing.T) {
 	}
 }
 
-// A cluster config the controller was started with — carrying the S3 target
-// its loop uploaded to — that has since become unreadable leaves the target
-// as undeterminable as an unreadable snapshot.conf does: the copies that
-// loop already uploaded may still sit on the store, and the record's last
-// successful upload says so. The reader must not report that store as a
-// complete exact zero: the remote catalog is unknown with a safe warning,
-// the same refusal the unreadable conf's arm makes, while the stages that
-// could run (the attempt record) still report.
 func TestReaderWithAnUnreadableClusterConfigAndNoConfReportsAnUnknownRemoteCatalog(t *testing.T) {
 	withEvidencePaths(t)
 	recordedConfig(t, "spec: [not a mapping\n")
@@ -859,15 +744,6 @@ func TestReaderWithAnUnreadableClusterConfigAndNoConfReportsAnUnknownRemoteCatal
 	}
 }
 
-// A cluster config the node state records — the one `stratum up --config`
-// started the controller with — that has since been deleted leaves the
-// remote target as undeterminable as an unreadable one does: the
-// controller keeps running with the config it was started with, so the
-// store that config's target uploaded to may still hold every copy, and
-// the reader must not resolve the missing file into the built-in defaults
-// and report the remote store as a complete exact zero. The engine
-// resolver's mustExist rule — the one the effective policy already
-// applies — settles this the same way for the target.
 func TestReaderWithADeletedRecordedConfigReportsAnUnknownRemoteCatalog(t *testing.T) {
 	withEvidencePaths(t)
 	p := recordedConfig(t, "spec:\n  snapshots:\n    retain: 3\n    intervalHours: 24\n")
@@ -902,21 +778,11 @@ func TestReaderWithADeletedRecordedConfigReportsAnUnknownRemoteCatalog(t *testin
 	}
 }
 
-// A node state that cannot be read leaves the cluster config the
-// controller actually runs unknown — the default path is a guess, and the
-// config it points at may describe a node with no S3 target while the
-// controller was started with one that uploads. The remote catalog must
-// not settle the no-target case as a real zero over that guess: with no
-// snapshot.conf supplying a target outright, the catalog is unknown, the
-// same refusal the deleted and unreadable config arms make.
 func TestReaderWithAnUnreadableNodeStateReportsAnUnknownRemoteCatalog(t *testing.T) {
 	withEvidencePaths(t)
 	old := loadNodeState
 	t.Cleanup(func() { loadNodeState = old })
 	loadNodeState = func(context.Context) (*nodestate.NodeState, error) { return nil, fs.ErrPermission }
-	// The config the fallback path resolves is hermetic: an empty temp
-	// directory for the walk, no S3 target — the strongest case for a
-	// wrong exact zero, because the defaults hold no target at all.
 	dir := t.TempDir()
 	oldCC := loadClusterConfig
 	t.Cleanup(func() { loadClusterConfig = oldCC })

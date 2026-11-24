@@ -1,4 +1,3 @@
-// Package kubetest starts a real Kubernetes control plane for tests.
 package kubetest
 
 import (
@@ -15,11 +14,9 @@ import (
 // env is the control plane shared by every test in a binary.
 var env *envtest.Environment
 
-// Available reports whether the control-plane binaries are present.
 func Available() bool { return os.Getenv("KUBEBUILDER_ASSETS") != "" }
 
-// Main starts the control plane, runs the tests and stops it, returning the
-// exit code. Use it from TestMain:
+// Main starts the control plane and returns the exit code, from TestMain.
 func Main(m *testing.M) int {
 	if Available() {
 		env = &envtest.Environment{}
@@ -34,8 +31,7 @@ func Main(m *testing.M) int {
 	return code
 }
 
-// Start returns the running control plane's client config, or skips the
-// test when the binaries are absent.
+// Start returns the control plane's config, or skips when binaries are absent.
 func Start(t *testing.T) *rest.Config {
 	t.Helper()
 	if !Available() {
@@ -47,7 +43,6 @@ func Start(t *testing.T) *rest.Config {
 	return env.Config
 }
 
-// IsolateHome points $HOME at a scratch directory and clears $KUBECONFIG.
 func IsolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -57,8 +52,6 @@ func IsolateHome(t *testing.T) string {
 	return home
 }
 
-// Kubeconfig writes a kubeconfig addressing the running control plane and
-// returns its path.
 func Kubeconfig(t *testing.T, cfg *rest.Config, contexts ...string) string {
 	t.Helper()
 	if len(contexts) == 0 {

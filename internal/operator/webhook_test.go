@@ -73,8 +73,6 @@ func TestRequesterPatchOps(t *testing.T) {
 	})
 }
 
-// admissionRequestFor builds a v1 AdmissionReview request for the given operation
-// that stamps the given user over an object with the given uid + annotations.
 func admissionRequestFor(t *testing.T, op admissionv1.Operation, uid string, user authenticationv1.UserInfo, annotations map[string]string) *admissionv1.AdmissionReview {
 	t.Helper()
 	meta := map[string]interface{}{"name": "app", "namespace": "team-a", "uid": uid}
@@ -118,7 +116,6 @@ func TestBuildAdmissionResponseStampsSignedOnCreate(t *testing.T) {
 		t.Fatalf("ops = %+v", ops)
 	}
 	m := ops[0].Value.(map[string]interface{})
-	// The signature binds the resource and desired state to the requester.
 	obj := &unstructured.Unstructured{}
 	_ = json.Unmarshal(req.Request.Object.Raw, obj)
 	wantSig := s.sign(requesterBinding(obj), requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a", "system:authenticated"}})
@@ -146,7 +143,6 @@ func TestBuildAdmissionResponsePreservesIdentityOnMetadataUpdate(t *testing.T) {
 	}
 }
 
-// TestBuildAdmissionResponseNoIdentity: a create with no user identity is denied.
 func TestBuildAdmissionResponseNoIdentity(t *testing.T) {
 	resp := buildAdmissionResponse(admissionRequestFor(t, admissionv1.Create, "uid-1", authenticationv1.UserInfo{}, nil).Request, testSigner())
 	if resp.Allowed {
@@ -160,7 +156,6 @@ func TestBuildAdmissionResponseNoIdentity(t *testing.T) {
 	}
 }
 
-// TestBuildAdmissionResponseNoSigner: without a signer, a create is denied.
 func TestBuildAdmissionResponseNoSigner(t *testing.T) {
 	resp := buildAdmissionResponse(admissionRequestFor(t, admissionv1.Create, "uid-1", authenticationv1.UserInfo{Username: "alice"}, nil).Request, nil)
 	if resp.Allowed || len(resp.Patch) != 0 {
@@ -168,10 +163,7 @@ func TestBuildAdmissionResponseNoSigner(t *testing.T) {
 	}
 }
 
-// TestWebhookStampVerifiesInReconciler ties the two halves together: the stamp
-// the webhook writes on CREATE must be one the reconciler's verifiedRequester
-// accepts (same signer and desired-state binding). A drift between them would silently
-// refuse every install.
+// Ties the two halves together; a drift would silently refuse every install.
 func TestWebhookStampVerifiesInReconciler(t *testing.T) {
 	s := testSigner()
 	req := admissionRequestFor(t, admissionv1.Create, "",

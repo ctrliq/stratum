@@ -11,8 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// spec.network.cilium is parsed strictly, and every bad value is refused
-// naming the field.
 func TestLoadConfigValidatesCilium(t *testing.T) {
 	for _, tc := range []struct {
 		name, block string
@@ -58,8 +56,6 @@ func TestLoadConfigValidatesCilium(t *testing.T) {
 	}
 }
 
-// Native routing on a dual-stack cluster needs the IPv6 range, and a
-// single-stack cluster has no use for one.
 func TestCiliumCheckStack(t *testing.T) {
 	native := func(v6 string) *Cilium {
 		return &Cilium{RoutingMode: "native", IPv4NativeRoutingCIDR: "10.0.0.0/8", IPv6NativeRoutingCIDR: v6}
@@ -89,7 +85,6 @@ func TestCiliumCheckStack(t *testing.T) {
 	}
 }
 
-// A worker's file cannot carry the block: it is a cluster setting.
 func TestWorkerConfigRefusesCilium(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("spec:\n  network:\n    cilium:\n      mtu: 9000\n"), 0o600); err != nil {
@@ -117,9 +112,6 @@ func TestCiliumSettingsFromTheBlock(t *testing.T) {
 	}
 }
 
-// writeBundles stages the configured settings in the Cilium bundle and records
-// them for a joining control plane; the shipped settings stage the shipped
-// bundle and leave no record.
 func TestWriteBundlesStagesTheCiliumSettings(t *testing.T) {
 	origDir, origCilium := version.ManifestsDir, version.CiliumSettingsPath
 	version.ManifestsDir = t.TempDir()
@@ -158,8 +150,6 @@ func TestWriteBundlesStagesTheCiliumSettings(t *testing.T) {
 	}
 }
 
-// A control plane records the settings it renders, and the shipped ones leave
-// no file behind.
 func TestSaveCiliumSettings(t *testing.T) {
 	orig := version.CiliumSettingsPath
 	version.CiliumSettingsPath = filepath.Join(t.TempDir(), "cilium.json")
@@ -182,9 +172,6 @@ func TestSaveCiliumSettings(t *testing.T) {
 	}
 }
 
-// The record says what this control plane staged: a bundle it could not stage
-// leaves the previous record, so a join is not checked against settings the
-// cluster never ran.
 func TestWriteBundlesRecordsOnlyWhatItStaged(t *testing.T) {
 	origDir, origCilium := version.ManifestsDir, version.CiliumSettingsPath
 	version.ManifestsDir = t.TempDir()

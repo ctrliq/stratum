@@ -1,10 +1,4 @@
-// Package profiletest gives tests a hardened node profile shaped like the
-// cis profile a Stratum PRO binary registers: an audit policy and an admission
-// configuration as config files, an at-rest encryption config as a shared
-// secret, kernel sysctls, and every property set. The engine carries no
-// profile of its own, so tests that exercise the profile seam register this
-// one. It is named cis because the engine's legacy readers (`--cis`,
-// `spec.cis`, a node state's `cis: true`) resolve to that name.
+// Package profiletest gives tests a hardened profile named cis, per the legacy readers.
 package profiletest
 
 import (
@@ -13,7 +7,6 @@ import (
 	"github.com/ctrliq/stratum/internal/profile"
 )
 
-// The fixture's name and the file names its derivations resolve to.
 const (
 	Name                 = "cis"
 	AuditPolicyFile      = "audit-policy.yaml"
@@ -22,7 +15,6 @@ const (
 	AuditLogFile         = "audit.log"
 )
 
-// Sysctls is the fixture's node sysctl set.
 var Sysctls = []string{
 	"vm.overcommit_memory=1",
 	"vm.panic_on_oom=0",
@@ -36,8 +28,6 @@ var Sysctls = []string{
 	"net.ipv4.conf.all.rp_filter=1",
 }
 
-// Hardened is the fixture with the given file bodies and secret: files are
-// its ConfigFiles, in the order they are written; secrets its SharedSecrets.
 func Hardened(files []profile.File, secrets []profile.Secret) profile.Profile {
 	return profile.Profile{
 		Name: Name,
@@ -83,8 +73,6 @@ func For(cis bool) profile.Profile {
 	return profile.Profile{}
 }
 
-// Register registers the fixture for the test, as a binary's root command
-// does, and puts the registry back as it was when the test ends.
 func Register(t testing.TB) {
 	t.Helper()
 	prev := profile.All()

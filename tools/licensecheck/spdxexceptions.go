@@ -1,9 +1,6 @@
 package main
 
-// spdxExceptionIDs holds every license exception id of the SPDX License List
-// 3.29.0 (json/exceptions.json in github.com/spdx/license-list-data at v3.29.0),
-// lowercased, since SPDX ids match case-insensitively. Only these, or an
-// AdditionRef, may follow WITH in a license expression.
+// Every SPDX License List 3.29.0 exception id, lowercased: SPDX ids match case-insensitively.
 var spdxExceptionIDs = map[string]bool{
 	"389-exception":                        true,
 	"asterisk-exception":                   true,

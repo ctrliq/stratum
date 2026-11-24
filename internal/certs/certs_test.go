@@ -29,9 +29,7 @@ import (
 )
 
 func TestAnyLeafExpiringWithin(t *testing.T) {
-	// The window arguments below are arbitrary inputs, not the renewal
-	// default: this pins anyLeafExpiringWithin's logic, which must not
-	// depend on version.CertRenewWindowDays.
+	// The window arguments are arbitrary inputs, not the renewal default.
 	ss := []CertStatus{
 		{Name: "ca", DaysLeft: 3000, IsCA: true, Rotatable: false}, // CA near end never triggers leaf rotation
 		{Name: "apiserver", DaysLeft: 300, Rotatable: true},
@@ -50,10 +48,6 @@ func TestAnyLeafExpiringWithin(t *testing.T) {
 	}
 }
 
-// TestWarnDaysDefault pins the warning window's fallback rule: a caller's
-// positive WarnDays wins, and anything else — 0 or negative — falls back to
-// version.CertRenewWindowDays, the one renewal window
-// TestRenewalWindowIsOneValue pins the default to.
 func TestWarnDaysDefault(t *testing.T) {
 	if got := warnDays(Options{}); got != version.CertRenewWindowDays {
 		t.Errorf("default warnDays=%d, want version.CertRenewWindowDays=%d", got, version.CertRenewWindowDays)
@@ -66,11 +60,7 @@ func TestWarnDaysDefault(t *testing.T) {
 	}
 }
 
-// TestRenewalWindowIsOneValue pins the renewal window against the one value
-// every consumer must share: the `certs check` default (warnDays), the renew
-// timer's window (version.CertRenewWindowDays), and the leaf lifetime
-// (pki.LeafValidity) the window must stay shorter than — a window as long as
-// the leaf would mark a cert due for renewal the moment it is issued.
+// Pins the one window every consumer must share, shorter than the leaf lifetime.
 func TestRenewalWindowIsOneValue(t *testing.T) {
 	got := warnDays(Options{})
 	if got != version.CertRenewWindowDays {
@@ -113,11 +103,6 @@ func TestCheckReportsLeavesAndCAs(t *testing.T) {
 	_ = time.Now
 }
 
-// TestCheckReportsTheKubeletClientCert: a worker's CSR-issued kubelet client
-// cert is no Stratum PKI leaf, so it is reported from the kubelet's cert dir,
-// marked as the kubelet's to renew, and never drives leaf rotation. It is
-// Expiring follows the requested warning window; RenewalOverdue separately
-// identifies a kubelet that has passed its latest renewal point.
 func TestCheckReportsTheKubeletClientCert(t *testing.T) {
 	prep(t)
 	find := func(ss []CertStatus) (CertStatus, bool) {
@@ -212,8 +197,7 @@ func TestRotateIgnoresUnreadableKubeletClientCert(t *testing.T) {
 	if _, err := Check(Options{}); err == nil {
 		t.Fatal("certs check must report the unreadable kubelet certificate")
 	}
-	// Fresh managed leaves are not due, so this exercises Rotate's eligibility
-	// check without restarting control-plane processes.
+	// Fresh leaves are not due, so no control-plane restart is exercised.
 	if _, err := RotateContext(context.Background(), io.Discard, Options{IfExpiringDays: 1, Quiet: true}); err != nil {
 		t.Fatalf("unreadable kubelet certificate blocked managed leaf renewal: %v", err)
 	}
@@ -234,10 +218,6 @@ func TestRotateIgnoresUnreadableKubeletClientCert(t *testing.T) {
 	check("certs rotate with unreadable kubelet cert", 1)
 }
 
-// TestCheckRefusesAnUnreadableKubeletClientCert: only an absent kubelet client
-// cert is skipped. One that is present but cannot be read is the credential a
-// worker is about to be locked out by, so check fails rather than leave the row
-// out and look healthy.
 func TestCheckRefusesAnUnreadableKubeletClientCert(t *testing.T) {
 	prep(t)
 	if err := os.MkdirAll(filepath.Dir(kubeletClientCertPath()), 0o700); err != nil {
@@ -269,11 +249,6 @@ func TestCheckRefusesAnUnreadableKubeletClientCert(t *testing.T) {
 	}
 }
 
-// TestCheckRefusesADamagedManagedCert: only an absent managed certificate is
-// skipped. One that is present but cannot be read or parsed is disk damage or
-// tampering, so check fails and names the file instead of leaving the row out
-// and looking healthy. A leaf offers the reissue remedy; a CA does not,
-// because rotate cannot fix a CA.
 func TestCheckRefusesADamagedManagedCert(t *testing.T) {
 	for _, cert := range []string{"apiserver", "front-proxy-ca"} {
 		for _, tc := range []struct {
@@ -317,8 +292,7 @@ func TestCheckRefusesADamagedManagedCert(t *testing.T) {
 					t.Errorf("error %q does not say the file cannot be read or parsed", err)
 				}
 				remedy := "; reissue it with `sudo /usr/local/bin/stratum certs rotate --yes`"
-				// Rotation replaces the file by rename, which cannot replace a
-				// directory, so a directory gets the move-aside step first.
+				// Rotation replaces the file by rename, which cannot replace a directory.
 				moveAside := "; it is a directory: move it aside with `sudo mv " + shellQuote(p) + " " + shellQuote(p+".damaged") +
 					"`, then reissue it with `sudo /usr/local/bin/stratum certs rotate --yes`"
 				want := remedy
@@ -336,12 +310,6 @@ func TestCheckRefusesADamagedManagedCert(t *testing.T) {
 	}
 }
 
-// TestCheckRemedyOnlyWhenRotationRepairs: the reissue remedy is offered only
-// where a forced rotation can actually repair the leaf in the node's current
-// state. RotateLeaves re-signs each leaf with the signer that signs it today,
-// and that signer reads the live leaf when the etcd CA exists or the kubelet
-// client trust is not split — a leaf that cannot be read fails there, so
-// rotate cannot repair it and the remedy would be false advice.
 func TestCheckRemedyOnlyWhenRotationRepairs(t *testing.T) {
 	remedy := "; reissue it with `sudo /usr/local/bin/stratum certs rotate --yes`"
 	damage := func(name string) string {
@@ -380,8 +348,7 @@ func TestCheckRemedyOnlyWhenRotationRepairs(t *testing.T) {
 	})
 	t.Run("damaged etcd leaf on a pre-migration node offers the remedy", func(t *testing.T) {
 		prep(t)
-		// GenerateAll always lays down the etcd CA; strip it for the
-		// pre-migration state, where the root still signs the etcd leaves.
+		// GenerateAll lays down the etcd CA; strip it for the pre-migration state.
 		for _, f := range []string{pki.EtcdCAName + ".crt", pki.EtcdCAName + ".key"} {
 			if err := os.Remove(filepath.Join(version.PKIDir, f)); err != nil {
 				t.Fatal(err)
@@ -392,8 +359,7 @@ func TestCheckRemedyOnlyWhenRotationRepairs(t *testing.T) {
 	})
 	t.Run("damaged apiserver-kubelet-client without split trust gets no remedy", func(t *testing.T) {
 		prep(t)
-		// GenerateAll sets a fresh node up split; strip the split CA and point
-		// the kubelet bundle back at the root, the pre-split state.
+		// GenerateAll sets a fresh node up split; strip it for the pre-split state.
 		for _, f := range []string{pki.KubeletClientCAName + ".crt", pki.KubeletClientCAName + ".key"} {
 			if err := os.Remove(filepath.Join(version.PKIDir, f)); err != nil {
 				t.Fatal(err)
@@ -424,9 +390,6 @@ func TestCheckRemedyOnlyWhenRotationRepairs(t *testing.T) {
 	})
 }
 
-// TestCheckSkipsAnAbsentManagedCert pins the skip: only an absent managed
-// certificate is skipped (a worker has no managed leaves), and its absence
-// neither errors nor drops the other rows.
 func TestCheckSkipsAnAbsentManagedCert(t *testing.T) {
 	prep(t)
 	for _, f := range []string{"apiserver.crt", "apiserver.key"} {
@@ -448,9 +411,6 @@ func TestCheckSkipsAnAbsentManagedCert(t *testing.T) {
 	}
 }
 
-// TestTimerRotationRefusesADamagedLeaf: the timer path (IfExpiringDays > 0)
-// must report a damaged leaf instead of quietly answering "nothing to
-// rotate" every run, and must leave the file for a human to look at first.
 func TestTimerRotationRefusesADamagedLeaf(t *testing.T) {
 	check := kubeVIPNode(t)
 	p := filepath.Join(version.PKIDir, "apiserver.crt")
@@ -478,9 +438,6 @@ func TestTimerRotationRefusesADamagedLeaf(t *testing.T) {
 	check("refused timer rotation", 1)
 }
 
-// TestForcedRotationRepairsADamagedLeaf: a forced run (IfExpiringDays unset)
-// reissues every leaf regardless of what is on disk, so it is the repair path
-// for a damaged leaf and must not refuse because of the damage it fixes.
 func TestForcedRotationRepairsADamagedLeaf(t *testing.T) {
 	check := kubeVIPNode(t)
 	if err := os.WriteFile(filepath.Join(version.PKIDir, "apiserver.crt"), []byte("not a certificate\n"), 0o600); err != nil {
@@ -495,10 +452,6 @@ func TestForcedRotationRepairsADamagedLeaf(t *testing.T) {
 	check("forced rotation with a damaged leaf", 1)
 }
 
-// TestForcedRotationNeedsADirectoryLeafMovedAside pins the directory hint in
-// check's error: rotation writes the reissued leaf by rename, which cannot
-// replace a directory, so forced rotation fails while the directory is there
-// and repairs the leaf once it is moved aside, as the hint says.
 func TestForcedRotationNeedsADirectoryLeafMovedAside(t *testing.T) {
 	check := kubeVIPNode(t)
 	p := filepath.Join(version.PKIDir, "apiserver.crt")
@@ -523,8 +476,6 @@ func TestForcedRotationNeedsADirectoryLeafMovedAside(t *testing.T) {
 	check("forced rotation after moving a directory leaf aside", 1)
 }
 
-// TestRotationPhaseTransitions walks the reported phase through the PKI-level
-// state changes (no cluster needed): idle → trust-new → sign-new → idle.
 func TestRotationPhaseTransitions(t *testing.T) {
 	prep(t)
 	if got := RotationPhase(); got[:4] != "idle" {
@@ -553,8 +504,6 @@ func TestRotationPhaseTransitions(t *testing.T) {
 	}
 }
 
-// TestRotationDetail: certs check shows a forced rotation and a staged signer
-// standing in for a lost key, and nothing once the rotation is finalized.
 func TestRotationDetail(t *testing.T) {
 	prep(t)
 	if got := RotationDetail(); got != nil {
@@ -610,17 +559,9 @@ func readAll(t *testing.T, path string) []byte {
 	return b
 }
 
-// TestRotateContextStopsAtAStepBoundary checks shutdown cancellation for leaf
-// rotation: the run group joins the renewal loop at shutdown, so a rotation
-// in flight must stop when its context ends — at a step boundary, the safe
-// point. The step in flight (the RSA reissue) finishes; no later step starts.
-// A rotation that ran on through the kubeconfig rewrite and the restarts
-// after its context ended would hold RunController's shutdown wait open, and
-// under systemd's KillMode=process be cut down mid-step instead.
+// A rotation must stop at a step boundary so shutdown's join does not wait it out.
 func TestRotateContextStopsAtAStepBoundary(t *testing.T) {
-	// leaf and kv are joined inside each subtest, after kubeVIPNode has
-	// redirected the version dirs: joining them here would read whatever
-	// paths an earlier test happened to leave behind.
+	// Joined inside each subtest, after kubeVIPNode has redirected the version dirs.
 
 	t.Run("a context already cancelled stops before the first step", func(t *testing.T) {
 		kubeVIPNode(t)
@@ -674,9 +615,7 @@ func TestRotateContextStopsAtAStepBoundary(t *testing.T) {
 			}
 			close(lines)
 		}()
-		// The step headers are the boundaries' own prints; the operation
-		// writes them through the writer it is handed, so the reader end of
-		// the same pipe stands in for the caller's stream.
+		// The boundary prints its own step headers through the writer it is handed.
 		seen := []string{}
 		waitFor := func(want string) {
 			t.Helper()
@@ -701,9 +640,7 @@ func TestRotateContextStopsAtAStepBoundary(t *testing.T) {
 		done := make(chan error, 1)
 		go func() { _, err := RotateContext(ctx, w, Options{}); done <- err }()
 
-		// The reissue header means step one has started, with the RSA reissue
-		// (a second or so of real keygen) in flight — so the cancel below
-		// lands inside that step, not between two of them.
+		// The reissue header means the RSA keygen step is in flight when the cancel lands.
 		waitFor("Reissue control-plane leaf certificates")
 		cancel()
 		err = <-done
@@ -721,8 +658,7 @@ func TestRotateContextStopsAtAStepBoundary(t *testing.T) {
 				t.Errorf("the rotation started a later step after its context ended: %q was printed", later)
 			}
 		}
-		// The safe point is the boundary AFTER the in-flight step, not an
-		// abort inside it: the reissue finishes.
+		// The safe point is the boundary after the in-flight step, not an abort inside it.
 		if after := readAll(t, leaf); bytes.Equal(after, beforeLeaf) {
 			t.Error("the reissue in flight was aborted inside the step; it must finish and stop at the boundary after it")
 		}
@@ -732,10 +668,6 @@ func TestRotateContextStopsAtAStepBoundary(t *testing.T) {
 	})
 }
 
-// TestRotateContextRunsTheWholeSequenceWhileTheContextLives pins the other
-// side of the boundary contract: a live context must change nothing about a
-// rotation — every step still runs, and the kubeconfigs (kube-vip's among
-// them, the TestLeafRotationRewritesKubeVIPKubeconfig pin) are still rewritten.
 func TestRotateContextRunsTheWholeSequenceWhileTheContextLives(t *testing.T) {
 	check := kubeVIPNode(t)
 	before := readAll(t, filepath.Join(version.PKIDir, "kube-vip.crt"))
@@ -748,8 +680,6 @@ func TestRotateContextRunsTheWholeSequenceWhileTheContextLives(t *testing.T) {
 	check("rotate context", 1)
 }
 
-// TestSubjectDrift pins that the drift check runs for this node's recorded
-// address and passes the drift and errors through.
 func TestSubjectDrift(t *testing.T) {
 	kubeVIPNode(t)
 	orig := subjectDrift
@@ -766,14 +696,6 @@ func TestSubjectDrift(t *testing.T) {
 	}
 }
 
-// TestRotate_ReportsWhetherItRotated pins the outcome contract: whether the
-// run reissued anything travels as data beside the error, so a caller — the
-// certs_rotate tool especially — can tell nothing-to-rotate from a rotation
-// without asking anyone to read the printed "nothing to rotate" / "rotated"
-// lines. The no-op half runs on the prep fixture alone (fresh leaves are not
-// within the window, so the run returns before the maintenance lease and the
-// kubeconfig rewrite: no admin.conf, no cluster); the rotation half drives the
-// redirected VIP node the other rotation tests use.
 func TestRotate_ReportsWhetherItRotated(t *testing.T) {
 	t.Run("nothing within the window is reported, not only printed", func(t *testing.T) {
 		prep(t)
@@ -810,10 +732,6 @@ func TestRotate_ReportsWhetherItRotated(t *testing.T) {
 	})
 }
 
-// TestRotateRefusesANegativeWindow: a negative if-expiring window is refused
-// before anything runs. Taken as-is it would read as a forced run, and the
-// CLI's --yes gate passes on any non-zero window, so a typo would reissue every
-// leaf without the consent a forced run asks for.
 func TestRotateRefusesANegativeWindow(t *testing.T) {
 	prep(t)
 	leaf := filepath.Join(version.PKIDir, "kube-vip.crt")
@@ -832,14 +750,9 @@ func TestRotateRefusesANegativeWindow(t *testing.T) {
 	}
 }
 
-// ── the stdout-guard retirement pins ─────────────────────────────────────────
-//
-// Every operation an MCP tool calls takes an io.Writer FIRST (after any ctx)
-// and reports its progress and warnings through it, instead of printing to
-// os.Stdout under internal/mcp's stdout guard.
+// Every MCP-called operation reports progress through an io.Writer first, never os.Stdout.
 
-// captureRealStdout captures the process's ACTUAL stdout while fn runs, so a
-// test can prove an operation left it alone.
+// captureRealStdout captures the process's actual stdout while fn runs.
 func captureRealStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -862,10 +775,6 @@ func captureRealStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestRotateContext_WritesItsProgressToTheWriter pins leaf rotation's half of
-// the convention: RotateContext takes the writer after its context, the step
-// headers and the closing "certs: rotated" line are written there, and the
-// process's real stdout never sees them.
 func TestRotateContext_WritesItsProgressToTheWriter(t *testing.T) {
 	kubeVIPNode(t)
 
@@ -893,11 +802,6 @@ func TestRotateContext_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestRotateCA_WritesItsProgressToTheWorker pins the per-node CA rotation's
-// half: RotateCA takes the writer first, its first step header reaches it, and
-// a phase that refuses (this fixture's worker has no kubelet kubeconfig to
-// read an endpoint from) still leaves its progress in the writer and nothing
-// on os.Stdout.
 func TestRotateCA_WritesItsProgressToTheWriter(t *testing.T) {
 	base := t.TempDir()
 	redirectVar(t, &version.K8sConfDir, filepath.Join(base, "kubernetes"))    // no manifests: a worker
@@ -921,12 +825,6 @@ func TestRotateCA_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestClusterCARotation_WritesItsProgressToTheWriter pins the cluster
-// orchestrator's half: RotateCAClusterContext takes the writer after its
-// context, and the unconditional "CA rotation across N node(s)" step — the
-// one print that is not Quiet-gated — reaches the writer it is handed, on the
-// recording-builder fixture the injected-builder tests drive, with os.Stdout
-// clean.
 func TestClusterCARotation_WritesItsProgressToTheWriter(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.AdminConf, "missing-admin.conf")
@@ -951,11 +849,6 @@ func TestClusterCARotation_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestEtcdCAMigration_RunsOnTheWriterItIsHanded pins the etcd-CA migration's
-// half: MigrateEtcdCAClusterContext takes the writer after its context. The
-// fixture run halts at the node roster — before the migration logs a step — so
-// the pin here is the seam itself plus a clean stdout: the refusal reaches the
-// caller while os.Stdout stays untouched.
 func TestEtcdCAMigration_RunsOnTheWriterItIsHanded(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.AdminConf, "missing-admin.conf")
@@ -978,12 +871,6 @@ func TestEtcdCAMigration_RunsOnTheWriterItIsHanded(t *testing.T) {
 	}
 }
 
-// TestSaveRenewalRecordReplacesTheRecord: a new attempt replaces the record —
-// a reader holding the old file (the hard link below) keeps reading the old
-// bytes — at 0600, and LoadRenewalRecord reads back what was saved. The
-// renewal record is what `stratum certs check` shows for a dead or failing
-// renewal loop; the move onto the shared atomic writer must change none of
-// that.
 func TestSaveRenewalRecordReplacesTheRecord(t *testing.T) {
 	version.K8sConfDir = t.TempDir()
 	first := RenewalRecord{AttemptedAt: time.Now().Add(-time.Hour), Result: "etcd restart gate"}
@@ -1020,11 +907,6 @@ func TestSaveRenewalRecordReplacesTheRecord(t *testing.T) {
 	}
 }
 
-// TestSaveRenewalRecordLeavesNoStrayTempOnFailure: a save whose rename fails
-// (the record's destination occupied by a directory here) leaves nothing
-// beside the record. The fixed-name .tmp this writer uses today survives a
-// failed rename as a stray copy of the record; the shared atomic writer
-// removes its temp name on every failure path.
 func TestSaveRenewalRecordLeavesNoStrayTempOnFailure(t *testing.T) {
 	version.K8sConfDir = t.TempDir()
 	if err := os.MkdirAll(RenewalRecordPath(), 0o755); err != nil {
@@ -1046,22 +928,12 @@ func TestSaveRenewalRecordLeavesNoStrayTempOnFailure(t *testing.T) {
 	}
 }
 
-// TestPodRestartOrderIsTheStaticPodNames: the rotation restarts the static
-// pods in start order — staticpod.Names verbatim, the set the manifest render
-// owns. A hand-written copy could drift from it and restart a pod that is no
-// longer rendered, or skip one that is.
 func TestPodRestartOrderIsTheStaticPodNames(t *testing.T) {
 	if !slices.Equal(podRestartOrder, staticpod.Names) {
 		t.Errorf("podRestartOrder = %v, want staticpod.Names %v in start order", podRestartOrder, staticpod.Names)
 	}
 }
 
-// TestRestartOrdersAreInitializedFromTheirOwners parses certs.go's
-// declarations and fails when either restart list is no longer initialized
-// from its owner — the pod order from staticpod.Names, the host order from the
-// derivation on comps.Units. A hand-written copy is indistinguishable from the
-// derivation by value today; it drifts only when the owner's set changes, and
-// then nothing ties the two together.
 func TestRestartOrdersAreInitializedFromTheirOwners(t *testing.T) {
 	t.Parallel() // host-free: parses only its own file
 	fset := token.NewFileSet()
@@ -1084,8 +956,7 @@ func TestRestartOrdersAreInitializedFromTheirOwners(t *testing.T) {
 	}
 }
 
-// varInit returns the initializing expression of a package-level var, or nil
-// when the file declares no such var with a value.
+// varInit returns the initializing expression of a package-level var, or nil.
 func varInit(f *ast.File, name string) ast.Expr {
 	for _, d := range f.Decls {
 		gd, ok := d.(*ast.GenDecl)
@@ -1107,20 +978,11 @@ func varInit(f *ast.File, name string) ast.Expr {
 	return nil
 }
 
-// TestHostRestartOrderIsDerivedFromTheUnits: the rotation's host-process tail
-// restarts the units that authenticate with the material it rewrites — every
-// comps.Units member but containerd, which holds none — in Units order, so
-// the operator, which reads super-admin.conf, restarts last. The shipped list
-// is the derivation's output, not a hand-written copy, and a unit added to
-// comps.Units flows through it: a literal list, a filter that keeps
-// containerd, or a derivation that drops a new roster member fails here.
 func TestHostRestartOrderIsDerivedFromTheUnits(t *testing.T) {
 	if !slices.Equal(hostRestartOrder, hostRestartOrderFrom(comps.Units)) {
 		t.Errorf("hostRestartOrder = %v, want the derivation applied to the roster: hostRestartOrderFrom(comps.Units) = %v", hostRestartOrder, hostRestartOrderFrom(comps.Units))
 	}
 
-	// The relation on the real roster, restated independently: every unit but
-	// containerd, in Units order — kubelet first, the operator last.
 	var want []string
 	for _, u := range comps.Units {
 		if u != "containerd" {
@@ -1135,8 +997,7 @@ func TestHostRestartOrderIsDerivedFromTheUnits(t *testing.T) {
 		t.Errorf("hostRestartOrderFrom(comps.Units) = %v, want kubelet first and the operator last (it reads super-admin.conf)", got)
 	}
 
-	// A synthetic roster member must flow through the derivation, so adding a
-	// component to comps.Units is a one-place change.
+	// A synthetic roster member must flow through the derivation.
 	augmented := append(slices.Clone(comps.Units), "synthetic-probe")
 	wantSynthetic := append(slices.Clone(want), "synthetic-probe")
 	if got := hostRestartOrderFrom(augmented); !slices.Equal(got, wantSynthetic) {

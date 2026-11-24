@@ -13,8 +13,7 @@ import (
 	"time"
 )
 
-// fakeProc writes a run's /proc (fx.procRoot) with one process per entry:
-// pid -> "state ppid", each started at tick 1000.
+// one process per entry: pid -> "state ppid", each started at tick 1000.
 func fakeProc(t *testing.T, fx *hostEffects, procs map[int]string) {
 	t.Helper()
 	root := t.TempDir()
@@ -24,16 +23,14 @@ func fakeProc(t *testing.T, fx *hostEffects, procs map[int]string) {
 	}
 }
 
-// writeStat writes a full-length /proc/<pid>/stat. The command name has a space
-// and a ')' in it, to check the parsing reads fields after the last ')'.
+// the command name holds a space and a ')': parsing must read after the last ')'.
 func writeStat(t *testing.T, fx *hostEffects, pid int, stateAndPPID, start string) {
 	t.Helper()
 	dir := filepath.Join(fx.procRoot, fmt.Sprint(pid))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Fields 3 (state) and 4 (ppid), 16 zeros for fields 5-20, 0 for 21,
-	// then field 22, the start time.
+	// fields 3 (state) and 4 (ppid), 16 zeros for 5-20, 0 for 21, then field 22.
 	line := fmt.Sprintf("%d (weird) name) %s %s0 %s 0 0\n", pid, stateAndPPID, strings.Repeat("0 ", 16), start)
 	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(line), 0o644); err != nil {
 		t.Fatal(err)
@@ -42,8 +39,7 @@ func writeStat(t *testing.T, fx *hostEffects, pid int, stateAndPPID, start strin
 
 func withShimSignals(t *testing.T, alive *[]int, onSignal func(pid int, sig syscall.Signal)) (*[]string, *hostEffects) {
 	t.Helper()
-	// Sequential by swap's stated exception: it shortens the shared
-	// idleShimWait and pollInterval.
+	// sequential by swap's exception: it shortens the shared idleShimWait and pollInterval.
 	fx := &hostEffects{}
 	var signals []string
 	oldWait, oldPoll := idleShimWait, pollInterval
@@ -60,9 +56,6 @@ func withShimSignals(t *testing.T, alive *[]int, onSignal func(pid int, sig sysc
 	return &signals, fx
 }
 
-// TestStopIdleShimsLeavesAShimThatStillHoldsAContainer: a shim with a
-// live child is a container still running, and is never signalled; one with no
-// child, or only a zombie, holds nothing and is stopped.
 func TestStopIdleShimsLeavesAShimThatStillHoldsAContainer(t *testing.T) {
 	alive := []int{100, 101, 102}
 	signals, fx := withShimSignals(t, &alive, func(pid int, sig syscall.Signal) {
@@ -86,8 +79,6 @@ func TestStopIdleShimsLeavesAShimThatStillHoldsAContainer(t *testing.T) {
 	}
 }
 
-// TestStopIdleShimsSignalsNothingWhenItCannotReadTheProcessTable: not knowing
-// whether a shim holds a container is not the same as knowing it holds none.
 func TestStopIdleShimsSignalsNothingWhenItCannotReadTheProcessTable(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	fx := &hostEffects{}
@@ -97,9 +88,6 @@ func TestStopIdleShimsSignalsNothingWhenItCannotReadTheProcessTable(t *testing.T
 	stopIdleShims(io.Discard, fx)
 }
 
-// TestStopIdleShimsNeverSignalsAReusedPID: an idle shim that
-// exits can have its PID reused before the signal. The start time is checked
-// before every signal, so the new process is left alone.
 func TestStopIdleShimsNeverSignalsAReusedPID(t *testing.T) {
 	alive := []int{102}
 	reused := false
@@ -107,7 +95,7 @@ func TestStopIdleShimsNeverSignalsAReusedPID(t *testing.T) {
 	fakeProc(t, fx, map[int]string{102: "S 1"})
 	pids := fx.shimPIDs
 	fx.shimPIDs = func() ([]int, error) {
-		// After idleShims chose 102, it exits and a new process takes its PID.
+		// after idleShims chose 102, it exits and a new process takes its PID.
 		if !reused {
 			reused = true
 			return pids()
@@ -121,15 +109,11 @@ func TestStopIdleShimsNeverSignalsAReusedPID(t *testing.T) {
 	}
 }
 
-// TestStopIdleShimsTreatsAnUnreadableChildAsLive: a stat that
-// cannot be read is not proof the process is gone, so its parent shim is not
-// idle.
 func TestStopIdleShimsTreatsAnUnreadableChildAsLive(t *testing.T) {
 	alive := []int{103}
 	signals, fx := withShimSignals(t, &alive, nil)
 	fakeProc(t, fx, map[int]string{103: "S 1"})
-	// A directory where the child's stat file should be: unreadable as a file
-	// whatever user the test runs as.
+	// a directory where the stat file should be: unreadable as any user.
 	if err := os.MkdirAll(filepath.Join(fx.procRoot, "300", "stat"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -139,13 +123,9 @@ func TestStopIdleShimsTreatsAnUnreadableChildAsLive(t *testing.T) {
 	}
 }
 
-// TestSignalShimsRechecksEachShimBeforeItsSignal: signalling
-// one shim can let a later one's PID be reused before it is reached, so each
-// is checked again immediately before its own signal.
 func TestSignalShimsRechecksEachShimBeforeItsSignal(t *testing.T) {
 	alive := []int{101, 102}
-	// fx is assigned before the onSignal closure below can ever run: the
-	// closure only fires once signalShims, after fakeProc, is called.
+	// fx is assigned before the closure can run: it only fires from signalShims.
 	var fx *hostEffects
 	signals, created := withShimSignals(t, &alive, func(pid int, _ syscall.Signal) {
 		if pid == 101 {
@@ -160,15 +140,11 @@ func TestSignalShimsRechecksEachShimBeforeItsSignal(t *testing.T) {
 	}
 }
 
-// stillProcs reads the same identity for shims and the top-level process but
-// each caller keeps its own rule for a start time it cannot read: a shim is
-// skipped (best-effort; the host-process check that follows still refuses),
-// while the top-level process fails closed and aborts.
 func TestUnreadableStartTimeSkipsAShimButAbortsTheTopLevelCheck(t *testing.T) {
 	alive := []int{101, 102}
 	signals, fx := withShimSignals(t, &alive, nil)
 	fakeProc(t, fx, map[int]string{102: "S 1"})
-	// Too few fields for startTime to reach field 22: unreadable, not gone.
+	// too few fields for startTime to reach field 22: unreadable, not gone.
 	if err := os.MkdirAll(filepath.Join(fx.procRoot, "101"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -202,8 +178,6 @@ func TestUnreadableStartTimeSkipsAShimButAbortsTheTopLevelCheck(t *testing.T) {
 	})
 }
 
-// A poll lists the shims once however many it tracks, and signalShims lists
-// afresh before each signal, since a signal can let a later PID be reused.
 func TestStillShimsListsOnceAndSignalShimsListsPerSignal(t *testing.T) {
 	alive := []int{101, 102, 103}
 	signals, fx := withShimSignals(t, &alive, nil)

@@ -93,7 +93,6 @@ func TestOwnNodeUIDRejectsFIFOConfigAndCredentials(t *testing.T) {
 				}
 			case <-time.After(500 * time.Millisecond):
 				t.Error("FIFO identity input blocked past the deadline")
-				// The old implementation may open the shared cert/key twice.
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}

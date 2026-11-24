@@ -35,8 +35,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// fakeStratumHost points the host probe at a directory that exists, so the
-// tools take the "this is a node" branch.
+// fakeStratumHost points the host probe at a directory that exists.
 func fakeStratumHost(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -82,16 +81,13 @@ func TestNotStratumHostErrorExplainsItself(t *testing.T) {
 	}
 }
 
-// planKubeadmCPLabel is the kubeadm role label, spelled out because the
-// orchestrator's decision under test is that its presence alone must not make
-// a node a control plane.
+// planKubeadmCPLabel is spelled out: its presence alone must not make a node a control plane.
 const planKubeadmCPLabel = "node-role.kubernetes.io/control-plane"
 
 // planRow is one node's place in a rendered plan: name and role, in order.
 type planRow struct{ name, role string }
 
-// nodeForPlan is one Node object as both front ends read it: Ready, with the
-// given labels, kubelet version and in-progress record.
+// nodeForPlan is one Node as both front ends read it: Ready, with labels, kubelet version.
 func nodeForPlan(name string, labels map[string]string, kubeletVersion string, annotations map[string]string) corev1.Node {
 	return corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels, Annotations: annotations},
@@ -102,9 +98,7 @@ func nodeForPlan(name string, labels map[string]string, kubeletVersion string, a
 	}
 }
 
-// servePlanNodes serves nodes as the API would, so one node list feeds both
-// front ends in the same order: the dry run's client and upgrade_plan's
-// connector read the same server.
+// servePlanNodes serves nodes as the API would, so one node list feeds both front ends.
 func servePlanNodes(t *testing.T, nodes []corev1.Node) *httptest.Server {
 	t.Helper()
 	body, err := json.Marshal(&corev1.NodeList{
@@ -122,8 +116,7 @@ func servePlanNodes(t *testing.T, nodes []corev1.Node) *httptest.Server {
 	return srv
 }
 
-// captureUpgradeStdout captures what UpgradeCluster prints, so the test can
-// read the dry run's rendered plan.
+// captureUpgradeStdout captures what UpgradeCluster prints, the dry run's rendered plan.
 func captureUpgradeStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -140,8 +133,7 @@ func captureUpgradeStdout(t *testing.T, fn func() error) (string, error) {
 	return string(out), runErr
 }
 
-// planRowsFromDryRun reads the dry run's node rows: one line per node, whose
-// second field is the role and third the current version.
+// planRowsFromDryRun reads the dry run's node rows: one per node, role and version.
 func planRowsFromDryRun(out string) []planRow {
 	var rows []planRow
 	for _, line := range strings.Split(out, "\n") {
@@ -156,13 +148,7 @@ func planRowsFromDryRun(out string) []planRow {
 	return rows
 }
 
-// TestUpgradePlanParityWithTheClusterDryRun: upgrade_plan renders the same
-// classification and order as UpgradeCluster's dry run for the same node set —
-// the orchestrator's semantics are canonical, so the tool cannot rebuild the
-// plan by hand and drift. The node set is built to catch both ways the two
-// copies disagreed: a node with only the kubeadm role label (the orchestrator
-// plans it as a worker), a node whose Stratum label says "false", and a served
-// order that is not the alphabetical one.
+// TestUpgradePlanParityWithTheClusterDryRun: the orchestrator's plan is canonical, not the tool's.
 func TestUpgradePlanParityWithTheClusterDryRun(t *testing.T) {
 	fakeStratumHost(t)
 	nodes := []corev1.Node{
@@ -226,8 +212,7 @@ func TestSummarizeCerts(t *testing.T) {
 	if got.Expired != 1 {
 		t.Errorf("expired = %d, want 1", got.Expired)
 	}
-	// The expired one must not also be counted as expiring, or the two
-	// numbers double-count and a summary reads as worse than it is.
+	// The expired one must not also count as expiring, or the summary double-counts.
 	if got.Expiring != 1 {
 		t.Errorf("expiring = %d, want 1 (the already-expired one is counted as expired, not both)", got.Expiring)
 	}
@@ -264,8 +249,7 @@ func TestSummarizeCertsCleanCluster(t *testing.T) {
 	}
 }
 
-// TestSummarizeCertsKubeletClient keeps the warning window, overdue renewal,
-// and expiry distinct and gives remediation for the certificate actually due.
+// TestSummarizeCertsKubeletClient keeps the warning window, overdue renewal and expiry distinct.
 func TestSummarizeCertsKubeletClient(t *testing.T) {
 	got := summarizeCerts([]certs.CertStatus{
 		{Name: certs.KubeletClientName, NotAfter: time.Now().Add(20 * 24 * time.Hour), DaysLeft: 20, Expiring: true, Kubelet: true, RenewalOverdue: true},
@@ -312,9 +296,7 @@ func TestSummarizeCertsKubeletClient(t *testing.T) {
 	}
 }
 
-// TestSummarizeProcs: a component whose socket another process serves makes
-// the node unhealthy even though it has a pid; a wanted component
-// that is not running still does; a stopped one that is not wanted does not.
+// TestSummarizeProcs: foreign or wanted-down is unhealthy; stopped and unwanted is not.
 func TestSummarizeProcs(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -366,12 +348,7 @@ func TestSummarizeProcs(t *testing.T) {
 	}
 }
 
-// stubSnapshotDir points the snapshot directory at a fresh directory: the
-// stand-in for a custom spec.snapshots.dir. Anything still using the default
-// dir misses it. It also stubs loadSnapshotConfig to the S3-less default.
-// The directory is part of the resolved snapshot settings, so the config
-// stub carries it, and snapshotDir is stubbed to the same directory for the
-// readers that resolve a bare snapshot name.
+// stubSnapshotDir points both snapshotDir and loadSnapshotConfig at a fresh, S3-less directory.
 func stubSnapshotDir(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "snaps")
@@ -379,8 +356,7 @@ func stubSnapshotDir(t *testing.T) string {
 	t.Cleanup(func() { snapshotDir = old })
 	snapshotDir = func() string { return dir }
 
-	// The handlers also read the host's snapshot config; without this a run on
-	// a node with an S3 target would prune and upload to the real bucket.
+	// Without this a run on a node with an S3 target would prune and upload to the real bucket.
 	oldCfg := loadSnapshotConfig
 	t.Cleanup(func() { loadSnapshotConfig = oldCfg })
 	cfg := etcdsnap.DefaultConfig()
@@ -428,9 +404,7 @@ func TestUninstallPreviewNamesSnapshotDir(t *testing.T) {
 	}
 }
 
-// A snapshot dir inside a removal target is deleted with it, so the note must
-// not promise otherwise. Paths are resolved, because spec.snapshots.dir may be
-// a symlink in either direction.
+// A snapshot dir inside a removal target is deleted with it; the note must not promise otherwise.
 func TestSnapshotDirNote(t *testing.T) {
 	root := t.TempDir() // a symlinked parent on macOS (/var -> /private/var), on purpose
 	mk := func(parts ...string) string {
@@ -517,9 +491,7 @@ func TestUninstallPreviewWarnsWhenSnapshotDirIsRemoved(t *testing.T) {
 	fakeStratumHost(t)
 	stubSnapshotDir(t)
 	dir := filepath.Join(version.DataDir, "snapshots")
-	// The note reports on the directory the resolved snapshot settings
-	// name, so the dir inside the removal target reaches the handler
-	// through loadSnapshotConfig as well as through snapshotDir.
+	// The dir inside the removal target reaches the handler through loadSnapshotConfig too.
 	cfg := etcdsnap.DefaultConfig()
 	cfg.Dir = dir
 	loadSnapshotConfig = func() (etcdsnap.Config, error) { return cfg, nil }
@@ -534,9 +506,7 @@ func TestUninstallPreviewWarnsWhenSnapshotDirIsRemoved(t *testing.T) {
 	}
 }
 
-// The preview's snapshot note is about the directory the resolved snapshot
-// settings name — the same one snapshot_list lists — not about a directory the
-// handler resolved on its own.
+// The preview's note names the resolved settings' dir, not one the handler resolved itself.
 func TestUninstallPreview_NoteNamesTheResolvedDir(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -558,14 +528,7 @@ func TestUninstallPreview_NoteNamesTheResolvedDir(t *testing.T) {
 	}
 }
 
-// TestUninstallPreviewReturnsTheSharedConditionals pins the MCP side of the one
-// preview: uninstall_preview's structured result carries the
-// conditional effects — the legacy containerd config, the firewalld bindings,
-// the registered SELinux contexts and the netns/cilium/cgroup/legacy-kubelet
-// layout — as uninstall.Preview() returns them, so the tool and the CLI dry run
-// enumerate the same effects because both render the same function's value.
-// The probes are stubbed through uninstall's PreviewProbes seam; the handler
-// must render what that seam answers, not a second gathering of its own.
+// TestUninstallPreviewReturnsTheSharedConditionals: both surfaces render uninstall.Preview().
 func TestUninstallPreviewReturnsTheSharedConditionals(t *testing.T) {
 	fakeStratumHost(t)
 	stubSnapshotDir(t)
@@ -606,18 +569,11 @@ func TestUninstallPreviewReturnsTheSharedConditionals(t *testing.T) {
 	}
 }
 
-// TestCredentialSources_ReadTools pins the separate credential domains:
-// token_list uses the shared node connector pinned to the node's own admin
-// credential — super-admin.conf where the node has one, admin.conf until its
-// first new-release `stratum up` writes it — while upgrade_plan continues to
-// use the configurable connector. Selecting a remote cluster must never
-// redirect a node-local token read, and the node credential must never be the
-// server's user-facing one.
+// TestCredentialSources_ReadTools pins token_list on the node credential, upgrade_plan on conn's.
 func TestCredentialSources_ReadTools(t *testing.T) {
 	fakeStratumHost(t)
 
-	// recordingServer answers every request with body and records the path
-	// it was requested under.
+	// recordingServer answers every request with body and records the request path.
 	recordingServer := func(body string) (*httptest.Server, func() []string) {
 		var mu sync.Mutex
 		var paths []string
@@ -644,27 +600,19 @@ func TestCredentialSources_ReadTools(t *testing.T) {
 	serverB, bPaths := recordingServer(nodes)
 	serverC, cPaths := recordingServer(secrets)
 
-	// A is the node connector's explicit admin.conf, independent of the
-	// generic connector's selected remote cluster.
+	// A is the node connector's explicit admin.conf, independent of the selected remote cluster.
 	oldConf := version.AdminConf
 	version.AdminConf = kubetest.Kubeconfig(t, &rest.Config{Host: serverA.URL})
 	t.Cleanup(func() { version.AdminConf = oldConf })
-	// B is the server's --kubeconfig. $KUBECONFIG points there too, so a
-	// connector built the way pkg/cli builds the server's resolves B, not A.
+	// B is the server's --kubeconfig; $KUBECONFIG points there, so the server's connector resolves B.
 	bConf := kubetest.Kubeconfig(t, &rest.Config{Host: serverB.URL})
 	t.Setenv("KUBECONFIG", bConf)
-	// C is super-admin.conf: the credential Stratum's own clients use when
-	// the node has one. The directory redirect keeps the test off the real
-	// node's paths.
+	// C is super-admin.conf, the credential Stratum's own clients use when the node has one.
 	oldKubeconfigDir := version.KubeconfigDir
 	version.KubeconfigDir = t.TempDir()
 	t.Cleanup(func() { version.KubeconfigDir = oldKubeconfigDir })
 
-	// serverConnector mirrors pkg/cli's generic connector: no explicit
-	// kubeconfig, so resolution follows $KUBECONFIG and falls back to
-	// admin.conf. nodeConnector mirrors its node connector: the node's own
-	// admin credential, super-admin.conf where the node has one, admin.conf
-	// until then.
+	// serverConnector follows $KUBECONFIG and falls back to admin.conf; nodeConnector is the node's.
 	serverConnector := func() *kube.Connector {
 		return kube.NewConnector(kube.Options{FallbackKubeconfig: version.AdminConf})
 	}
@@ -673,9 +621,7 @@ func TestCredentialSources_ReadTools(t *testing.T) {
 	}
 
 	t.Run("token_list stays on this node despite the selected remote cluster", func(t *testing.T) {
-		// The selector resolves against the redirected node paths per call.
-		// No super-admin.conf in the redirected
-		// directory, so the node credential is admin.conf — A, never B.
+		// No super-admin.conf in the redirected directory, so the node credential is admin.conf (A).
 		before := len(bPaths())
 		handler := TokenListHandler(nodeConnector())
 		if _, _, err := handler(context.Background(), nil, TokenListIn{}); err != nil {
@@ -695,9 +641,7 @@ func TestCredentialSources_ReadTools(t *testing.T) {
 		}
 	})
 
-	// Stratum's own clients use super-admin.conf once the node has one, and
-	// token_list is one of them: a revocable admin.conf must not be the
-	// credential that reads kube-system on a node that holds the real one.
+	// A revocable admin.conf must not read kube-system where super-admin.conf exists.
 	t.Run("token_list notices super-admin.conf on the same connector", func(t *testing.T) {
 		handler := TokenListHandler(nodeConnector())
 		if _, _, err := handler(t.Context(), nil, TokenListIn{}); err != nil {
@@ -792,10 +736,7 @@ func TestCredentialSources_ReadTools(t *testing.T) {
 	})
 }
 
-// TestCertsCheckSchemaStatesTheRenewalWindow: the certs_check schema tells a
-// model the default warning window in prose. A window change that misses this
-// string leaves the tool advertising the old default, and callers that read
-// the schema instead of the code plan around the wrong expiry.
+// TestCertsCheckSchemaStatesTheRenewalWindow: a schema drift leaves callers the wrong expiry.
 func TestCertsCheckSchemaStatesTheRenewalWindow(t *testing.T) {
 	f, ok := reflect.TypeOf(CertsCheckIn{}).FieldByName("WarnDays")
 	if !ok {
@@ -809,10 +750,7 @@ func TestCertsCheckSchemaStatesTheRenewalWindow(t *testing.T) {
 	}
 }
 
-// TestUninstallPreviewSchemaNamesTheLocalPathDir: the uninstall preview
-// schema tells a model which fixed layout items its conditionals carry. The
-// local-path directory is one of them, so a schema that leaves it out has the
-// tool describe a preview without the item it returns.
+// TestUninstallPreviewSchemaNamesTheLocalPathDir: a missing item misdescribes the preview.
 func TestUninstallPreviewSchemaNamesTheLocalPathDir(t *testing.T) {
 	f, ok := reflect.TypeOf(UninstallPreviewOut{}).FieldByName("Conditionals")
 	if !ok {
@@ -824,12 +762,7 @@ func TestUninstallPreviewSchemaNamesTheLocalPathDir(t *testing.T) {
 	}
 }
 
-// TestCertsCheckServedSchemaStatesTheRenewalWindow pins the schema text a
-// client's tools/list actually shows for warn_days. The tag-level pin above
-// reads the struct tag; this pins the description inferred from it at
-// registration — the artifact a model reads when it decides how to call the
-// tool — so no registration-side change can drop or rewrite the window while
-// the tag still holds it.
+// TestCertsCheckServedSchemaStatesTheRenewalWindow pins the served description, not the tag.
 func TestCertsCheckServedSchemaStatesTheRenewalWindow(t *testing.T) {
 	cs := fencedSession(t, func(s *sdk.Server) {
 		sdk.AddTool(s, &sdk.Tool{Name: "certs_check", Description: "Report certificate expiry."}, CertsCheckHandler())

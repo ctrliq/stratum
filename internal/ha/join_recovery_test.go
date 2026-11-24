@@ -56,8 +56,7 @@ func TestJoinResumesCommittedMemberWithoutQuorum(t *testing.T) {
 	if st.EtcdInitialCluster == "" || r2.addCalls != 0 || r2.removeByIDCalls != 0 || r2.removeCalled {
 		t.Fatalf("resume must retain membership and build the initial cluster: state=%+v add=%d remove=%d", st, r2.addCalls, r2.removeByIDCalls)
 	}
-	// The journal survives the resumed save too: it ends when a later start
-	// confirms the node's local etcd data, not when node.yaml lands.
+	// the journal ends when a later start confirms the node's local etcd data, not at this save
 	if _, err := os.Stat(joinIntentPath); err != nil {
 		t.Fatalf("completed resume lost its journal: %v", err)
 	}
@@ -82,10 +81,7 @@ func TestJoinResumesAnInheritedVIPWithoutQuorum(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			joinFixture(t)
 			if tc.profile != "" {
-				// The named-profile subtests run against a binary's registry:
-				// both the first attempt's and the resume's profile must be
-				// registered for profile.ForNode to resolve them, as a real
-				// binary registers its profiles at the root command.
+				// profile.ForNode resolves against a binary's registry; a real binary registers its profiles
 				prev := profile.All()
 				names := []profile.Profile{{Name: "cis"}, {Name: tc.profile}}
 				if tc.resumeProfile != tc.profile {
@@ -271,8 +267,7 @@ func TestJoinKeepsMembershipWhenPublishedStateSyncFails(t *testing.T) {
 				if !slices.Equal(synced, []string{nodestate.StatePath(), version.K8sConfDir}) {
 					t.Fatalf("durability order: %v", synced)
 				}
-				// A durable save does not end the journal: it survives until a
-				// later start confirms the node's local etcd data.
+				// a durable save does not end the journal
 				if _, statErr := os.Stat(joinIntentPath); statErr != nil {
 					t.Fatalf("completed save lost the journal: %v", statErr)
 				}
@@ -422,11 +417,7 @@ func TestJoinCannotCompensateOverPreviouslyPublishedState(t *testing.T) {
 	if err := saveJoinState(st); err != nil {
 		t.Fatal(err)
 	}
-	// Make the next replacement fail after the state exists: with the state
-	// directory read-only, SaveState cannot create its temp file (it writes a
-	// uniquely named one, so occupying its old fixed .tmp name no longer
-	// blocks a save). A failed replacement must be classified as published,
-	// not compensated over.
+	// a read-only state dir makes SaveState fail after the state exists
 	if err := os.Chmod(filepath.Dir(nodestate.StatePath()), 0o500); err != nil {
 		t.Fatal(err)
 	}
@@ -543,12 +534,7 @@ func TestFailedStaleJoinRefreshKeepsPublishedStateRecoverable(t *testing.T) {
 	}
 }
 
-// TestResumedJoinRecordsTheControllerStartsServer: a join resumed from its
-// recovery journal saves the server the controller start's rule gives
-// (nodestate.ServerURL), even when the journal's recorded state carries the
-// --join URL, as a journal an older build wrote does. The resume copies the
-// recorded state whole, so a join that does not re-apply the rule after the
-// copy saves the --join URL, and the first restart rewrites every kubeconfig.
+// the resume copies the journal's recorded state whole, so the ServerURL rule must be re-applied
 func TestResumedJoinRecordsTheControllerStartsServer(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -567,16 +553,13 @@ func TestResumedJoinRecordsTheControllerStartsServer(t *testing.T) {
 			opts := freshJoinOpts()
 			opts.Server = "https://10.0.0.11:6443"
 			opts.VIP = tc.vip
-			// The wedge: the first run adds its member and fails the state save
-			// with quorum unconfirmed, so the journal survives as the recovery
-			// record.
+			// the first run fails its state save without confirmed quorum, so the journal survives
 			r1 := &recordedJoin{listMembers: listedMembers(), failSaveState: errors.New("disk full"),
 				quorumHeldErr: errors.New("no quorum")}
 			if _, err := prepareControlPlaneJoin(context.Background(), opts, etcdDir, fakeJoinEffects(r1)); err == nil {
 				t.Fatal("the first join must fail after adding its member")
 			}
-			// The journal as an older build wrote it: its recorded state names
-			// the --join URL as the server.
+			// an older build's journal records the --join URL as the server
 			j, err := readJoinIntent()
 			if err != nil || j == nil || j.Recovery == nil {
 				t.Fatalf("the failed join left no recovery journal: %+v, %v", j, err)
@@ -591,7 +574,6 @@ func TestResumedJoinRecordsTheControllerStartsServer(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the resumed join refused: %v", err)
 			}
-			// The resume ran from the journal: no online discovery, no second add.
 			if slices.Contains(r2.order, "discover") || r2.addCalls != 0 {
 				t.Fatalf("the re-run did not resume from the journal: effects %v, member-adds %d", r2.order, r2.addCalls)
 			}
@@ -608,8 +590,6 @@ func TestResumedJoinRecordsTheControllerStartsServer(t *testing.T) {
 			if !r2.kcCalled || r2.kcServer != tc.want {
 				t.Errorf("the resumed join wrote kubeconfigs against %q (called %v), want %q", r2.kcServer, r2.kcCalled, tc.want)
 			}
-			// The journal the resume leaves for a later resume records the
-			// rule's server too, so the --join URL does not come back from it.
 			var atSave joinIntent
 			if err := json.Unmarshal(r2.intentAtSaveRaw, &atSave); err != nil {
 				t.Fatal(err)
@@ -621,11 +601,7 @@ func TestResumedJoinRecordsTheControllerStartsServer(t *testing.T) {
 	}
 }
 
-// TestJoinAdoptingTheJournalsMemberSkipsTheVIPCheck: a re-run that adopts the
-// member its intent journal records, still listed by the cluster, adds nothing
-// to etcd, so it does not check the VIP; a check that would refuse proves it
-// never ran. That holds whether the journal carries the preparation's recovery
-// record or was left before the preparation finished, without one.
+// adopting the journal's member adds nothing to etcd, so the VIP check must not run
 func TestJoinAdoptingTheJournalsMemberSkipsTheVIPCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -671,11 +647,7 @@ func TestJoinAdoptingTheJournalsMemberSkipsTheVIPCheck(t *testing.T) {
 	}
 }
 
-// TestStaleJoinRefreshRefusedByTheVIPCheckKeepsTheJournal: a re-run whose
-// journal records a member the cluster no longer lists refreshes its
-// preparation and proceeds as a fresh member-add, so it checks the VIP. A VIP
-// that does not serve the cluster refuses that add before the journal is
-// replaced: the journal stays byte for byte the recovery record it was.
+// a refused fresh add must leave the journal byte for byte as the recovery record
 func TestStaleJoinRefreshRefusedByTheVIPCheckKeepsTheJournal(t *testing.T) {
 	joinFixture(t)
 	dir := t.TempDir()
@@ -704,9 +676,7 @@ func TestStaleJoinRefreshRefusedByTheVIPCheckKeepsTheJournal(t *testing.T) {
 	}
 }
 
-// A resumed join takes its node facts from this run's spec.node, not from the
-// journal: a journal an older build wrote has none, and the operator may have
-// corrected them before retrying.
+// an older journal has no node facts, and the operator may have corrected them since
 func TestResumedJoinTakesThisRunsNodeFacts(t *testing.T) {
 	joinFixture(t)
 	etcdDir := t.TempDir()

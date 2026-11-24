@@ -14,8 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/bootstrap/clusterinfo"
 )
 
-// closedPortURL is an https URL on 127.0.0.1 where nothing listens, so a fetch
-// gets a real "connection refused" from the kernel.
 func closedPortURL(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -29,8 +27,6 @@ func closedPortURL(t *testing.T) string {
 	return "https://" + addr
 }
 
-// unreachableFor makes fetchClusterInfo fail with a real connection refusal for
-// the first n calls, then fetch from real, counting every call.
 func unreachableFor(t *testing.T, n int32, real string) (calls *atomic.Int32) {
 	t.Helper()
 	calls = &atomic.Int32{}
@@ -46,9 +42,6 @@ func unreachableFor(t *testing.T, n int32, real string) (calls *atomic.Int32) {
 	return calls
 }
 
-// TestDiscoverCARetriesAnUnreachableControlPlane: a join that meets
-// a VIP or control plane that is briefly not answering waits it out, instead
-// of failing on the first refused dial with nothing left to retry the join.
 func TestDiscoverCARetriesAnUnreachableControlPlane(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	url, _ := clusterInfoServer(t, signedData(kubeconfigWith(caPEM)))
@@ -62,15 +55,12 @@ func TestDiscoverCARetriesAnUnreachableControlPlane(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAGivesUpOnAControlPlaneThatNeverAnswers: the wait is bounded,
-// and the error names the failure and how long it was waited out.
 func TestDiscoverCAGivesUpOnAControlPlaneThatNeverAnswers(t *testing.T) {
 	_, pin := makeCA(t)
 	calls := unreachableFor(t, 1<<30, "")
 
 	_, err := DiscoverCA(closedPortURL(t), testToken, pin)
-	// The final dial may use the last milliseconds of the reach budget and
-	// report a timeout instead of the earlier connection refusals.
+	// The final dial may time out instead of reporting the earlier refusals.
 	if err == nil || !transientDialError(err) {
 		t.Errorf("want a transient network failure, got: %v", err)
 	}
@@ -84,22 +74,16 @@ func TestDiscoverCAGivesUpOnAControlPlaneThatNeverAnswers(t *testing.T) {
 	}
 }
 
-// timeoutErr is the net.Error a fetch returns when its deadline passes.
 type timeoutErr struct{}
 
 func (timeoutErr) Error() string   { return "Client.Timeout exceeded while awaiting headers" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
 
-// The last attempt gets only what is left of the budget, so it can time out
-// before the refusal it would have met arrives. The error must still say
-// why the control plane was unreachable, not only that time ran out.
 func TestDiscoverCAReportsTheCauseNotTheClippedTimeout(t *testing.T) {
 	_, pin := makeCA(t)
 	dead := closedPortURL(t)
-	// Set here rather than relied on from TestMain: a budget shorter than
-	// one fetch's timeout makes the second attempt the clipped, final one,
-	// with the refusal as the failure before it.
+	// A budget shorter than one fetch's timeout makes the second attempt the clipped final one.
 	oldBudget, oldInterval, oldFetch := reachWaitTimeout, reachWaitInterval, fetchTimeout
 	reachWaitTimeout, reachWaitInterval, fetchTimeout = 200*time.Millisecond, 5*time.Millisecond, time.Hour
 	t.Cleanup(func() { reachWaitTimeout, reachWaitInterval, fetchTimeout = oldBudget, oldInterval, oldFetch })
@@ -123,8 +107,6 @@ func TestDiscoverCAReportsTheCauseNotTheClippedTimeout(t *testing.T) {
 	}
 }
 
-// TestDiscoverCADoesNotRetryAnAnswer: authentication refusals are terminal;
-// only anonymous discovery RBAC propagation is worth a bounded HTTP retry.
 func TestDiscoverCADoesNotRetryAnAnswer(t *testing.T) {
 	var requests atomic.Int32
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,10 +124,6 @@ func TestDiscoverCADoesNotRetryAnAnswer(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAReachWaitDoesNotSpendTheSignatureBudget: time waiting for the
-// network is not time the bootstrapsigner had. A control plane unreachable for
-// longer than the whole signature budget, then answering unsigned for a while,
-// must still get its signature wait.
 func TestDiscoverCAReachWaitDoesNotSpendTheSignatureBudget(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	kc := kubeconfigWith(caPEM)
@@ -176,8 +154,6 @@ func TestDiscoverCAReachWaitDoesNotSpendTheSignatureBudget(t *testing.T) {
 	}
 }
 
-// TestTransientDialErrorClassifiesRealFailures: the classification, against
-// what the network and the server really return rather than hand-built errors.
 func TestTransientDialErrorClassifiesRealFailures(t *testing.T) {
 	_, err := fetchClusterInfoData(closedPortURL(t), fetchTimeout)
 	if err == nil || !transientDialError(err) {
@@ -194,13 +170,11 @@ func TestTransientDialErrorClassifiesRealFailures(t *testing.T) {
 	}
 }
 
-// jsonEncode writes data as the cluster-info ConfigMap body.
 func jsonEncode(w io.Writer, data map[string]string) error {
 	return json.NewEncoder(w).Encode(map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "data": data})
 }
 
-// hangingServer accepts every request and answers none of the first n until
-// the test ends (n < 0: never answers), then serves signed cluster-info.
+// Answers none of the first n requests (n < 0: never), then serves signed cluster-info.
 func hangingServer(t *testing.T, n int32, kc string) (url string, requests *atomic.Int32) {
 	t.Helper()
 	requests = &atomic.Int32{}
@@ -220,9 +194,6 @@ func hangingServer(t *testing.T, n int32, kc string) (url string, requests *atom
 	return srv.URL, requests
 }
 
-// TestDiscoverCARetriesATimeout: a control plane that accepts
-// the connection and then says nothing is the timeout half of "briefly
-// unreachable", classified through the real fetch and retried.
 func TestDiscoverCARetriesATimeout(t *testing.T) {
 	old := fetchTimeout
 	fetchTimeout = 50 * time.Millisecond
@@ -242,9 +213,6 @@ func TestDiscoverCARetriesATimeout(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAReachBudgetIsABound: with the production
-// per-request timeout, a control plane that accepts and never answers must
-// still end the wait at the reach budget, not one full request later.
 func TestDiscoverCAReachBudgetIsABound(t *testing.T) {
 	_, pin := makeCA(t)
 	url, _ := hangingServer(t, -1, "")
@@ -259,9 +227,6 @@ func TestDiscoverCAReachBudgetIsABound(t *testing.T) {
 	}
 }
 
-// TestFetchRefusesANonPositiveTimeout: http.Client reads a
-// non-positive Timeout as none, so a spent budget must never reach it — the
-// fetch refuses one rather than wait forever on an endpoint that hangs.
 func TestFetchRefusesANonPositiveTimeout(t *testing.T) {
 	url, _ := hangingServer(t, -1, "")
 	for _, timeout := range []time.Duration{0, -time.Millisecond} {
@@ -276,11 +241,6 @@ func TestFetchRefusesANonPositiveTimeout(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAStartsNoAttemptOnASpentBudget: the budget is
-// checked at the start of every attempt, so one that is spent by the time the
-// next attempt would start ends the wait — it is never handed to a request as
-// a non-positive timeout. A retry interval longer than the whole budget makes
-// the sleep spend exactly what is left.
 func TestDiscoverCAStartsNoAttemptOnASpentBudget(t *testing.T) {
 	oldInterval, oldBudget := reachWaitInterval, reachWaitTimeout
 	reachWaitInterval, reachWaitTimeout = time.Second, 50*time.Millisecond

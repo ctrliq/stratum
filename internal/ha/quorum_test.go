@@ -11,20 +11,12 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 )
 
-// TestConfirmQuorumLost pins what counts as proof. Only a membership this node
-// could read, in which the voters answering in this cluster plus those that
-// could not be reached still fall short of a majority, is a confirmed loss. An
-// unreadable membership or an unreachable peer is unknown, and a majority
-// elsewhere in the old cluster is quorum, even when the local member is itself
-// cut off.
 func TestConfirmQuorumLost(t *testing.T) {
 	const cluster = 7
 	member := func(id uint64, learner bool) *etcdserverpb.Member {
 		return &etcdserverpb.Member{ID: id, IsLearner: learner}
 	}
 	five := []*etcdserverpb.Member{member(1, false), member(2, false), member(3, false), member(4, false), member(5, false)}
-	// answers lists the peer IDs that report a cluster ID, and which one; any
-	// other peer is unreachable.
 	answers := func(ids map[uint64]uint64) func(*etcdserverpb.Member) (uint64, bool) {
 		return func(m *etcdserverpb.Member) (uint64, bool) { id, ok := ids[m.ID]; return id, ok }
 	}
@@ -32,8 +24,8 @@ func TestConfirmQuorumLost(t *testing.T) {
 		name    string
 		lc      localCluster
 		listErr error
-		peers   map[uint64]uint64 // peers that answered, with their cluster ID; the rest are unreachable
-		want    string            // substring of the refusal; "" is confirmed loss
+		peers   map[uint64]uint64
+		want    string
 	}{
 		{"five members, local one cut off, three others answer",
 			localCluster{cluster, 2, five}, nil, map[uint64]uint64{3: cluster, 4: cluster, 5: cluster}, "still has quorum"},
@@ -69,8 +61,6 @@ func TestConfirmQuorumLost(t *testing.T) {
 	}
 }
 
-// CP1 has been replaced by a singleton. CP2's etcd still runs but is isolated
-// from CP3-CP5, which retain quorum. Their failed probes cannot permit a wipe.
 func TestReviewRejoinRefusesUnknownPeerMajority(t *testing.T) {
 	wiped := false
 	restoreSeams(t, func() error { return nil }, func(string) error { return nil },
@@ -84,9 +74,9 @@ func TestReviewRejoinRefusesUnknownPeerMajority(t *testing.T) {
 			return localCluster{ClusterID: 7, SelfID: 2, Members: members}, nil
 		}, func(m *etcdserverpb.Member) (uint64, bool) {
 			if m.ID == 1 {
-				return 99, true // replacement seed is a different cluster
+				return 99, true
 			}
-			return 0, false // CP3-CP5 probes are inconclusive, not proof of death
+			return 0, false
 		})
 	}
 	err := RejoinEtcd(context.Background(), io.Discard, "10.255.255.1", false)

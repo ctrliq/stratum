@@ -23,8 +23,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// kubeletClusterOps are the cluster effects of a --cluster run, so a test can
-// drive the run without one.
 type kubeletClusterOps struct {
 	local       func(w io.Writer, o KubeletCAOptions) error
 	remote      func(n cnode, phase string, fetchShared, force bool) error
@@ -34,19 +32,13 @@ type kubeletClusterOps struct {
 	confirm     func(what string) error
 }
 
-// MigrateKubeletClientCACluster runs every phase on every node from this
-// control plane: to KubeletClientCAName, or with Rollback back to the root.
 func MigrateKubeletClientCACluster(w io.Writer, o KubeletCAOptions) error {
 	ctx, stop := interrupt.Context()
 	defer stop()
 	return MigrateKubeletClientCAClusterContext(ctx, w, o)
 }
 
-// MigrateKubeletClientCAClusterContext is MigrateKubeletClientCACluster with
-// the caller's context. Its progress goes through w, and like the other
-// cluster orchestrators it acquires its API client through an injectable
-// builder: the front ends hand it the node credential's builder,
-// the default stays the package's admin seam.
+// Like the other cluster orchestrators, it takes an injectable API client builder.
 func MigrateKubeletClientCAClusterContext(ctx context.Context, w io.Writer, o KubeletCAOptions, buildClient ...clientBuilder) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("certs: kubelet client-CA migration not started: %w", err)
@@ -86,8 +78,7 @@ func MigrateKubeletClientCAClusterContext(ctx context.Context, w io.Writer, o Ku
 		return err
 	}
 	defer release()
-	// Another initiator may already be finalized locally while its root rotation
-	// still needs followers. Read its shared checkpoint under the same lease.
+	// Another initiator may be finalized locally while its root rotation still needs followers.
 	active, err := unfinishedCARotation(ctx, cs)
 	if err != nil {
 		return fmt.Errorf("read CA rotation record before kubelet client-CA migration: %w", err)
@@ -167,9 +158,6 @@ func runKubeletCACluster(w io.Writer, o KubeletCAOptions, otherCPs, workers []cn
 	return nil
 }
 
-// runKubeletCAPhase runs phase on this node, then each other control plane,
-// then each worker, and checks every kubelet's answer where the phase calls
-// for it.
 func runKubeletCAPhase(w io.Writer, o KubeletCAOptions, phase string, otherCPs, workers []cnode, ops kubeletClusterOps) error {
 	if err := ops.local(w, KubeletCAOptions{Phase: phase, Force: o.Force, Quiet: true}); err != nil {
 		return fmt.Errorf("initiator: %w", err)
@@ -218,7 +206,6 @@ func runKubeletCAPhase(w io.Writer, o KubeletCAOptions, phase string, otherCPs, 
 	return nil
 }
 
-// kubeletHalted adds what to do next to the error that stopped a --cluster run.
 func kubeletHalted(phase string, rollback bool, err error) error {
 	const bin = pki.KubeletMigrateCommand
 	if rollback {
@@ -229,8 +216,6 @@ func kubeletHalted(phase string, rollback bool, err error) error {
 		"To abandon it, run `%s --cluster --rollback --yes` (add --force once any node has completed %s)", err, phase, bin, bin, pki.KubeletPhaseDropRoot)
 }
 
-// checkKubeletsClientAuth checks that every node's kubelet trusts this node's
-// {leaf} client certificate, or with trusted false that it refuses it.
 func checkKubeletsClientAuth(ctx context.Context, w io.Writer, cs kubernetes.Interface, leaf string, trusted bool) error {
 	client, err := pki.LeafKeyPair(leaf)
 	if err != nil {
@@ -258,8 +243,7 @@ func checkKubeletsClientAuth(ctx context.Context, w io.Writer, cs kubernetes.Int
 	return nil
 }
 
-// probeKubeletClientAuth is pki.ProbeKubeletClientAuth, a var so a test can
-// stand in for the kubelets.
+// probeKubeletClientAuth is a var so a test can stand in for the kubelets.
 var probeKubeletClientAuth = pki.ProbeKubeletClientAuth
 
 func checkKubeletClientAuth(ctx context.Context, node, ip, leaf string, roots []*x509.Certificate, client tls.Certificate, trusted bool,
@@ -305,7 +289,7 @@ func runKubeletCAJob(ctx context.Context, w io.Writer, cs kubernetes.Interface, 
 	return nodejob.WaitReady(ctx, cs, n.Name, 60)
 }
 
-// kubeletCANodeArgv is the argv a node's Job runs; shell-free like caNodeArgv.
+// kubeletCANodeArgv is the argv a node's Job runs; shell-free, like caNodeArgv.
 func kubeletCANodeArgv(phase string, fetchShared, force bool) []string {
 	argv := []string{
 		"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--",

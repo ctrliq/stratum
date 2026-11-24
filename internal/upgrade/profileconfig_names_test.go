@@ -10,12 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/profile"
 )
 
-// The backup record holds one name per line and the restore reads each back
-// as a path element, so a profile file name with a newline would read as two
-// coverage entries (and a rollback would remove a file it never backed up),
-// and one with a backslash would make the record reader refuse the rollback.
-// Registration refuses such names; the upgrade refuses them too, before it
-// writes anything, on a fresh run and on a resume.
+// The record holds one path element per line, so a name it cannot round-trip is refused.
 func TestRefreshProfileConfigsRefusesANameTheRecordCannotRoundTrip(t *testing.T) {
 	for _, bad := range []string{"policy.yaml\nnode.yaml", `policy\node.yaml`, "policy\x01.yaml"} {
 		t.Run(strings.NewReplacer("\n", `\n`, "\x01", `\x01`).Replace(bad), func(t *testing.T) {
@@ -39,8 +34,6 @@ func TestRefreshProfileConfigsRefusesANameTheRecordCannotRoundTrip(t *testing.T)
 				t.Errorf("the refused refresh left a staging dir: %v", err)
 			}
 
-			// The resume path: a kept backup from an earlier run must not
-			// let the name through to the write either.
 			if _, err := refreshProfileConfigs(io.Discard, ts, cisProfile()); err != nil {
 				t.Fatal(err)
 			}
@@ -52,8 +45,6 @@ func TestRefreshProfileConfigsRefusesANameTheRecordCannotRoundTrip(t *testing.T)
 	}
 }
 
-// A record carrying a name with a control character is refused like one
-// carrying a path, before anything is restored or removed.
 func TestRestoreProfileConfigsRefusesARecordWithAControlCharacter(t *testing.T) {
 	withCISConfigs(t)
 	const ts = "20261018-000002"

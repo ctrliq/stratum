@@ -34,28 +34,20 @@ func TestRemoteExcludesUnrelatedObjects(t *testing.T) {
 	}
 }
 
-// remoteTime is a fixed UTC time the stub remote store's LastModified values
-// parse to, so the creation times the remote catalog reports assert exactly.
 func remoteTime(hour, min int) time.Time {
 	return time.Date(2026, 7, 4, hour, min, 0, 0, time.UTC)
 }
 
-// remoteObj is one object the stub remote store serves: its base name is the
-// stable backup ID, its modified stamp the creation time the catalog reports.
 type remoteObj struct {
 	name     string
 	size     int64
 	modified time.Time
 }
 
-// ro builds a stub remote object with the given creation time.
 func ro(name string, size int64, at time.Time) remoteObj {
 	return remoteObj{name: name, size: size, modified: at}
 }
 
-// remoteXML renders one ListObjectsV2 response over the objects: truncated
-// with next as the continuation token when another page follows, complete
-// otherwise.
 func remoteXML(next string, objs ...remoteObj) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name>`)
@@ -72,16 +64,11 @@ func remoteXML(next string, objs ...remoteObj) string {
 	return b.String()
 }
 
-// stubRemote serves ListObjectsV2 a page at a time like S3: the request's
-// continuation token picks the page (no token is the first), and a page with
-// a successor is truncated carrying the successor's token.
 func stubRemote(t *testing.T, pages ...[]remoteObj) *objstore.Target {
 	tgt, _ := stubRemoteCounting(t, pages...)
 	return tgt
 }
 
-// stubRemoteCounting is stubRemote with a count of the listing requests the
-// store served, so a test can pin how many pages a bounded listing asked for.
 func stubRemoteCounting(t *testing.T, pages ...[]remoteObj) (*objstore.Target, func() int) {
 	t.Helper()
 	var mu sync.Mutex
@@ -123,11 +110,6 @@ func stubRemoteCounting(t *testing.T, pages ...[]remoteObj) (*objstore.Target, f
 	}
 }
 
-// The remote catalog lists every remote copy the store holds with its stable
-// name-derived ID, its remote location, its creation time (the object's
-// LastModified), its size and an unknown digest — a listing exposes no
-// digest — and is complete, in a stable order, when the whole store was
-// listed within the bounds.
 func TestRemoteCatalogsRemoteCopies(t *testing.T) {
 	s1 := "etcd-snapshot-cp-1-20260704-010000.db"
 	s2 := "pre-upgrade-20260704-020000.db"
@@ -155,9 +137,6 @@ func TestRemoteCatalogsRemoteCopies(t *testing.T) {
 	}
 }
 
-// A configured store holding nothing lists zero remote copies exactly, and a
-// node with no remote target configured holds zero remote copies exactly too:
-// neither is an unknown.
 func TestRemoteEmptyStoreIsACompleteExactZero(t *testing.T) {
 	t.Run("empty bucket", func(t *testing.T) {
 		tgt := stubRemote(t, []remoteObj{})
@@ -174,9 +153,6 @@ func TestRemoteEmptyStoreIsACompleteExactZero(t *testing.T) {
 	})
 }
 
-// A remote copy created before the retention cutoff — one predating the
-// retention window or surviving a failed prune — is flagged with its creation
-// time while staying listed and counted with every other copy.
 func TestRemoteFlagsOldCopiesPastRetention(t *testing.T) {
 	cutoff := remoteTime(0, 2)
 	oldID := "etcd-snapshot-cp-1-20260704-010000.db"
@@ -196,11 +172,6 @@ func TestRemoteFlagsOldCopiesPastRetention(t *testing.T) {
 	}
 }
 
-// A store that never answers is bounded, not waited out: the request context
-// — which the catalog propagates to the store — ends the underlying listing,
-// the store sees its request context end, and the catalog returns within its
-// time bound with unknown completeness and a safe warning that names the
-// condition — never the store's address or any raw error.
 func TestRemoteHungListingReturnsBounded(t *testing.T) {
 	sawCancel := make(chan struct{})
 	var once sync.Once
@@ -242,10 +213,6 @@ func TestRemoteHungListingReturnsBounded(t *testing.T) {
 	}
 }
 
-// A store that refuses the listing with 403 leaves the remote catalog
-// unknown, never zero: the copies already listed stand, completeness is
-// false, and the warning names the refusal without the store's raw error
-// text.
 func TestRemoteDeniedListingIsUnknownNotZero(t *testing.T) {
 	refusing := func(t *testing.T) *objstore.Target {
 		t.Helper()
@@ -304,10 +271,6 @@ func TestRemoteDeniedListingIsUnknownNotZero(t *testing.T) {
 	})
 }
 
-// The union of the local and remote catalogs counts each stable backup ID
-// once: the same snapshot saved locally and uploaded off-box is one backup in
-// two locations, not two. Both catalogs complete, the union's entries are the
-// exact total.
 func TestRemoteUnionDeduplicatesByStableBackupID(t *testing.T) {
 	s1 := "etcd-snapshot-cp-1-20260704-010000.db" // local only
 	s2 := "etcd-snapshot-cp-1-20260704-020000.db" // local and remote
@@ -360,10 +323,6 @@ func TestRemoteUnionDeduplicatesByStableBackupID(t *testing.T) {
 	}
 }
 
-// A partial listing in the union leaves the deduplicated total unknown —
-// however many entries the union counted, they are a floor, never the total.
-// Even a partial listing that described nothing is an unknown, not a zero,
-// and a partial local half is just as unknown-making as a partial remote one.
 func TestRemoteUnionNeverYieldsAnExactTotalFromAPartialListing(t *testing.T) {
 	s1 := "etcd-snapshot-cp-1-20260704-010000.db"
 	local := LocalResult{
@@ -417,9 +376,6 @@ func TestRemoteUnionNeverYieldsAnExactTotalFromAPartialListing(t *testing.T) {
 	})
 }
 
-// Old remote copies are counted once in the deduplicated union, flagged on
-// their entry, and surfaced to retention diagnostics with their creation
-// times — whether the local half also holds them or not.
 func TestRemoteUnionSurfacesOldCopiesToRetention(t *testing.T) {
 	oldID := "etcd-snapshot-cp-1-20260704-010000.db" // local and an old remote copy
 	newID := "etcd-snapshot-cp-1-20260704-030000.db" // a remote copy inside the window

@@ -46,9 +46,6 @@ func node(name string, ready bool, taints ...corev1.Taint) corev1.Node {
 		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: status}}}}
 }
 
-// TestCoreDNSToMove is the rule table. The first case is the one
-// seen in practice: both replicas on the first node, still there after the
-// others joined.
 func TestCoreDNSToMove(t *testing.T) {
 	older, newer := dnsPod("coredns-a", "cp1", 2*time.Hour, true), dnsPod("coredns-b", "cp1", time.Hour, true)
 	cordoned := node("cp2", true)
@@ -91,12 +88,8 @@ func TestCoreDNSToMove(t *testing.T) {
 	}
 }
 
-// freshSpreader returns a spreader whose cooldown has never fired: a fresh
-// spreader value starts with a zero last move and needs no reset at all.
 func freshSpreader() *corednsSpreader { return &corednsSpreader{} }
 
-// TestReconcileCoreDNSSpreadEvictsOnceThenCoolsDown: the decision reaches the
-// API as an eviction, and a second pass inside the cooldown does nothing.
 func TestReconcileCoreDNSSpreadEvictsOnceThenCoolsDown(t *testing.T) {
 	sp := freshSpreader()
 	cs, evicted := spreadCluster(corednsDeploy(map[string]string{group + "/stack": CoreDNSStack}))
@@ -119,8 +112,7 @@ func corednsDeploy(labels map[string]string) *appsv1.Deployment {
 	}
 }
 
-// spreadCluster is two replicas on cp1 with cp2 joined, behind a fake API that
-// records evictions. deploy nil means no CoreDNS Deployment.
+// spreadCluster is two replicas on cp1 with cp2 joined; deploy nil means no CoreDNS Deployment.
 func spreadCluster(deploy *appsv1.Deployment) (*fake.Clientset, *[]string) {
 	a, b := dnsPod("coredns-a", "cp1", 2*time.Hour, true), dnsPod("coredns-b", "cp1", time.Hour, true)
 	n1, n2 := node("cp1", true), node("cp2", true)
@@ -140,9 +132,6 @@ func spreadCluster(deploy *appsv1.Deployment) (*fake.Clientset, *[]string) {
 	return cs, evicted
 }
 
-// TestCoreDNSSpreadCooldownWindow pins the cooldown itself: a move — completed
-// or refused — buys spreadCooldown of quiet for every later pass, a pass at
-// the window's edge runs again, and the shipped window is five minutes.
 func TestCoreDNSSpreadCooldownWindow(t *testing.T) {
 	if spreadCooldown != 5*time.Minute {
 		t.Errorf("spreadCooldown = %v, want 5m — the shipped pacing of replica moves", spreadCooldown)
@@ -153,13 +142,10 @@ func TestCoreDNSSpreadCooldownWindow(t *testing.T) {
 		cs, evicted := spreadCluster(corednsDeploy(map[string]string{group + "/stack": CoreDNSStack}))
 
 		sp.reconcileCoreDNSSpread(context.Background(), cs, epoch)
-		// A millisecond inside the window: dropped, though the replicas are
-		// still colocated and a node could take one.
 		sp.reconcileCoreDNSSpread(context.Background(), cs, epoch.Add(spreadCooldown-time.Millisecond))
 		if len(*evicted) != 1 || (*evicted)[0] != "coredns-b" {
 			t.Fatalf("evictions inside the window = %v, want exactly [coredns-b]", *evicted)
 		}
-		// Exactly the window after the move: allowed again.
 		sp.reconcileCoreDNSSpread(context.Background(), cs, epoch.Add(spreadCooldown))
 		if len(*evicted) != 2 || (*evicted)[1] != "coredns-b" {
 			t.Errorf("evictions at the boundary = %v, want coredns-b moved again", *evicted)
@@ -178,8 +164,6 @@ func TestCoreDNSSpreadCooldownWindow(t *testing.T) {
 			return true, nil, apierrors.NewInternalError(errors.New("eviction refused"))
 		})
 
-		// The refused attempt still counts as a move: the next pass inside the
-		// window makes no attempt at all, and the window's edge tries again.
 		sp.reconcileCoreDNSSpread(context.Background(), cs, epoch)
 		sp.reconcileCoreDNSSpread(context.Background(), cs, epoch.Add(spreadCooldown-time.Millisecond))
 		if attempts != 1 {
@@ -195,8 +179,6 @@ func TestCoreDNSSpreadCooldownWindow(t *testing.T) {
 	})
 }
 
-// TestReconcileCoreDNSSpreadOnlyTouchesStratumsCoreDNS: kube-dns pods this
-// deployer did not apply are never evicted, even in the shape it would fix.
 func TestReconcileCoreDNSSpreadOnlyTouchesStratumsCoreDNS(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -217,15 +199,7 @@ func TestReconcileCoreDNSSpreadOnlyTouchesStratumsCoreDNS(t *testing.T) {
 	}
 }
 
-// TestReconcileCoreDNSSpreadMovesWhatTheDeployerLabels pins the shared stack
-// name end to end: the deployer stamps the objects of the bundled coredns/
-// directory with stratum.ciq.com/stack=coredns, and the spreader's gate moves
-// exactly the CoreDNS carrying that label. Both sides read the one exported
-// constant CoreDNSStack; if either side ever drifts from it, Stratum's own
-// CoreDNS stops being spread — or a foreign one starts being.
 func TestReconcileCoreDNSSpreadMovesWhatTheDeployerLabels(t *testing.T) {
-	// The deployer applies the shipped coredns bundle: stack "coredns", named
-	// by the bundle's first-level directory under version.ManifestsDir.
 	r := deployFixture(t, cp("cp1", "10.0.0.11"))
 	dir := r.dir
 	writeManifest(t, filepath.Join(dir, "coredns", "coredns.yaml"), configMap("coredns", "kube-system"))
@@ -236,7 +210,6 @@ func TestReconcileCoreDNSSpreadMovesWhatTheDeployerLabels(t *testing.T) {
 		t.Fatalf("deployer stamped stack label %q (present %v) on the coredns/ bundle, want coredns", label, ok)
 	}
 
-	// The spreader moves the Deployment carrying exactly that label.
 	sp := freshSpreader()
 	cs, evicted := spreadCluster(corednsDeploy(map[string]string{group + "/stack": label}))
 	sp.reconcileCoreDNSSpread(context.Background(), cs, epoch)

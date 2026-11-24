@@ -21,15 +21,9 @@ var (
 
 var fallbackNameservers = []string{"8.8.8.8", "1.1.1.1"}
 
-// CoreDNSUpstream is the file in CoreDNSUpstreamDir CoreDNS forwards through
-// when it exists. Without it, CoreDNS forwards through its pod's resolv.conf,
-// which is the node's.
 func CoreDNSUpstream() string { return filepath.Join(version.CoreDNSUpstreamDir, "resolv.conf") }
 
-// WriteCoreDNSUpstream chooses where this node's CoreDNS pods forward names
-// outside the cluster, writes or removes CoreDNSUpstream to match,
-// and reports the choice unless it is the node's own resolv.conf. Only CoreDNS
-// reads it: the kubelet and every other pod keep the node's resolvers.
+// WriteCoreDNSUpstream: only CoreDNS reads the file; every other pod keeps the node's resolvers.
 func WriteCoreDNSUpstream(st *nodestate.NodeState) error {
 	// Written by an earlier release's kubelet resolvConf override, which nothing reads now.
 	if err := os.Remove(filepath.Join(version.K8sConfDir, "resolv.conf")); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -45,12 +39,11 @@ func WriteCoreDNSUpstream(st *nodestate.NodeState) error {
 	return nil
 }
 
-// upstreamChoice is what CoreDNS forwards through, and why.
 type upstreamChoice struct {
-	Written     bool   // CoreDNSUpstream holds Nameservers; otherwise it is absent
-	Source      string // the node file the nameservers came from; "" for the fallback
+	Written     bool
+	Source      string // "" for the fallback
 	Nameservers []string
-	LeftOut     []string // "<addr> from <file>: <reason>", or "<file>: <read error>"
+	LeftOut     []string
 }
 
 func (c upstreamChoice) report() string {
@@ -98,12 +91,6 @@ func chooseCoreDNSUpstream(ipv6 bool, noIPv6 string) (upstreamChoice, error) {
 	return c, writeUpstream(fallbackNameservers, hostResolvConf)
 }
 
-// writeUpstream writes CoreDNSUpstream, keeping the search, domain and options
-// lines of the file at keep. It goes through the shared atomic writer
-// (internal/atomicfile): staged under a hidden unique temp name, fsynced at
-// its final mode, renamed into place, and the directory fsynced so the rename
-// survives a power loss — the file is replaced whole, never truncated, so a
-// pod starting mid-write reads the old file or the new one.
 func writeUpstream(nameservers []string, keep string) error {
 	var b strings.Builder
 	for _, ns := range nameservers {
@@ -122,9 +109,6 @@ func writeUpstream(nameservers []string, keep string) error {
 	return atomicfile.WriteFile(CoreDNSUpstream(), []byte(b.String()), 0o644)
 }
 
-// podIPv6 reports whether this node's pods have IPv6, from the cluster ranges
-// it recorded. When they have none, noIPv6 says why an IPv6 nameserver was
-// left out.
 func podIPv6(st *nodestate.NodeState) (ok bool, noIPv6 string) {
 	for _, cidrs := range []string{st.PodCIDR, st.ServiceCIDR} {
 		for _, c := range strings.Split(cidrs, ",") {
@@ -139,8 +123,6 @@ func podIPv6(st *nodestate.NodeState) (ok bool, noIPv6 string) {
 	return false, "IPv6, and pods here have no IPv6"
 }
 
-// podReachableNameservers splits the nameservers in path into those a pod
-// reaches and the rest, each as "<addr> from <path>: <reason>".
 func podReachableNameservers(path string, ipv6 bool, noIPv6 string) (reachable, unreachable []string, err error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -164,7 +146,6 @@ func podReachableNameservers(path string, ipv6 bool, noIPv6 string) (reachable, 
 	return reachable, unreachable, nil
 }
 
-// podUnreachable says why a pod cannot reach a nameserver at a, or "".
 func podUnreachable(a netip.Addr, ipv6 bool, noIPv6 string) string {
 	a = a.Unmap()
 	switch {

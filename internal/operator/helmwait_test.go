@@ -1,17 +1,5 @@
 package operator
 
-// Wait-strategy guards for the Helm v4 migration. Helm v4 replaced each
-// action's Wait bool with a WaitStrategy whose zero value is not "no wait":
-// install, upgrade, uninstall and rollback all ask the Kubernetes client for a
-// waiter, and the real client refuses an empty strategy with "wait strategy not
-// set". Helm's fake client ignores the strategy, so the flow tests in
-// helmflows_test.go pass whether or not an action sets one. These tests record
-// the strategy every action asks for and require helmWaitStrategy, the one
-// strategy the client newActionConfig builds answers with Helm v3's
-// Wait = false waits. They check the strategy each action asks for, and which
-// deletions v3NoWait waits for; the waits themselves are checked against a
-// fake apiserver in helmapiserver_test.go.
-
 import (
 	"context"
 	"errors"
@@ -28,10 +16,6 @@ import (
 	helmrelease "helm.sh/helm/v4/pkg/release/v1"
 )
 
-// waitRecorder wraps a fakeHelm's Kubernetes client. It records the strategy
-// of every waiter an action asks for and refuses an empty one, as the real
-// client does, so an action that sets no strategy fails here as it would on a
-// cluster.
 type waitRecorder struct {
 	kube.Interface
 
@@ -39,8 +23,7 @@ type waitRecorder struct {
 	strategies []kube.WaitStrategy
 }
 
-// recordWaits puts a waitRecorder in front of h's Kubernetes client for every
-// action configuration the operator builds during the test.
+// Wraps the one Kubernetes client every action config shares, so every waiter is recorded.
 func recordWaits(h *fakeHelm) *waitRecorder {
 	rec := &waitRecorder{Interface: h.cfg.KubeClient}
 	h.cfg.KubeClient = rec
@@ -51,9 +34,7 @@ func (w *waitRecorder) GetWaiter(ws kube.WaitStrategy) (kube.Waiter, error) {
 	return w.GetWaiterWithOptions(ws)
 }
 
-// GetWaiterWithOptions makes waitRecorder a kube.InterfaceWaitOptions, which
-// Helm's actions call instead of GetWaiter when the client offers it. The
-// upgrade worker calls it from its own goroutine, hence the lock.
+// The upgrade worker calls this from its own goroutine, hence the lock.
 func (w *waitRecorder) GetWaiterWithOptions(ws kube.WaitStrategy, opts ...kube.WaitOption) (kube.Waiter, error) {
 	w.mu.Lock()
 	w.strategies = append(w.strategies, ws)
@@ -67,9 +48,6 @@ func (w *waitRecorder) GetWaiterWithOptions(ws kube.WaitStrategy, opts ...kube.W
 	return w.Interface.GetWaiter(ws)
 }
 
-// wantHelmWaitStrategy fails unless the reconcile under test asked for at
-// least one waiter and built every one with helmWaitStrategy. An empty record
-// means the action under test never ran, so it fails too.
 func wantHelmWaitStrategy(t *testing.T, rec *waitRecorder, action string) {
 	t.Helper()
 	rec.mu.Lock()
@@ -85,9 +63,6 @@ func wantHelmWaitStrategy(t *testing.T, rec *waitRecorder, action string) {
 	}
 }
 
-// markFlowHCDeleted gives the stored HelmChart a deletion timestamp and the
-// release identity the controller records on adoption, so the next reconcile
-// takes the deletion path and uninstalls that release.
 func markFlowHCDeleted(t *testing.T, dyn dynamic.Interface) {
 	t.Helper()
 	hc := getFlowHC(t, dyn)
@@ -114,8 +89,6 @@ func TestHelmFlowWaitStrategyInstall(t *testing.T) {
 	wantDeployed(t, dyn, 1, "1.0.0")
 }
 
-// The stored revision 1 makes the reconcile upgrade, so every waiter recorded
-// comes from the upgrade.
 func TestHelmFlowWaitStrategyUpgrade(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
@@ -129,7 +102,6 @@ func TestHelmFlowWaitStrategyUpgrade(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 2, status: "deployed", chartVersion: "1.1.0"})
 }
 
-// The uninstall on the deletion path runs before the finalizer is dropped.
 func TestHelmFlowWaitStrategyDeletionUninstall(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
@@ -148,8 +120,6 @@ func TestHelmFlowWaitStrategyDeletionUninstall(t *testing.T) {
 	}
 }
 
-// Recovering a pending first install uninstalls it, the operator's second
-// uninstall site.
 func TestHelmFlowWaitStrategyRecoverUninstall(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -164,7 +134,6 @@ func TestHelmFlowWaitStrategyRecoverUninstall(t *testing.T) {
 	}
 }
 
-// Recovering a pending upgrade rolls it back to the previous revision.
 func TestHelmFlowWaitStrategyRecoverRollback(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease,
@@ -180,8 +149,6 @@ func TestHelmFlowWaitStrategyRecoverRollback(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 3, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// deleteRecorder is a kube.Waiter that records the objects each WaitForDelete
-// call is given and waits for nothing.
 type deleteRecorder struct{ deleted []kube.ResourceList }
 
 func (r *deleteRecorder) Wait(kube.ResourceList, time.Duration) error         { return nil }
@@ -194,8 +161,6 @@ func (r *deleteRecorder) WaitForDelete(resources kube.ResourceList, _ time.Durat
 	return nil
 }
 
-// configMapInfo is a ConfigMap as Helm builds it from a manifest, with the
-// given annotations.
 func configMapInfo(name string, annotations map[string]string) *resource.Info {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion("v1")
@@ -205,11 +170,7 @@ func configMapInfo(name string, annotations map[string]string) *resource.Info {
 	return &resource.Info{Name: name, Object: u}
 }
 
-// TestV3NoWaitWaitsForDeletedHooksOnly: Helm calls WaitForDelete both after
-// deleting hooks by their delete policy and after an uninstall. Helm v3 waited
-// in the first case, so a before-hook-creation hook is gone before Helm creates
-// it again, and not in the second, with Wait = false. The objects an uninstall
-// deletes are the release's, which never carry the hook annotation.
+// Helm v3 waited for hook deletions by delete policy, not for uninstall deletions with Wait=false.
 func TestV3NoWaitWaitsForDeletedHooksOnly(t *testing.T) {
 	hook := map[string]string{helmrelease.HookAnnotation: "pre-install"}
 	for _, tc := range []struct {
@@ -236,9 +197,7 @@ func TestV3NoWaitWaitsForDeletedHooksOnly(t *testing.T) {
 	}
 }
 
-// Helm v4.3.1's install waits for a chart's crds/ with StatusWatcherStrategy in
-// place of the operator's HookOnlyStrategy. That wait must still be v3NoWait's,
-// not Helm's status watcher, which lists and watches the CRDs.
+// Helm 4.3.1's install asks StatusWatcherStrategy for a chart's crds/; it must map to v3NoWait.
 func TestV3WaitClientAnswersTheCRDWaitStrategy(t *testing.T) {
 	c := v3WaitClient{kube.New(nil)}
 	for _, ws := range []kube.WaitStrategy{helmWaitStrategy, kube.StatusWatcherStrategy} {

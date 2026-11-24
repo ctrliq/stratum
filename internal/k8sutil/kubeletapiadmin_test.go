@@ -56,9 +56,6 @@ func TestEnsureKubeletAPIAdminBinding(t *testing.T) {
 	}
 }
 
-// TestKubeletClientUserIsTheLeafCN pins the binding's subject to the CN pki
-// issues apiserver-kubelet-client with: a rename on either side would leave the
-// apiserver unauthorized at every kubelet.
 func TestKubeletClientUserIsTheLeafCN(t *testing.T) {
 	for _, sp := range pki.LeafSpecs("cp1", "10.0.0.1", nil) {
 		if sp.Name != "apiserver-kubelet-client" {

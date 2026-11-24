@@ -27,9 +27,6 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube/kubetest"
 )
 
-// Protocol-boundary tests for the generic write toolset.
-
-// newWriteSession is newK8sSession with the tiers the operator enabled.
 func newWriteSession(t *testing.T, allowWrite, allowDestructive bool) *k8sSession {
 	t.Helper()
 	cfg := kubetest.Start(t)
@@ -56,7 +53,6 @@ func newWriteSession(t *testing.T, allowWrite, allowDestructive bool) *k8sSessio
 	return s
 }
 
-// The security assertion, and the reason this tier exists.
 func TestWriteToolsAreAbsentWithoutTheFlag(t *testing.T) {
 	s := newWriteSession(t, false, false)
 
@@ -73,8 +69,6 @@ func TestWriteToolsAreAbsentWithoutTheFlag(t *testing.T) {
 		if advertised[name] {
 			t.Errorf("%s is advertised without --allow-write", name)
 		}
-		// Absence is the control; that the call also fails only confirms
-		// nothing answers behind it.
 		if _, err := s.cs.CallTool(t.Context(), &sdk.CallToolParams{Name: name}); err == nil {
 			t.Errorf("calling unregistered %s succeeded", name)
 		}
@@ -153,8 +147,7 @@ func TestResourceApplyRoundTrip(t *testing.T) {
 		if got.Data["key"] != "first" {
 			t.Errorf("data = %v", got.Data)
 		}
-		// The fixed field manager is what makes the server's changes
-		// attributable, so it is asserted rather than assumed.
+		// the fixed field manager makes the server's changes attributable.
 		var managers []string
 		for _, e := range got.ManagedFields {
 			managers = append(managers, e.Manager)
@@ -189,7 +182,6 @@ func TestResourceApplyRoundTrip(t *testing.T) {
 	})
 
 	t.Run("a namespace argument that contradicts the manifest is refused", func(t *testing.T) {
-		// Not resolved silently in either direction.
 		other := s.createNamespace(t)
 		msg := s.callExpectingError(t, "resource_apply", map[string]any{
 			"manifest": map[string]any{
@@ -209,7 +201,6 @@ func TestResourceApplyRoundTrip(t *testing.T) {
 	})
 
 	t.Run("a namespace argument alone still places the object", func(t *testing.T) {
-		// The override is only refused when the manifest disagrees.
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{
 			"manifest": map[string]any{
@@ -289,11 +280,9 @@ func TestResourceScaleRoundTrip(t *testing.T) {
 		}
 	})
 
-	// A resource with no /scale subresource fails on a path the caller never
-	// typed, so the message has to explain itself.
+	// a 404 on a path the caller never typed must explain itself.
 	t.Run("an unscalable resource explains why", func(t *testing.T) {
-		// The ConfigMap is created first, so the 404 can only be the missing
-		// subresource.
+		// created first, so the 404 can only be the missing subresource.
 		if _, err := s.typed.CoreV1().ConfigMaps(s.namespace).Create(t.Context(), &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{Name: "unscalable", Namespace: s.namespace},
 		}, metav1.CreateOptions{}); err != nil {
@@ -362,8 +351,7 @@ func TestResourceDeleteRoundTrip(t *testing.T) {
 		}
 	})
 
-	// No bulk delete exists, on purpose: a missing name must fail rather
-	// than mean "all of them".
+	// no bulk delete exists on purpose: a missing name must fail, not mean all.
 	t.Run("a missing name is rejected, not treated as a wildcard", func(t *testing.T) {
 		mk("survivor")
 		msg := s.callExpectingError(t, "resource_delete", map[string]any{
@@ -378,11 +366,9 @@ func TestResourceDeleteRoundTrip(t *testing.T) {
 	})
 }
 
-// The escalation guard. Without it --allow-write is transitively
-// --allow-anything, because writing a ClusterRoleBinding grants whatever
-// the agent likes — which would make the whole tier system decorative.
+// without this guard --allow-write is transitively --allow-anything.
 func TestIdentityAndAdmissionWritesAreRefused(t *testing.T) {
-	s := newWriteSession(t, true, true) // both flags: the deny list still holds
+	s := newWriteSession(t, true, true)
 
 	for _, tc := range []struct {
 		name     string
@@ -425,8 +411,6 @@ func TestIdentityAndAdmissionWritesAreRefused(t *testing.T) {
 		}
 	})
 
-	// Worth a test of its own: the refusal must not read as "ask for a
-	// bigger flag", because there is no flag that grants it.
 	t.Run("the message does not suggest a flag would help", func(t *testing.T) {
 		msg := s.callExpectingError(t, "resource_apply", map[string]any{"manifest": map[string]any{
 			"apiVersion": "v1", "kind": "Secret",
@@ -438,7 +422,7 @@ func TestIdentityAndAdmissionWritesAreRefused(t *testing.T) {
 	})
 }
 
-// Deleting a namespace cascades and deleting a PVC destroys data.
+// a namespace delete cascades and a PVC delete destroys data.
 func TestUnrecoverableDeletesNeedTheDestructiveFlag(t *testing.T) {
 	t.Run("refused with only --allow-write", func(t *testing.T) {
 		s := newWriteSession(t, true, false)
@@ -463,8 +447,7 @@ func TestUnrecoverableDeletesNeedTheDestructiveFlag(t *testing.T) {
 			t.Fatalf("create namespace: %v", err)
 		}
 
-		// envtest runs no namespace controller, so the delete is accepted and the
-		// namespace stays Terminating forever.
+		// envtest runs no namespace controller, so the namespace stays Terminating forever.
 		var out mcpsrv.ResourceDeleteOut
 		s.call(t, "resource_delete", map[string]any{"resource": "namespaces", "name": target}, &out)
 		if out.Name != target {
@@ -473,8 +456,7 @@ func TestUnrecoverableDeletesNeedTheDestructiveFlag(t *testing.T) {
 	})
 }
 
-// Creating or changing a namespace needs --allow-destructive: an apply can be
-// as hard to undo as a delete.
+// an apply can be as hard to undo as a delete.
 func TestIrreversibleAppliesNeedTheDestructiveFlag(t *testing.T) {
 	namespace := func(name string) map[string]any {
 		return map[string]any{"manifest": map[string]any{
@@ -499,8 +481,7 @@ func TestIrreversibleAppliesNeedTheDestructiveFlag(t *testing.T) {
 	})
 }
 
-// A PodTemplate carries a pod spec at its top level, outside spec, and is
-// checked like any other.
+// a PodTemplate carries its pod spec at the top level, outside spec.
 func TestPodTemplatePodSpecsAreChecked(t *testing.T) {
 	s := newWriteSession(t, true, true)
 	msg := s.callExpectingError(t, "resource_apply", map[string]any{"manifest": map[string]any{
@@ -516,8 +497,7 @@ func TestPodTemplatePodSpecsAreChecked(t *testing.T) {
 	}
 }
 
-// The deny and destructive lists are pinned, so adding or removing one is a
-// deliberate edit rather than a side effect.
+// pinning makes adding or removing an entry a deliberate edit.
 func TestWritePolicyListsArePinned(t *testing.T) {
 	wantDenied := []string{
 		"apiservices.apiregistration.k8s.io",
@@ -561,7 +541,6 @@ func TestWritePolicyListsArePinned(t *testing.T) {
 	}
 }
 
-// TestHostEscapingPodSpecsAreRefused.
 func TestHostEscapingPodSpecsAreRefused(t *testing.T) {
 	s := newWriteSession(t, true, true)
 
@@ -627,8 +606,6 @@ func TestHostEscapingPodSpecsAreRefused(t *testing.T) {
 			}
 		})
 
-		// The same spec one level down. A Deployment is the likelier
-		// shape, and a guard that only reads the Pod case is no guard.
 		t.Run("deployment with "+tc.name, func(t *testing.T) {
 			msg := s.callExpectingError(t, "resource_apply", map[string]any{"manifest": map[string]any{
 				"apiVersion": "apps/v1", "kind": "Deployment",
@@ -648,7 +625,6 @@ func TestHostEscapingPodSpecsAreRefused(t *testing.T) {
 	}
 
 	t.Run("an ordinary pod spec is still applied", func(t *testing.T) {
-		// The guard has to be narrow enough to leave the tool useful.
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{"manifest": map[string]any{
 			"apiVersion": "v1", "kind": "Pod",
@@ -679,8 +655,7 @@ func TestHostEscapingPodSpecsAreRefused(t *testing.T) {
 	})
 }
 
-// TestSecretBearingPodSpecsAreRefused covers the disclosure route around
-// the Secret read deny list: mount one, print it, read it via pod_logs.
+// covers the disclosure route around the secret read deny list: mount, print, pod_logs.
 func TestSecretBearingPodSpecsAreRefused(t *testing.T) {
 	s := newWriteSession(t, true, true)
 
@@ -729,9 +704,7 @@ func TestSecretBearingPodSpecsAreRefused(t *testing.T) {
 				}},
 			}},
 		}, "an envFrom secretRef"},
-		// The kubelet presents this Secret to whatever registry the image
-		// names, so the credential leaves the cluster without any
-		// container reading it.
+		// the kubelet presents this secret to the named registry; no container reads it.
 		{"imagePullSecrets", map[string]any{
 			"containers":       []any{map[string]any{"name": "c", "image": "registry.attacker.example/x"}},
 			"imagePullSecrets": []any{map[string]any{"name": "regcred"}},
@@ -752,7 +725,6 @@ func TestSecretBearingPodSpecsAreRefused(t *testing.T) {
 		})
 	}
 
-	// A configMap through the same fields must still work.
 	t.Run("a configMap by the same routes is still applied", func(t *testing.T) {
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{"manifest": map[string]any{
@@ -783,9 +755,7 @@ func TestSecretBearingPodSpecsAreRefused(t *testing.T) {
 	})
 }
 
-// A workload whose pods would mount a bound service account's token is
-// refused: the container could print the token and pod_logs would return it.
-// The same workload with automountServiceAccountToken: false is applied.
+// the container could print the token and pod_logs would return it.
 func TestBoundServiceAccountTokensAreRefused(t *testing.T) {
 	s := newWriteSession(t, true, false)
 
@@ -834,11 +804,7 @@ func TestBoundServiceAccountTokensAreRefused(t *testing.T) {
 	}
 }
 
-// A volume that names a Secret for the kubelet to deliver leaks it without
-// any container reading it: the in-tree iSCSI plugin logs in to the portal
-// the pod spec names with the Secret's CHAP keys. Every such reference is
-// refused, the removed in-tree plugins included, and the refusal says the
-// kubelet sends the values, not that a container could print them.
+// the kubelet delivers the secret to the portal or driver the pod names.
 func TestVolumeSecretRefsAreRefused(t *testing.T) {
 	s := newWriteSession(t, true, true)
 	container := []any{map[string]any{"name": "c", "image": "busybox"}}
@@ -893,7 +859,6 @@ func TestVolumeSecretRefsAreRefused(t *testing.T) {
 		})
 	}
 
-	// The refusal is for the Secret, not the volume type.
 	t.Run("an iscsi volume without a secretRef is still applied", func(t *testing.T) {
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{"manifest": map[string]any{
@@ -912,10 +877,7 @@ func TestVolumeSecretRefsAreRefused(t *testing.T) {
 	})
 }
 
-// The operator deletes whatever its kube-system inventory lists, and a
-// node-client claim holds a node name, both with the operator's own
-// cluster-admin identity. Writing either through this server would get around
-// its tiers, so neither is writable even with both flags.
+// the operator writes both with its own cluster-admin identity, so the tiers could be bypassed.
 func TestEngineConfigMapsAreNotWritableAtAnyTier(t *testing.T) {
 	for _, destructive := range []bool{false, true} {
 		t.Run(fmt.Sprintf("allow-destructive=%t", destructive), func(t *testing.T) {
@@ -959,11 +921,7 @@ func testEngineConfigMapsRefused(t *testing.T, s *k8sSession) {
 	})
 }
 
-// The local-path provisioner runs a helper pod on the node, with a node
-// directory mounted, for every volume, and what that pod runs comes from the
-// objects in its namespace and from a storage class's parameters. None of them
-// is writable even with both flags, and the refusal comes before the API
-// server is asked, so the objects are left as they were.
+// what the local-path helper pod runs comes from these objects, so none is writable at any tier.
 func TestLocalPathProvisioningIsNotWritableAtAnyTier(t *testing.T) {
 	s := newWriteSession(t, true, true)
 	const ns = "local-path-storage"
@@ -1065,8 +1023,7 @@ func TestLocalPathProvisioningIsNotWritableAtAnyTier(t *testing.T) {
 		}
 	})
 
-	// A cluster-scoped object lives in no namespace, so naming this one as
-	// the namespace argument does not put it there.
+	// a cluster-scoped object lives in no namespace, so naming this one does not place it there.
 	t.Run("a cluster-scoped object given that namespace is applied", func(t *testing.T) {
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{"namespace": ns, "manifest": map[string]any{
@@ -1091,7 +1048,6 @@ func TestLocalPathProvisioningIsNotWritableAtAnyTier(t *testing.T) {
 	})
 }
 
-// TestNodeWritesAreRefusedButDeletesAreOnlyGated.
 func TestNodeWritesAreRefusedButDeletesAreOnlyGated(t *testing.T) {
 	t.Run("apply is refused at every tier", func(t *testing.T) {
 		s := newWriteSession(t, true, true)
@@ -1116,12 +1072,10 @@ func TestNodeWritesAreRefusedButDeletesAreOnlyGated(t *testing.T) {
 	})
 }
 
-// TestConversionWebhookCRDsAreRefused.
 func TestConversionWebhookCRDsAreRefused(t *testing.T) {
 	s := newWriteSession(t, true, true)
 
-	// spec.versions is required, or the API server rejects every one of
-	// these as invalid and the negative case below proves nothing.
+	// spec.versions is required, or the negative case below proves nothing.
 	crd := func(conversion map[string]any) map[string]any {
 		spec := map[string]any{
 			"group": "example.com",
@@ -1160,9 +1114,7 @@ func TestConversionWebhookCRDsAreRefused(t *testing.T) {
 		t.Errorf("error %q does not say the conversion webhook is why", msg)
 	}
 
-	// A CRD with no conversion webhook is an ordinary install and must
-	// still work, or the guard has taken the resource away entirely.
-	// A success, not "the refusal did not mention conversion".
+	// a CRD without a conversion webhook must still install, or the guard has taken the resource away.
 	t.Run("a CRD without one is applied", func(t *testing.T) {
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{
@@ -1195,7 +1147,7 @@ func TestConversionWebhookCRDsAreRefused(t *testing.T) {
 				t.Errorf("restore non-webhook CRD: %v", err)
 			}
 		}()
-		// A different manager owns conversion; the MCP manifest omits it.
+		// a different manager owns conversion; the MCP manifest omits it.
 		if _, err := ri.Apply(t.Context(), "widgets.example.com", &unstructured.Unstructured{Object: webhook}, metav1.ApplyOptions{FieldManager: "external-manager", Force: true}); err != nil {
 			t.Fatal(err)
 		}
@@ -1216,13 +1168,7 @@ func typedFor(t *testing.T, cfg *rest.Config) kubernetes.Interface {
 	return typed
 }
 
-// TestNodePathStorageIsRefused covers the one route around the pod-spec
-// hostPath guard that the PersistentVolume deny list does not close.
-//
-// deniedMutations refuses writing a PersistentVolume or a claim, so this
-// server cannot create a node-path pair. It can still mount a pair an
-// operator left behind, and that reaches the node's filesystem with no
-// hostPath anywhere in the pod spec.
+// deniedMutations refuses writing a node-path PV or claim, not mounting one left behind.
 func TestNodePathStorageIsRefused(t *testing.T) {
 	s := newWriteSession(t, true, true)
 
@@ -1260,8 +1206,7 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// A claim bound to ordinary storage must still mount, or the guard has
-	// taken persistent storage away rather than node paths.
+	// a claim bound to ordinary storage must still mount, or the guard took storage away.
 	t.Run("a pod mounting a claim bound to network storage is applied", func(t *testing.T) {
 		vol := s.createNFSPV(t, "bound-nfs")
 		claim := s.createBoundClaim(t, "netdata", vol)
@@ -1282,8 +1227,7 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// A claim that does not exist yet is not a refusal: the pod cannot
-	// start until it binds, and creating the claim is itself refused.
+	// an absent claim is not a refusal: the pod cannot start until it binds.
 	t.Run("a pod mounting an absent claim is applied", func(t *testing.T) {
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{"manifest": map[string]any{
@@ -1301,9 +1245,7 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// A claim the cluster will create from a template is made after this
-	// check, so the check is on what it could bind to among the PVs that
-	// exist now. A class-less template matches a class-less node-path PV.
+	// the check sees the PVs that exist now; a class-less template matches a class-less PV.
 	t.Run("a StatefulSet whose claim template can bind a node-path volume is refused", func(t *testing.T) {
 		s.createNodePathPV(t, "np-claims")
 
@@ -1335,10 +1277,7 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// A set's pods re-adopt an existing <template>-<set>-<ordinal> claim by
-	// name, so a claim that is already bound is what the new pods mount. The
-	// provisioned class keeps the PV matching out of it: only the reuse of a
-	// node-path-backed claim can refuse.
+	// a set's pods re-adopt a bound claim by name, so reusing a node-path claim must refuse.
 	t.Run("a StatefulSet whose template would reuse a claim bound to a node path is refused", func(t *testing.T) {
 		vol := s.createNodePathPV(t, "np-reuse")
 		s.createBoundClaim(t, "data-webhost-0", vol)
@@ -1371,9 +1310,6 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// The product-owner constraint in the other direction: a retained claim
-	// the template's name could reach must keep applying when it is bound to
-	// ordinary storage.
 	t.Run("a StatefulSet whose template would reuse a claim bound to network storage is applied", func(t *testing.T) {
 		vol := s.createNFSPV(t, "net-reuse")
 		s.createBoundClaim(t, "data-webnet-0", vol)
@@ -1407,8 +1343,6 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// An ephemeral volume whose claim template pins a node-path PV is the
-	// same route under a different name.
 	t.Run("a pod whose ephemeral volume names a node-path volume is refused", func(t *testing.T) {
 		nodePV := s.createNodePathPV(t, "np-ephemeral")
 
@@ -1431,10 +1365,7 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 		}
 	})
 
-	// The product-owner case: the default local-path provisioner makes
-	// hostPath PVs for every claim it serves, so a template on a provisioned
-	// class must keep applying. The explicit class matters here: an unset
-	// class would match the class-less node-path PV above.
+	// the provisioner makes hostPath PVs; the explicit class keeps the node-path PV from matching.
 	t.Run("a StatefulSet on a provisioned class is applied", func(t *testing.T) {
 		s.createNodePathPV(t, "np-provisioned")
 
@@ -1468,13 +1399,11 @@ func TestNodePathStorageIsRefused(t *testing.T) {
 	})
 }
 
-// TestApplyChecksTheObjectAlreadyThere covers what server-side apply
-// preserves. A field this manifest omits stays as another field manager
-// left it, so checking only the manifest does not enforce the policy.
+// a field the manifest omits stays as another manager left it, so the stored object is checked too.
 func TestApplyChecksTheObjectAlreadyThere(t *testing.T) {
 	s := newWriteSession(t, true, true)
 
-	// Created by another manager, carrying a volume this server refuses.
+	// created by another manager, carrying a volume this server refuses.
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "legacy", Namespace: s.namespace},
 		Spec: appsv1.DeploymentSpec{
@@ -1496,8 +1425,7 @@ func TestApplyChecksTheObjectAlreadyThere(t *testing.T) {
 		t.Fatalf("seed deployment: %v", err)
 	}
 
-	// The manifest itself is clean and mentions no volumes at all. Under
-	// SSA the secret volume survives, so this must still be refused.
+	// under SSA the secret volume survives the clean manifest, so this must refuse.
 	msg := s.callExpectingError(t, "resource_apply", map[string]any{"manifest": map[string]any{
 		"apiVersion": "apps/v1", "kind": "Deployment",
 		"metadata": map[string]any{"name": "legacy", "namespace": s.namespace},
@@ -1516,10 +1444,7 @@ func TestApplyChecksTheObjectAlreadyThere(t *testing.T) {
 		t.Errorf("error %q does not say the retained secret volume is why", msg)
 	}
 
-	// A StatefulSet another manager created carries a volumeClaimTemplates
-	// entry this manifest omits. SSA keeps it, so a scale-up apply that only
-	// changes the image would still have the controller make new claims from
-	// that template -- it must be refused while a node-path PV could take one.
+	// SSA keeps the retained template; a scale-up is refused only while a node-path PV could take one.
 	t.Run("a retained claim template on the stored object is refused", func(t *testing.T) {
 		s.createNodePathPV(t, "np-retained")
 		emptyClass := ""
@@ -1568,7 +1493,6 @@ func TestApplyChecksTheObjectAlreadyThere(t *testing.T) {
 		}
 	})
 
-	// A deployment with nothing to retain still applies.
 	t.Run("an object with no protected field is applied", func(t *testing.T) {
 		var out mcpsrv.ResourceApplyOut
 		s.call(t, "resource_apply", map[string]any{"manifest": map[string]any{
@@ -1640,20 +1564,11 @@ func (s *k8sSession) createBoundClaim(t *testing.T, name, volume string) string 
 	return name
 }
 
-// TestACRDAppliedHereIsThenAddressable is the end-to-end case for the
-// discovery refresh.
-//
-// Discovery is cached for the life of the process, and resource_apply
-// resolves the CRD's own kind through the mapper first, so the cache is
-// already warm and predates the new kind. Without a refresh on a miss,
-// this server can install a CustomResourceDefinition and then be unable
-// to address it for the rest of the session, reporting "unknown
-// resource" as though the CRD had never been applied.
+// discovery is cached for the process life, so a fresh CRD needs a refresh on a miss.
 func TestACRDAppliedHereIsThenAddressable(t *testing.T) {
 	s := newWriteSession(t, true, true)
 
-	// Warm the cache before the kind exists, which is what makes the
-	// miss possible. Any resolve through the mapper does it.
+	// warm the cache before the kind exists; that is what makes the miss possible.
 	var before mcpsrv.ResourceListOut
 	s.call(t, "resource_list", map[string]any{"resource": "configmaps", "namespace": s.namespace}, &before)
 
@@ -1678,9 +1593,7 @@ func TestACRDAppliedHereIsThenAddressable(t *testing.T) {
 		t.Fatalf("apply = %+v", applied)
 	}
 
-	// Wait for the API server itself to serve the new resource. That is
-	// a different question from whether our cached discovery knows about
-	// it, which is what the call below actually tests.
+	// the API server serving it differs from whether the cached discovery knows it.
 	waitForServedResource(t, s.typed, "example.com/v1", "sprockets")
 
 	var out mcpsrv.ResourceListOut
@@ -1709,10 +1622,7 @@ func waitForServedResource(t *testing.T, typed kubernetes.Interface, groupVersio
 	}
 }
 
-// Server-side apply can build a pod spec out of fields that neither the
-// manifest nor the existing object holds alone: another manager's hostPID,
-// with no containers beside it, and this manifest's containers. The object the
-// apply would produce is what gets checked.
+// SSA can merge another manager's hostPID with this manifest's containers.
 func TestApplyRefusesAPodSpecAssembledAcrossManagers(t *testing.T) {
 	s := newWriteSession(t, true, true)
 	dc, err := dynamic.NewForConfig(kubetest.Start(t))

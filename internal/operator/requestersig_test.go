@@ -41,15 +41,12 @@ func TestRequesterSignerSignVerify(t *testing.T) {
 	if !s.verify("uid-1", info, sig) {
 		t.Fatal("a signature must verify against its own inputs")
 	}
-	// Bound to the UID.
 	if s.verify("uid-2", info, sig) {
 		t.Error("signature must not verify against a different object UID")
 	}
-	// Bound to the identity.
 	if s.verify("uid-1", requesterInfo{Username: "bob"}, sig) {
 		t.Error("signature must not verify against a different identity")
 	}
-	// Field boundaries are unambiguous: (user "a", group "b") != (user "ab", group "").
 	a := s.sign("uid-1", requesterInfo{Username: "a", Groups: []string{"b"}})
 	b := s.sign("uid-1", requesterInfo{Username: "ab", Groups: []string{}})
 	if a == b {
@@ -87,20 +84,9 @@ func TestEnsureRequesterSigner(t *testing.T) {
 	}
 }
 
-// literalStamp is the authentic signature of testSigner() over a fixed object
-// binding (API version stratum.ciq.com/v1, kind HelmChart, namespace team-a,
-// name app, no spec; metadata UID is excluded) and the fixed
-// identity (alice/u1, groups team-a + system:authenticated), computed once when
-// this guard landed. It stands for every requester stamp already stored on a
-// tenant HelmChart in a cluster and MUST NEVER BE REGENERATED: if a change to
-// the signer alters what the signature covers or how it is encoded, this
-// literal stops verifying and this test fails.
+// literalStamp stands for stamps already stored on tenant HelmCharts; never regenerate.
 const literalStamp = "qGR5/gX3C+ZeEqoAFoBXibGE60aHXstXnWGcoofZT2g"
 
-// TestRequesterStamp_AStampWrittenTodayStillVerifies: a stamp written by
-// today's release still verifies after a key-format change, or every tenant
-// HelmChart already in the cluster would fail verification and keep its
-// finalizer.
 func TestRequesterStamp_AStampWrittenTodayStillVerifies(t *testing.T) {
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a", "system:authenticated"}}
 	hc := &unstructured.Unstructured{Object: map[string]any{
@@ -119,12 +105,9 @@ func TestRequesterStamp_AStampWrittenTodayStillVerifies(t *testing.T) {
 		},
 	}}
 
-	// The literal verifies against the key it was signed with.
 	if !testSigner().verify(requesterBinding(hc), info, literalStamp) {
 		t.Error("today's literal stamp must verify with today's key and binding")
 	}
-	// And the object-level path the reconciler uses accepts it and returns the
-	// stamped identity.
 	got, authentic, reason := verifiedRequester(hc, testSigner())
 	if !authentic {
 		t.Fatalf("a stamp written by this release must still verify; refused: %s", reason)
@@ -137,10 +120,7 @@ func TestRequesterStamp_AStampWrittenTodayStillVerifies(t *testing.T) {
 	}
 }
 
-// loadStampedFixture reads the golden stamp fixture: the exact object today's
-// admission webhook produces for one CREATE — namespace/name/spec binding,
-// stamped requester identity and canonical groups, and the signature in the
-// current canonical form. It is written once and never regenerated.
+// Reads the golden fixture, written once and never regenerated.
 func loadStampedFixture(t *testing.T) *unstructured.Unstructured {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "stamped-helmchart.json"))
@@ -154,22 +134,12 @@ func loadStampedFixture(t *testing.T) *unstructured.Unstructured {
 	return obj
 }
 
-// fixtureStamp is the signature the golden fixture carries. It was produced by
-// this release's signer and MUST NEVER BE REGENERATED alongside the fixture:
-// the fixture stands for the legacy stamps already stored on tenant HelmCharts,
-// so replacing it would make this test confirm the new format instead of the
-// old one.
+// fixtureStamp stands for the legacy stored stamps; never regenerate it or the fixture.
 const fixtureStamp = "9cHHuoCJeU+pN435a4q1fH6X97EShVgi2yBjztE5W6c"
 
-// TestRequesterStampFromThisReleaseStillVerifies: the golden fixture
-// testdata/stamped-helmchart.json (today's admitObject output, written once)
-// must keep verifying under the verifier of every future release, and
-// verification must keep rejecting anything that alters what the stamp is
-// bound to — the requester identity, and the desired state it authorizes.
 func TestRequesterStampFromThisReleaseStillVerifies(t *testing.T) {
 	hc := loadStampedFixture(t)
 
-	// The fixture binds exactly the identity and desired state admission saw.
 	bound := requesterInfo{Username: "alice", UID: "alice-uid", Groups: []string{"system:authenticated"}}
 	ann := hc.GetAnnotations()
 	if ann[annRequester] != bound.Username || ann[annRequesterUID] != bound.UID {
@@ -185,7 +155,6 @@ func TestRequesterStampFromThisReleaseStillVerifies(t *testing.T) {
 		t.Fatal("golden fixture records no spec, so the stamp binds no desired state")
 	}
 
-	// It verifies, and verification returns the stamped identity.
 	got, authentic, reason := verifiedRequester(hc, testSigner())
 	if !authentic {
 		t.Fatalf("a stamp written by this release must still verify; refused: %s", reason)
@@ -194,7 +163,6 @@ func TestRequesterStampFromThisReleaseStillVerifies(t *testing.T) {
 		t.Errorf("verifiedRequester returned identity %+v, want %+v", got, bound)
 	}
 
-	// Any change to what the signature covers stops it verifying.
 	for _, tc := range []struct {
 		name   string
 		tamper func(o *unstructured.Unstructured)
@@ -230,10 +198,6 @@ func TestRequesterStampFromThisReleaseStillVerifies(t *testing.T) {
 	}
 }
 
-// TestLoadRequesterSigner_FailsClosedWhenCancelled: a first key load whose
-// context is already cancelled returns nil promptly, instead of hanging in the
-// retry loop — an operator shutting down must not wait on an apiserver that
-// never answers.
 func TestLoadRequesterSigner_FailsClosedWhenCancelled(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	cs.PrependReactor("*", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -245,8 +209,6 @@ func TestLoadRequesterSigner_FailsClosedWhenCancelled(t *testing.T) {
 	done := make(chan *requesterSigner, 1)
 	go func() { done <- loadRequesterSignerWithRetry(ctx, cs) }()
 
-	// One second is well inside the ten-second retry interval: the loop must
-	// see the cancellation between attempts, not only after the timer fires.
 	select {
 	case s := <-done:
 		if s != nil {
@@ -257,8 +219,6 @@ func TestLoadRequesterSigner_FailsClosedWhenCancelled(t *testing.T) {
 	}
 }
 
-// testRotationKey returns a deterministic 32-byte key for rotation n; distinct n
-// give distinct keys, so a test can name exactly which key signed a stamp.
 func testRotationKey(n int) []byte {
 	k := make([]byte, requesterKeyBytes)
 	copy(k, "rotation-test-key-")
@@ -267,10 +227,7 @@ func testRotationKey(n int) []byte {
 	return k
 }
 
-// keyringFromSecret writes the requester-signing Secret the way the migration
-// leaves it — the legacy key field holding the CURRENT key, plus the retained-key
-// map (a JSON object of key id to std-base64 key) holding every verification key —
-// and loads a signer from it. Calling it again with a larger map is a key rotation.
+// Writes the signing Secret the way the migration leaves it and loads a signer.
 func keyringFromSecret(t *testing.T, cs kubernetes.Interface, currentID string, keys map[string][]byte) *requesterSigner {
 	t.Helper()
 	keyring := map[string]string{}
@@ -309,10 +266,7 @@ func keyringFromSecret(t *testing.T, cs kubernetes.Interface, currentID string, 
 	return s
 }
 
-// stampedV2 builds a HelmChart carrying the full migration stamp set: the identity
-// annotations, the legacy signature, the v2 signature, and the key identifier of
-// the key that produced the v2 signature — the annotation set admission writes
-// once the versioned binding lands.
+// stampedV2 builds a HelmChart carrying the full migration stamp set.
 func stampedV2(ns, name, uid string, info requesterInfo, s *requesterSigner, keyID string, spec map[string]any) *unstructured.Unstructured {
 	o := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "stratum.ciq.com/v1",
@@ -333,19 +287,12 @@ func stampedV2(ns, name, uid string, info requesterInfo, s *requesterSigner, key
 	return o
 }
 
-// TestRequesterStampV2Roundtrip: the versioned binding round-trips through
-// sign/verify. The v2 MAC is the legacy field sequence with the version+algorithm
-// header length-prefixed FIRST — that header is what keeps a v2 MAC from colliding
-// with a legacy MAC over the same payload — and a migrated stamp carries BOTH
-// signatures, so a pre-migration verifier can still verify it.
 func TestRequesterStampV2Roundtrip(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	s := keyringFromSecret(t, cs, "k1", map[string][]byte{"k1": testRotationKey(1)})
 	// Unsorted, with a duplicate: the v2 MAC must cover the canonical group set.
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"system:authenticated", "team-a", "team-a"}}
 
-	// The v2 MAC construction is the cross-release contract: length-prefixed
-	// version+algorithm header first, then the unchanged legacy fields.
 	if stampBindingV2 != "v2-hmac-sha256" {
 		t.Fatalf("stampBindingV2 = %q, want the pinned version+algorithm header v2-hmac-sha256", stampBindingV2)
 	}
@@ -376,8 +323,6 @@ func TestRequesterStampV2Roundtrip(t *testing.T) {
 	if _, ok, reason := verifiedRequester(stamped, s); !ok {
 		t.Fatalf("a migrated stamp must verify: %s", reason)
 	}
-	// Each half verifies on its own: the v2 signature through the stamp's key id,
-	// the legacy signature through the legacy path a pre-migration release reads.
 	onlyV2 := stamped.DeepCopy()
 	a := onlyV2.GetAnnotations()
 	delete(a, annRequesterSig)
@@ -393,9 +338,6 @@ func TestRequesterStampV2Roundtrip(t *testing.T) {
 	if _, ok, reason := verifiedRequester(onlyLegacy, s); !ok {
 		t.Fatalf("the legacy signature alone must still verify (pre-migration stamps): %s", reason)
 	}
-	// A v2 signature that fails no longer dooms the object on its own: the
-	// legacy MAC over the current binding authenticates it (the mixed-version
-	// fallback). Tampering BOTH signatures is what verification must refuse.
 	deadV2 := stamped.DeepCopy()
 	a = deadV2.GetAnnotations()
 	a[annRequesterSigV2] = "not-a-real-sig"
@@ -403,7 +345,6 @@ func TestRequesterStampV2Roundtrip(t *testing.T) {
 	if _, ok, reason := verifiedRequester(deadV2, s); !ok {
 		t.Fatalf("a failed v2 signature must fall back to the legacy MAC over the current binding: %s", reason)
 	}
-	// Anything the v2 stamp binds is rejected when it changes.
 	for _, tc := range []struct {
 		name   string
 		tamper func(o *unstructured.Unstructured)
@@ -433,17 +374,13 @@ func TestRequesterStampV2Roundtrip(t *testing.T) {
 	}
 }
 
-// TestRequesterKeyRotationRetainsVerifiers: three key rotations later, stamps
-// signed under every retained key still verify, and an untouched legacy object —
-// stamped once, never re-admitted — still uninstalls. The retained-key map exists
-// so rotation never orphans a stamp that is already stored.
 func TestRequesterKeyRotationRetainsVerifiers(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
 	spec := map[string]any{"chart": "app"}
 
 	s0 := keyringFromSecret(t, cs, "k0", map[string][]byte{"k0": testRotationKey(0)})
-	legacyHC := signedHC("team-a", "app", "uid-0", info, s0) // legacy stamp only, never re-admitted
+	legacyHC := signedHC("team-a", "app", "uid-0", info, s0)
 
 	signers := []*requesterSigner{s0}
 	allKeys := map[string][]byte{"k0": testRotationKey(0)}
@@ -453,8 +390,6 @@ func TestRequesterKeyRotationRetainsVerifiers(t *testing.T) {
 	}
 	final := signers[3]
 
-	// objects[0] is the untouched legacy object; objects[1..4] carry v2 stamps
-	// signed under k0..k3 respectively.
 	objects := []*unstructured.Unstructured{legacyHC}
 	for i, s := range signers {
 		id := "k" + fmt.Sprint(i)
@@ -475,18 +410,12 @@ func TestRequesterKeyRotationRetainsVerifiers(t *testing.T) {
 			t.Errorf("stamp signed under k%d carries key id %q", i, got)
 		}
 	}
-	// The untouched legacy object must still uninstall: its legacy stamp verifies
-	// against the retained keys even though none of them is the signer's current key.
 	imp, refuse, msg := uninstallIdentity(objects[0].DeepCopy(), []string{"kube-system"}, final)
 	if refuse || imp == nil || imp.UserName != info.Username {
 		t.Fatalf("untouched legacy object must remain uninstallable after three rotations: imp=%+v refuse=%v msg=%s", imp, refuse, msg)
 	}
 }
 
-// TestRequesterLegacyStampsStillVerifyUnderKeyring: the retained-key map must not
-// disturb legacy verification. The literalStamp guard stamp and the golden
-// fixture keep verifying under a signer whose CURRENT key is not the key they were
-// signed with — that key is merely retained in the map.
 func TestRequesterLegacyStampsStillVerifyUnderKeyring(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	retained := testSigner().key // the key the golden stamps were signed with
@@ -528,11 +457,6 @@ func TestRequesterLegacyStampsStillVerifyUnderKeyring(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerLoadsKeyedSecret: the Secret's retained-key map is the
-// signer's keyring — it signs under the map's current key and verifies under every
-// retained key — and a Secret that still carries only the legacy key field loads
-// with a key identifier that stays stable across reloads (see
-// TestAdmissionStampSurvivesSignerReload for the stamp-level consequence).
 func TestRequesterSignerLoadsKeyedSecret(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	s := keyringFromSecret(t, cs, "k1", map[string][]byte{"k1": testRotationKey(1), "k0": testRotationKey(0)})
@@ -545,24 +469,12 @@ func TestRequesterSignerLoadsKeyedSecret(t *testing.T) {
 	if _, ok, reason := verifiedRequester(o, s); !ok {
 		t.Fatalf("own v2 stamp must verify: %s", reason)
 	}
-	// A stamp signed under the RETAINED key k0 verifies too — the map is a
-	// keyring, not just the current key.
+	// A stamp signed under the retained key k0 verifies too.
 	old := stampedV2("team-a", "app", "uid-2", info, keyringFromSecret(t, fake.NewSimpleClientset(), "k0", map[string][]byte{"k0": testRotationKey(0)}), "k0", map[string]any{"chart": "app"})
 	if _, ok, reason := verifiedRequester(old, s); !ok {
 		t.Fatalf("a stamp signed under retained key k0 must verify under the loaded keyring: %s", reason)
 	}
 }
-
-// --- refreshing the requester signing key without a restart -------------------
-//
-// The signer is no longer loaded once and frozen for the process lifetime. A
-// background owner keeps the signing Secret under observation and publishes
-// immutable signer snapshots through an atomic holder; the admission webhook
-// reads a snapshot per request and the reconciler per pass. The tests below pin
-// that contract: the owner surface (maintainRequesterSigner), the holder
-// (newRequesterSignerHolder / publish / current), the tunable inter-attempt
-// wait of the startup retry (requesterKeyRetryWait), and an admissionHandler
-// that accepts the holder and re-reads the snapshot on every admission.
 
 // plainRequesterHC builds an unstamped HelmChart CR for admission to stamp.
 func plainRequesterHC(values string) *unstructured.Unstructured {
@@ -574,8 +486,6 @@ func plainRequesterHC(values string) *unstructured.Unstructured {
 	}}
 }
 
-// admissionCreateRequest builds the wire request admission would see for one
-// CREATE of obj by user.
 func admissionCreateRequest(t *testing.T, obj *unstructured.Unstructured, user string) *admissionv1.AdmissionRequest {
 	t.Helper()
 	raw, err := json.Marshal(obj)
@@ -593,9 +503,6 @@ func admissionCreateRequest(t *testing.T, obj *unstructured.Unstructured, user s
 	}
 }
 
-// admitThrough posts one CREATE AdmissionReview to handler, applies the returned
-// JSON Patch like the apiserver would, and returns the stamped object. allowed
-// is false when admission refused; msg then carries the refusal reason.
 func admitThrough(t *testing.T, handler http.HandlerFunc, obj *unstructured.Unstructured, user string) (stamped *unstructured.Unstructured, allowed bool, msg string) {
 	t.Helper()
 	body, err := json.Marshal(admissionv1.AdmissionReview{Request: admissionCreateRequest(t, obj, user)})
@@ -633,8 +540,6 @@ func admitThrough(t *testing.T, handler http.HandlerFunc, obj *unstructured.Unst
 	return out, true, ""
 }
 
-// writeRequesterSecret writes (or replaces) the signing Secret with the given
-// current key id and retained-key ring.
 func writeRequesterSecret(t *testing.T, cs kubernetes.Interface, currentID string, keys map[string][]byte) {
 	t.Helper()
 	keyring := map[string]string{}
@@ -685,10 +590,6 @@ func waitForSigner(t *testing.T, h *requesterSignerHolder, cond func(*requesterS
 	}
 }
 
-// TestRequesterSignerRetryKeepsSixAttempts: the startup key load keeps its
-// six-attempt pattern against a transient apiserver, fails closed (nil) when
-// they are exhausted, and spaces the attempts by requesterKeyRetryWait — which
-// must be honored, or no test could ever observe the pattern.
 func TestRequesterSignerRetryKeepsSixAttempts(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	var gets atomic.Int32
@@ -713,10 +614,6 @@ func TestRequesterSignerRetryKeepsSixAttempts(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerHolderPublishesImmutableSnapshots: the holder starts
-// keyless (fail closed), hands out the latest published snapshot, and never
-// lets a later publish change an earlier one — a snapshot handed out stays
-// byte-for-byte the signer it was when the reader took it.
 func TestRequesterSignerHolderPublishesImmutableSnapshots(t *testing.T) {
 	h := newRequesterSignerHolder()
 	if got := h.current(); got != nil {
@@ -746,12 +643,6 @@ func TestRequesterSignerHolderPublishesImmutableSnapshots(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerHolderSwapRaceUnderAdmissionAndReconcile: concurrent
-// admission (buildAdmissionResponse) and reconcile (verifiedRequester) readers
-// taking snapshots from the holder while publishers swap signers in must keep
-// stamping and verifying without a torn read — run under -race, this is the
-// test that condemns a plain (non-atomic) pointer swap. Every published signer
-// retains the whole keyring, so verification must succeed on every read.
 func TestRequesterSignerHolderSwapRaceUnderAdmissionAndReconcile(t *testing.T) {
 	h := newRequesterSignerHolder()
 	keys := map[string][]byte{
@@ -810,13 +701,6 @@ func TestRequesterSignerHolderSwapRaceUnderAdmissionAndReconcile(t *testing.T) {
 	wg.Wait()
 }
 
-// TestRequesterSignerOwnerReloadsReplacedSecret: deleting then recreating the
-// signing Secret must reload the key WITHOUT a process restart — the same
-// admission handler stamps with the new key on the next admission, the
-// reconciler verifies under the re-published snapshot, and stamps already
-// stored under the replaced key still verify (the previous verifier set is
-// retained, even though the recreated Secret carries only the new key, and the
-// retained set is written back so it survives a restart).
 func TestRequesterSignerOwnerReloadsReplacedSecret(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
@@ -829,11 +713,8 @@ func TestRequesterSignerOwnerReloadsReplacedSecret(t *testing.T) {
 
 	waitForSigner(t, h, func(s *requesterSigner) bool { return s != nil && bytes.Equal(s.key, testRotationKey(1)) },
 		"the owner must publish the signer loaded from the signing Secret")
-	// One handler instance for the whole test: it must re-read the snapshot per
-	// admission, which is what lets it stamp with both keys below.
 	handler := admissionHandler(h)
 
-	// A stamp already stored on a tenant HelmChart, signed under the original key.
 	oldObj := stampedV2("team-a", "app", "uid-1", info, s1, "k1", map[string]any{"chart": "app", "valuesContent": "replicas: 1"})
 	if _, ok, reason := verifiedRequester(oldObj, h.current()); !ok {
 		t.Fatalf("the stored stamp must verify before the Secret is replaced: %s", reason)
@@ -846,7 +727,6 @@ func TestRequesterSignerOwnerReloadsReplacedSecret(t *testing.T) {
 		t.Fatalf("the webhook must stamp with the loaded key id k1, stamped %q", got)
 	}
 
-	// Replace the Secret: delete, then recreate carrying ONLY the new key.
 	if err := cs.CoreV1().Secrets(webhookNamespace).Delete(context.Background(), requesterKeySecret, metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -870,9 +750,6 @@ func TestRequesterSignerOwnerReloadsReplacedSecret(t *testing.T) {
 		t.Errorf("stored stamps signed under the replaced key must still verify: %s", reason)
 	}
 
-	// The retained verifier set must outlive this process: the owner persists
-	// the merged keyring, or the next restart loses every stamp signed under
-	// the replaced key.
 	sec, err := cs.CoreV1().Secrets(webhookNamespace).Get(context.Background(), requesterKeySecret, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -886,10 +763,6 @@ func TestRequesterSignerOwnerReloadsReplacedSecret(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerOwnerKeepsSetWhenSecretDeleted: a deleted signing Secret
-// must NOT churn the key — the current verifier set keeps signing and
-// verifying across many owner ticks, and admission through the holder keeps
-// stamping with the same key.
 func TestRequesterSignerOwnerKeepsSetWhenSecretDeleted(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
@@ -908,8 +781,6 @@ func TestRequesterSignerOwnerKeepsSetWhenSecretDeleted(t *testing.T) {
 	if err := cs.CoreV1().Secrets(webhookNamespace).Delete(context.Background(), requesterKeySecret, metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// ~25 owner ticks: the snapshot must hold steady and the stored stamp must
-	// keep verifying the whole time.
 	deadline := time.Now().Add(50 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		cur := h.current()
@@ -922,7 +793,6 @@ func TestRequesterSignerOwnerKeepsSetWhenSecretDeleted(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	// Admission through the holder still stamps, with the SAME key.
 	stamped, allowed, msg := admitThrough(t, handler, plainRequesterHC("replicas: 3"), "alice")
 	if !allowed {
 		t.Fatalf("admission after the Secret was deleted refused: %s", msg)
@@ -935,12 +805,6 @@ func TestRequesterSignerOwnerKeepsSetWhenSecretDeleted(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerOwnerRecreatesDeletedSecretFromHeldKey: a signing Secret
-// deleted while a key is loaded must be re-created from the held snapshot.
-// Nothing else in the cluster restores it, and the next restart over a missing
-// Secret mints a fresh random key (ensureRequesterSigner) — which would strand
-// every stored stamp as "forged or tampered", the outcome the key identifiers
-// exist to prevent.
 func TestRequesterSignerOwnerRecreatesDeletedSecretFromHeldKey(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
@@ -959,8 +823,6 @@ func TestRequesterSignerOwnerRecreatesDeletedSecretFromHeldKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The owner re-creates the deleted Secret from the held key within a few
-	// ticks, carrying the same key material.
 	deadline := time.Now().Add(250 * time.Millisecond)
 	for {
 		sec, err := cs.CoreV1().Secrets(webhookNamespace).Get(context.Background(), requesterKeySecret, metav1.GetOptions{})
@@ -979,8 +841,6 @@ func TestRequesterSignerOwnerRecreatesDeletedSecretFromHeldKey(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	// The restart the recreation exists for: a fresh load must return the SAME
-	// key — a fresh random one would fail every stored stamp at boot.
 	restarted, err := ensureRequesterSigner(context.Background(), cs)
 	if err != nil {
 		t.Fatal(err)
@@ -992,8 +852,6 @@ func TestRequesterSignerOwnerRecreatesDeletedSecretFromHeldKey(t *testing.T) {
 		t.Errorf("a stored stamp must verify under the signer a restarted operator loads: %s", reason)
 	}
 
-	// The re-created Secret carries the retained ring, so stamps signed under
-	// other retained keys survive the restart too.
 	sec, err := cs.CoreV1().Secrets(webhookNamespace).Get(context.Background(), requesterKeySecret, metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -1007,10 +865,6 @@ func TestRequesterSignerOwnerRecreatesDeletedSecretFromHeldKey(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerOwnerKeepsSetOnTransientErrors: while the apiserver
-// returns transient errors the owner must keep the current verifier set
-// working — and once the errors clear, a Secret that changed underneath must
-// still be picked up.
 func TestRequesterSignerOwnerKeepsSetOnTransientErrors(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
@@ -1046,8 +900,6 @@ func TestRequesterSignerOwnerKeepsSetOnTransientErrors(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	// While reads fail, the Secret is replaced; the owner can only learn that
-	// once the errors clear.
 	writeRequesterSecret(t, cs, "k2", map[string][]byte{"k1": testRotationKey(1), "k2": testRotationKey(2)})
 	failing.Store(false)
 
@@ -1058,10 +910,6 @@ func TestRequesterSignerOwnerKeepsSetOnTransientErrors(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerOwnerNeverStaysSilentlyKeyless: a first load that cannot
-// reach the apiserver must leave the holder nil (fail closed, admission
-// refused) — and the owner must keep retrying in the background so the key is
-// published the moment it becomes reachable, with no process restart.
 func TestRequesterSignerOwnerNeverStaysSilentlyKeyless(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	var failing atomic.Bool
@@ -1082,7 +930,6 @@ func TestRequesterSignerOwnerNeverStaysSilentlyKeyless(t *testing.T) {
 	defer cancel()
 	go maintainRequesterSigner(ctx, cs, h, 2*time.Millisecond)
 
-	// Keyless: nothing published, admission refused — not an invented signer.
 	deadline := time.Now().Add(50 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if s := h.current(); s != nil {
@@ -1096,7 +943,6 @@ func TestRequesterSignerOwnerNeverStaysSilentlyKeyless(t *testing.T) {
 		t.Errorf("the keyless refusal must say the signing key is unavailable, got: %s", msg)
 	}
 
-	// The apiserver becomes reachable: the key loads WITHOUT a restart.
 	failing.Store(false)
 	waitForSigner(t, h, func(s *requesterSigner) bool { return s != nil },
 		"the owner must keep retrying so the key loads the moment the apiserver answers")
@@ -1110,9 +956,6 @@ func TestRequesterSignerOwnerNeverStaysSilentlyKeyless(t *testing.T) {
 	}
 }
 
-// TestRequesterSignerOwnerStopsOnCancellation: the owner must respect
-// ctx.Done throughout — including while its first load or a ticker wait is
-// pending — and return promptly instead of leaking a goroutine.
 func TestRequesterSignerOwnerStopsOnCancellation(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	cs.PrependReactor("get", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -1141,8 +984,6 @@ func TestRequesterSignerOwnerStopsOnCancellation(t *testing.T) {
 	}
 }
 
-// setSchemaDefaultStripper replaces the versioned binding's schema source for
-// one test and restores the previous value at cleanup.
 func setSchemaDefaultStripper(t *testing.T, strip func(spec any) any) {
 	t.Helper()
 	prev := schemaDefaultStripper.Load()
@@ -1160,10 +1001,7 @@ func setSchemaDefaultStripper(t *testing.T, strip func(spec any) any) {
 	})
 }
 
-// stripDefaultsFor builds a schema source that strips every field named in the
-// (mutable) defaults map — a stand-in for the CRD-backed stripper whose served
-// schema can GROW the way the apiserver's does, so the map is read at strip
-// time, not materialized once.
+// Reads the defaults map at strip time, like a served schema that can grow.
 func stripDefaultsFor(defaults map[string]any) func(spec any) any {
 	return func(spec any) any {
 		props := make(map[string]any, len(defaults))
@@ -1179,16 +1017,12 @@ func stripDefaultsFor(defaults map[string]any) func(spec any) any {
 	}
 }
 
-// TestRequesterStampV2BindsAdmittedDefaults: the versioned binding covers the
-// admitted fields with their exact values, while subsequently introduced
-// defaulted fields may be projected away. Current defaults remain authenticated
-// so changing the schema cannot remove coverage of previously admitted values.
 func TestRequesterStampV2BindsAdmittedDefaults(t *testing.T) {
 	defaults := map[string]any{"timeout": "5m", "createNamespace": false}
 	setSchemaDefaultStripper(t, stripDefaultsFor(defaults))
 
 	s := testSigner()
-	info := requesterInfo{Username: "alice", UID: "alice-uid", Groups: []string{"system:authenticated"}} // what admitObject stamps
+	info := requesterInfo{Username: "alice", UID: "alice-uid", Groups: []string{"system:authenticated"}}
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "stratum.ciq.com/v1", "kind": "HelmChart",
 		"metadata": map[string]any{"namespace": "team-a", "name": "app"},
@@ -1199,7 +1033,6 @@ func TestRequesterStampV2BindsAdmittedDefaults(t *testing.T) {
 	}}
 	created := admitObject(t, obj, nil, "alice", s)
 
-	// The v2 signature binds the admitted field policy and exact admitted values.
 	if got := created.GetAnnotations()[annRequesterSigV2]; got != s.signV2(bindingV2(created), info) {
 		t.Fatalf("the stamped v2 signature must cover the admitted field policy and spec")
 	}
@@ -1210,8 +1043,6 @@ func TestRequesterStampV2BindsAdmittedDefaults(t *testing.T) {
 		t.Fatalf("a stamp over the admitted-field binding must verify: %s", reason)
 	}
 
-	// The schema gains a new default after the object exists; reading the old
-	// object serves it with "priority": 3, which the stamp never covered.
 	defaults["priority"] = int64(3)
 	served := created.DeepCopy()
 	served.Object["spec"].(map[string]any)["priority"] = int64(3)
@@ -1221,34 +1052,24 @@ func TestRequesterStampV2BindsAdmittedDefaults(t *testing.T) {
 		t.Errorf("verified identity %+v, want the bound alice/alice-uid", got)
 	}
 
-	// A tamper to a non-default value fails both signatures.
 	tampered := served.DeepCopy()
 	tampered.Object["spec"].(map[string]any)["chart"] = "other"
 	if _, ok, _ := verifiedRequester(tampered, s); ok {
 		t.Error("a tampered non-default value must be refused")
 	}
 
-	// A write of a NON-default value into a previously-defaulted field is
-	// covered by the projection now — and by the legacy MAC's full coverage.
 	changed := served.DeepCopy()
 	changed.Object["spec"].(map[string]any)["timeout"] = "10m"
 	if _, ok, _ := verifiedRequester(changed, s); ok {
 		t.Error("replacing a defaulted value with a non-default one must be refused")
 	}
 
-	// Without a schema source nothing is stripped (fail-safe full coverage):
-	// the same injected default then breaks verification, exactly as the
-	// pre-migration binding would.
 	setSchemaDefaultStripper(t, nil)
 	if _, ok, _ := verifiedRequester(served, s); ok {
 		t.Error("with no schema source the v2 stamp must keep full spec coverage")
 	}
 }
 
-// TestStripSchemaDefaultsWalk pins the projection the versioned binding covers:
-// fields equal to their schema default drop out recursively, fields the schema
-// does not describe always stay, and numbers compare by value across the int64
-// an unstructured decode yields and the float64 a plain JSON decode yields.
 func TestStripSchemaDefaultsWalk(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",
@@ -1294,19 +1115,14 @@ func TestStripSchemaDefaultsWalk(t *testing.T) {
 		t.Errorf("projection = %v, want %v (default-valued fields dropped, unknown and non-default fields kept)", out, want)
 	}
 
-	// A value that is itself the default drops out whole.
 	if _, keep := stripSchemaDefaults("5m", map[string]any{"default": "5m"}); keep {
 		t.Error("a scalar equal to its schema default must drop out of the projection")
 	}
-	// A non-default value in a defaulted field stays.
 	if v, keep := stripSchemaDefaults("10m", map[string]any{"default": "5m"}); !keep || v != "10m" {
 		t.Errorf("stripSchemaDefaults(10m) = %v keep=%v, want the value kept", v, keep)
 	}
 }
 
-// TestSchemaDefaultStripperFromCRD: the stripper derives from the storage
-// version's openAPIV3Schema — not the first version — and refuses to produce a
-// source from a schema without a spec.
 func TestSchemaDefaultStripperFromCRD(t *testing.T) {
 	const crd = `{
 	  "spec": {"versions": [

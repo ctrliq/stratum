@@ -189,8 +189,6 @@ func TestForNodeRefusesAProfileItCannotResolve(t *testing.T) {
 	}
 }
 
-// SharedSecretNames is every registered profile's secrets, sorted and
-// without repeats, and SecretNames one profile's, sorted.
 func TestSharedSecretNames(t *testing.T) {
 	prev := All()
 	t.Cleanup(func() { _ = SetRegistered(prev) })

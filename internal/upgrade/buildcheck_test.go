@@ -16,7 +16,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// answer stands in for the check Job on a node and records what it ran.
 func answer(t *testing.T, code int, err error) *[]nodejob.Spec {
 	t.Helper()
 	var ran []nodejob.Spec
@@ -29,9 +28,7 @@ func answer(t *testing.T, code int, err error) *[]nodejob.Spec {
 	return &ran
 }
 
-// The orchestrator's question before a drain: exit 0 is "already on
-// this build", ExitUpgradeNeeded is "upgrade it", and anything else is not an
-// answer at all -- so the node is neither skipped nor drained on a guess.
+// Anything but exit 0 or ExitUpgradeNeeded is not an answer: no skip, no drain.
 func TestNodeRunsThisBuild(t *testing.T) {
 	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-rc3"}
 	n := Node{Name: "w1", Version: "v1.37.1"}
@@ -65,8 +62,6 @@ func TestNodeRunsThisBuild(t *testing.T) {
 	}
 }
 
-// The check runs the staged binary, read-only: --check, the same --from and
-// --target as the upgrade would, and nothing that belongs to an upgrade.
 func TestNodeCheckArgv(t *testing.T) {
 	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-rc3", SoakSec: 15, SkipSnapshot: true}
 	argv := nodeCheckArgv(o, Node{})
@@ -79,9 +74,7 @@ func TestNodeCheckArgv(t *testing.T) {
 	}
 }
 
-// The check and the upgrade exec the same staged binary against the same
-// target, with the same pin: everything before --check is exactly what the
-// upgrade starts with, so the check cannot answer for another binary.
+// The check must not be able to answer for another binary than the upgrade runs.
 func TestCheckAndUpgradeArgvShareTheirPrefix(t *testing.T) {
 	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-next", SoakSec: 5,
 		expectBuild: "0123abcd", expectSHA256: "feedface", arch: "arm64"}
@@ -94,9 +87,7 @@ func TestCheckAndUpgradeArgvShareTheirPrefix(t *testing.T) {
 	}
 }
 
-// Every node is pinned to the build ID; the exact bytes pin only the nodes of
-// the orchestrator's architecture, since another architecture runs another
-// binary of the same build.
+// Another architecture runs another binary of the same build, so bytes pin only this arch.
 func TestStagedArgvPinsBuildAndSameArchBytes(t *testing.T) {
 	o := ClusterOptions{Target: "v1.37.1", From: "/x", expectBuild: "0123abcd", expectSHA256: "feedface", arch: "arm64"}
 	flag := func(argv []string, f string) string {
@@ -117,8 +108,7 @@ func TestStagedArgvPinsBuildAndSameArchBytes(t *testing.T) {
 	}
 }
 
-// A --from that cannot say what it is does not start the rollout: unpinned,
-// each node would answer for whatever is staged there.
+// Unpinned, each node would answer for whatever is staged at --from.
 func TestPinStagedBinaryRefusesAnUnidentifiedBinary(t *testing.T) {
 	dir := t.TempDir()
 	from := filepath.Join(dir, "stratum-next")
@@ -136,8 +126,7 @@ func TestPinStagedBinaryRefusesAnUnidentifiedBinary(t *testing.T) {
 	readStagedBuild = func(string) string { return "0123abcd" }
 	oldVer := readStagedVersion
 	t.Cleanup(func() { readStagedVersion = oldVer })
-	// A staged binary that cannot report its release would have every node
-	// stamped with the wrong one.
+	// A staged binary that cannot report its release would have every node stamped with the wrong one.
 	readStagedVersion = func(string) (string, error) { return "", errors.New("exec format error") }
 	o := ClusterOptions{From: from}
 	if err := pinStagedBinary(&o); err == nil || !strings.Contains(err.Error(), "does not report its version") {
@@ -157,8 +146,7 @@ func TestPinStagedBinaryRefusesAnUnidentifiedBinary(t *testing.T) {
 	}
 }
 
-// The version is read by running the staged binary, so it is read before the
-// hash: whatever the run leaves at --from is what gets pinned.
+// Reading the version runs the binary, so it can leave other bytes at --from.
 func TestPinStagedBinaryReadsTheVersionBeforeHashing(t *testing.T) {
 	from := filepath.Join(t.TempDir(), "stratum-next")
 	writeFile(t, from, "before", 0o755)
@@ -180,9 +168,7 @@ func TestPinStagedBinaryReadsTheVersionBeforeHashing(t *testing.T) {
 	}
 }
 
-// The kubelet's own report, "v1.37.1-stratum", is at a bare --target v1.37.1.
-// Compared raw it never was, so the plan could not show a finished or an
-// interrupted node for what it was.
+// The kubelet reports "v1.37.1-stratum", which is at a bare --target v1.37.1.
 func TestNodeKubeletVersionDropsTheBuildSuffix(t *testing.T) {
 	for in, want := range map[string]string{
 		"v1.37.1-stratum": "v1.37.1",
@@ -196,8 +182,7 @@ func TestNodeKubeletVersionDropsTheBuildSuffix(t *testing.T) {
 	}
 }
 
-// The check Job can take two minutes; a lease lost while it ran stops the node
-// before its cordon, whatever the check answered.
+// A lease lost during the two-minute check Job must stop the node before its cordon.
 func TestNodeRunsThisBuildRechecksTheLeaseAfterTheJob(t *testing.T) {
 	g := &leaseGuard{}
 	o := ClusterOptions{Target: "v1.37.1", From: "/var/lib/stratum/upgrade/stratum-rc3", lease: g}

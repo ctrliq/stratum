@@ -1,28 +1,6 @@
 package certs
 
-// The node-maintenance fence for the certs operations. Rotate, RotateCA and
-// MigrateEtcdCA each restart control-plane components and rewrite certificate
-// material on this host, so each must take the node maintenance lock
-// (internal/nodelock, the /run/stratum-upgrade.lock flock the upgrade already
-// fences at) before any change, and release it on every exit. The CLI and the
-// MCP tool call exactly these functions, so a refusal here is the refusal
-// their invocations print; pkg/cli adds nothing.
-//
-// Callers that already hold the lock must not refuse against themselves:
-// RotateCA's leaf reissue and the daily renewal tick reach Rotate from code
-// that took the lock, so Rotate takes a held-lock capability
-// (Options.NodeLockHeld) instead of reacquiring. A lock held in-process is
-// enough to test all of this: flock conflicts between open file descriptions,
-// so a second Acquire in the same process refuses exactly as it would against
-// a second process. The cross-process cases — a released binary's raw holder,
-// a killed holder — are internal/nodelock's own tests.
-//
-// The lock file lives at version.NodeUpgradeLockPath (/run/stratum-upgrade.lock)
-// — a path a test run must neither create nor hold. The fence tests below
-// redirect it per test; the TestMain redirects it for the rest of the package,
-// whose fixtures predate the fence and reach Rotate without one
-// (internal/etcdsnap/main_test.go and internal/ha/main_test.go are the same
-// fixture for restore and rejoin).
+// A second in-process Acquire refuses as it would against another process.
 
 import (
 	"context"
@@ -61,8 +39,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// redirectVar points one of the version package's path vars at value for the
-// test and restores it afterwards.
 func redirectVar(t *testing.T, v *string, value string) {
 	t.Helper()
 	old := *v
@@ -70,10 +46,6 @@ func redirectVar(t *testing.T, v *string, value string) {
 	t.Cleanup(func() { *v = old })
 }
 
-// holdNodeLock takes the node maintenance lock the way an `upgrade` run does —
-// the operation every released binary records — and releases it when the test
-// ends. The release is also returned for tests that must hand the node over
-// mid-test; releasing twice is harmless.
 func holdNodeLock(t *testing.T) (release func()) {
 	t.Helper()
 	release, err := nodelock.Acquire("upgrade")
@@ -84,9 +56,6 @@ func holdNodeLock(t *testing.T) (release func()) {
 	return release
 }
 
-// assertNodeLockRefusal fails unless err is the operation-naming lock refusal:
-// the substrings the released wording pins, plus the holder's operation and
-// pid, which is what tells an operator WHAT holds the node.
 func assertNodeLockRefusal(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -95,7 +64,7 @@ func assertNodeLockRefusal(t *testing.T, err error) {
 	for _, want := range []string{
 		"already running on this node",
 		"nothing was changed",
-		"upgrade", // the holder operation, named
+		"upgrade",
 		strconv.Itoa(os.Getpid()),
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -104,8 +73,6 @@ func assertNodeLockRefusal(t *testing.T, err error) {
 	}
 }
 
-// readLeaf reads one leaf certificate from the fixture PKI, for the
-// byte-identical assertions that prove nothing was reissued.
 func readLeaf(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(version.PKIDir, name))
@@ -115,13 +82,6 @@ func readLeaf(t *testing.T, name string) []byte {
 	return b
 }
 
-// TestRotateRefusesWhileNodeLockHeld is the leaf-renewal fence: while an
-// upgrade (or any other maintenance operation) holds the node, `certs rotate`
-// — the CLI's, the MCP tool's and the daily tick's entry point — refuses,
-// names the holder, and reissues nothing. A forced rotation is asserted, so
-// the run would reach RotateLeaves if the lock were not in the way: the leaf
-// must be byte-identical afterwards, which is what "before any change" means
-// here.
 func TestRotateRefusesWhileNodeLockHeld(t *testing.T) {
 	kubeVIPNode(t)
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
@@ -138,9 +98,6 @@ func TestRotateRefusesWhileNodeLockHeld(t *testing.T) {
 	}
 }
 
-// TestRotateWithHeldLockCapabilityDoesNotReacquire pins the nesting: a caller
-// that already holds the node lock passes the capability (Options.NodeLockHeld)
-// and Rotate proceeds instead of refusing against its own fence.
 func TestRotateWithHeldLockCapabilityDoesNotReacquire(t *testing.T) {
 	kubeVIPNode(t)
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
@@ -156,11 +113,6 @@ func TestRotateWithHeldLockCapabilityDoesNotReacquire(t *testing.T) {
 	}
 }
 
-// withHeldLock returns o with the held-lock capability set — the
-// Options.NodeLockHeld field nested callers pass instead of reacquiring. It is
-// read through reflect rather than written as a literal so this file compiles,
-// and the refusal tests above stay runnable, until the wiring adds the field;
-// the probe fails naming exactly what is missing.
 func withHeldLock(t *testing.T, o Options) Options {
 	t.Helper()
 	f := reflect.ValueOf(&o).Elem().FieldByName("NodeLockHeld")
@@ -171,10 +123,6 @@ func withHeldLock(t *testing.T, o Options) Options {
 	return o
 }
 
-// TestRotateReleasesTheNodeLock: a finished rotation hands the node on. Two
-// rotations in a row — or a rotation followed by any other operation's
-// Acquire — must both get past the lock, which a release that did nothing
-// would fail.
 func TestRotateReleasesTheNodeLock(t *testing.T) {
 	kubeVIPNode(t)
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
@@ -189,14 +137,10 @@ func TestRotateReleasesTheNodeLock(t *testing.T) {
 	release()
 }
 
-// stagedCPNode is a control-plane fixture with a CA rotation already staged:
-// the state from which a fresh trust-new must refuse, whether or not the node
-// lock is free.
 func stagedCPNode(t *testing.T) {
 	t.Helper()
 	kubeVIPNode(t)
-	// A control-plane node renders the apiserver static pod; its presence is
-	// what makes isWorker() false and the CP phase run.
+	// The apiserver manifest is what makes isWorker() false and the CP phase run.
 	if err := os.MkdirAll(staticpod.Dir(), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +158,6 @@ func stagedCPNode(t *testing.T) {
 	}
 }
 
-// stagedRotationFiles reads the files a staged rotation consists of, for the
-// byte-identical assertion that a refusal left them alone.
 func stagedRotationFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	out := map[string][]byte{}
@@ -225,7 +167,6 @@ func stagedRotationFiles(t *testing.T) map[string][]byte {
 	return out
 }
 
-// assertStagedRotationUnchanged fails unless every staged file is byte-identical.
 func assertStagedRotationUnchanged(t *testing.T, before map[string][]byte) {
 	t.Helper()
 	for name, want := range before {
@@ -235,11 +176,6 @@ func assertStagedRotationUnchanged(t *testing.T, before map[string][]byte) {
 	}
 }
 
-// TestStagedRotationRefusalSurvivesTheNodeLock pins the pre-existing guard: a
-// trust-new on a node with a rotation already staged refuses with the staged
-// message while the node lock is FREE — the node-lock wiring must not swallow
-// or reorder the staged-rotation refusal that stops a second, divergent CA.
-// Green before the wiring lands, so any change it reports is the wiring's.
 func TestStagedRotationRefusalSurvivesTheNodeLock(t *testing.T) {
 	stagedCPNode(t)
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
@@ -257,11 +193,6 @@ func TestStagedRotationRefusalSurvivesTheNodeLock(t *testing.T) {
 	assertStagedRotationUnchanged(t, before)
 }
 
-// TestRotateCARefusesWhileNodeLockHeld is the CA-rotation fence: the node-side
-// phase entry takes the node maintenance lock at its top — before the staged
-// guard, which is the first pre-change refusal on the control-plane path — so
-// while an upgrade holds the node, the refusal is the operation-naming lock
-// refusal and the staged rotation is untouched.
 func TestRotateCARefusesWhileNodeLockHeld(t *testing.T) {
 	stagedCPNode(t)
 	redirectVar(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
@@ -273,10 +204,6 @@ func TestRotateCARefusesWhileNodeLockHeld(t *testing.T) {
 	assertStagedRotationUnchanged(t, before)
 }
 
-// TestRotateCAReleasesTheNodeLockOnAnErrorExit: a phase that fails after the
-// lock — here a worker whose kubelet kubeconfig cannot be read — must still
-// hand the node on, or every later maintenance operation on it refuses until
-// the process dies.
 func TestRotateCAReleasesTheNodeLockOnAnErrorExit(t *testing.T) {
 	base := t.TempDir()
 	redirectVar(t, &version.K8sConfDir, filepath.Join(base, "kubernetes"))    // no manifests: a worker
@@ -295,13 +222,6 @@ func TestRotateCAReleasesTheNodeLockOnAnErrorExit(t *testing.T) {
 	release()
 }
 
-// TestMigrateEtcdCARefusesWhileNodeLockHeld is the etcd-CA-migration fence:
-// the per-node phase entry takes the node maintenance lock before it decides
-// anything about the phase, so while an upgrade holds the node the refusal is
-// the operation-naming lock refusal. Once the holder lets go, the same
-// invocation gets past the lock — to this node's no-etcd refusal, which is
-// where the phase's own work starts — proving the lock was released, not
-// dropped.
 func TestMigrateEtcdCARefusesWhileNodeLockHeld(t *testing.T) {
 	t.Setenv("NODE_IP", "10.0.0.9")                                               // hostNodeIP's fallback with no node state
 	redirectVar(t, &version.K8sConfDir, filepath.Join(t.TempDir(), "kubernetes")) // no etcd manifest

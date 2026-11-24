@@ -27,36 +27,18 @@ import (
 	"github.com/ctrliq/stratum/internal/pki"
 )
 
-// kubeletRenewTimeout bounds the CSR round trip: create, auto-approval by the
-// controller-manager, and signing.
 var kubeletRenewTimeout = 3 * time.Minute
 
-// errNoKubeletClientCert marks a kubelet with no client cert to renew with:
-// none on disk, or none in the file. sign-new authenticates the renewal with
-// that cert, so it cannot repair such a worker; rejoinWorker says what can.
+// sign-new authenticates the renewal with the current cert; it cannot repair a kubelet without one.
 var errNoKubeletClientCert = errors.New("the kubelet has no usable client cert")
 
 const rejoinWorker = "remove this worker (`stratum uninstall`) and join it again with a token from `stratum token create`"
 
-// kubeletRenewOps are the side effects of renewKubeletClientCert and
-// renewKubeletServingCert: request sends a CSR and returns the issued
-// certificate PEM, store installs a certificate and key as the kubelet's
-// current credential of that kind, client or serving.
 type kubeletRenewOps struct {
 	request kubeletRequest
 	store   func(certPEM, keyPEM []byte) error
 }
 
-// renewKubeletClientCert obtains a client certificate under the new CA for the
-// node identity in certPath and installs it, without ever removing the current
-// one first. The CSR is authenticated by the current certificate, which the
-// apiservers still accept until finalize, and approved through the
-// selfnodeclient binding, so no bootstrap token is involved. The new CA is the
-// trust anchor's newest (newestCA). A current certificate it already signed is
-// left as it is and reported as not renewed, so a sign-new that renewed and then
-// failed to restart the kubelet can be run again. Every check on the issued
-// certificate runs before store, so a refusal leaves the kubelet's credential as
-// it was.
 func renewKubeletClientCert(ctx context.Context, certPath string, anchor []*x509.Certificate, ops kubeletRenewOps) (renewed bool, err error) {
 	current, err := readKubeletClientLeaf(certPath)
 	if err != nil {
@@ -98,11 +80,7 @@ func renewKubeletClientCert(ctx context.Context, certPath string, anchor []*x509
 	return true, nil
 }
 
-// newestCA is the CA in the trust anchor that this rotation introduced: the one
-// whose validity starts last, since trust-new mints it after the CA it
-// replaces. The bundle's order is not relied on, as a worker's comes from
-// cluster-info. Two CAs that start in the same second cannot be told apart and
-// are refused.
+// The new CA is the one whose NotBefore starts last; equal start times are refused.
 func newestCA(anchor []*x509.Certificate) (*x509.Certificate, error) {
 	var newest *x509.Certificate
 	tied := false
@@ -136,11 +114,6 @@ func checkNodeClientSubject(what string, s pkix.Name) error {
 	return nil
 }
 
-// checkRenewedClientCert accepts an issued certificate only when it is for the
-// same node, carries the key this run generated, is valid now, and was signed
-// by newCA. One signed by another CA in the trust anchor is from the CA this
-// rotation replaces: finalize would drop it and lock the kubelet out exactly as
-// the old certificate would.
 func checkRenewedClientCert(certPEM []byte, key *ecdsa.PrivateKey, cn string, anchor []*x509.Certificate, newCA *x509.Certificate) error {
 	issued, err := pki.FirstCertificate(certPEM)
 	if err != nil {
@@ -187,11 +160,8 @@ func readKubeletClientLeaf(path string) (*x509.Certificate, error) {
 	return leaf, nil
 }
 
-// kubeletRequest sends a CSR and returns the issued certificate PEM.
 type kubeletRequest = func(ctx context.Context, csrPEM []byte, key crypto.Signer) ([]byte, error)
 
-// requestKubeletClientCert sends csrPEM as the kubelet, using kubeconfigPath's
-// client cert and trust, and waits for the issued certificate.
 func requestKubeletClientCert(kubeconfigPath string) kubeletRequest {
 	return requestKubeletCert(kubeconfigPath, certificatesv1.KubeAPIServerClientKubeletSignerName,
 		[]certificatesv1.KeyUsage{certificatesv1.UsageDigitalSignature, certificatesv1.UsageClientAuth})
@@ -219,9 +189,7 @@ func requestKubeletCert(kubeconfigPath, signerName string, usages []certificates
 	}
 }
 
-// storeKubeletClientCert writes the pair the way the kubelet's own rotation
-// does: a new timestamped kubelet-client-*.pem, then a swap of the
-// kubelet-client-current.pem symlink. The previous file stays on disk.
+// Writes the pair the way the kubelet's own rotation does: timestamped file, then symlink swap.
 func storeKubeletClientCert(certPath string) func(certPEM, keyPEM []byte) error {
 	return func(certPEM, keyPEM []byte) error {
 		dir := filepath.Dir(certPath)
@@ -234,9 +202,7 @@ func storeKubeletClientCert(certPath string) func(certPEM, keyPEM []byte) error 
 	}
 }
 
-// abandonCSR deletes a CSR the wait gave up on, since one left pending blocks
-// FinalizePreflight until kube-controller-manager collects it a day later. The
-// kubelet's own credentials may not delete it, so a failure only names it.
+// A pending CSR blocks finalize; the kubelet may lack delete rights, so failure only names it.
 func abandonCSR(cs kubernetes.Interface, name string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

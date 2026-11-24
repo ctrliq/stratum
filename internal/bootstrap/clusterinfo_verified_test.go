@@ -72,8 +72,7 @@ func newFixture(t *testing.T, ips []net.IP) verifiedFixture {
 	}
 }
 
-// serve starts a cluster-info endpoint. sawClientCert, if non-nil, records
-// whether the client offered a certificate when asked for one.
+// sawClientCert, if non-nil, records whether the client offered a certificate.
 func serve(t *testing.T, f verifiedFixture, publish []byte, sawClientCert *bool) string {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -103,9 +102,6 @@ func serve(t *testing.T, f verifiedFixture, publish []byte, sawClientCert *bool)
 	return srv.URL
 }
 
-// TestFetchClusterCAVerifiedReturnsPeerChain: the caller needs the peer chain to
-// check the fetched bundle against the connection it arrived on, so the happy
-// path must hand it back rather than discard it.
 func TestFetchClusterCAVerifiedReturnsPeerChain(t *testing.T) {
 	f := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	url := serve(t, f, f.caPEM, nil)
@@ -124,11 +120,6 @@ func TestFetchClusterCAVerifiedReturnsPeerChain(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedSendsNoClientCert makes the RBAC finding executable.
-// The cluster-info ConfigMap is granted to system:anonymous alone, and the
-// apiserver runs Node,RBAC — so offering the kubelet's client certificate would
-// authenticate the request as system:node:<host> and turn a request RBAC permits
-// into a 403. Presenting no credential is deliberate, not an oversight.
 func TestFetchClusterCAVerifiedSendsNoClientCert(t *testing.T) {
 	f := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	var sawClientCert bool
@@ -141,8 +132,6 @@ func TestFetchClusterCAVerifiedSendsNoClientCert(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedRejectsUntrustedServer is the whole point: the
-// transport, not any later containment check, is what stops an on-path attacker.
 func TestFetchClusterCAVerifiedRejectsUntrustedServer(t *testing.T) {
 	genuine := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	attacker := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
@@ -156,11 +145,6 @@ func TestFetchClusterCAVerifiedRejectsUntrustedServer(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedDistinguishesSANMismatch: a SAN failure means a
-// misconfigured endpoint, a chain failure means an untrusted peer. They call for
-// opposite responses, and this error string is all an operator gets — it reaches
-// them through the failed carotate Job's pod log, which nodejob.Run deliberately
-// retains (it deletes the Job only on success).
 func TestFetchClusterCAVerifiedDistinguishesSANMismatch(t *testing.T) {
 	f := newFixture(t, nil) // signed by the trusted CA, but no IP SAN
 	url := serve(t, f, f.caPEM, nil)
@@ -168,9 +152,7 @@ func TestFetchClusterCAVerifiedDistinguishesSANMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("serving cert with no matching SAN accepted")
 	}
-	// Assert the phrase unique to the trusted-but-wrong-endpoint branch: both
-	// branches contain "SAN mismatch" (the trust branch ends "...not as a SAN
-	// mismatch"), so matching that alone would pass whichever branch ran.
+	// Both branches contain "SAN mismatch"; matching that alone would pass whichever branch ran.
 	if !strings.Contains(err.Error(), "presented a TRUSTED certificate that is not valid for that endpoint") {
 		t.Errorf("err = %v, want the trusted-cert-wrong-endpoint diagnosis", err)
 	}
@@ -179,8 +161,6 @@ func TestFetchClusterCAVerifiedDistinguishesSANMismatch(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedNeedsUsableRoots: with no anchor there is nothing to
-// verify against, and the caller must not silently fall back to trusting anyone.
 func TestFetchClusterCAVerifiedNeedsUsableRoots(t *testing.T) {
 	f := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	url := serve(t, f, f.caPEM, nil)
@@ -193,11 +173,6 @@ func TestFetchClusterCAVerifiedNeedsUsableRoots(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedUntrustedPlusSANMismatch pins the combination where
-// classifying on the x509 error type alone gets the answer backwards. Verify
-// checks the hostname BEFORE it builds chains, so an attacker-signed certificate
-// that also fails SAN validation surfaces as x509.HostnameError — and must not be
-// announced as a trusted cert with a misconfigured endpoint.
 func TestFetchClusterCAVerifiedUntrustedPlusSANMismatch(t *testing.T) {
 	genuine := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	attacker := newFixture(t, nil) // untrusted CA AND no IP SAN
@@ -214,9 +189,6 @@ func TestFetchClusterCAVerifiedUntrustedPlusSANMismatch(t *testing.T) {
 	}
 }
 
-// TestCAFromClusterInfoRefusesAmbiguity: map iteration order is randomised, so
-// returning "whichever cluster entry came first" would make the node's trust
-// store depend on a coin flip. These bytes are the trust store; refuse instead.
 func TestCAFromClusterInfoRefusesAmbiguity(t *testing.T) {
 	body := func(t *testing.T, clusters map[string][]byte) []byte {
 		t.Helper()
@@ -254,14 +226,9 @@ func TestCAFromClusterInfoRefusesAmbiguity(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedCapsResponse: this runs on a worker that is also
-// running a kubelet, mid-rotation. An unbounded read turns a malfunctioning
-// apiserver into an OOM rather than a refusal.
 func TestFetchClusterCAVerifiedCapsResponse(t *testing.T) {
 	f := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
-	// Write until the client hangs up rather than stopping just past the cap: a
-	// handler that stops on its own produces "exceeds" even with the bound removed,
-	// so it would pin the refusal without pinning the bound.
+	// A handler that stops on its own produces "exceeds" even with the bound removed.
 	var served atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		chunk := make([]byte, 1<<16)
@@ -284,16 +251,12 @@ func TestFetchClusterCAVerifiedCapsResponse(t *testing.T) {
 	if !strings.Contains(err.Error(), "exceeds") {
 		t.Errorf("err = %v, want it to name the size cap", err)
 	}
-	// The refusal must come from a BOUNDED read. Allow generous slack for socket
-	// and proxy buffering, but nothing close to what the handler was willing to send.
+	// Slack for buffering, but nothing near what the handler was willing to send.
 	if got := served.Load(); got > 16*maxClusterInfoBytes {
 		t.Errorf("served %d bytes before the refusal; the read is not bounded near the %d-byte cap", got, maxClusterInfoBytes)
 	}
 }
 
-// TestFetchClusterCAVerifiedRejectsPlaintext pins the guard that stops a payload
-// fetched over an unauthenticated connection from becoming the kubelet's
-// clientCAFile, should a kubeconfig ever record an http:// endpoint.
 func TestFetchClusterCAVerifiedRejectsPlaintext(t *testing.T) {
 	f := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -319,12 +282,6 @@ func TestFetchClusterCAVerifiedRejectsPlaintext(t *testing.T) {
 	}
 }
 
-// TestFetchClusterCAVerifiedReportsHTTPStatus: a non-200 must be reported as
-// what it is. 403 is the specific case this function's anonymous-request
-// rationale anticipates — the anonymous grant removed, or a credential
-// presented — and without the status check the body (a Status object, no `data`
-// key) surfaces as "cluster-info ConfigMap missing data.kubeconfig", sending an
-// operator after a malformed ConfigMap instead of an authorization failure.
 func TestFetchClusterCAVerifiedReportsHTTPStatus(t *testing.T) {
 	f := newFixture(t, []net.IP{net.ParseIP("127.0.0.1")})
 	for _, tc := range []struct {
@@ -339,8 +296,7 @@ func TestFetchClusterCAVerifiedReportsHTTPStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.code)
-				// The shape the apiserver actually returns: a Status object, which
-				// parses as JSON but carries no `data` key.
+				// The shape the apiserver returns: a Status object with no data key.
 				if err := json.NewEncoder(w).Encode(map[string]any{
 					"kind": "Status", "status": "Failure", "code": tc.code,
 				}); err != nil {

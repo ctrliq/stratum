@@ -54,14 +54,14 @@ func TestMergedValuesPrecedence(t *testing.T) {
 		valuesContent: "replicas: 1\nimage:\n  repo: base\n  tag: v1\nservice:\n  port: 80\n",
 		set:           map[string]string{"image.tag": "v3"},
 	}
-	hcc := "replicas: 2\nimage:\n  tag: v2\n" // HCC overlays over spec; set overlays over HCC
+	hcc := "replicas: 2\nimage:\n  tag: v2\n"
 
 	got, err := mergedValues(spec, hcc)
 	if err != nil {
 		t.Fatalf("mergedValues: %v", err)
 	}
 
-	// replicas: HCC (2) beats spec (1) — strvals/YAML parse ints as float64.
+	// strvals/YAML parse ints as float64.
 	if v := got["replicas"]; asInt(v) != 2 {
 		t.Errorf("replicas = %v, want 2", v)
 	}
@@ -69,16 +69,12 @@ func TestMergedValuesPrecedence(t *testing.T) {
 	if !ok {
 		t.Fatalf("image is not a map: %#v", got["image"])
 	}
-	// image.tag: set (v3) beats HCC (v2) beats spec (v1).
 	if img["tag"] != "v3" {
 		t.Errorf("image.tag = %v, want v3 (set wins)", img["tag"])
 	}
-	// image.repo: only in spec, survives the deep-merge (HCC's image map merges,
-	// does not replace).
 	if img["repo"] != "base" {
 		t.Errorf("image.repo = %v, want base (nested deep-merge)", img["repo"])
 	}
-	// service.port: only in spec, untouched.
 	svc, ok := got["service"].(map[string]interface{})
 	if !ok || asInt(svc["port"]) != 80 {
 		t.Errorf("service.port = %#v, want 80", got["service"])
@@ -103,7 +99,6 @@ func TestMergedValuesBadYAML(t *testing.T) {
 }
 
 func TestMergeMapsReplacesSlices(t *testing.T) {
-	// Slices replace wholesale (not appended), as Helm does.
 	dst := map[string]interface{}{"args": []interface{}{"a", "b"}, "keep": "yes"}
 	src := map[string]interface{}{"args": []interface{}{"c"}}
 	out := mergeMaps(dst, src)
@@ -116,15 +111,7 @@ func TestMergeMapsReplacesSlices(t *testing.T) {
 	}
 }
 
-// --------------------------- chartContent round trip ----------------------
-
-// makeChartTGZ builds a minimal but valid chart archive in-memory:
-//
-//	<name>/Chart.yaml
-//	<name>/templates/cm.yaml
-//
-// LoadArchive strips the leading path component, so Chart.yaml must live under
-// the chart's top-level directory (not at the tar root).
+// LoadArchive strips the leading path component, so Chart.yaml sits under the chart's top dir.
 func makeChartTGZ(t *testing.T, name, version string) []byte {
 	t.Helper()
 	files := map[string]string{
@@ -180,24 +167,15 @@ func TestLoadChartBadBase64(t *testing.T) {
 }
 
 func TestLoadChartNoSource(t *testing.T) {
-	// No chartContent and no chart name => error, before any repo I/O.
 	_, err := loadChart(context.Background(), helmSpec{}, "ns", "name")
 	if err == nil {
 		t.Fatal("expected error when neither chartContent nor chart is set")
 	}
 }
 
-// --------------------------- repository fetch ------------------------------
-//
-// Repository and OCI requests share the chart timeout and leader lifetime.
-// Chart resolution and download run synchronously through context-bound
-// transports, because the SDK's LocateChart helper does not expose them.
+// repo fetches run through context-bound transports; the SDK's LocateChart exposes none.
 
-// redirectHelmCacheDir points loadChart's on-disk Helm cache at a per-test
-// temp dir instead of /var/lib/stratum-helm, which a test run may not write,
-// and sends Helm's content cache — the digest-keyed chart store loadChart
-// leaves at its home-directory default — into the same dir, so a test writes
-// nothing outside it.
+// point the cache and content cache at a temp dir, so a test writes nothing outside it.
 func redirectHelmCacheDir(t *testing.T) {
 	t.Helper()
 	prev := version.HelmCacheDir
@@ -205,19 +183,13 @@ func redirectHelmCacheDir(t *testing.T) {
 	t.Cleanup(func() { version.HelmCacheDir = prev })
 	t.Setenv("HELM_CONTENT_CACHE", filepath.Join(version.HelmCacheDir, "content"))
 	t.Setenv("HELM_REPOSITORY_CACHE", filepath.Join(version.HelmCacheDir, "cache"))
-	// The migration must not read the host's real legacy cache in a test: a
-	// path that does not exist makes it a no-op unless the test points the
-	// seam at state of its own.
+	// an absent path makes the migration a no-op; a test may point the seam at its own state.
 	legacyPrev := legacyHelmCacheDir
 	legacyHelmCacheDir = filepath.Join(t.TempDir(), "absent")
 	t.Cleanup(func() { legacyHelmCacheDir = legacyPrev })
 }
 
-// TestLoadChartRepoFetchTimesOut pins the contract against a repo that never
-// answers: loadChart must fail with a reason naming the timeout, keeping the
-// whole spec.timeout window and nothing more. loadChart runs in a goroutine
-// and the wait is bounded, so the fetch must fail inside the spec.timeout
-// window and not wait for Helm's own 120s getter timeout.
+// the fetch must fail inside spec.timeout, not wait for Helm's own 120s getter timeout.
 func TestLoadChartRepoFetchTimesOut(t *testing.T) {
 	redirectHelmCacheDir(t)
 	unblock := make(chan struct{})
@@ -299,17 +271,11 @@ func TestHelmChartRepoFetchStopsOnLeadershipCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Error("leadership cancellation left reconciliation waiting on the chart's 30s fetch timeout")
 	}
-	// Join reconciliation even on a failing implementation before the test
-	// restores its shared Helm state.
+	// the select above may end in a bare t.Error; join even then, before cleanups restore Helm state.
 	t.Cleanup(func() { <-done })
 }
 
-// TestLoadChartFromRepoFetch pins the happy path the timeout bounds: a repo
-// that answers serves its index and the chart archive, and loadChart resolves
-// and loads the chart through LocateChart. It keeps the timeout enforcement
-// honest — failing every fetch outright would also satisfy
-// TestLoadChartRepoFetchTimesOut, so this proves a fetch from a repo that
-// answers still succeeds.
+// the happy path keeps the timeout enforcement honest: an answering repo must fetch.
 func TestLoadChartFromRepoFetch(t *testing.T) {
 	redirectHelmCacheDir(t)
 	tgz := makeChartTGZ(t, "widget", "1.0.0")
@@ -340,12 +306,7 @@ func TestLoadChartFromRepoFetch(t *testing.T) {
 	}
 }
 
-// --------------------------- Helm log output ------------------------------
-
-// TestNewActionConfigLogsToOperatorLog pins that Helm's log output, debug
-// messages included, reaches the operator's standard logger as it did under
-// Helm v3. Helm v4 logs through slog, and an action.Configuration built
-// without a logger discards it.
+// helm v4 discards slog output when no logger is set.
 func TestNewActionConfigLogsToOperatorLog(t *testing.T) {
 	var buf bytes.Buffer
 	prevOut, prevFlags := log.Writer(), log.Flags()
@@ -367,13 +328,7 @@ func TestNewActionConfigLogsToOperatorLog(t *testing.T) {
 	}
 }
 
-// --------------------------- Helm apply method ----------------------------
-
-// TestHelmInstallUsesClientSideApply pins that a first install keeps Helm v3's
-// client-side apply, which needs no patch rights under requester impersonation.
-// Helm v4 installs server-side by default. The kube client's create options
-// are opaque, so the guard reads the apply method Helm records on the release,
-// which it derives from the same Install.ServerSideApply field.
+// client-side apply needs no patch rights under requester impersonation.
 func TestHelmInstallUsesClientSideApply(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	dyn := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
@@ -395,10 +350,6 @@ func TestHelmInstallUsesClientSideApply(t *testing.T) {
 	}
 }
 
-// TestNewActionConfigBindsRequestedNamespace pins that newActionConfig, which
-// inlines Helm v3's kube.GetConfig, binds Helm's clients to the namespace it is
-// given rather than the kubeconfig context's. Helm v4's kube client puts chart
-// objects that name no namespace into the getter's namespace.
 func TestNewActionConfigBindsRequestedNamespace(t *testing.T) {
 	kubeconfig := filepath.Join(t.TempDir(), "config")
 	if err := os.WriteFile(kubeconfig, []byte("apiVersion: v1\nkind: Config\nclusters:\n- name: test\n  cluster:\n    server: https://127.0.0.1:6443\ncontexts:\n- name: test\n  context:\n    cluster: test\n    namespace: elsewhere\ncurrent-context: test\n"), 0o600); err != nil {
@@ -421,14 +372,7 @@ func TestNewActionConfigBindsRequestedNamespace(t *testing.T) {
 	}
 }
 
-// --------------------------- unverifiable uninstall -----------------------
-
-// forbidOwnershipCheck makes h's Kubernetes client report one chart object,
-// the ConfigMap app-cm, whose REST client answers every request with 403, as
-// the apiserver does when the impersonated requester may not read it. Helm
-// v4's uninstall then cannot verify that the release owns app-cm. It returns
-// the client so a test can clear the object list once the apiserver
-// "recovers".
+// app-cm's ownership read answers 403, so helm's uninstall cannot verify it.
 func forbidOwnershipCheck(t *testing.T, h *fakeHelm) *kubefake.FailingKubeClient {
 	t.Helper()
 	kc, ok := h.cfg.KubeClient.(*kubefake.FailingKubeClient)
@@ -452,8 +396,6 @@ func forbidOwnershipCheck(t *testing.T, h *fakeHelm) *kubefake.FailingKubeClient
 	return kc
 }
 
-// wantUninstallIncomplete fails unless the HelmChart is Failed with a message
-// that carries Helm's list of the objects it could not verify.
 func wantUninstallIncomplete(t *testing.T, dyn dynamic.Interface, when string) {
 	t.Helper()
 	st := readFlowStatus(t, dyn)
@@ -464,11 +406,7 @@ func wantUninstallIncomplete(t *testing.T, dyn dynamic.Interface, when string) {
 	}
 }
 
-// TestDeletionKeepsFinalizerWhenHelmCannotVerifyOwnership pins the fail-safe:
-// when Helm v4's uninstall skips an object it cannot verify, purges the
-// release and reports success, the HelmChart keeps its finalizer and turns
-// Failed with Helm's list, and the next reconcile, which finds no release,
-// still keeps the finalizer.
+// helm purges the release anyway, so the finalizer must hold on the status alone.
 func TestDeletionKeepsFinalizerWhenHelmCannotVerifyOwnership(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
@@ -494,10 +432,7 @@ func TestDeletionKeepsFinalizerWhenHelmCannotVerifyOwnership(t *testing.T) {
 	wantUninstallIncomplete(t, dyn, "after the next reconcile")
 }
 
-// When the recovery uninstall purges the release but also returns an error
-// (here a failed wait for deletion), Helm's list of objects it could not
-// verify still decides: the HelmChart records it and is not reinstalled over
-// them, rather than turning a plain Failed that the next tick would reinstall.
+// an uninstall error must not hide the unverified list from the hold.
 func TestRecoverUninstallErrorKeepsTheUnverifiedList(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -510,11 +445,6 @@ func TestRecoverUninstallErrorKeepsTheUnverifiedList(t *testing.T) {
 	wantUninstallIncomplete(t, dyn, "after a recovery uninstall that also returned an error")
 }
 
-// TestRecoverPendingInstallStopsWhenHelmCannotVerifyOwnership pins the same
-// fail-safe for the uninstall that recovers a pending first install: the
-// HelmChart turns Failed with Helm's list and is not reinstalled over the
-// leftovers, even once the apiserver recovers and the failed backoff has
-// passed, until its spec changes.
 func TestRecoverPendingInstallStopsWhenHelmCannotVerifyOwnership(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -552,11 +482,7 @@ func TestRecoverPendingInstallStopsWhenHelmCannotVerifyOwnership(t *testing.T) {
 	wantDeployed(t, dyn, 1, "1.1.0")
 }
 
-// TestDeletionAfterIncompleteRecoveryAsksToRemoveFinalizer pins that deleting
-// a HelmChart whose pending-install recovery left objects Helm could not
-// verify rewrites the status to the finalizer instruction, keeping Helm's
-// list: the spec change the recovery message asks for does nothing once the
-// HelmChart is being deleted.
+// the spec change the recovery message asks for does nothing once deletion began.
 func TestDeletionAfterIncompleteRecoveryAsksToRemoveFinalizer(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -582,7 +508,6 @@ func TestDeletionAfterIncompleteRecoveryAsksToRemoveFinalizer(t *testing.T) {
 	}
 }
 
-// updateFlowHC applies mutate to the stored HelmChart.
 func updateFlowHC(t *testing.T, dyn dynamic.Interface, mutate func(*unstructured.Unstructured)) {
 	t.Helper()
 	hc := getFlowHC(t, dyn)
@@ -592,13 +517,7 @@ func updateFlowHC(t *testing.T, dyn dynamic.Interface, mutate func(*unstructured
 	}
 }
 
-// TestUninstallIncompleteListsOnlyUnverifiableObjects pins that an "uninstall
-// incomplete:" status message, which asks a person to remove the objects it
-// lists by hand, lists only the objects whose ownership Helm could not verify.
-// Helm's uninstall note also lists the objects a helm.sh/resource-policy: keep
-// annotation keeps and the objects another release owns; a person following
-// the message would delete those too, such as a kept PersistentVolumeClaim and
-// its data. The whole note still reaches the operator log.
+// the status message must not list objects helm keeps on purpose; a person would delete them.
 func TestUninstallIncompleteListsOnlyUnverifiableObjects(t *testing.T) {
 	t.Run("deletion", func(t *testing.T) {
 		h := useFakeHelm(t, fakeHelmOptions{})
@@ -634,11 +553,6 @@ func TestUninstallIncompleteListsOnlyUnverifiableObjects(t *testing.T) {
 	})
 }
 
-// keptAndOtherReleaseManifest is a stored release manifest with three objects:
-// the PersistentVolumeClaim app-data, which a helm.sh/resource-policy: keep
-// annotation keeps; the ConfigMap app-cm, whose ownership read
-// forbidOwnershipCheck answers with 403; and the ConfigMap other-cm, which
-// another release owns.
 const keptAndOtherReleaseManifest = `---
 # Source: app/templates/pvc.yaml
 apiVersion: v1
@@ -661,11 +575,7 @@ metadata:
   name: other-cm
 `
 
-// seedKeptAndUnverifiable stores revision 1 of the flow release, with the Helm
-// status given and keptAndOtherReleaseManifest, so that Helm's uninstall of it
-// sorts the three objects into the three sections of its note: it keeps
-// app-data for its resource policy, cannot verify app-cm (403), and skips
-// other-cm because the live object names another release.
+// helm sorts the three objects into the three sections of its uninstall note.
 func seedKeptAndUnverifiable(t *testing.T, h *fakeHelm, status string) {
 	t.Helper()
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: status, chartVersion: "1.0.0"})
@@ -707,8 +617,6 @@ func seedKeptAndUnverifiable(t *testing.T, h *fakeHelm, status string) {
 	kc.DummyResources = append(kc.DummyResources, &other)
 }
 
-// captureOperatorLog sends the operator's standard logger to a buffer for the
-// rest of the test.
 func captureOperatorLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -722,10 +630,6 @@ func captureOperatorLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// wantOnlyUnverifiableListed fails unless the HelmChart is Failed with an
-// "uninstall incomplete:" message that starts with prefix and names app-cm,
-// the object Helm could not verify, but neither app-data, which the resource
-// policy keeps, nor other-cm, which another release owns.
 func wantOnlyUnverifiableListed(t *testing.T, dyn dynamic.Interface, prefix, when string) {
 	t.Helper()
 	wantUninstallIncomplete(t, dyn, when)
@@ -740,9 +644,6 @@ func wantOnlyUnverifiableListed(t *testing.T, dyn dynamic.Interface, prefix, whe
 	}
 }
 
-// wantFullNoteLogged fails unless the operator log names every object in Helm's
-// uninstall note: the kept app-data, the unverifiable app-cm and the
-// other release's other-cm.
 func wantFullNoteLogged(t *testing.T, logs *bytes.Buffer, when string) {
 	t.Helper()
 	for _, obj := range []string{"app-data", "app-cm", "other-cm"} {
@@ -752,14 +653,7 @@ func wantFullNoteLogged(t *testing.T, logs *bytes.Buffer, when string) {
 	}
 }
 
-// TestDeletionRemovesFinalizerWhenNoteListsOnlyKeptObjects pins that an
-// uninstall whose Helm note lists only objects Helm leaves on purpose (the
-// PersistentVolumeClaim app-data, which a helm.sh/resource-policy: keep
-// annotation keeps, and the ConfigMap other-cm, which another release owns)
-// completes: the HelmChart loses its finalizer, no status write asks a person
-// to remove objects by hand, and the note still reaches the operator log. An
-// "uninstall incomplete:" message here would hold the finalizer forever and
-// tell a person to delete the kept volume's data.
+// an uninstall-incomplete message here would hold the finalizer and risk the kept volume's data.
 func TestDeletionRemovesFinalizerWhenNoteListsOnlyKeptObjects(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	logs := captureOperatorLog(t)
@@ -785,12 +679,7 @@ func TestDeletionRemovesFinalizerWhenNoteListsOnlyKeptObjects(t *testing.T) {
 	}
 }
 
-// seedKeptAndOtherRelease is seedKeptAndUnverifiable without the object Helm
-// cannot verify: the deployed release's uninstall no longer reaches app-cm, so
-// Helm's note lists only the kept app-data and the other release's other-cm.
-// Helm's fake Kubernetes client builds the objects to delete from its
-// DummyResources, not from the stored manifest, so dropping app-cm there is
-// enough.
+// the fake kube client builds deletes from DummyResources, so dropping app-cm there is enough.
 func seedKeptAndOtherRelease(t *testing.T, h *fakeHelm) {
 	t.Helper()
 	seedKeptAndUnverifiable(t, h, "deployed")
@@ -807,13 +696,7 @@ func seedKeptAndOtherRelease(t *testing.T, h *fakeHelm) {
 	kc.DummyResources = reported
 }
 
-// TestUninstallIncompleteStatusSurvivesTransientWriteFailure pins that one
-// transient failure of the "uninstall incomplete:" status write, such as the
-// apiserver's "etcdserver: leader changed", does not lose the fail-safe. Helm
-// has purged the release by the time that status is written, so if it is lost
-// the next reconcile finds no release: the deletion path then removes the
-// finalizer, and the pending-install recovery path reinstalls over the objects
-// Helm could not verify.
+// helm has purged the release by then, so a lost hold write would remove the finalizer.
 func TestUninstallIncompleteStatusSurvivesTransientWriteFailure(t *testing.T) {
 	t.Run("deletion", func(t *testing.T) {
 		h := useFakeHelm(t, fakeHelmOptions{})
@@ -849,8 +732,7 @@ func TestUninstallIncompleteStatusSurvivesTransientWriteFailure(t *testing.T) {
 
 		wantIncompleteWriteRejectedOnce(t, writes, "after the recovery uninstall")
 
-		// The apiserver recovers and the failed backoff has passed, so only the
-		// recorded "uninstall incomplete:" status can stop a reinstall.
+		// recovered apiserver, failed backoff passed: only the recorded hold stops a reinstall.
 		kc.DummyResources = nil
 		updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 			past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -867,16 +749,12 @@ func TestUninstallIncompleteStatusSurvivesTransientWriteFailure(t *testing.T) {
 	})
 }
 
-// statusWrites is what recordStatusWrites saw.
 type statusWrites struct {
-	messages []string // status.message of every status write, rejected ones included
-	rejected int      // writes failed with "etcdserver: leader changed"
+	messages []string
+	rejected int // writes failed with "etcdserver: leader changed"
 }
 
-// recordStatusWrites records every status write to the HelmChart in dyn. It
-// fails the first failIncomplete writes whose message starts with
-// uninstallIncompletePrefix with the transient error an apiserver returns when
-// etcd changes leader mid-request, and lets every other write through.
+// fails the first failIncomplete incomplete-prefix writes with a transient etcd error.
 func recordStatusWrites(t *testing.T, dyn dynamic.Interface, failIncomplete int) *statusWrites {
 	t.Helper()
 	fake, ok := dyn.(*dynfake.FakeDynamicClient)
@@ -907,9 +785,6 @@ func recordStatusWrites(t *testing.T, dyn dynamic.Interface, failIncomplete int)
 	return w
 }
 
-// wantIncompleteWriteRejectedOnce fails unless recordStatusWrites rejected
-// exactly one "uninstall incomplete:" status write, so a test that relies on
-// that failure cannot pass without it.
 func wantIncompleteWriteRejectedOnce(t *testing.T, w *statusWrites, when string) {
 	t.Helper()
 	if w.rejected != 1 {
@@ -928,34 +803,28 @@ func TestSpecHashStableAndSensitive(t *testing.T) {
 	if h1 != h2 {
 		t.Errorf("specHash not stable: %s != %s", h1, h2)
 	}
-	// Insertion order of the values map must not matter (canonical JSON).
+	// map order must not matter (canonical JSON).
 	valsReordered := map[string]interface{}{"b": map[string]interface{}{"c": 2}, "a": 1}
 	if specHash(base, valsReordered) != h1 {
 		t.Error("specHash changed under value-map reordering (not canonical)")
 	}
 
-	// version change flips the hash.
 	verBumped := base
 	verBumped.version = "1.0.1"
 	if specHash(verBumped, vals) == h1 {
 		t.Error("specHash unchanged after version bump")
 	}
-	// chartContent change flips the hash.
 	ccChanged := base
 	ccChanged.chartContent = "BBBB"
 	if specHash(ccChanged, vals) == h1 {
 		t.Error("specHash unchanged after chartContent change")
 	}
-	// values change flips the hash.
 	if specHash(base, map[string]interface{}{"a": 99}) == h1 {
 		t.Error("specHash unchanged after values change")
 	}
 }
 
-// --------------------------- finalizer list helpers -----------------------
-
 func TestFinalizerListHelpers(t *testing.T) {
-	// add is idempotent.
 	got := addFinalizerList([]string{"other"}, helmFinalizer)
 	if len(got) != 2 || got[1] != helmFinalizer {
 		t.Errorf("addFinalizerList = %#v, want [other %s]", got, helmFinalizer)
@@ -963,12 +832,10 @@ func TestFinalizerListHelpers(t *testing.T) {
 	if again := addFinalizerList(got, helmFinalizer); len(again) != 2 {
 		t.Errorf("addFinalizerList not idempotent: %#v", again)
 	}
-	// remove keeps the others.
 	rem := removeFinalizerList(got, helmFinalizer)
 	if len(rem) != 1 || rem[0] != "other" {
 		t.Errorf("removeFinalizerList = %#v, want [other]", rem)
 	}
-	// remove of an absent finalizer is a no-op.
 	if noop := removeFinalizerList([]string{"other"}, helmFinalizer); len(noop) != 1 {
 		t.Errorf("removeFinalizerList absent = %#v, want [other]", noop)
 	}
@@ -1048,21 +915,7 @@ func TestParseHelmSpecBadTimeoutFallsBack(t *testing.T) {
 	}
 }
 
-// --------------------------- spec.setString ----------------------
-
-// setStringCases pins the exact strvals behaviour of the vendored helm
-// (v3.21.4) for both merge paths, so the two halves of setString support are asserted
-// against the same table.
-//
-// `set` (strvals.ParseInto) type-infers, but far more narrowly than folklore
-// suggests: only "true"/"false" (bool), "null" (nil), and an integer literal
-// that does not begin with '0' (int64) are converted. "1.0", "01" and "1e5" are
-// already left as strings by this helm version — older helm coerced them
-// through ParseFloat. They stay in the table as regression cover for that
-// behaviour not coming back.
-//
-// `setString` (strvals.ParseIntoString) infers nothing: every value stays the
-// string the user wrote.
+// pins the vendored helm's strvals inference for set and setString in one table.
 var setStringCases = []struct {
 	name     string
 	val      string
@@ -1099,8 +952,7 @@ func TestMergedValuesSetStringPreservesStrings(t *testing.T) {
 }
 
 func TestMergedValuesSetStillInfers(t *testing.T) {
-	// The companion half: spec.set must keep its existing inference. If this
-	// regresses, setString has been wired into the wrong loop.
+	// if this regresses, setString has been wired into the wrong loop.
 	for _, tc := range setStringCases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := mergedValues(helmSpec{set: map[string]string{"k": tc.val}}, "")
@@ -1119,11 +971,7 @@ func TestMergedValuesSetStillInfers(t *testing.T) {
 }
 
 func TestMergedValuesSetStringBeatsSet(t *testing.T) {
-	// Helm applies --set-string after --set (cli/values.Options.MergeValues), so
-	// the string form wins a same-key collision. That ordering is what makes
-	// setString a usable escape hatch: a user who finds a value arriving with the
-	// wrong type adds it to setString, without first having to hunt down and
-	// delete the set entry that is producing it.
+	// helm applies --set-string after --set, so the string form wins a collision.
 	spec := helmSpec{
 		set:       map[string]string{"image.tag": "42", "replicas": "3"},
 		setString: map[string]string{"image.tag": "42"},
@@ -1140,7 +988,6 @@ func TestMergedValuesSetStringBeatsSet(t *testing.T) {
 		t.Errorf("image.tag = %#v (%T), want %q (string) — setString must win the collision",
 			img["tag"], img["tag"], "42")
 	}
-	// A key only in set is untouched by the second loop and still infers.
 	if _, isInt := got["replicas"].(int64); !isInt {
 		t.Errorf("replicas = %#v (%T), want int64 — set-only keys must keep inferring",
 			got["replicas"], got["replicas"])
@@ -1148,8 +995,6 @@ func TestMergedValuesSetStringBeatsSet(t *testing.T) {
 }
 
 func TestMergedValuesSetStringBeatsValuesContent(t *testing.T) {
-	// setString sits in the same top band as set: above valuesContent and above
-	// the HelmChartConfig overlay.
 	spec := helmSpec{
 		valuesContent: "image:\n  tag: fromvalues\n",
 		setString:     map[string]string{"image.tag": "01"},
@@ -1165,15 +1010,7 @@ func TestMergedValuesSetStringBeatsValuesContent(t *testing.T) {
 }
 
 func TestMergedValuesPrefixOverlapIsStable(t *testing.T) {
-	// A parent key and a child key in the same field conflict inside strvals:
-	// whichever lands first, the other's write then hits a string where it
-	// expects a map (or a map where it expects a string), so the outcome
-	// depends on the order the entries are applied in. Go map iteration is
-	// random, so this spec sometimes parsed and sometimes failed from one
-	// reconcile to the next with no spec change. 200 rounds is far beyond the
-	// odds of a random order staying parent-first throughout (a single call
-	// succeeds roughly one time in eight), so a success here means the apply
-	// order is not fixed.
+	// 200 rounds beats the odds of a random map order succeeding once in eight.
 	cases := []struct {
 		name   string
 		field  func(*helmSpec, map[string]string)
@@ -1194,9 +1031,7 @@ func TestMergedValuesPrefixOverlapIsStable(t *testing.T) {
 				if vals != nil {
 					t.Errorf("round %d: vals = %#v, want nil alongside the error", i, vals)
 				}
-				// The tail of the strvals message is a Go interface-conversion
-				// panic text, which helm bumps may reword, so only its shape is
-				// asserted; the prefix pins which field and key failed.
+				// helm bumps may reword the panic text tail, so only its shape is asserted.
 				if !strings.HasPrefix(err.Error(), tc.prefix) || !strings.Contains(err.Error(), "interface conversion") {
 					t.Fatalf("round %d: error = %q, want %q... plus interface-conversion detail", i, err, tc.prefix)
 				}
@@ -1221,10 +1056,6 @@ func TestParseHelmSpecSetString(t *testing.T) {
 }
 
 func TestSpecHashCoversSetString(t *testing.T) {
-	// specHash fingerprints the merged values it is handed (see the :240 call
-	// site: mergedValues then specHash), so adding setString has to move the
-	// hash — otherwise a setString-only edit would look converged and never
-	// re-reconcile. This walks the same two steps the hot path does.
 	hash := func(spec helmSpec) string {
 		t.Helper()
 		vals, err := mergedValues(spec, "")
@@ -1241,18 +1072,7 @@ func TestSpecHashCoversSetString(t *testing.T) {
 	}
 }
 
-// --------------------------- CRD schema guard --------------------
-
-// TestHelmChartCRDDeclaresSetString guards the half of setString support that no
-// Go-level test can see.
-//
-// The HelmChart CRD's .spec is a closed structural schema: it lists its
-// properties explicitly and carries no x-kubernetes-preserve-unknown-fields
-// (only .status does). The API server therefore PRUNES any spec field the
-// schema does not declare — silently, with no validation error for the user.
-// A spec.setString that existed only in the Go struct would be dropped at
-// admission and would never reach parseHelmSpec, so every test above would go
-// green while the feature was dead in every real cluster.
+// a closed CRD schema prunes undeclared spec fields silently at admission.
 func TestHelmChartCRDDeclaresSetString(t *testing.T) {
 	props, ok := helmChartCRDSpecSchema(t)["properties"].(map[string]interface{})
 	if !ok {
@@ -1276,13 +1096,9 @@ func TestHelmChartCRDDeclaresSetString(t *testing.T) {
 	}
 }
 
-// The CRD description is the contract `kubectl explain` prints, so a precedence
-// chain that stops at .spec.set tells every operator the opposite of what the
-// code does: mergedValues applies setString after set, and both the root
-// description and spec.set's own must state that precedence.
+// the CRD description is the contract `kubectl explain` prints.
 func TestHelmChartCRDDescribesSetStringPrecedence(t *testing.T) {
-	// The precedence chain lives on the CRD's ROOT description (what `kubectl
-	// explain helmcharts` prints first), not on .spec's.
+	// the precedence chain lives on the CRD's root description, not .spec's.
 	if root := string(addons.RenderHelmCRDs()); strings.Contains(root, "< .spec.set.") {
 		t.Error("the HelmChart CRD description states a values-precedence chain ending " +
 			"at `< .spec.set.`, so `kubectl explain helmcharts` contradicts mergedValues, " +
@@ -1297,22 +1113,8 @@ func TestHelmChartCRDDescribesSetStringPrecedence(t *testing.T) {
 	}
 }
 
-// --------------------------- CRD equals the controller's spec ---------------
-
-// TestHelmChartCRDDeclaresExactlyTheSpecTheControllerReads pins the whole
-// .spec contract, not one field of it. The CRD's .spec is a closed structural
-// schema, so a field parseHelmSpec reads but the CRD does not declare is
-// pruned at admission and never reaches the controller, while a field the CRD
-// declares but parseHelmSpec ignores is dead contract. Both directions are
-// checked, and each default the CRD declares must equal what parsing an empty
-// spec yields, so `kubectl explain` and the controller cannot drift apart.
+// the closed schema prunes what it does not declare; a declared field nothing reads is dead.
 func TestHelmChartCRDDeclaresExactlyTheSpecTheControllerReads(t *testing.T) {
-	// The spec fields are exactly the table's rows — and
-	// TestParseHelmSpecReadsEachRowByName proves parseHelmSpec reads by each
-	// of those names. Membership flows from helmChartSpecTable alone, so the
-	// table, the struct and the CRD cannot drift apart, and
-	// TestHelmChartCRDMatchesTheSpecTable ties the table to helmSpec itself
-	// row for row.
 	specFields := make([]string, 0, len(helmChartSpecTable))
 	for _, row := range helmChartSpecTable {
 		specFields = append(specFields, row.name)
@@ -1326,9 +1128,7 @@ func TestHelmChartCRDDeclaresExactlyTheSpecTheControllerReads(t *testing.T) {
 		t.Fatal("HelmChart CRD .spec has no properties block")
 	}
 
-	// Controller to CRD: a field the controller reads but the CRD does not
-	// declare is pruned at admission, silently — the failure mode
-	// TestHelmChartCRDDeclaresSetString documents for setString.
+	// controller to CRD: an undeclared field is pruned at admission.
 	for _, f := range specFields {
 		if _, ok := props[f]; !ok {
 			t.Errorf("parseHelmSpec reads spec.%s, but the CRD does not declare it — the apiserver prunes it at admission", f)
@@ -1340,10 +1140,6 @@ func TestHelmChartCRDDeclaresExactlyTheSpecTheControllerReads(t *testing.T) {
 			t.Errorf("the CRD declares spec.%s, but parseHelmSpec never reads it", f)
 		}
 	}
-
-	// Each default the CRD declares must equal what the controller applies
-	// when the field is absent, so the promise `kubectl explain` prints
-	// matches what the controller does.
 	s := parseHelmSpec(newHC("kube-system", "cr", map[string]interface{}{}))
 	d, declared := crdDefault(props, "createNamespace")
 	if !declared || d != s.createNamespace {
@@ -1353,8 +1149,6 @@ func TestHelmChartCRDDeclaresExactlyTheSpecTheControllerReads(t *testing.T) {
 	if !declared || d != s.insecureSkipTLSVerify {
 		t.Errorf("spec.insecureSkipTLSVerify: the CRD declares default %v (declared=%t), the controller defaults to %v", d, declared, s.insecureSkipTLSVerify)
 	}
-	// The CRD declares the timeout as a Go duration string; the controller
-	// applies it as a Duration, so parse the one and compare with the other.
 	d, declared = crdDefault(props, "timeout")
 	dur, err := time.ParseDuration(str(d, ""))
 	if !declared || err != nil {
@@ -1365,21 +1159,12 @@ func TestHelmChartCRDDeclaresExactlyTheSpecTheControllerReads(t *testing.T) {
 	}
 }
 
-// TestHelmChartCRDMatchesTheSpecTable guards the single declaration of the
-// HelmChart .spec contract: helmChartSpecTable, the table of field name, kind
-// and default that parseHelmSpec reads. The CRD must equal the table property
-// for property — name, type and default, in both directions — and
-// parseHelmSpec must actually read the table, or the table is just a second
-// hand copy of the contract beside the ones it replaces. Until the table
-// exists this test does not compile.
+// the table, not a second copy, is the contract the CRD must match.
 func TestHelmChartCRDMatchesTheSpecTable(t *testing.T) {
 	props, ok := helmChartCRDSpecSchema(t)["properties"].(map[string]interface{})
 	if !ok {
 		t.Fatal("HelmChart CRD .spec has no properties block")
 	}
-
-	// The table is what parseHelmSpec reads: one row per helmSpec field, by
-	// name — no row without a field, no field without a row.
 	if got, want := len(helmChartSpecTable), reflect.TypeOf(helmSpec{}).NumField(); got != want {
 		t.Errorf("helmChartSpecTable has %d rows, but helmSpec has %d fields — the spec contract is declared twice, or a field is missing from the table", got, want)
 	}
@@ -1395,9 +1180,7 @@ func TestHelmChartCRDMatchesTheSpecTable(t *testing.T) {
 		}
 	}
 
-	// Table to CRD: every row must be declared with the same type and the
-	// same default, or `kubectl explain` promises something other than what
-	// the controller reads.
+	// table to CRD: same type and default, or kubectl explain lies.
 	for _, row := range helmChartSpecTable {
 		prop, ok := props[row.name].(map[string]interface{})
 		if !ok {
@@ -1417,17 +1200,14 @@ func TestHelmChartCRDMatchesTheSpecTable(t *testing.T) {
 			t.Errorf("spec.%s: the CRD declares default %v, the table declares %v", row.name, d, row.def)
 		}
 	}
-	// CRD to table: a property no row declares is contract the controller
-	// never honours.
+	// CRD to table: a property no row declares is contract the controller never honours.
 	for _, name := range sortedKeys(props) {
 		if !rows[name] {
 			t.Errorf("the CRD declares spec.%s, but helmChartSpecTable does not — the controller never reads it", name)
 		}
 	}
 
-	// The timeout description must tell the truth: the controller installs
-	// and upgrades with Wait=false, so the timeout bounds the Helm operation
-	// itself and is never a --wait timeout.
+	// the timeout bounds the Helm operation; the description must not promise --wait.
 	timeout, ok := props["timeout"].(map[string]interface{})
 	if !ok {
 		t.Fatal("the CRD does not declare spec.timeout")
@@ -1440,9 +1220,7 @@ func TestHelmChartCRDMatchesTheSpecTable(t *testing.T) {
 		t.Errorf("spec.timeout's description mentions --wait, but the controller never waits (Wait=false on install and upgrade): %q", desc)
 	}
 
-	// parseHelmSpec must read the table, not merely sit beside it: change a
-	// row's default and the parsed empty spec must follow, or the default is
-	// still declared twice — once in the table, once in parseHelmSpec.
+	// change a row's default and the parsed empty spec must follow.
 	for i := range helmChartSpecTable {
 		if helmChartSpecTable[i].name != "createNamespace" {
 			continue
@@ -1469,18 +1247,7 @@ func TestHelmChartCRDMatchesTheSpecTable(t *testing.T) {
 	}
 }
 
-// TestParseHelmSpecReadsEachRowByName closes the gap every other guard in this
-// file leaves open: parseHelmSpec addresses each spec field by a name LITERAL,
-// while the CRD, the table and these tests agree on names as DATA. A typo
-// inside that code — "chartContnet" where every data structure says
-// chartContent — reads nothing while all three structures still match, and
-// only a cluster running with the field silently ignored would notice. So each
-// row's field is set alone, on an object of its own, and the parsed struct
-// must carry exactly that value: a name the parser misspells parses as zero
-// here. Each sentinel names its row, so one literal swapped between two fields
-// fails both rows rather than satisfying each half. This is what makes
-// "parseHelmSpec reads each field by its row's name" true in code and not
-// just in the comment above it.
+// a misspelled name literal in parseHelmSpec reads nothing while all structures match.
 func TestParseHelmSpecReadsEachRowByName(t *testing.T) {
 	for _, row := range helmChartSpecTable {
 		sentinel := "probe-" + row.name
@@ -1492,7 +1259,7 @@ func TestParseHelmSpecReadsEachRowByName(t *testing.T) {
 			set = map[string]interface{}{"probe": sentinel}
 		case "array": // valuesSecrets, the only array row: one entry named by the sentinel
 			set = []interface{}{map[string]interface{}{"name": sentinel, "keys": []interface{}{"k"}}}
-		default: // string; timeout gets a parseable duration or it would fall back to the declared default and read like an unread field
+		default: // timeout gets a parseable duration or it reads like an unread field
 			if row.name == "timeout" {
 				set = "3m"
 			} else {
@@ -1505,8 +1272,7 @@ func TestParseHelmSpecReadsEachRowByName(t *testing.T) {
 			t.Errorf("helmChartSpecTable row %q names no helmSpec field to read into", row.name)
 			continue
 		}
-		// helmSpec's fields are unexported, so Interface() panics on them;
-		// the kind accessors read fine and cover every kind a row declares.
+		// Interface() panics on unexported fields; the kind accessors read fine.
 		switch {
 		case row.name == "timeout":
 			if fv.Kind() != reflect.Int64 || fv.Int() != int64(3*time.Minute) {
@@ -1537,8 +1303,7 @@ func TestParseHelmSpecReadsEachRowByName(t *testing.T) {
 	}
 }
 
-// describe names a reflect.Value for an error message without Interface(),
-// which panics on unexported fields.
+// names a reflect.Value without Interface(), which panics on unexported fields.
 func describe(fv reflect.Value) string {
 	switch fv.Kind() {
 	case reflect.String:
@@ -1558,12 +1323,7 @@ func describe(fv reflect.Value) string {
 	}
 }
 
-// TestHelmChartCRDsCarryTheEngineIdentity pins the CRD bundle's group and
-// versions to k8sutil, the same pair the operator's dynamic client, the
-// webhook's admission rule and the SPA read. The YAML declares the pair as
-// literals the Go side cannot import, so without this pin a renamed
-// HelmChartGroup or an edited version name leaves the whole suite green
-// while the operator talks to a group the cluster's CRDs do not serve.
+// the YAML declares the group as literals the Go side cannot import.
 func TestHelmChartCRDsCarryTheEngineIdentity(t *testing.T) {
 	want := map[string]bool{
 		"helmcharts." + k8sutil.HelmChartGroup:       false,
@@ -1612,10 +1372,7 @@ func TestHelmChartCRDsCarryTheEngineIdentity(t *testing.T) {
 	}
 }
 
-// helmChartCRDSpecSchema digs the v1 openAPIV3Schema for .spec out of the CRD
-// bundle the operator actually ships — internal/addons embeds the YAML and
-// serves it through RenderHelmCRDs — so this tracks the deployed artifact
-// rather than a copy that could drift from it.
+// reads the CRD bundle the operator actually ships, so it tracks the deployed artifact.
 func helmChartCRDSpecSchema(t *testing.T) map[string]interface{} {
 	t.Helper()
 	want := "helmcharts." + k8sutil.HelmChartGroup
@@ -1657,8 +1414,6 @@ func sortedKeys(m map[string]interface{}) []string {
 	return out
 }
 
-// crdDefault returns the default the CRD declares for one spec property and
-// whether it declares one at all.
 func crdDefault(props map[string]interface{}, name string) (d interface{}, declared bool) {
 	prop, ok := props[name].(map[string]interface{})
 	if !ok {
@@ -1671,22 +1426,10 @@ func crdDefault(props map[string]interface{}, name string) (d interface{}, decla
 // TestNothing is a cheap compile-canary target (`go test -run TestNothing`).
 func TestNothing(t *testing.T) {}
 
-// --------------------------- the hold outlives its message -----------------
-//
-// The uninstall-incomplete hold lives in the status message alone, so any
-// Failed write that names a different problem stamps the hold away: a values
-// typo, a refused HelmChartConfig overlay, and a dropped HelmChartConfig List
-// each end it. These tests pin those sequences: the hold is recorded in its
-// own status field, which the deletion guard and the reinstall gate read.
-
-// tenantNS is a non-privileged namespace, so its HelmCharts install under
-// their requester's identity and a HelmChartConfig overlay is accepted only
-// from that same requester (hccInstallAllowed).
+// the hold lives in its own status field, which every Failed write preserves.
 const tenantNS = "team-a"
 
-// stampAs sets an authentic requester stamp for info on o, signed by signer.
-// requesterBinding covers the object's spec, so o must already carry its
-// final spec when this is called.
+// requesterBinding covers the object's spec, so o must carry its final spec first.
 func stampAs(o *unstructured.Unstructured, info requesterInfo, signer *requesterSigner) {
 	groups, _ := json.Marshal(info.Groups)
 	o.SetAnnotations(map[string]string{
@@ -1697,11 +1440,7 @@ func stampAs(o *unstructured.Unstructured, info requesterInfo, signer *requester
 	})
 }
 
-// newFlowHCIn is an adopted HelmChart (it already carries the finalizer) in ns
-// with the given spec and a per-test metadata.uid, for tests that store
-// HelmChartConfig overlays or requester stamps beside it. Like newFlowHC it
-// clears the operator's record of unwritten "uninstall incomplete:" statuses
-// around the test.
+// adopted, with a per-test uid for tests that store overlays or stamps beside it.
 func newFlowHCIn(t *testing.T, ns, name, uid string, spec map[string]interface{}) *unstructured.Unstructured {
 	t.Helper()
 	wantNoUnwrittenIncomplete(t, "at the start of a flow test")
@@ -1719,7 +1458,6 @@ func newFlowHCIn(t *testing.T, ns, name, uid string, spec map[string]interface{}
 	}}
 }
 
-// newFlowHCC is a HelmChartConfig overlay for ns/name with the given spec.
 func newFlowHCC(ns, name string, spec map[string]interface{}) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "stratum.ciq.com/v1",
@@ -1729,9 +1467,7 @@ func newFlowHCC(ns, name string, spec map[string]interface{}) *unstructured.Unst
 	}}
 }
 
-// newFlowDynClient stores hc and any HelmChartConfig overlays in a fake
-// dynamic client that lists helmcharts and helmchartconfigs, so a test can
-// drive reconcileHelmCharts, which reads the overlays from the client itself.
+// lists helmcharts and helmchartconfigs, so a test can drive reconcileHelmCharts.
 func newFlowDynClient(t *testing.T, hc *unstructured.Unstructured, configs ...*unstructured.Unstructured) dynamic.Interface {
 	t.Helper()
 	objs := make([]runtime.Object, 0, 1+len(configs))
@@ -1750,16 +1486,12 @@ func newFlowDynClient(t *testing.T, hc *unstructured.Unstructured, configs ...*u
 	)
 }
 
-// reconcileAllCharts runs one whole iteration of the operator's HelmChart loop:
-// it lists the HelmCharts and the HelmChartConfig overlays and reconciles each
-// chart once, where reconcileFlow reconciles one pre-picked chart.
 func reconcileAllCharts(t *testing.T, dyn dynamic.Interface, pol helmPolicy) {
 	t.Helper()
 	kubeconfig := filepath.Join(t.TempDir(), "missing-kubeconfig")
 	reconcileHelmCharts(context.Background(), dyn, kubeconfig, pol)
 }
 
-// getHCIn returns the stored HelmChart ns/name.
 func getHCIn(t *testing.T, dyn dynamic.Interface, ns, name string) *unstructured.Unstructured {
 	t.Helper()
 	hc, err := dyn.Resource(helmChartGVR).Namespace(ns).Get(context.Background(), name, metav1.GetOptions{})
@@ -1769,7 +1501,6 @@ func getHCIn(t *testing.T, dyn dynamic.Interface, ns, name string) *unstructured
 	return hc
 }
 
-// updateHCIn applies mutate to the stored HelmChart ns/name.
 func updateHCIn(t *testing.T, dyn dynamic.Interface, ns, name string, mutate func(*unstructured.Unstructured)) {
 	t.Helper()
 	hc := getHCIn(t, dyn, ns, name)
@@ -1779,7 +1510,6 @@ func updateHCIn(t *testing.T, dyn dynamic.Interface, ns, name string, mutate fun
 	}
 }
 
-// readStatusIn reads the subset of HelmChart ns/name's status the flow tests pin.
 func readStatusIn(t *testing.T, dyn dynamic.Interface, ns, name string) flowStatus {
 	t.Helper()
 	st, _, _ := unstructured.NestedMap(getHCIn(t, dyn, ns, name).Object, "status")
@@ -1790,9 +1520,6 @@ func readStatusIn(t *testing.T, dyn dynamic.Interface, ns, name string) flowStat
 	}
 }
 
-// wantHoldEstablished fails unless the HelmChart ns/name is Failed with Helm's
-// list of the objects an uninstall left because their ownership could not be
-// verified.
 func wantHoldEstablished(t *testing.T, dyn dynamic.Interface, ns, name, when string) {
 	t.Helper()
 	st := readStatusIn(t, dyn, ns, name)
@@ -1803,11 +1530,7 @@ func wantHoldEstablished(t *testing.T, dyn dynamic.Interface, ns, name, when str
 	}
 }
 
-// TestHelmChartHoldSurvivesValuesTypoAndRevert pins the typo-and-revert
-// sequence: a HelmChart is held because a recovery uninstall left objects
-// Helm could not verify; a values typo then writes a new Failed message and
-// the hold's text is gone; reverting the typo to the identical values must
-// still not reinstall over the unverified objects, which today it does.
+// reverting the typo to identical values must still not reinstall over unverified objects.
 func TestHelmChartHoldSurvivesValuesTypoAndRevert(t *testing.T) {
 	shortIncompleteWriteBackoff(t)
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -1822,8 +1545,7 @@ func TestHelmChartHoldSurvivesValuesTypoAndRevert(t *testing.T) {
 		t.Fatalf("release %s/%s still stored, want it purged as Helm v4 does: %+v", flowNS, flowRelease, hist)
 	}
 
-	// A values typo merges to nothing: its parse error replaces the hold's
-	// message.
+	// the typo's parse error replaces the hold's message.
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 		if err := unstructured.SetNestedField(hc.Object, "a: [\n", "spec", "valuesContent"); err != nil {
 			t.Fatal(err)
@@ -1834,8 +1556,7 @@ func TestHelmChartHoldSurvivesValuesTypoAndRevert(t *testing.T) {
 		t.Fatalf("status = %+v, want the values parse error stamped in place of the hold's message", st)
 	}
 
-	// The apiserver has recovered and the failed backoff has passed, so on the
-	// reverted values only the hold can stop a reinstall.
+	// only the hold can stop a reinstall now.
 	kc.DummyResources = nil
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 		if err := unstructured.SetNestedField(hc.Object, "a: 1\n", "spec", "valuesContent"); err != nil {
@@ -1853,9 +1574,7 @@ func TestHelmChartHoldSurvivesValuesTypoAndRevert(t *testing.T) {
 	}
 }
 
-// A HelmChart held by an older operator has only the Failed message. Migrate
-// that hold before a values error can replace the message, or reverting the
-// typo would reinstall over objects whose ownership was never verified.
+// migration must precede any write that replaces the message-only hold.
 func TestLegacyUninstallHoldSurvivesValuesTypoAndRevert(t *testing.T) {
 	shortIncompleteWriteBackoff(t)
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -1875,8 +1594,7 @@ func TestLegacyUninstallHoldSurvivesValuesTypoAndRevert(t *testing.T) {
 		}
 	})
 
-	// The first reconcile after an upgrade can itself hit a values parse
-	// failure, so migration must precede that status write.
+	// the first reconcile after an upgrade can itself hit a values parse failure.
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 		if err := unstructured.SetNestedField(hc.Object, "a: [\n", "spec", "valuesContent"); err != nil {
 			t.Fatal(err)
@@ -1911,12 +1629,7 @@ func TestDeletionIncompleteMessageLegacyRecovery(t *testing.T) {
 	}
 }
 
-// TestHelmChartDeletionKeepsHoldAfterRefusedOverlayEdit pins the
-// refused-edit-then-delete sequence: a tenant HelmChart is held because a
-// recovery uninstall left objects Helm could not verify; a HelmChartConfig
-// overlay by another requester is refused and its refusal message replaces
-// the hold's text; deleting the HelmChart then must keep the finalizer and
-// report the hold.
+// the refusal replaces the hold's text; deleting then must keep the finalizer and report the hold.
 func TestHelmChartDeletionKeepsHoldAfterRefusedOverlayEdit(t *testing.T) {
 	shortIncompleteWriteBackoff(t)
 	signer := testSigner()
@@ -1935,8 +1648,7 @@ func TestHelmChartDeletionKeepsHoldAfterRefusedOverlayEdit(t *testing.T) {
 		t.Fatalf("release %s/%s still stored, want it purged as Helm v4 does: %+v", tenantNS, flowRelease, hist)
 	}
 
-	// An overlay authored by another requester is refused: its refusal
-	// replaces the hold's message.
+	// an overlay by another requester is refused, replacing the hold's message.
 	hcc := newFlowHCC(tenantNS, flowName, map[string]interface{}{"valuesContent": "b: 2\n"})
 	stampAs(hcc, requesterInfo{Username: "bob", Groups: []string{"system:authenticated"}}, signer)
 	if _, err := dyn.Resource(helmChartConfigGVR).Namespace(tenantNS).Create(context.Background(), hcc, metav1.CreateOptions{}); err != nil {
@@ -1947,8 +1659,7 @@ func TestHelmChartDeletionKeepsHoldAfterRefusedOverlayEdit(t *testing.T) {
 		t.Fatalf("status = %+v, want the refused overlay stamped in place of the hold's message", st)
 	}
 
-	// Deleting the HelmChart now must keep the finalizer and report the hold:
-	// the unverified objects are still in the cluster.
+	// deleting the HelmChart now must keep the finalizer and report the hold.
 	updateHCIn(t, dyn, tenantNS, flowName, func(hc *unstructured.Unstructured) {
 		deleted := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 		hc.SetDeletionTimestamp(&deleted)
@@ -1958,18 +1669,11 @@ func TestHelmChartDeletionKeepsHoldAfterRefusedOverlayEdit(t *testing.T) {
 	if !hasFinalizer(getHCIn(t, dyn, tenantNS, flowName), helmFinalizer) {
 		t.Fatalf("finalizer removed although the deleted HelmChart was held; status = %+v", readStatusIn(t, dyn, tenantNS, flowName))
 	}
-	// The regenerated message must carry the hold's recorded object list, not
-	// just the hold prefix: a person deleting the HelmChart is told what to
-	// remove.
+	// a person deleting the HelmChart is told what to remove.
 	wantHoldEstablished(t, dyn, tenantNS, flowName, "after the deletion reconcile")
 }
 
-// TestHelmChartConfigListFailureKeepsHold pins that a HelmChartConfig List
-// failure while a HelmChart is held neither ends the hold nor reconciles the
-// chart with the overlays the failed List dropped: without the overlay's
-// values the recomputed spec hash no longer matches the recorded one, and a
-// reconcile that drops them installs over the unverified objects without
-// them.
+// a List failure must not reconcile the chart with the overlays the failed List dropped.
 func TestHelmChartConfigListFailureKeepsHold(t *testing.T) {
 	shortIncompleteWriteBackoff(t)
 	h := useFakeHelm(t, fakeHelmOptions{})
@@ -1987,8 +1691,7 @@ func TestHelmChartConfigListFailureKeepsHold(t *testing.T) {
 		t.Fatalf("release %s/%s still stored, want it purged as Helm v4 does: %+v", flowNS, flowRelease, hist)
 	}
 
-	// The apiserver has recovered, but the HelmChartConfig List then fails, as
-	// during an apiserver outage: the overlay is missing from the merge.
+	// the overlay is missing from the merge during the outage.
 	kc.DummyResources = nil
 	dyn.(*dynfake.FakeDynamicClient).PrependReactor("list", helmChartConfigGVR.Resource,
 		func(ktesting.Action) (bool, runtime.Object, error) {
@@ -2004,24 +1707,7 @@ func TestHelmChartConfigListFailureKeepsHold(t *testing.T) {
 	}
 }
 
-// --------------------------- one helm cache dir ----------------------------
-//
-// The operator's helm cache dir was the package literal /var/lib/stratum-helm:
-// outside the data dir, outside uninstall's delete list, and in conflict with
-// the --helm-cache flag the supervisor passes (version.HelmCacheDir, derived
-// under DataDir) — the literal won, because loadChart sets Helm's repository
-// settings from it directly. These tests pin the decision: one source of
-// truth, internal/version's HelmCacheDir, so the operator's cache lives under
-// the data dir and the flag and the dir the operator writes agree;
-// /var/lib/stratum-helm survives only as a legacy path uninstall removes
-// (pinned in internal/uninstall).
-
-// TestOperatorHelmCacheDirIsTheVersionLayout pins the one source of truth:
-// the operator's cache dir names version.HelmCacheDir — the same path the
-// supervisor passes as the operator's --helm-cache flag
-// (internal/cluster/processes.go) — and stays derived under the data dir, so
-// a node's helm cache is inside the one state directory uninstall removes
-// instead of a second on-disk footprint the flag does not name.
+// one source of truth: version.HelmCacheDir, so the --helm-cache flag and the dir agree.
 func TestOperatorHelmCacheDirIsTheVersionLayout(t *testing.T) {
 	if helmCacheDir != version.HelmCacheDir {
 		t.Fatalf("operator helm cache dir = %q, want version.HelmCacheDir %q — the --helm-cache flag the supervisor passes and the dir loadChart writes must come from one source of truth, not from a literal beside it", helmCacheDir, version.HelmCacheDir)
@@ -2035,8 +1721,7 @@ func TestOperatorHelmCacheDirIsTheVersionLayout(t *testing.T) {
 	}
 }
 
-// Named repository resolution must use the cache and configuration under the
-// current data root. The fetcher consumes the repository CA in memory.
+// named repository resolution must use the cache and configuration under the data root.
 func TestOperatorHelmCacheDerivesFromTheDataRoot(t *testing.T) {
 	data, conf, run := version.DataDir, version.ConfDir, version.RunDir
 	version.SetRoots(t.TempDir(), t.TempDir(), t.TempDir())
@@ -2070,19 +1755,7 @@ func TestOperatorHelmCacheDerivesFromTheDataRoot(t *testing.T) {
 	}
 }
 
-// TestHelmCacheHomeDoesNotCarryTheOperatorPaths pins the HELM_CACHE_HOME
-// semantics the one-source-of-truth decision rests on, against the vendored
-// helm (v4.3.0, pkg/cli/environment.go:122-124 and pkg/helmpath/lazypath.go):
-// cli.New() defaults RepositoryCache from HELM_REPOSITORY_CACHE with fallback
-// helmpath.CachePath("repository") and RepositoryConfig from
-// HELM_REPOSITORY_CONFIG with fallback helmpath.ConfigPath("repositories.yaml").
-// A set HELM_CACHE_HOME moves the repo/content caches exactly beneath itself
-// (the "helm" path element is only joined on the XDG/default fallback), but
-// repositories.yaml does not follow the cache home at all — it stays under
-// the config home of the invoking user. Setting the env var from the
-// --helm-cache flag (operator.Run) therefore cannot carry the whole cache
-// layout: loadChart sets both settings explicitly, and the tests above pin
-// that they come from version.HelmCacheDir.
+// repositories.yaml follows the config home, not HELM_CACHE_HOME, so loadChart sets both.
 func TestHelmCacheHomeDoesNotCarryTheOperatorPaths(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HELM_CACHE_HOME", dir)

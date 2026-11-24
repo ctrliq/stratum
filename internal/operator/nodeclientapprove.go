@@ -1,5 +1,4 @@
-// Kubelet client-cert CSR approver for bootstrap-token joins: a join token may
-// claim a new node name, never one already registered or claimed by a certificate.
+// a join token may claim a new node name, never one already registered or claimed.
 package operator
 
 import (
@@ -29,12 +28,10 @@ const (
 	nodesGroup          = "system:nodes"
 )
 
-// nodeClientPassTimeout bounds one approval pass below the CSR loop's 30s tick,
-// so a slow or flooded apiserver cannot hold the serving approver behind it.
+// bounds one pass below the CSR loop's 30s tick so a slow apiserver cannot wedge it.
 const nodeClientPassTimeout = 25 * time.Second
 
-// The annotations a pending bootstrap CSR carries, so `kubectl describe csr`
-// shows which node it asks for and why it waits.
+// so `kubectl describe csr` shows which node a pending CSR asks for and why it waits.
 const (
 	nodeClientPendingAnnotation   = "stratum.ciq.com/node-client-pending"
 	nodeClientRequestedAnnotation = "stratum.ciq.com/requested-node"
@@ -108,8 +105,6 @@ func reconcileNodeClientCSRs(parent context.Context, cs kubernetes.Interface, no
 	}
 }
 
-// nodeClientPass is what one approval pass reads once: the registered Nodes,
-// the persistent name claims, and each join token's verdict.
 type nodeClientPass struct {
 	cs         kubernetes.Interface
 	now        time.Time
@@ -124,8 +119,6 @@ type tokenVerdict struct {
 	reason  string
 }
 
-// newNodeClientPass reads the Nodes and the claims, and claims every
-// registered Node's name that holds none yet.
 func newNodeClientPass(ctx context.Context, cs kubernetes.Interface, now time.Time) (*nodeClientPass, error) {
 	nodes, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -151,9 +144,7 @@ func newNodeClientPass(ctx context.Context, cs kubernetes.Interface, now time.Ti
 	return p, nil
 }
 
-// holdApproved records the claim of an approved bootstrap CSR whose name holds
-// none: one approved before claims existed, or one an administrator approved
-// after deleting the old claim.
+// records a claim for an approved CSR whose name holds none yet.
 func (p *nodeClientPass) holdApproved(ctx context.Context, csr *certv1.CertificateSigningRequest, name string) error {
 	if _, ok := p.owners[name]; ok {
 		return nil
@@ -165,8 +156,6 @@ func (p *nodeClientPass) holdApproved(ctx context.Context, csr *certv1.Certifica
 	return nil
 }
 
-// recordNodeClientPending writes the node a pending CSR asks for and why it
-// waits onto the CSR, and logs it, only when either changed.
 func recordNodeClientPending(ctx context.Context, cs kubernetes.Interface, csr *certv1.CertificateSigningRequest, name, reason string) {
 	if csr.Annotations[nodeClientPendingAnnotation] == reason && csr.Annotations[nodeClientRequestedAnnotation] == name {
 		return
@@ -197,8 +186,7 @@ func csrApproved(csr *certv1.CertificateSigningRequest) bool {
 	return false
 }
 
-// bootstrapNodeClientCSR excludes renewals by an existing node, which
-// stratum-csr-renewal leaves to the upstream approver.
+// excludes renewals by an existing node, which stratum-csr-renewal handles upstream.
 func bootstrapNodeClientCSR(csr *certv1.CertificateSigningRequest) bool {
 	return csr.Spec.SignerName == certv1.KubeAPIServerClientKubeletSignerName &&
 		strings.HasPrefix(csr.Spec.Username, bootstrapUserPrefix) &&
@@ -221,8 +209,7 @@ func parseCSR(csr *certv1.CertificateSigningRequest) (*x509.CertificateRequest, 
 	return x509.ParseCertificateRequest(block.Bytes)
 }
 
-// verdict leaves a claimed name PENDING rather than denied. An administrator
-// may approve a verified same-name replacement explicitly.
+// a claimed name stays pending, not denied: an administrator may approve a replacement by hand.
 func (p *nodeClientPass) verdict(ctx context.Context, csr *certv1.CertificateSigningRequest) (verdict, string) {
 	if !usagesAreNodeClientOnly(csr.Spec.Usages) {
 		return deny, "unexpected key usages for a kubelet client cert"
@@ -271,9 +258,7 @@ func (p *nodeClientPass) token(ctx context.Context, id string) (verdict, string)
 	return v, reason
 }
 
-// bootstrapTokenVerdict denies a CSR whose join token has since been deleted,
-// disabled or has expired, or was never a stratum join token, so a request
-// left pending cannot outlive its credential.
+// a pending request must not outlive its credential: a dead or foreign token denies.
 func bootstrapTokenVerdict(ctx context.Context, cs kubernetes.Interface, id string, now time.Time) (verdict, string) {
 	sec, err := cs.CoreV1().Secrets(metav1.NamespaceSystem).Get(ctx, "bootstrap-token-"+id, metav1.GetOptions{})
 	switch {
@@ -304,10 +289,7 @@ func bootstrapTokenVerdict(ctx context.Context, cs kubernetes.Interface, id stri
 	return approve, ""
 }
 
-// usagesAreNodeClientOnly accepts exactly the usage sets the
-// kube-apiserver-client-kubelet signer signs: {digital signature, client auth}
-// and {digital signature, key encipherment, client auth}, repeats ignored. Any
-// other set would be approved and then never signed, so it is denied here.
+// any other usage set would be approved and then never signed by the signer.
 func usagesAreNodeClientOnly(us []certv1.KeyUsage) bool {
 	var sig, client bool
 	for _, u := range us {

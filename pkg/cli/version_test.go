@@ -10,10 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestVersionComponents_ReadsInternalVersion: `version --components` reads
-// the five component stamps out of internal/version as its defaults, not
-// only through WithComponentVersions from cmd/stratum's main-package vars,
-// so a build stamped without that wiring still reports every component.
 func TestVersionComponents_ReadsInternalVersion(t *testing.T) {
 	old := [5]string{
 		version.ContainerdVersion, version.RuncVersion, version.KubeVipVersion,
@@ -29,7 +25,6 @@ func TestVersionComponents_ReadsInternalVersion(t *testing.T) {
 	version.CiliumVersion = "1.91.6"
 	version.CorednsVersion = "1.91.7"
 
-	// No WithComponentVersions: the stamped defaults must reach the report.
 	got := runVersionComponents(t, rootConfig{displayVersion: "v1.37.1-stratum.0"})
 	for name, want := range map[string]string{
 		"containerd": "2.91.3", "runc": "1.91.4", "kube-vip": "1.91.5",
@@ -40,18 +35,17 @@ func TestVersionComponents_ReadsInternalVersion(t *testing.T) {
 		}
 	}
 
-	// konnectivity is not shipped, so it is never reported, stamped or not.
+	// konnectivity is not shipped, so never reported
 	if _, ok := got["konnectivity"]; ok {
 		t.Errorf("version --components reports konnectivity = %q, want no row", got["konnectivity"])
 	}
 
-	// WithComponentVersions stays an override: a non-empty field replaces the
-	// stamped default, an empty field leaves the stamp in place.
+	// a non-empty override field replaces the stamp, an empty one leaves it
 	got = runVersionComponents(t, rootConfig{
 		displayVersion: "v1.37.1-stratum.0",
 		components:     ComponentVersions{Containerd: "9.9.9-override", Konnectivity: "9.9.9-ignored"},
 	})
-	// The deprecated Konnectivity field is a no-op: its value reaches no row.
+	// the deprecated Konnectivity field is a no-op
 	if _, ok := got["konnectivity"]; ok {
 		t.Errorf("version --components reports konnectivity = %q for a nonempty ComponentVersions.Konnectivity, want no row", got["konnectivity"])
 	}
@@ -63,10 +57,7 @@ func TestVersionComponents_ReadsInternalVersion(t *testing.T) {
 	}
 }
 
-// runVersionComponents runs `version --components` for one rootConfig and
-// returns the reported name/version pairs. version.go prints with fmt.Print*
-// straight to os.Stdout, so the capture swaps os.Stdout for a pipe the way
-// TestVersionBuildPrintsTheBuildID does.
+// version.go prints straight to os.Stdout, so the capture swaps os.Stdout
 func runVersionComponents(t *testing.T, cfg rootConfig) map[string]string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -110,8 +101,6 @@ func TestRuntimeMismatchWarning(t *testing.T) {
 	}
 }
 
-// TestRuntimeMismatchSilentWithoutARuntime: a node with nothing on the CRI
-// socket (or no stratum at all) gets no warning on `version --components`.
 func TestRuntimeMismatchSilentWithoutARuntime(t *testing.T) {
 	dir := t.TempDir()
 	if w := runtimeMismatch(filepath.Join(dir, "none.sock"), filepath.Join(dir, "containerd")); w != "" {

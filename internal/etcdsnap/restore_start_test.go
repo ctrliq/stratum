@@ -13,18 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestRestoreRefusesANodeStartInProgress: `stratum up` drops
-// the data lock after preparing node state and before its supervisor is
-// visible. A restore in that gap would replace the data dir under a start
-// about to run with the old prepared state, so Restore refuses there, before
-// it stops a single component (the snapshot path does not even exist, so
-// getting past the refusal would fail differently).
-//
-// Through the exported entry point with the production effects value: the
-// refusal probes are the real ones — no supervisor serves the control socket
-// (it points nowhere), and this test holds the node-start lock the way a
-// starting node does. The locks live in temp dirs, so nothing on the host is
-// touched.
+// stratum up drops the data lock before its supervisor shows; the absent snapshot is deliberate.
 func TestRestoreRefusesANodeStartInProgress(t *testing.T) {
 	swap(t, &version.ControlSocket, filepath.Join(t.TempDir(), "absent.sock"))
 	swap(t, &version.DataDir, filepath.Join(t.TempDir(), "stratum"))
@@ -39,7 +28,6 @@ func TestRestoreRefusesANodeStartInProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { held.Close() })
-	// Hold the node-start lock the way `stratum up` does for its whole run.
 	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
@@ -48,8 +36,7 @@ func TestRestoreRefusesANodeStartInProgress(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "a stratum node is starting") {
 		t.Fatalf("Restore during a node start = %v", err)
 	}
-	// The refusal came after the data lock was taken, so it must have been
-	// released on the way out: taking it again succeeds.
+	// taking the data lock again proves the refusal released it.
 	release, err := etcddata.Lock(version.EtcdDataDir)
 	if err != nil {
 		t.Fatalf("the data lock was not released on the refusal: %v", err)

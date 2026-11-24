@@ -10,11 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestKubeletConfigIsAlways0600: writeKubeletConfig leaves kubelet.conf at
-// 0600 on a first write, and brings a file an older release wrote 0644 back
-// to 0600 on the next start — CIS 4.1.1. The shared atomic writer replaces
-// the file whole, so the mode arrives with the replacement inode and no
-// separate chmod is needed.
 func TestKubeletConfigIsAlways0600(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })
@@ -46,10 +41,6 @@ func TestKubeletConfigIsAlways0600(t *testing.T) {
 	}
 }
 
-// TestDisableSELinuxRewritesTheConfigAtomically: turning enable_selinux off
-// goes through the shared atomic writer, so the config is replaced whole —
-// no fixed .tmp name beside it that two writers could tear, no truncated
-// config where a working one was.
 func TestDisableSELinuxRewritesTheConfigAtomically(t *testing.T) {
 	oldConfig := version.ContainerdConfig
 	t.Cleanup(func() { version.ContainerdConfig = oldConfig })
@@ -90,10 +81,6 @@ func TestDisableSELinuxRewritesTheConfigAtomically(t *testing.T) {
 	}
 }
 
-// TestEnsureConfigWritesConfigAndRecordAtomically: the rendered containerd
-// config and the confinement record land through the shared atomic writer —
-// each file whole, nothing but the two files in the config directory, and the
-// record readable by ConfinedSince.
 func TestEnsureConfigWritesConfigAndRecordAtomically(t *testing.T) {
 	dir := t.TempDir()
 	oldBin, oldConfig, oldSocket, oldLabelled := version.BinDir, version.ContainerdConfig, version.ControlSocket, selinuxLabelled

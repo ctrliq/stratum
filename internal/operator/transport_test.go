@@ -86,8 +86,7 @@ func TestContextTransportKeepsBodyReadableUntilClosed(t *testing.T) {
 	}
 }
 
-// Exercise the actual Helm configuration, not just the transport helper:
-// both release storage and Kubernetes clients must use the lifetime wrapper.
+// Exercise the real Helm clients, not just the transport helper.
 func TestHelmClientsCannotWriteAfterCancellation(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

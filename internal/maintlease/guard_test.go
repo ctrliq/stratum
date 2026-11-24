@@ -1,13 +1,5 @@
 package maintlease
 
-// Tests for the lease guard: how a run that holds the maintenance lease
-// notices that it may no longer hold it. Two distinct states: lost — someone
-// else holds the lease, permanent; stale — renewals have been failing for one
-// renewal interval before expiry, cleared by one renewal that succeeds, which
-// is a compare-and-swap on a lease still naming this run and so proves nobody
-// held it in between. That is what lets a run ride out its own API server
-// restarting without aborting an in-flight node.
-
 import (
 	"context"
 	"errors"
@@ -21,9 +13,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
-// TestGuardStaleRenewalsTripBeforeExpiryAndClear: one missed renewal holds;
-// no renewal for one renewal interval before expiry trips the guard; one
-// successful same-holder renewal clears it.
 func TestGuardStaleRenewalsTripBeforeExpiryAndClear(t *testing.T) {
 	t0 := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	down := errors.New("dial tcp 127.0.0.1:6443: connection refused")
@@ -34,7 +23,7 @@ func TestGuardStaleRenewalsTripBeforeExpiryAndClear(t *testing.T) {
 	if g.Err() != nil {
 		t.Fatalf("one missed renewal tripped the guard: %v", g.Err())
 	}
-	g.Observe(down, t0.Add(Duration)) // no renewal for one interval before expiry
+	g.Observe(down, t0.Add(Duration))
 	err := g.Err()
 	if err == nil || !strings.Contains(err.Error(), "may be taken by another run") {
 		t.Fatalf("no renewal for %s: %v, want the guard stale", Duration-RenewEvery, err)
@@ -42,16 +31,12 @@ func TestGuardStaleRenewalsTripBeforeExpiryAndClear(t *testing.T) {
 	if !errors.Is(err, down) {
 		t.Errorf("the stale error %v does not carry the renewal failure %v", err, down)
 	}
-	// The API server came back and the lease still named this run: that
-	// renewal is a compare-and-swap, so nobody held it meanwhile.
 	g.Observe(nil, t0.Add(10*Duration))
 	if err := g.Err(); err != nil {
 		t.Fatalf("a renewal that succeeded after the outage left the guard tripped: %v", err)
 	}
 }
 
-// TestGuardTakeoverIsPermanent: a lease another run holds loses the guard at
-// once, and no later successful renewal brings it back.
 func TestGuardTakeoverIsPermanent(t *testing.T) {
 	t0 := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	g := &Guard{lastRenew: t0}
@@ -65,12 +50,6 @@ func TestGuardTakeoverIsPermanent(t *testing.T) {
 	}
 }
 
-// TestGuardConfirmProvesNobodyHeldTheLease: Err alone cannot say nobody held
-// the lease since the last renewal — after a long step, such as an API
-// outage, a successor may already hold it before the next tick sees it.
-// Confirm renews now: a same-holder renewal clears stale, a takeover is
-// surfaced at once, and an ordinary failure comes back for the caller to
-// retry.
 func TestGuardConfirmProvesNobodyHeldTheLease(t *testing.T) {
 	t0 := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 	ctx := context.Background()
@@ -98,10 +77,6 @@ func TestGuardConfirmProvesNobodyHeldTheLease(t *testing.T) {
 	}
 }
 
-// TestGuardConfirmReturnsTerminalAPIErrorsAsTheyCame: a renewal failing for
-// good — Forbidden or NotFound on the lease — is returned as it came,
-// whatever state the guard is in, so the caller's retry loop stops at once
-// instead of running out its window.
 func TestGuardConfirmReturnsTerminalAPIErrorsAsTheyCame(t *testing.T) {
 	ctx := context.Background()
 	res := coordinationv1.SchemeGroupVersion.WithResource("leases").GroupResource()
@@ -118,8 +93,6 @@ func TestGuardConfirmReturnsTerminalAPIErrorsAsTheyCame(t *testing.T) {
 	}
 }
 
-// TestNilGuardReadsAsHeld: a nil guard (dry-run, tests) is held, and answers
-// the same through confirm.
 func TestNilGuardReadsAsHeld(t *testing.T) {
 	var g *Guard
 	if g.Err() != nil || g.ID() != "" {

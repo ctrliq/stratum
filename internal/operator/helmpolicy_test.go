@@ -7,10 +7,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-// TestTargetNamespaceAllowed pins the namespace containment rule: a HelmChart may
-// target its own namespace (or an unset target, which parseHelmSpec defaults to
-// its own), a privileged-namespace chart may target anywhere, and every other
-// cross-namespace target is refused.
 func TestTargetNamespaceAllowed(t *testing.T) {
 	priv := []string{"kube-system"}
 	cases := []struct {
@@ -37,7 +33,6 @@ func TestTargetNamespaceAllowed(t *testing.T) {
 	}
 }
 
-// TestSplitNamespaces: comma-split, trims spaces, drops empties.
 func TestSplitNamespaces(t *testing.T) {
 	if got := splitNamespaces("kube-system"); !slices.Equal(got, []string{"kube-system"}) {
 		t.Errorf("single = %v", got)
@@ -50,9 +45,6 @@ func TestSplitNamespaces(t *testing.T) {
 	}
 }
 
-// TestParseHelmSpecInsecureForInlineChart pins that an inline chart
-// does no fetch, so insecureSkipTLSVerify is forced off (never logged or
-// surfaced in .status as a skipped verification); a repo-based chart keeps it.
 func TestParseHelmSpecInsecureForInlineChart(t *testing.T) {
 	mk := func(spec map[string]interface{}) *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]interface{}{
@@ -77,12 +69,6 @@ func TestParseHelmSpecInsecureForInlineChart(t *testing.T) {
 	}
 }
 
-// TestUninstallTarget pins the rule that the deletion path uninstalls what was
-// ADOPTED, not what the spec currently says. The spec stays tenant-writable
-// right up to the delete, so the two attacks this closes are: mutate
-// releaseName to have the operator uninstall a release the CR never owned, and
-// mutate targetNamespace to something refused so the CR's own release is left
-// running with nothing tracking it.
 func TestUninstallTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -140,13 +126,7 @@ func TestUninstallTarget(t *testing.T) {
 	}
 }
 
-// The spec is not consulted at all. This is the actual regression guard: a
-// reader who "helpfully" reintroduces spec.targetNamespace/spec.releaseName
-// into the deletion path re-opens both attacks, and every case above would
-// still pass because they only exercise status.
 func TestUninstallTargetIgnoresSpec(t *testing.T) {
-	// Recorded: the release this CR really owns. The tenant has since repointed
-	// the spec at kube-system/coredns, which must have no effect here.
 	status := map[string]interface{}{"releaseNamespace": "team-a", "releaseName": "app"}
 	ns, name, ok := uninstallTarget(status)
 	if !ok {

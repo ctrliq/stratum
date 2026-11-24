@@ -17,8 +17,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
-// An apply to a namespace or a CRD needs --allow-destructive, and the refusal
-// gives the reason an apply is risky, not a delete's.
+// The refusal for an apply must give an apply's reason, not a delete's.
 func TestIrreversibleKindsNeedTheDestructiveFlagToApply(t *testing.T) {
 	for _, gvr := range []schema.GroupVersionResource{
 		{Version: "v1", Resource: "namespaces"},
@@ -53,8 +52,6 @@ func TestIrreversibleKindsNeedTheDestructiveFlagToApply(t *testing.T) {
 	}
 }
 
-// A HelmChart, and the HelmChartConfig the operator merges into one, are
-// refused at every tier, for every verb.
 func TestHelmChartsAreNotWritableAtAnyTier(t *testing.T) {
 	for _, resource := range []string{"helmcharts", "helmchartconfigs"} {
 		gvr := schema.GroupVersionResource{Group: "stratum.ciq.com", Version: "v1", Resource: resource}
@@ -69,7 +66,6 @@ func TestHelmChartsAreNotWritableAtAnyTier(t *testing.T) {
 	}
 }
 
-// Every pod spec in a manifest is checked, wherever it is nested.
 func TestPodSpecGuardsReachEveryEmbeddedPodSpec(t *testing.T) {
 	containers := []any{map[string]any{"name": "c", "image": "busybox"}}
 	hostPath := []any{map[string]any{"name": "root", "hostPath": map[string]any{"path": "/"}}}
@@ -122,11 +118,7 @@ func TestPodSpecGuardsReachEveryEmbeddedPodSpec(t *testing.T) {
 	}
 }
 
-// A claim the cluster will create from a template (a StatefulSet's
-// volumeClaimTemplates entry or an ephemeral volume) is made after this check,
-// so the check runs against what such a claim could bind to among the PVs that
-// exist now. Each refusal is pinned by a literal in this file, not by the
-// helper the code uses, so a wording change is a test failure.
+// Each refusal is pinned by a literal in this file, not by the helper the code uses.
 func TestClaimTemplatesCannotReachNodePathVolumes(t *testing.T) {
 	refusal := "this server will not apply a pod spec that mounts %s: %s " +
 		"PersistentVolume %q, whose %s source is a path on the node, so mounting it " +
@@ -134,12 +126,9 @@ func TestClaimTemplatesCannotReachNodePathVolumes(t *testing.T) {
 		"that can be granted by a flag"
 	templateWhat := fmt.Sprintf("the claims the set's pods will mount from volumeClaimTemplates entry %q", "data")
 	ephemeralWhat := fmt.Sprintf("the claim the pod will mount from ephemeral volume %q", "scratch")
-	// A template's set produces many claims, an ephemeral volume names one: the
-	// pronoun in the refusal agrees with what the sentence mounts.
+	// A template's set makes many claims, an ephemeral volume names one, so the pronoun differs.
 	templateBinds, ephemeralBinds := "they can bind to", "it can bind to"
 
-	// nodePathPV returns a PersistentVolume with the given source, storage class
-	// ("" leaves it class-less) and optional claim reservation.
 	nodePathPV := func(name, class string, source corev1.PersistentVolumeSource, ref *corev1.ObjectReference) *corev1.PersistentVolume {
 		pv := &corev1.PersistentVolume{
 			ObjectMeta: metav1.ObjectMeta{Name: name},
@@ -388,10 +377,7 @@ func TestClaimTemplatesCannotReachNodePathVolumes(t *testing.T) {
 	}
 }
 
-// A set's pods reuse an existing claim named <template>-<set>-<ordinal> by
-// name, so a claim that exists and is bound is what the new pods mount, and
-// the PV reservation it carries does not keep them off its volume. Each
-// refusal is pinned by a literal here, as in the test above.
+// A set's pods reuse an existing claim named <template>-<set>-<ordinal>; refusals are pinned here.
 func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 	refusal := "this server will not apply a pod spec that mounts claim %q: it is " +
 		"bound to PersistentVolume %q, whose %s source is a path on the node, so mounting it " +
@@ -449,7 +435,6 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 		v.Annotations = map[string]string{"pv.kubernetes.io/provisioned-by": provisioner}
 		return v
 	}
-	// at points v's hostPath or local source at dir.
 	at := func(v *corev1.PersistentVolume, dir string) *corev1.PersistentVolume {
 		if v.Spec.HostPath != nil {
 			v.Spec.HostPath = &corev1.HostPathVolumeSource{Path: dir}
@@ -458,8 +443,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 		}
 		return v
 	}
-	// provisioned is what local-path makes for the claim v is reserved for:
-	// its annotation and /opt/local-path-provisioner/<pv>_<namespace>_<claim>.
+	// The annotation plus the /opt/local-path-provisioner/<pv>_<ns>_<claim> path local-path makes.
 	provisioned := func(v *corev1.PersistentVolume) *corev1.PersistentVolume {
 		ref := v.Spec.ClaimRef
 		return at(tagged(v, "rancher.io/local-path"),
@@ -489,8 +473,6 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 			},
 		}
 	}
-	// A workload whose pod template has an ephemeral volume; meta is the
-	// workload's metadata.
 	workloadWithEphemeral := func(kind string, meta map[string]any, volume string) map[string]any {
 		return map[string]any{
 			"apiVersion": "apps/v1", "kind": kind,
@@ -504,8 +486,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 		}
 	}
 	named := func(name string) map[string]any { return map[string]any{"name": name} }
-	// The API server keeps 58 characters of a generateName, so a long
-	// Deployment's pods start with only the first 58 of "<name>-".
+	// The API server keeps 58 characters of a generateName.
 	longName := strings.Repeat("a", 60)
 	longPod := strings.Repeat("a", 58) + "x1b2c"
 
@@ -520,8 +501,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 		directGet bool   // a claim mounted by name reads its own PV
 	}{
 		{
-			// The hole itself: the PV is reserved by a claim with a uid, so the
-			// PV reservation is not what refuses, the bound claim is.
+			// The hole itself: the PV reservation is not what refuses here, the bound claim is.
 			name:   "a bound claim the template could produce is refused",
 			pvs:    []*corev1.PersistentVolume{pv("pv-node", hostPath, claimRef("default", "data-web-0", "uid-1"))},
 			claims: []*corev1.PersistentVolumeClaim{claim("data-web-0", "pv-node")},
@@ -547,8 +527,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 			obj:    statefulSet("web"),
 		},
 		{
-			// The set reuses the pending claim as it is, so its own class, not
-			// the template's, decides which PV it can still bind.
+			// The set reuses the pending claim as it is: its own class, not the template's, binds.
 			name:   "a pending claim whose own class matches a node-path PV is refused",
 			pvs:    []*corev1.PersistentVolume{withClass(pv("pv-node", hostPath, nil), "local-storage")},
 			claims: []*corev1.PersistentVolumeClaim{pendingWithClass("data-web-0", "local-storage")},
@@ -559,9 +538,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 				"granted by a flag",
 		},
 		{
-			// Binding writes the PV's claimRef (with the claim's uid) before the
-			// claim's volumeName, so a pending claim can already hold a
-			// reservation that carries its uid.
+			// Binding writes the PV's claimRef (with the uid) before the claim's volumeName.
 			name:   "a pending claim a node-path PV is already reserved for by uid is refused",
 			pvs:    []*corev1.PersistentVolume{pv("pv-node", hostPath, claimRef("default", "data-web-0", "uid-pending"))},
 			claims: []*corev1.PersistentVolumeClaim{withUID(claim("data-web-0", ""), "uid-pending")},
@@ -659,8 +636,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 			obj:    statefulSet("web"),
 		},
 		{
-			// volumeName binds only that volume, so an unrelated node-path PV of
-			// the same class cannot take the claim.
+			// volumeName binds only that volume, so an unrelated node-path PV cannot take the claim.
 			name: "a template pinned to a network volume is applied beside a node-path PV of its class",
 			pvs: []*corev1.PersistentVolume{
 				withClass(pv("pv-nfs", nfs, nil), "shared"),
@@ -703,8 +679,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 			obj:    statefulSet("web"),
 		},
 		{
-			// The static local-volume provisioner tags PVs over disks an
-			// operator chose: the annotation says who made a PV, not what it reaches.
+			// The annotation says who made a PV, not what it reaches.
 			name: "a claim bound to another provisioner's local PV is refused",
 			pvs: []*corev1.PersistentVolume{at(tagged(pv("local-pv-1", local, claimRef("default", "data-web-0", "uid-6")),
 				"local-volume-provisioner-node1-abc"), "/mnt/disks/vol1")},
@@ -759,8 +734,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 				"granted by a flag",
 		},
 		{
-			// The pod mounts whatever the pending claim binds, so its own class
-			// decides.
+			// The pod mounts whatever the pending claim binds, so its own class decides.
 			name:   "a pod mounting a pending claim whose class matches a node-path PV is refused",
 			pvs:    []*corev1.PersistentVolume{withClass(pv("pv-node", hostPath, nil), "local-static")},
 			claims: []*corev1.PersistentVolumeClaim{pendingWithClass("data", "local-static")},
@@ -777,8 +751,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 			obj:    podMounting("data"),
 		},
 		{
-			// A fresh claim gets a new uid, so a reservation left by a deleted
-			// claim of the same name cannot take it.
+			// A fresh claim gets a new uid, so a deleted claim's reservation cannot take it.
 			name: "a set beside a node-path PV reserved by a deleted claim's uid is applied",
 			pvs:  []*corev1.PersistentVolume{pv("pv-node", hostPath, claimRef("default", "data-web-0", "uid-old"))},
 			obj:  statefulSet("web"),
@@ -821,8 +794,7 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 					t.Errorf("checkClaimedVolumes refused an apply it must allow: %v", err)
 				}
 			}
-			// The PV list already holds every volume, so reused claims must be
-			// checked against it, not with one read per claim.
+			// The PV list already holds every volume, so reused claims are checked against it.
 			for _, action := range cs.Actions() {
 				if !tc.directGet && action.GetVerb() == "get" && action.GetResource().Resource == "persistentvolumes" {
 					t.Errorf("a reused claim's volume was read one at a time: %v", action)
@@ -832,7 +804,6 @@ func TestClaimTemplatesCannotReuseAClaimBoundToANodePathVolume(t *testing.T) {
 	}
 }
 
-// A manifest nested past the search bound is refused, not left unchecked.
 func TestPodSpecGuardsRefuseAManifestTooDeepToCheck(t *testing.T) {
 	deep := map[string]any{"containers": []any{}, "hostPID": true}
 	for range podSpecSearchDepth + 1 {

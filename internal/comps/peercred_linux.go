@@ -7,9 +7,6 @@ import (
 	"time"
 )
 
-// peerPID is the pid of the process listening on the unix socket at path,
-// from SO_PEERCRED: the kernel records it at listen time, so it needs nothing
-// from the server.
 func peerPID(path string) (int, error) {
 	c, err := net.DialTimeout("unix", path, 5*time.Second)
 	if err != nil {

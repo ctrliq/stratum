@@ -25,24 +25,14 @@ var (
 	writeCoreDNSUpstream = runtime.WriteCoreDNSUpstream
 )
 
-// learnClusterDNS fills in the cluster DNS address for a worker that joined
-// before it was recorded. Such a worker has no ServiceCIDR, so its
-// kubelet handed pods 10.96.0.10 whatever the cluster's range, which on a
-// range that does not contain it is no resolver at all. The address is read
-// from the kube-dns Service with kubelet's own credential, which the Node
-// authorizer lets read Services, and set on st; it reports whether that
-// changed it. Writing kubelet.conf and saving the state are the caller's. A
-// cluster it cannot reach is no failure: the worker starts with what it has,
-// and the next start tries again.
+// A cluster the worker cannot reach is no failure: the next start tries again.
 func learnClusterDNS(st *NodeState) (changed bool) {
 	if st.Role != "worker" || st.ServiceCIDR != "" {
 		return false
 	}
 	current := st.ClusterDNSIP
 	if current == "" {
-		// The address runtime.ClusterDNSIP renders with no range and no
-		// address recorded, so a Service already at the kubelet's address is
-		// no change.
+		// The address the kubelet renders with no range and nothing recorded, so no change.
 		current = netcfg.Default().DNSIPv4
 	}
 	ip, err := fetchClusterDNSIP()
@@ -58,8 +48,6 @@ func learnClusterDNS(st *NodeState) (changed bool) {
 	return true
 }
 
-// kubeDNSServiceIP is kube-system/kube-dns's ClusterIP, read as this node's
-// kubelet.
 func kubeDNSServiceIP() (string, error) {
 	cfg, err := clientcmd.BuildConfigFromFlags("", filepath.Join(version.KubeconfigDir, "kubelet.kubeconfig"))
 	if err != nil {

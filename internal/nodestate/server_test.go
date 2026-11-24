@@ -9,15 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestServerURLIsTheVIPElseTheLocalAPIServer pins the one rule every
-// controller's kubeconfigs, and its recorded server, follow: the VIP when one
-// is configured (one address for in-cluster and external clients), the local
-// apiserver otherwise. The controller start and the HA join both take it from
-// here, so a joined controller's first restart writes what the join wrote.
-// Only the address decides: the interface and BGP mode say how kube-vip
-// announces the VIP, not where clients reach it. An IPv6 VIP is bracketed, and
-// every URL must parse back to the address it was built from: client-go
-// cannot build a client from a server URL that net/url rejects.
+// The URL must parse back to the address it was built from; client-go rejects a bare IPv6 host.
 func TestServerURLIsTheVIPElseTheLocalAPIServer(t *testing.T) {
 	for _, tc := range []struct {
 		name string

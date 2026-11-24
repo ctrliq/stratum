@@ -16,8 +16,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// fakeHost puts the test on a host in mode, with Stratum's paths and the
-// local-path directory under a temp dir. mode Disabled leaves selinuxfs absent.
+// mode Disabled leaves selinuxfs absent.
 func fakeHost(t *testing.T, mode Mode) string {
 	t.Helper()
 	tmp := t.TempDir()
@@ -71,8 +70,7 @@ func fakeHost(t *testing.T, mode Mode) string {
 	return tmp
 }
 
-// realRunPaths points the run directory, containerd's state and the unit at
-// their real paths, which the distribution's equivalences cover.
+// real paths the distribution's equivalences cover.
 func realRunPaths(t *testing.T) {
 	t.Helper()
 	for _, sw := range []struct {
@@ -94,8 +92,7 @@ type policyBase struct {
 	distro [][2]string
 }
 
-// el9 is the part of a Rocky 9 policy these tests use: it labels /run as
-// /var/run, and container-selinux's containerd rules are under /var/run.
+// labels /run as /var/run; container-selinux's containerd rules sit under /var/run.
 var el9 = policyBase{
 	rules: []rule{
 		{"/var/run(/.*)?", "all files", "var_run_t"},
@@ -115,9 +112,7 @@ var el10 = policyBase{
 	distro: [][2]string{{"/var/run", "/run"}, {"/var/lock", "/run/lock"}, {"/etc/systemd/system", "/usr/lib/systemd/system"}},
 }
 
-// fakePolicy stands in for the policy tools of a host with base's policy. It
-// keeps the local contexts semanage registers, so consecutive Ensure calls see
-// what earlier ones did, and records every call.
+// keeps the local contexts semanage registers, so consecutive Ensure calls compose.
 type fakePolicy struct {
 	base     policyBase
 	module   bool
@@ -290,9 +285,6 @@ func TestDisabledHostRunsNothing(t *testing.T) {
 	}
 }
 
-// A temp file takes the label the policy gives its destination, so the rename
-// never shows the destination with the temp name's label, but only once Ensure
-// has labelled the node.
 func TestLabelLikeWaitsForTheStamp(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -330,9 +322,6 @@ func TestLabelLikeWithNoPolicyLabel(t *testing.T) {
 	}
 }
 
-// A missing matchpathcon on a labelled node, as after an opt-out that removed
-// the packages before Ensure ran, only warns; the next start relabels. Any
-// other failure fails the write rather than leave a wrong label in place.
 func TestLabelLikeMissingToolWarnsOtherFailuresFail(t *testing.T) {
 	fakeHost(t, Enforcing)
 	writeStamp(t)
@@ -343,12 +332,7 @@ func TestLabelLikeMissingToolWarnsOtherFailuresFail(t *testing.T) {
 	if err := LabelLike("/x/.f.tmp-1", "/x/f"); err != nil {
 		t.Fatalf("LabelLike with no matchpathcon = %v, want a warning", err)
 	}
-	// The warning is delivered to the writer the caller hands, not
-	// unconditionally to stdout: the shared atomic writer's default routes it
-	// to stderr, so a write under a protocol handler cannot inject a
-	// diagnostic into its stdout stream. The stamp again first: the call
-	// above fired the warning and removed it, and an unlabelled node reports
-	// nothing.
+	// the warning goes to the writer the caller hands, not unconditionally to stdout.
 	writeStamp(t)
 	var warned bytes.Buffer
 	if err := LabelLikeWithWriter(&warned, "/x/.f.tmp-1", "/x/f"); err != nil {
@@ -375,11 +359,7 @@ func TestLabelLikeMissingToolWarnsOtherFailuresFail(t *testing.T) {
 	}
 }
 
-// With container-selinux removed but matchpathcon still installed, the local
-// contexts name labels the policy no longer defines, and chcon fails. That is
-// the policy being gone, not a failed write: the stamp goes and Ensure decides,
-// so a staged payload or an upgrade on an existing node does not stop here
-// before Ensure can warn.
+// a chcon failure with the module gone is the policy being gone, not a failed write.
 func TestLabelLikeWarnsWhenTheModuleIsGone(t *testing.T) {
 	fakeHost(t, Enforcing)
 	writeStamp(t)
@@ -396,8 +376,6 @@ func TestLabelLikeWarnsWhenTheModuleIsGone(t *testing.T) {
 	}
 }
 
-// Ensure checks matchpathcon before it labels the node, so it never records a
-// labelled node whose writes cannot be labelled.
 func TestEnsureChecksMatchpathcon(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -412,8 +390,6 @@ func TestEnsureChecksMatchpathcon(t *testing.T) {
 	}
 }
 
-// A new permissive node that is not CIS only warns when its files cannot be
-// labelled, as it does for a missing policy.
 func TestEnsurePermissiveWarnsOnAFailure(t *testing.T) {
 	fakeHost(t, Permissive)
 	p := newFakePolicy(t, el9)
@@ -428,8 +404,6 @@ func TestEnsurePermissiveWarnsOnAFailure(t *testing.T) {
 	}
 }
 
-// A copy of a policy rule that a container-selinux update removed is deleted;
-// a context the operator added is not.
 func TestEnsureRemovesAStaleManagedContext(t *testing.T) {
 	fakeHost(t, Enforcing)
 	realRunPaths(t)
@@ -452,8 +426,6 @@ func TestEnsureRemovesAStaleManagedContext(t *testing.T) {
 	}
 }
 
-// Without container-selinux a new node is refused when enforcing or under
-// CIS, and warned otherwise; an opted-out node is not touched at all.
 func TestEnsureWithoutContainerSELinux(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -504,8 +476,6 @@ func TestEnsureWithoutContainerSELinux(t *testing.T) {
 	}
 }
 
-// Prerequisite refuses the nodes Ensure refuses for a missing policy, and
-// passes the ones it warns or runs, without touching the host.
 func TestPrerequisite(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -521,8 +491,7 @@ func TestPrerequisite(t *testing.T) {
 		{"opted out under CIS", Enforcing, Options{RequiresSELinux: true, Profile: "cis", OptOut: true}, false, false, []string{"spec.selinux: false", "cis profile"}},
 		// The opt-out refusal comes before the Disabled pass, as in Ensure.
 		{"disabled, opted out under CIS", Disabled, Options{RequiresSELinux: true, Profile: "cis", OptOut: true}, false, false, []string{"spec.selinux: false", "cis profile"}},
-		// An existing node is refused like a new one: the upgrade checks nodes
-		// that already run.
+		// the upgrade checks nodes that already run.
 		{"enforcing, existing node", Enforcing, Options{Existing: true}, false, false, []string{"container-selinux", "spec.selinux: false"}},
 		{"permissive", Permissive, Options{}, false, false, nil},
 		{"opted out", Enforcing, Options{OptOut: true}, false, false, nil},
@@ -564,9 +533,6 @@ func TestPrerequisite(t *testing.T) {
 	}
 }
 
-// A tool failure that is not a missing package answers the question neither
-// way: Prerequisite returns it wrapped in ErrCannotTell, so the upgrade path
-// can warn and let the node through instead of passing it silently.
 func TestPrerequisiteCannotTell(t *testing.T) {
 	fakeHost(t, Enforcing)
 	writeStamp(t)
@@ -589,10 +555,7 @@ func TestPrerequisiteCannotTell(t *testing.T) {
 	}
 }
 
-// A node with the container policy, semodule and matchpathcon but no
-// semanage is refused like one without the policy: Ensure registers
-// Stratum's contexts with semanage, so the upgrade would leave it unlabelled.
-// A permissive node without it only warns at its start, so it passes.
+// Ensure registers contexts with semanage, so an upgrade would leave such a node unlabelled.
 func TestPrerequisiteNamesAMissingSemanage(t *testing.T) {
 	for _, tc := range []struct {
 		mode   Mode
@@ -660,8 +623,6 @@ func TestEnsureNamesAMissingSemanage(t *testing.T) {
 	}
 }
 
-// A policy tool that fails is reported as a failure, not as a missing package
-// to install.
 func TestEnsureToolFailureIsNotAMissingPackage(t *testing.T) {
 	for _, existing := range []bool{false, true} {
 		fakeHost(t, Enforcing)
@@ -679,8 +640,6 @@ func TestEnsureToolFailureIsNotAMissingPackage(t *testing.T) {
 	}
 }
 
-// A host with none of Stratum's contexts gets every one, then a full relabel
-// that stays on each root's filesystem, and the stamp.
 func TestEnsureRegistersEveryContextAndRelabels(t *testing.T) {
 	for _, m := range []Mode{Enforcing, Permissive} {
 		t.Run(m.String(), func(t *testing.T) {
@@ -717,8 +676,6 @@ func TestEnsureRegistersEveryContextAndRelabels(t *testing.T) {
 	}
 }
 
-// With the real run paths, a second start on a labelled node registers
-// nothing and relabels only what an upgrade or an operator may replace.
 func TestEnsureSecondStartIsANoop(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -778,8 +735,6 @@ func TestEnsureSecondStartIsANoop(t *testing.T) {
 	}
 }
 
-// A full relabel that fails is retried on the next start, though the contexts
-// are registered by then.
 func TestEnsureRetriesAFailedRelabel(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -805,8 +760,6 @@ func TestEnsureRetriesAFailedRelabel(t *testing.T) {
 	}
 }
 
-// Opting out of a labelled node removes the stamp, so the writers stop
-// labelling, and runs no tool.
 func TestEnsureOptOutStopsLabelling(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -825,8 +778,7 @@ func TestEnsureOptOutStopsLabelling(t *testing.T) {
 	}
 }
 
-// A context with another type, or an equivalence to another path, is
-// corrected in place: semanage refuses to add one that exists.
+// semanage refuses to add a context that already exists.
 func TestEnsureCorrectsADifferingContext(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -845,8 +797,7 @@ func TestEnsureCorrectsADifferingContext(t *testing.T) {
 	}
 }
 
-// effective is the type libselinux gives path from local rules: an exact path
-// first, then the newest regular expression that matches.
+// the type libselinux gives path: exact path first, then the newest regex match.
 func effective(local []rule, path string) string {
 	for _, r := range local {
 		if stem(r.spec) == r.spec && r.spec == path {
@@ -861,10 +812,7 @@ func effective(local []rule, path string) string {
 	return ""
 }
 
-// A broad context registered again, after an operator removed it, comes after
-// the narrower contexts under it, and libselinux takes the newest match: the
-// narrower ones are registered again after it, so binaries and sandbox shm keep
-// their types.
+// libselinux takes the newest match, so narrower contexts are re-registered after a repair.
 func TestEnsureKeepsNarrowerContextsAheadOfARepairedBroadOne(t *testing.T) {
 	fakeHost(t, Enforcing)
 	realRunPaths(t)
@@ -902,9 +850,7 @@ func TestEnsureKeepsNarrowerContextsAheadOfARepairedBroadOne(t *testing.T) {
 	}
 }
 
-// On Rocky 9 an equivalence an earlier start registered for the containerd
-// state is removed before the rules that replace it, which semanage would
-// otherwise refuse beneath it.
+// semanage would refuse the replacing rules beneath the equivalence.
 func TestEnsureReplacesAnIneffectiveEquivalence(t *testing.T) {
 	fakeHost(t, Enforcing)
 	realRunPaths(t)
@@ -923,10 +869,6 @@ func TestEnsureReplacesAnIneffectiveEquivalence(t *testing.T) {
 	}
 }
 
-// A node that was running before only warns when a context cannot be
-// registered; a new node stops with the error. Either way nothing is
-// relabelled with contexts that failed to register, and the next start that
-// registers them relabels everything.
 func TestEnsureRegistrationFailure(t *testing.T) {
 	for _, existing := range []bool{true, false} {
 		fakeHost(t, Enforcing)
@@ -950,8 +892,6 @@ func TestEnsureRegistrationFailure(t *testing.T) {
 	}
 }
 
-// A start with SELinux disabled drops the stamp: files written while it was
-// off have no labels, so the next start with it on relabels everything.
 func TestEnsureForgetsTheStampWhileSELinuxIsDisabled(t *testing.T) {
 	fakeHost(t, Disabled)
 	writeStamp(t)
@@ -964,9 +904,6 @@ func TestEnsureForgetsTheStampWhileSELinuxIsDisabled(t *testing.T) {
 	}
 }
 
-// A narrower context listed before a broader one, as an update interrupted
-// after re-adding the broad context leaves them, is registered again after it,
-// though every type already matches.
 func TestEnsureRepairsAnInterruptedReordering(t *testing.T) {
 	fakeHost(t, Enforcing)
 	realRunPaths(t)
@@ -992,8 +929,6 @@ func TestEnsureRepairsAnInterruptedReordering(t *testing.T) {
 	}
 }
 
-// The CIS profile refuses spec.selinux: false on every host, so a worker cannot
-// join with it where SELinux is disabled and keep it.
 func TestEnsureRefusesCISOptOutWhereSELinuxIsDisabled(t *testing.T) {
 	fakeHost(t, Disabled)
 	newFakePolicy(t, el9)
@@ -1002,8 +937,7 @@ func TestEnsureRefusesCISOptOutWhereSELinuxIsDisabled(t *testing.T) {
 	}
 }
 
-// A path that exists but cannot be inspected is an error: skipping it could
-// record a relabel that never happened.
+// skipping it could record a relabel that never happened.
 func TestRestoreReportsAnUninspectablePath(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -1045,8 +979,7 @@ func TestRestoreSkipsMissingPaths(t *testing.T) {
 	}
 }
 
-// semanage refuses a rule beneath a distribution equivalence's target, so each
-// path is registered as the policy labels it.
+// semanage refuses a rule beneath a distribution equivalence's target.
 func TestCanonical(t *testing.T) {
 	for name, tc := range map[string]struct {
 		base policyBase
@@ -1110,9 +1043,6 @@ SELinux Local fcontext Equivalence
 	}
 }
 
-// A failure on a labelled node keeps the stamp, so the node stays labelled and
-// its containers confined, and the pending marker makes the next start run
-// the full relabel again.
 func TestEnsureFailureKeepsALabelledNodeLabelled(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -1152,9 +1082,6 @@ func TestEnsureFailureKeepsALabelledNodeLabelled(t *testing.T) {
 	}
 }
 
-// A container-selinux update that changes the rules behind an equivalence
-// relabels the tree labelled through it, though Stratum's own contexts did not
-// change.
 func TestEnsureRelabelsWhenThePolicyChanges(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -1172,8 +1099,6 @@ func TestEnsureRelabelsWhenThePolicyChanges(t *testing.T) {
 	}
 }
 
-// A stamp recording other contexts, as after an upgrade that adds one before
-// it is registered, makes the next start relabel everything.
 func TestEnsureRelabelsOnAStaleStamp(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -1192,8 +1117,6 @@ func TestEnsureRelabelsOnAStaleStamp(t *testing.T) {
 	}
 }
 
-// A stamp that cannot be inspected fails the write rather than letting it
-// through unlabelled.
 func TestLabelLikeFailsOnAnUninspectableStamp(t *testing.T) {
 	fakeHost(t, Enforcing)
 	newFakePolicy(t, el9)
@@ -1218,9 +1141,6 @@ func TestForgetLabels(t *testing.T) {
 	}
 }
 
-// A file written while SELinux is disabled gets no label, so the stamp goes
-// at once: a start that fails before Ensure runs must not leave the next
-// enabled start trusting it.
 func TestLabelLikeForgetsTheStampWhileSELinuxIsDisabled(t *testing.T) {
 	fakeHost(t, Disabled)
 	writeStamp(t)
@@ -1236,10 +1156,7 @@ func TestLabelLikeForgetsTheStampWhileSELinuxIsDisabled(t *testing.T) {
 	}
 }
 
-// A recursive restore excludes every directory mounted beneath its roots,
-// bind mounts from the same filesystem included, since restorecon -x stops
-// only where the device changes; mounts elsewhere, and the roots themselves,
-// are not excluded.
+// restorecon -x stops only where the device changes.
 func TestRestoreExcludesMountsBeneathItsRoots(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -1272,9 +1189,7 @@ func TestRestoreExcludesMountsBeneathItsRoots(t *testing.T) {
 	}
 }
 
-// CoreDNS's upstream directory exists, and is relabelled, from the first
-// start: created after the one full relabel, it would keep the data
-// directory's type, which CoreDNS may not read.
+// created after the relabel it would keep the data directory's type.
 func TestEnsureCreatesTheDNSDirBeforeTheRelabel(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -1291,8 +1206,7 @@ func TestEnsureCreatesTheDNSDirBeforeTheRelabel(t *testing.T) {
 	}
 }
 
-// The policy tools run as root, so nothing of the caller's environment but
-// what toolenv names may reach them.
+// the policy tools run as root.
 func TestRunEnvIsExplicit(t *testing.T) {
 	t.Setenv("XTABLES_LIBDIR", "/evil")
 	t.Setenv("TC_LIB_DIR", "/evil")

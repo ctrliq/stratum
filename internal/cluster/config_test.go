@@ -10,14 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// spec.snapshots.intervalHours is what the scheduled snapshot loop turns
-// straight into its ticker's interval. Unset — a missing config file, an empty
-// spec, or an explicit zero — keeps the built-in default a controller runs
-// (version.SnapshotIntervalHours), and an explicit value passes through as it
-// is, down to the smallest whole-hour interval the loop accepts. The
-// zero-keeps-default half of this is the part of the interval contract that
-// must survive run-group ownership; whether a negative value is refused is that
-// change's own acceptance test and is deliberately not pinned here.
 func TestLoadConfigSnapshotIntervalHours(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -49,13 +41,6 @@ func TestLoadConfigSnapshotIntervalHours(t *testing.T) {
 	}
 }
 
-// A negative spec.snapshots.intervalHours is a config error, refused at
-// load like every other bad value in this file, not a value passed
-// through for the scheduled snapshot loop to choke on: the loop builds
-// its ticker's interval straight from the field, and time.NewTicker
-// panics on a non-positive one, taking the whole `stratum up` process
-// down with it. The error names the field and the value, as the vip
-// refusal does. Zero is not refused — it keeps the default pinned above.
 func TestLoadConfigRefusesANegativeSnapshotIntervalHours(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -78,20 +63,8 @@ func TestLoadConfigRefusesANegativeSnapshotIntervalHours(t *testing.T) {
 	}
 }
 
-// A spec.snapshots.intervalHours whose time.Duration product overflows is
-// the same refusal as the negative one, reached a different way: the
-// snapshot loop's ticker interval is time.Duration(hours) * time.Hour, and
-// hours in the millions wrap that product to a non-positive duration —
-// the exact value time.NewTicker panics on. A refusal that checked only
-// the sign of the field would let ten million hours through, and the run
-// group would turn the panic into a restart loop instead of the load-time
-// error the negative refusal gives.
 func TestLoadConfigRefusesASnapshotIntervalHoursThatOverflowsItsDuration(t *testing.T) {
-	// Both wrap-to-positive values were accepted when the check was the
-	// product's sign: 5124096 hours wraps to about 25 minutes and
-	// 2251799813685249 wraps to exactly one hour, both positive, so a sign
-	// check passed them to the snapshot ticker whole. The bound must refuse
-	// every value the product cannot represent, whatever sign it wraps to.
+	// Both values wrap to positive durations, so the bound must refuse them too.
 	for _, val := range []string{"10000000", "5124096", "2251799813685249"} {
 		t.Run(val, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
@@ -106,9 +79,6 @@ func TestLoadConfigRefusesASnapshotIntervalHoursThatOverflowsItsDuration(t *test
 	}
 }
 
-// spec.snapshots.retain is how many scheduled snapshots each control plane
-// keeps once no snapshot.conf exists. Unset or an explicit zero keeps the
-// built-in default, and a positive value passes through as it is.
 func TestLoadConfigSnapshotRetain(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -136,15 +106,8 @@ func TestLoadConfigSnapshotRetain(t *testing.T) {
 	}
 }
 
-// A negative spec.snapshots.retain is refused at load, as a negative
-// intervalHours is. Passed through, it reaches the scheduled save as its
-// retention, and the save prunes only for a positive one, so on a control
-// plane with no snapshot.conf a stray minus sign would silently stop pruning
-// until the disk fills. The error names the field and the value.
 func TestLoadConfigRefusesANegativeSnapshotRetain(t *testing.T) {
-	// Named in words, not by the value: t.TempDir() puts the test name in the
-	// path, which the error quotes, so a name holding the value would satisfy
-	// the value check on its own.
+	// t.TempDir() puts the test name in the path the error quotes, so the name must not hold the value.
 	for _, tc := range []struct {
 		name string
 		val  string

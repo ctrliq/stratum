@@ -1,9 +1,4 @@
-// Package uninstall removes a stratum node's footprint: it stops the supervised
-// components (via the controller's control socket, when one is running) and
-// deletes the on-disk layout created by `stratum up`.
-// Everything lives under /var/lib/stratum plus a handful of /etc drop-ins, so
-// the deletion list is short by construction. Destructive: this wipes etcd
-// data and all local cluster state, so Run requires an explicit confirmation.
+// Package uninstall removes a stratum node's footprint.
 package uninstall
 
 import (
@@ -33,46 +28,27 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// units are stopped in reverse start order (kubelet first, etcd last), derived
-// from the canonical comps.Units roster.
+// stopped in reverse start order: kubelet first, etcd last.
 var units = func() []string {
 	u := slices.Clone(comps.Units)
 	slices.Reverse(u)
 	return u
 }()
 
-// The wait durations around the top-level process stop. Production code only
-// reads these, so two Runs in one process cannot race over them; tests shorten
-// them, which is why they stay variables rather than constants. Every probe
-// the runner consults is a field on hostEffects, built in Run; there is no
-// package-level probe to fall back to.
+// production only reads these: two Runs in one process cannot race. Tests shorten them.
 var (
 	topLevelStopWait = 30 * time.Second
 	topLevelKillWait = 5 * time.Second
 )
 
-// startLockHeld is etcddata.StartLockHeld, shared with the restore path.
 func startLockHeld() (bool, error) { return etcddata.StartLockHeld() }
 
-// hostEffects is one teardown run's complete set of host effects, probes,
-// discovered state and layout. The runner consults nothing else, so a run
-// cannot reach the host through a path the value does not carry, and a test
-// that builds a zero value fails closed on the unset-effect sentinel instead
-// of reaching the node. The probes are the read-only seams the preflight and
-// the teardown consult (the supervisor's state, the process table, the static
-// pods); the discovery fields are what this run has learned about the node's
-// network namespaces, seeded fresh at the runner's entry so a second Run never
-// inherits a first one's answer; the layout fields are where the node keeps
-// the state the teardown reads and removes. All of it is per-run: Run builds
-// one value per call, so two Runs in one process share nothing.
+// one teardown run's effects, probes, discovered state and layout; a zero value fails closed.
 type hostEffects struct {
 	acquireNodeLock     func() (func(), error)
 	acquireEtcdDataLock func() (func(), error)
 	removeAll           func(path string) error
-	// removeEmptyDir removes a directory only when it is empty (rmdir, not
-	// os.Remove, which also unlinks a file): the local-path provisioner's
-	// volume directory goes through it, so a volume that arrives after the
-	// emptiness check, or a file that replaces the directory, is kept.
+	// rmdir, not os.Remove, which would also unlink a file that replaced the directory.
 	removeEmptyDir     func(path string) error
 	stopHostProcesses  func() error
 	disableSystemdUnit func() error
@@ -83,42 +59,30 @@ type hostEffects struct {
 	enableSystemdUnit  func() error
 	suppressRestartFn  func() error
 	allowRestartFn     func() error
-	// untrustPodCIDRs removes the firewalld bindings stratum added, before the
-	// delete loop removes the record it reads. Run wires host.UntrustPodCIDRs
-	// as its default; tests stub the field on their effects value.
+	// before the delete loop, which removes the ownership record this reads.
 	untrustPodCIDRs func() error
-	// restoreAppArmor puts the kernel's runc AppArmor profile back as the host
-	// has it, once every container is stopped. Run wires
-	// apparmor.RestoreWithWriter as its default.
 	restoreAppArmor func() error
-	// removeSELinuxContexts deletes the SELinux file contexts stratum
-	// registered, before the delete loop: the record of what stratum
-	// registered lives under DataDir. Run wires selinux.RemoveContexts as its
-	// default.
-	removeSELinuxContexts func() error
-	unmountStateFn        func() error
-	unmountFn             func(mp string) error
-	putManifestFn         func(name string, manifest []byte) error
-	stopStaticPodFn       func(name string) error
-	startUnitFn           func(name string) error
-	startContainerdFn     func() error
-	stopContainerdFn      func() error
-	stopKubeletFn         func() error
-	stopContainersFn      func() error
-	waitHostExitFn        func()
-	startAndWaitActive    func(name string, wait time.Duration) error
-	ctrRun                func(args ...string) (string, error)
-	runCmd                func(stdin, name string, args ...string) ([]byte, error)
-	nodeMarkerFn          func() (func(host string, at time.Time) error, error)
-	teardownDatapathFn    func() error
-	stopIdleShimsFn       func()
-	signalPID             func(pid int, sig syscall.Signal) error
-	// removeLegacyHostConfig heals a host an older stratum broke, self-logging
-	// its outcome through the run's writer: Run wires the runtime function
-	// itself, which reports both outcomes to the writer it is given.
+	// before the delete loop: its record of what stratum registered lives under DataDir.
+	removeSELinuxContexts  func() error
+	unmountStateFn         func() error
+	unmountFn              func(mp string) error
+	putManifestFn          func(name string, manifest []byte) error
+	stopStaticPodFn        func(name string) error
+	startUnitFn            func(name string) error
+	startContainerdFn      func() error
+	stopContainerdFn       func() error
+	stopKubeletFn          func() error
+	stopContainersFn       func() error
+	waitHostExitFn         func()
+	startAndWaitActive     func(name string, wait time.Duration) error
+	ctrRun                 func(args ...string) (string, error)
+	runCmd                 func(stdin, name string, args ...string) ([]byte, error)
+	nodeMarkerFn           func() (func(host string, at time.Time) error, error)
+	teardownDatapathFn     func() error
+	stopIdleShimsFn        func()
+	signalPID              func(pid int, sig syscall.Signal) error
 	removeLegacyHostConfig func(w io.Writer)
 
-	// The read-only probes the preflight gates and the teardown steps consult.
 	supervisorRunning  func() bool
 	unitActive         func(name string) bool
 	supervisorStatus   func() (map[string]supervisor.ProcStatus, error)
@@ -135,9 +99,6 @@ type hostEffects struct {
 	loadNodeState      func() (*nodestate.NodeState, error)
 	shimPIDs           func() ([]int, error)
 
-	// What this run has learned about the node's network namespaces
-	// (datapath.go), and the filesystem layout it reads it from. The runner
-	// seeds the discovery fresh at its entry; the layout is as installed.
 	stratumNetns    map[string]bool
 	stratumNetnsErr error
 	netnsEnumerated bool
@@ -154,19 +115,13 @@ type hostEffects struct {
 	mountInfoPath      string
 	procRoot           string
 
-	// assumeNoForeignRuntimes is --assume-no-foreign-runtimes: the operator has
-	// checked the host, so a run that cannot see the host's processes proceeds.
+	// the operator has checked the host, so a run that cannot see its processes proceeds.
 	assumeNoForeignRuntimes bool
 
-	// cniKept is the run's decision for each CNI directory, made once by
-	// cniKeepReason so the unmount phase and the delete loop agree.
+	// the per-directory keep decision, made once so the unmount phase and the delete loop agree.
 	cniKept map[string]error
 }
 
-// cniKeepReason is why the CNI directory t stays, nil when it goes:
-// noOtherRuntime, asked once per run. The unmount phase asks first, so a
-// mount under a directory that stays is left mounted, and the delete loop
-// keeps the same directory.
 func (fx *hostEffects) cniKeepReason(t string) error {
 	if err, ok := fx.cniKept[t]; ok {
 		return err
@@ -179,35 +134,17 @@ func (fx *hostEffects) cniKeepReason(t string) error {
 	return err
 }
 
-// errUnsetEffect marks an effect the caller never set. It is what a zero
-// hostEffects answers with, so a test harness that forgets a stub sees the
-// sentinel instead of the effect's real host behavior.
+// what a zero hostEffects answers with, so a test that forgets a stub fails closed.
 var errUnsetEffect = errors.New("unset host effect")
 
-// unsetEffect is the fail-closed error for the named field: identifiable with
-// errors.Is against errUnsetEffect, and naming the field so the harness can
-// say which stub is missing.
 func unsetEffect(name string) error {
 	return fmt.Errorf("%w: hostEffects.%s is not set", errUnsetEffect, name)
 }
 
-// topLevelProc is a PID and its start time, which together identify one
-// process — a PID alone can be reused between the SIGTERM below and the
-// SIGKILL that can follow it.
+// PID plus start time: a PID alone can be reused between SIGTERM and the SIGKILL that can follow.
 type topLevelProc = shimProc
 
-// stopTopLevelProcess finds the top-level `stratum up` process — the one
-// holding the start lock, whether or not systemd ever started it — and
-// stops it, waiting for it to actually exit. `systemctl stop` (stopSystemdUnit,
-// above) only signals an ACTIVE unit; a unit that is loaded but was never
-// started through systemd (a node started by hand, or one where systemd's
-// bookkeeping and the real process have otherwise drifted apart) makes that
-// call a no-op, leaving the process — and the start lock it holds — untouched.
-// This finds it independently, through the same /proc scan already used to
-// find containerd, kubelet, the operator and idle shims (internal/comps),
-// rather than inventing a second way to identify a Stratum-managed process.
-// There should be at most one match: the start lock enforces that only one
-// `stratum up` runs at a time. Its signal is the run's signalPID effect.
+// systemctl stop only signals an ACTIVE unit; a hand-started node's process needs this /proc scan.
 func stopTopLevelProcess(fx *hostEffects) error {
 	if fx.signalPID == nil {
 		return unsetEffect("signalPID")
@@ -242,19 +179,9 @@ func stopTopLevelProcess(fx *hostEffects) error {
 	return fmt.Errorf("stratum up still running after SIGTERM (%s) and SIGKILL (%s)", topLevelStopWait, topLevelKillWait)
 }
 
-// isProcGone reports whether err is startTime's answer to a pid that
-// genuinely no longer exists (its /proc entry gone), as opposed to a read
-// that simply failed for some other reason and proves nothing either way.
 func isProcGone(err error) bool { return os.IsNotExist(err) }
 
-// scanTopLevel snapshots the top-level `stratum up` process(es) currently
-// running, pid and start time together, so a later PID reuse can be told
-// apart from the same process still being there. A start-time read that
-// fails for a reason other than the process having genuinely exited is
-// returned as an error, never silently dropped: skipping a pid here on an
-// unrelated failure (a permission error, an unreadable stat line) would read
-// as "nothing to stop" and let uninstall delete state under a process this
-// call simply could not check.
+// a start-time read failure other than exit is an error: skipping it would read as nothing to stop.
 func scanTopLevel(fx *hostEffects) ([]topLevelProc, error) {
 	if fx.topLevelPIDs == nil {
 		return nil, unsetEffect("topLevelPIDs")
@@ -277,11 +204,6 @@ func scanTopLevel(fx *hostEffects) ([]topLevelProc, error) {
 	return procs, nil
 }
 
-// stillTopLevel is the subset of procs that are still the same process (see
-// stillProcs). It fails closed: a topLevelPIDs failure, or a start-time read
-// failing for any reason other than the pid genuinely being gone, is returned
-// as an error instead of an empty result, for the same reason as scanTopLevel
-// above.
 func stillTopLevel(fx *hostEffects, procs []topLevelProc) ([]topLevelProc, error) {
 	if fx.topLevelPIDs == nil {
 		return nil, unsetEffect("topLevelPIDs")
@@ -289,12 +211,7 @@ func stillTopLevel(fx *hostEffects, procs []topLevelProc) ([]topLevelProc, error
 	return stillProcs(fx.topLevelPIDs, fx, procs)
 }
 
-// signalTopLevel checks each process is still itself immediately before its
-// own signal, the same as shims.go's signalShims: a signal to one can let a
-// later PID be reused before that one is reached, and a PID a different
-// process now holds must never receive a signal meant for the original one.
-// A stillTopLevel failure aborts the whole call rather than signalling on an
-// unconfirmed identity.
+// recheck identity immediately before each signal: a PID can be reused mid-sequence.
 func signalTopLevel(fx *hostEffects, procs []topLevelProc, sig syscall.Signal) error {
 	for _, p := range procs {
 		still, err := stillTopLevel(fx, []topLevelProc{p})
@@ -308,11 +225,7 @@ func signalTopLevel(fx *hostEffects, procs []topLevelProc, sig syscall.Signal) e
 	return nil
 }
 
-// waitTopLevelGone polls stillTopLevel(procs) until none of the originally
-// found processes are still themselves, or wait elapses. A stillTopLevel
-// failure returns immediately as an error: not being able to prove it is
-// gone is not the same as it being gone, so this never resolves an
-// unconfirmed case to "gone" by falling through the deadline instead.
+// a probe failure is an error, never resolved to gone at the deadline.
 func waitTopLevelGone(fx *hostEffects, procs []topLevelProc, wait time.Duration) (bool, error) {
 	deadline := time.Now().Add(wait)
 	for {
@@ -330,30 +243,7 @@ func waitTopLevelGone(fx *hostEffects, procs []topLevelProc, wait time.Duration)
 	}
 }
 
-// dirsAndFiles is the on-disk state to delete. version.DataDir covers the
-// staged binaries, PKI, kubeconfigs, etcd data, manifests, logs — the whole
-// point of the one-directory layout (the operator's helm cache among them,
-// since it moved under the data dir as version.HelmCacheDir). The three roots
-// are named through their version variables; every other entry is one of
-// bring-up's outside-root paths (host.Footprint), named through the variable
-// that declares it, so the delete list cannot drift from what bring-up
-// writes. The coupling is pinned both ways: internal/host's
-// TestUninstallTargetsCoverTheFootprint fails when a footprint path is missing
-// here, and the footprint test fails when a path here is not bring-up's —
-// with two named exceptions. host.KubeletDir is the one footprint path that is
-// deliberately NOT a target: a plain RemoveAll here would delete the directory
-// wholesale right after this run's own datapath teardown promised to keep
-// whatever is not Stratum's kubelet's ("left /var/lib/kubelet in place"),
-// destroying a co-hosted kubelet's state. removeLegacyKubeletDir
-// (datapath.go) is the directory's only remover, stale sockets and
-// Stratum-signed cert pairs included, and TestTargetsOutsideEveryRootAreListed
-// carries the decision in its kept set.
-// /var/lib/stratum-helm is the other exception: the operator helm cache's home
-// on nodes brought up before it moved under the data dir. Nothing writes it
-// anymore; version.LegacyHelmCacheDir declares it so the operator's migration
-// and this delete target never drift apart. An uninstalled legacy node must
-// not keep the operator's whole helm cache (the repository index cache,
-// repositories.yaml and the written CA files).
+// pinned against bring-up's footprint by tests; the kubelet dir's exception is theirs.
 func dirsAndFiles() []string {
 	return append([]string{
 		version.DataDir,
@@ -371,32 +261,15 @@ func dirsAndFiles() []string {
 	}, host.ProfileSysctlFiles()...)
 }
 
-// Targets returns every path uninstall will delete (used for the dry-run preview
-// and unit-tested to guard against drift from the installer's layout): the
-// three roots plus host.Footprint's outside-root paths, and the upgrade's
-// binary backup sets beside version.StratumInstallPath, which are enumerated
-// from the node as it stands.
+// Targets returns every path uninstall will delete.
 func Targets() []string {
 	return append(dirsAndFiles(), stratumBinaryBackups()...)
 }
 
-// stratumBinaryBackups returns the backup sets an upgrade wrote beside the
-// installed stratum binary: each <install>.bak-<ts> file it saved before
-// replacing the live binary, which stays there through every rollback
-// (internal/upgrade keeps the newest sets beside version.StratumInstallPath).
-// They sit outside the three roots, so they are targets of their own; the live
-// binary and every neighbour that is not one of its .bak- sets are not
-// uninstall's to remove. Enumerated at call time, so only sets that exist are
-// named and the list follows version.StratumInstallPath wherever a test or a
-// future release moves it. A directory that cannot be read contributes none:
-// a leftover backup binary is not worth failing an uninstall over, and the
-// three roots and the footprint — the spine of the delete list — never depend
-// on this read.
+// only the existing .bak- sets beside the install path; a live binary is not uninstall's to remove.
 func stratumBinaryBackups() []string {
 	if !filepath.IsAbs(version.StratumInstallPath) {
-		// A relative install path would put relative paths in the destructive
-		// delete loop (TestTargetsAreAbsolute); treat it as no backups, as for
-		// an unreadable directory.
+		// a relative path would put relative paths in the destructive delete loop
 		return nil
 	}
 	entries, err := os.ReadDir(filepath.Dir(version.StratumInstallPath))
@@ -410,8 +283,7 @@ func stratumBinaryBackups() []string {
 		if !ok || !e.Type().IsRegular() {
 			continue
 		}
-		// The upgrade writes regular files with this exact UTC stamp. A
-		// similarly named directory or malformed suffix is not its backup.
+		// the upgrade writes regular files with this exact UTC stamp
 		const layout = "20060102-150405"
 		tm, err := time.Parse(layout, stamp)
 		if err == nil && tm.Format(layout) == stamp {
@@ -421,10 +293,7 @@ func stratumBinaryBackups() []string {
 	return baks
 }
 
-// orphanRefusal returns a non-nil error when uninstall cannot rely on kubelet
-// to reap live control-plane static pods. A serving supervisor socket alone is
-// insufficient: kubelet may be deliberately stopped or restarting beneath it.
-// Force-terminating orphaned processes is deliberately separate work.
+// a supervisor socket alone is not enough: kubelet may be stopped beneath it.
 func orphanRefusal(supervisorUp, kubeletUp bool, activeControlPlane, activeHostProcesses []string) error {
 	if supervisorUp {
 		if kubeletUp || len(activeControlPlane) == 0 {
@@ -467,8 +336,7 @@ func activeControlPlane(fx *hostEffects) ([]string, error) {
 	}
 	var active []string
 	for _, name := range staticpod.Names {
-		// Listener reachability alone is not liveness: Stop also waits for the
-		// process to disappear, and kube-vip deliberately has no listener.
+		// a closed port is only a shutdown in progress, and kube-vip has no port at all.
 		running, err := fx.staticPodRunning(name)
 		if err != nil {
 			return nil, fmt.Errorf("uninstall: cannot determine whether static pod %q is still running: %w. Refusing to delete state. Nothing was changed", name, err)
@@ -492,8 +360,7 @@ func orphanPreflight(fx *hostEffects) error {
 	if err != nil {
 		return err
 	}
-	// Do not issue a second control request after a failed supervisor probe.
-	// A false kubelet status then only strengthens the same fail-closed refusal.
+	// a failed supervisor probe already refuses; a second control request adds nothing.
 	kubeletUp := supervisorUp && fx.unitActive("kubelet")
 	var activeHost []string
 	if !supervisorUp {
@@ -505,10 +372,7 @@ func orphanPreflight(fx *hostEffects) error {
 	return orphanRefusal(supervisorUp, kubeletUp, activeControlPlane, activeHost)
 }
 
-// activeHostProcesses returns every Stratum host process still present. The
-// process table is authoritative when the supervisor has disappeared or after
-// it has been asked to stop children; a control-socket status is only a
-// snapshot and must not authorize state deletion.
+// the process table is authoritative: a socket status is only a snapshot, not deletion authority.
 func activeHostProcesses(fx *hostEffects) ([]string, error) {
 	if fx.hostProcessRunning == nil {
 		return nil, unsetEffect("hostProcessRunning")
@@ -526,9 +390,6 @@ func activeHostProcesses(fx *hostEffects) ([]string, error) {
 	return active, nil
 }
 
-// refuseActiveHostProcesses is an error, for Run's abort to wrap, while any
-// Stratum host process is still present after the supervisor was asked to
-// stop them.
 func refuseActiveHostProcesses(fx *hostEffects) error {
 	activeHost, err := activeHostProcesses(fx)
 	if err != nil {
@@ -543,10 +404,6 @@ func refuseActiveHostProcesses(fx *hostEffects) error {
 }
 
 // Run tears the node down, writing its preview, progress and warnings to w.
-// Without force it only prints what would be removed. The CLI passes os.Stdout,
-// so its output is what it always printed; the MCP server passes the buffer its
-// result is built from, so the same text reaches the result as data and never
-// the process's stdout.
 func Run(w io.Writer, force bool) error {
 	return RunWithOptions(w, Options{Force: force})
 }
@@ -554,19 +411,11 @@ func Run(w io.Writer, force bool) error {
 // Options are uninstall's flags.
 type Options struct {
 	Force bool
-	// AssumeNoForeignRuntimes skips the refusal of a run that cannot see the
-	// host's processes; the operator has checked the host. Force does not
-	// imply it.
+	// the operator has checked the host; Force does not imply it.
 	AssumeNoForeignRuntimes bool
 }
 
-// RunWithOptions is Run with every flag. It is the only place
-// that builds a production hostEffects value: one per call, with every
-// effect's real implementation and every probe's real answer wired inline, so
-// a second Run never inherits the first run's value and no effect or probe
-// stays behind as a package variable a forgotten stub could fall back to. The
-// teardown sequence itself lives in the unexported runner, which consults the
-// value and nothing else.
+// the only place a production hostEffects is built: one per call, nothing shared between runs.
 func RunWithOptions(w io.Writer, o Options) error {
 	force := o.Force
 	fx := &hostEffects{
@@ -610,9 +459,7 @@ func RunWithOptions(w io.Writer, o Options) error {
 		loadNodeState:      nodestate.LoadState,
 		shimPIDs:           func() ([]int, error) { return comps.ProcessPIDs("runtime-shim") },
 
-		// The layout paths the datapath teardown reads come from the same
-		// declarations the preview names as fixed items (preview.go), so the
-		// two cannot name different paths.
+		// the same declarations the preview names as fixed items, so the two cannot name different paths.
 		netnsDir:         netnsDir,
 		ciliumRunDir:     ciliumRunDir,
 		bpfRoot:          "/sys/fs/bpf",
@@ -628,8 +475,7 @@ func RunWithOptions(w io.Writer, o Options) error {
 		containerdStateDir: version.ContainerdRootDir,
 		netnsRecordPath:    "/run/stratum-uninstall-netns.json",
 	}
-	// The steps that are themselves built from other effects close over fx: by
-	// the time any of them runs, the value above is complete.
+	// close over fx only after the literal above is complete.
 	fx.stopTopLevelFn = func() error { return stopTopLevelProcess(fx) }
 	fx.startContainerdFn = func() error { return startContainerd(fx) }
 	fx.stopContainersFn = func() error { return stopContainers(w, fx) }
@@ -644,17 +490,7 @@ func RunWithOptions(w io.Writer, o Options) error {
 	return runUninstall(w, force, fx)
 }
 
-// runUninstall is the teardown sequence Run hands its effects value to, with
-// the writer every preview, progress and warning print below it writes to.
-// Every host effect it reaches is a field on fx: one that is not set stops the
-// run with the unset-effect sentinel before that effect's host call is made, so
-// a zero value can drive the preview, which consults no effects, but never the
-// destructive path. The preview's own host reads — the legacy containerd
-// config, the firewalld and SELinux probes — are the read-only PreviewProbes
-// the shared Preview() consults (preview.go), so the dry run and the MCP
-// uninstall_preview enumerate the same effects from one function's value.
-// They are direct read-only calls on the ambient host, not effects, and
-// report what they cannot read instead of failing.
+// an unset effect stops the run before its host call; a zero value can only drive the preview.
 func runUninstall(w io.Writer, force bool, fx *hostEffects) error {
 	if !force {
 		fmt.Fprintln(w, "stratum uninstall will STOP all stratum services and irreversibly DELETE:")
@@ -677,23 +513,12 @@ func runUninstall(w io.Writer, force bool, fx *hostEffects) error {
 		return nil
 	}
 
-	// What this invocation learned about the node's network namespaces is its
-	// own: Run can be called again in a persistent process (the MCP server), and
-	// a flag, ownership or error left by an earlier call — on this value or
-	// another — would stand in for what this one has not read. Seeding the
-	// per-run fields fresh here takes the place of the shared reset a
-	// package-level discovery state would need. The saved record on disk is
-	// kept: it is the part that is meant to outlive a call (datapath.go).
+	// Run can be called again in a persistent process, so discovery is seeded fresh per run.
 	fx.stratumNetns, fx.stratumNetnsErr, fx.netnsEnumerated = map[string]bool{}, nil, false
 
-	// The teardown runs in four declared phases, each carrying its steps'
-	// error class and rollback behavior: refuseUninstall's failures change
-	// nothing, prepareTeardown's roll back through undo.abort, commitTeardown
-	// makes the commit decision, and removeState's errors accumulate instead
-	// of rolling back.
 	release, unitWasEnabled, err := refuseUninstall(fx)
 	if release != nil {
-		// The locks are held for the whole teardown, not just the refusal phase.
+		// the locks are held for the whole teardown, not just the refusal phase.
 		defer release()
 	}
 	if err != nil {
@@ -708,22 +533,9 @@ func runUninstall(w io.Writer, force bool, fx *hostEffects) error {
 	return removeState(w, fx)
 }
 
-// refuseUninstall is the refusal phase: the fail-closed gates the run must
-// pass before it touches the node — the node maintenance lock, the etcd data
-// lock, the start-in-progress probe, the orphan preflight and the enablement
-// query. Its declared error class is refusal: a failure here stops the run
-// with nothing stopped, disabled or deleted, so there is nothing to roll back.
-// It returns the locks' release for the runner to defer over the whole
-// teardown, since the locks outlive this phase, and the unit's enablement as
-// found, which the preparation phase's undo record restores exactly. That
-// query fails closed, before anything is touched, the same as orphanPreflight
-// below: proceeding on a question this could not actually answer risks an
-// abort later restoring the wrong enablement.
+// returns the locks' release for the runner to defer over the whole teardown.
 func refuseUninstall(fx *hostEffects) (release func(), unitWasEnabled bool, err error) {
-	// The node maintenance lock first, then the data lock, the order rejoin and
-	// restore take them in. An upgrade, rollback or certificate rotation holds
-	// only the node lock, and an uninstall beside one would remove the PKI and
-	// state it is changing while it carries on, holding its cluster leases.
+	// the node lock first: an upgrade or rotation holds only it, and a parallel uninstall races it.
 	if fx.acquireNodeLock == nil {
 		return nil, false, unsetEffect("acquireNodeLock")
 	}
@@ -731,8 +543,7 @@ func refuseUninstall(fx *hostEffects) (release func(), unitWasEnabled bool, err 
 	if err != nil {
 		return nil, false, err
 	}
-	// Join, restore, and rejoin hold this same lock while changing the etcd
-	// directory. Take it before stopping services or removing version.DataDir.
+	// join, restore and rejoin hold this lock while changing the etcd directory.
 	if fx.acquireEtcdDataLock == nil {
 		releaseNode()
 		return nil, false, unsetEffect("acquireEtcdDataLock")
@@ -757,15 +568,12 @@ func refuseUninstall(fx *hostEffects) (release func(), unitWasEnabled bool, err 
 		return release, false, err
 	}
 
-	// Fail closed before any stop or delete. A supervisor socket is not enough:
-	// the supervisor may be running while kubelet is stopped or in backoff, and
-	// without kubelet there is no process to reap a removed static-pod manifest.
+	// fail closed before any stop or delete.
 	if err := orphanPreflight(fx); err != nil {
 		return release, false, err
 	}
 
-	// Captured before anything changes, so a later failure's abort can put
-	// enablement back exactly where it found it — never force it either way.
+	// captured before anything changes, so an abort restores enablement exactly as found.
 	if fx.unitEnabledFn == nil {
 		return release, false, unsetEffect("unitEnabledFn")
 	}
@@ -776,20 +584,8 @@ func refuseUninstall(fx *hostEffects) (release func(), unitWasEnabled bool, err 
 	return release, unitWasEnabled, nil
 }
 
-// prepareTeardown is the reversible-preparation phase: the early systemd
-// disable, the restart suppression, the static-pod and container stops, the
-// host-process stop, the sweeps, the unmount, the pre-stop start-lock probe,
-// the unit stop and the top-level process stop. Its declared rollback is
-// undo.abort: everything it changes is still put-back-able, so every failure
-// after the first change goes through the abort, which restores what was
-// changed and deletes nothing. The early systemd disable is the phase's first
-// step — preparation, not preflight: it is the run's first host change (the
-// unit's boot enablement) — but when it fails nothing has changed that undo
-// could put back, so it alone refuses outright instead of aborting.
+// the early systemd disable is preparation, not preflight: its failure refuses, nothing to undo.
 func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
-	// The abort must be able to restore the unit and stopped host processes
-	// before preparation makes its first change. Manifest restoration is
-	// checked below before removing each manifest that would need it.
 	if fx.allowRestartFn == nil {
 		return unsetEffect("allowRestartFn")
 	}
@@ -802,16 +598,7 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 	if fx.stopContainerdFn == nil {
 		return unsetEffect("stopContainerdFn")
 	}
-	// Disable the reboot-persistence unit from starting at the NEXT boot —
-	// the first step, before touching any running process or on-disk state.
-	// A reboot that interrupts uninstall (or a failed rollback below) must
-	// not bring the whole node back over state this function has already
-	// deleted. This alone does nothing about the unit's Restart= while it
-	// stays ACTIVE, which is what suppressRestartFn (right below) is for; and
-	// stopping the unit outright, rather than just disabling it, would
-	// SIGTERM the top-level `stratum up` process now, taking kubelet down
-	// before the static-pod teardown below gets a chance to use it — see
-	// stopSystemdUnit in the commit phase.
+	// disable first: a reboot mid-uninstall must not bring the node back over deleted state.
 	if fx.disableSystemdUnit == nil {
 		return unsetEffect("disableSystemdUnit")
 	}
@@ -819,22 +606,14 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 		return fmt.Errorf("uninstall: %w", err)
 	}
 
-	// No timers to stop: cert renewal and etcd snapshots are loops inside the
-	// controller process, so stopping the components stops them too.
-	//
-	// Control-plane static pods first, while kubelet is still up to tear them
-	// down (removing the manifest is the stop verb); then the host processes.
-	//
-	// Each manifest is read before it is removed, so an abort below can put the
-	// control plane back rather than leave it stopped behind "nothing was
-	// deleted".
+	// no timers: cert renewal and etcd snapshots are loops inside the controller process.
+
+	// static pods first, while kubelet is still up to reap them; then the host processes.
+
+	// each manifest is read before it is removed, so an abort can put it back.
 	undo := &teardownUndo{manifests: map[string][]byte{}, unitWasEnabled: unitWasEnabled}
 
-	// Disarm Restart= on the ACTIVE unit too: DisableUnit only
-	// stops the unit from starting at the NEXT boot, so without this an
-	// unrelated exit of `stratum up` during the teardown below would have
-	// systemd relaunch it mid-teardown, racing the static-pod and
-	// host-process removal this function is doing by hand.
+	// DisableUnit only stops the next boot; without this systemd relaunches the unit mid-teardown.
 	if fx.suppressRestartFn == nil {
 		return undo.abort(fx, unsetEffect("suppressRestartFn"))
 	}
@@ -848,8 +627,7 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 		if !fx.staticPodExists(name) {
 			continue
 		}
-		// A manifest that cannot be read could not be put back, so it is not
-		// removed.
+		// a manifest that cannot be read could not be put back, so it is not removed.
 		if fx.readManifestFn == nil {
 			return undo.abort(fx, unsetEffect("readManifestFn"))
 		}
@@ -874,9 +652,7 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 		}
 	}
 	if fx.supervisorRunning() {
-		// One snapshot, read with its error: a status that cannot be read is
-		// no reason to believe kubelet stopped or that nothing needs starting
-		// again after an abort.
+		// a status that cannot be read is no reason to believe kubelet stopped.
 		if fx.supervisorStatus == nil {
 			return undo.abort(fx, unsetEffect("supervisorStatus"))
 		}
@@ -893,9 +669,7 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 			return undo.abort(fx, err)
 		}
 	}
-	// Every failure from here until the first removal still goes through the
-	// abort: the manifests are gone and the services stopped, and "Nothing was
-	// deleted" alone would leave a control plane down.
+	// failures from here still abort: the manifests are gone and the services stopped.
 	if fx.stopHostProcesses == nil {
 		return undo.abort(fx, unsetEffect("stopHostProcesses"))
 	}
@@ -911,10 +685,7 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 		return undo.abort(fx, unsetEffect("stopIdleShimsFn"))
 	}
 	fx.stopIdleShimsFn()
-	// Refuse to delete data underneath any static pod that is still running:
-	// RemoveAll of open files "succeeds" on Linux, so wiping state below a live
-	// process silently corrupts it. Running, not Active: a closed port is only a
-	// shutdown in progress, and kube-vip has no port at all.
+	// RemoveAll under a live process silently corrupts it: unlinking open files "succeeds".
 	if fx.staticPodRunning == nil {
 		return undo.abort(fx, unsetEffect("staticPodRunning"))
 	}
@@ -927,8 +698,7 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 			return undo.abort(fx, fmt.Errorf("static pod %s is still running after its manifest was removed; stop `stratum up` on this node, then re-run", name))
 		}
 	}
-	// Stopping the host processes only signals children and a supervisor can disappear after the
-	// preflight. Do not unmount kubelet volumes while it may still be running.
+	// the stop only signals; do not unmount kubelet volumes while it may still run.
 	if err := refuseActiveHostProcesses(fx); err != nil {
 		return undo.abort(fx, err)
 	}
@@ -938,84 +708,35 @@ func prepareTeardown(w io.Writer, fx *hostEffects, unitWasEnabled bool) error {
 	if err := fx.unmountStateFn(); err != nil {
 		return undo.abort(fx, fmt.Errorf("%w; re-run `stratum uninstall --yes`, after a reboot if the mount stays", err))
 	}
-	// The unmount itself takes time, so make the authoritative sweep again
-	// immediately before RemoveAll to close a process-restart race.
+	// sweep again right before RemoveAll to close a process-restart race.
 	if err := refuseActiveHostProcesses(fx); err != nil {
 		return undo.abort(fx, err)
 	}
 
-	// One last chance to fail closed before anything below actually stops:
-	// this probes the SAME start-lock query the gate below will rely on
-	// after the top-level process is gone, while there is still a node here
-	// for undo.abort to put back if the query itself cannot even be made
-	// (permissions, a path that vanished). Its answer (held or not) is not
-	// the point yet — `stratum up` is presumably still running at this point
-	// in the normal case, so "held" here is expected, not a finding — only
-	// whether the question can be asked at all.
+	// probe the query's askability while undo is still possible; the answer is checked at commit.
 	if _, err := fx.startInProgress(); err != nil {
 		return undo.abort(fx, fmt.Errorf("the start lock cannot be queried: %w", err))
 	}
-	// Now safe to stop the reboot-persistence unit itself: the static pods are
-	// down and every host process this uninstall manages is confirmed stopped,
-	// so the top-level process's SIGTERM (host.StopUnit) has nothing left it
-	// needs to keep alive for. Goes through the same abort as everything else
-	// in this window: a stop failure here must still offer to
-	// put the node back, not just say "nothing was deleted" over a control
-	// plane it already stopped.
+	// static pods down, host processes stopped: the unit's SIGTERM has nothing to keep alive.
 	if fx.stopSystemdUnit == nil {
 		return undo.abort(fx, unsetEffect("stopSystemdUnit"))
 	}
-	// Stopping the unit also stops the supervisor that startUnitFn needs
-	// for rollback. Check the independent stop's wiring while that rollback
-	// is still reachable.
+	// check the stop's wiring while rollback is still reachable.
 	if fx.stopTopLevelFn == nil {
 		return undo.abort(fx, unsetEffect("stopTopLevelFn"))
 	}
 	if err := fx.stopSystemdUnit(); err != nil {
 		return undo.abort(fx, fmt.Errorf("stop stratum.service: %w", err))
 	}
-	// systemctl stop only signals an ACTIVE unit, so a unit that is loaded but
-	// was never started through systemd — a manually launched node, or one
-	// whose systemd bookkeeping otherwise drifted from the real process —
-	// leaves the top-level `stratum up` process (and the start lock it holds)
-	// untouched above. This finds and stops it independently, whether or not
-	// stopSystemdUnit already did the same job through systemd.
 	if err := fx.stopTopLevelFn(); err != nil {
 		return undo.abort(fx, fmt.Errorf("stop the stratum up process: %w", err))
 	}
 	return nil
 }
 
-// commitTeardown is the commit phase: the post-stop start-lock gate and the
-// Restart= restore. Everything the run could find is already stopped by the
-// preparation phase, so its declared class is refusal, returned directly
-// rather than through undo.abort: there is nothing left running for the
-// abort to restore, and the node is left stopped, its state undeleted. The
-// Restart= restore is warning-only: the unit is already down, so a drop-in
-// that could not be removed only matters to a same-boot `stratum up`, which
-// strips it itself. Once this phase returns nil the teardown is committed:
-// removeState accumulates its errors and nothing is put back.
+// nothing is left running, so the refusal returns directly instead of through undo.abort.
 func commitTeardown(w io.Writer, fx *hostEffects) error {
-	// stopTopLevelFn's exe check can miss a `stratum up` running from a
-	// different copy of the binary than this `stratum uninstall` — same
-	// process, different file, so /proc/<pid>/exe never matches
-	// os.Executable(). Widening that matcher risks matching an unrelated
-	// program instead, so this checks the one fact only the real holder can
-	// produce, rather than trying to recognize it by name: is the start lock
-	// still held? A reboot leaves no orphans, but a still-running `stratum
-	// up` this uninstall could not identify is not a reboot, and deleting
-	// state under it would corrupt a live node, not a stopped one.
-	//
-	// The gate is the commit decision, and its refusal does NOT go through
-	// undo.abort: the top-level process this uninstall could find is already
-	// stopped, along with every static pod and host process it manages, so
-	// there is nothing left running for abort to restore — it would only
-	// tear back into re-enabling the unit and restarting kubelet/containerd
-	// for a node this call cannot actually put back into the state it was in
-	// before. Unlike the preparation phase, though, this still refuses to
-	// proceed: it returns the refusal directly, leaving node state exactly
-	// as it is (stopped, not deleted) instead of trying to reconstruct a
-	// "running" account it cannot make true.
+	// the exe check can miss a stratum up running from a different copy of the binary; the lock cannot.
 	if held, err := fx.startInProgress(); err != nil {
 		return fmt.Errorf("uninstall: determine whether the start lock is still held: %w. Node state was not "+
 			"deleted; the stratum up process this uninstall could find is already stopped, so there is nothing "+
@@ -1028,23 +749,9 @@ func commitTeardown(w io.Writer, fx *hostEffects) error {
 			"there is nothing to restore. Stop the running `stratum up` on this node, then re-run " +
 			"`stratum uninstall --yes`")
 	}
-	// The unit is stopped for good now, so the Restart=no override
-	// suppressRestartFn wrote no longer protects anything — remove it here,
-	// on the success path, rather than leaving it for the next real reboot
-	// (which clears /run on its own): without this, a `stratum up` run
-	// before that reboot would install and start a fresh unit that inherits
-	// Restart=no from a drop-in this uninstall never intended to outlive it.
-	//
-	// A failure here is a warning, not an abort: the unit
-	// is already stopped and every static pod and host process this
-	// uninstall manages is already confirmed down, so there is nothing left
-	// running to restore — undo.abort would tear back into re-enabling the
-	// unit and restarting kubelet/containerd for a node that was never
-	// actually left in a bad state, just to work around a drop-in file that
-	// could not be removed. The leftover file only matters to a same-boot
-	// `stratum up` before the next real reboot clears /run on its own, and
-	// InstallUnit always strips it there (see internal/host.InstallUnit),
-	// so uninstall itself can just proceed to delete state.
+	// a same-boot `stratum up` would inherit the Restart=no drop-in; the next reboot clears /run.
+
+	// a failure here is a warning: the unit is already down, nothing is left to restore.
 	if fx.allowRestartFn == nil {
 		return unsetEffect("allowRestartFn")
 	}
@@ -1054,19 +761,9 @@ func commitTeardown(w io.Writer, fx *hostEffects) error {
 	return nil
 }
 
-// removeState is the commit-and-removal phase: the datapath teardown, the
-// firewalld untrust, the SELinux removal, the AppArmor restore, the delete
-// loop, the legacy-config heal and the systemd reload, then the worker's Node
-// mark. Its declared error class is accumulated: past the commit boundary
-// nothing is rolled back, so each failure is kept apart, the rest of the
-// teardown still runs, and the joined errors are reported at the end; only the heal, the
-// credential read and the Node mark are warning-only, being best-effort or
-// self-logging steps.
+// past the commit boundary nothing rolls back: every error is kept and the teardown continues.
 func removeState(w io.Writer, fx *hostEffects) error {
-	// Once cleanup starts, it must attempt every independent removal and
-	// retain their errors. Catch missing wiring before the first cleanup
-	// mutation instead of returning halfway through deletion and skipping
-	// the systemd reload or a worker's Node mark.
+	// check all wiring before the first mutation, so no step is skipped halfway through deletion.
 	if fx.teardownDatapathFn == nil {
 		return unsetEffect("teardownDatapathFn")
 	}
@@ -1091,14 +788,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	if fx.reloadSystemd == nil {
 		return unsetEffect("reloadSystemd")
 	}
-	// A worker marks its own Node so the control plane's operator removes it
-	// once the worker is gone. Only once its state is removed, and
-	// whether that removal succeeded decides it, not the other cleanup: a mark
-	// taken earlier could have the Node deleted by the operator while this
-	// uninstall aborted or failed, and kubelet would come back to a new Node
-	// without its labels, taints or cordon. The removal takes kubelet's kubeconfig and its
-	// certificates with it, so the credential is read into memory first.
-	// Best-effort: without the mark the notice says how.
+	// removal destroys the credential, so read it first; mark after it: an early mark loses the Node.
 	var mark func() error
 	var host string
 	if fx.loadNodeState == nil {
@@ -1118,19 +808,13 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	// Both read before the state they come from is removed.
 	markedNotice, unmarkedNotice := nodeNotice(fx, true), nodeNotice(fx, false)
 
-	// Every container is stopped and kubelet is gone, so the datapath and
-	// cgroup state they held can go. Before the delete loop. A failure
-	// is reported at the end and the rest of the teardown still runs. It is kept
-	// apart from firstErr (a state-removal failure) so that a worker whose state
-	// was removed still marks its Node: a retry could not, as the credential the
-	// mark needs is gone with the state.
+	// kept apart from firstErr so a worker whose state was removed still marks its Node.
 	var datapathErr error
 	if err := fx.teardownDatapathFn(); err != nil {
 		datapathErr = fmt.Errorf("the node's network datapath and cgroups were not fully removed: %w", err)
 	}
 	var firstErr error
-	// Before the delete loop: the record of what stratum added lives under
-	// DataDir, which the loop removes.
+	// the ownership record lives under DataDir, which the loop removes.
 	untrustErr := fx.untrustPodCIDRs()
 	if untrustErr != nil {
 		firstErr = errors.Join(firstErr, fmt.Errorf("%w; kept %s for the firewalld ownership record so a later uninstall can retry", untrustErr, version.DataDir))
@@ -1143,16 +827,11 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	if err := fx.restoreAppArmor(); err != nil {
 		apparmorErr = fmt.Errorf("the host's runc AppArmor profile was not restored: %w", err)
 	}
-	// Whether the node's state, DataDir (the node state file and kubelet's
-	// credential), was deleted is what decides the Node mark below, apart from
-	// whether the other cleanup succeeded.
 	stateRemoved := false
 	keepState := errors.Is(datapathErr, errKeepState)
 	for _, t := range Targets() {
 		if t == version.DataDir && keepState {
-			// The saved record of the node's network namespaces could not be
-			// read, so what is left to detach is not known (datapath.go). Keep
-			// DataDir, and carry on with every other target.
+			// the netns record is unreadable, so what is left to detach is unknown: keep DataDir.
 			continue
 		}
 		if isCNIDir(t) {
@@ -1163,9 +842,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 			}
 		}
 		if t == version.DataDir && untrustErr != nil {
-			// The record lives under DataDir. Deleting it after a failed
-			// untrust would make a later uninstall forget the leftover binding.
-			// Continue tearing down every other target.
+			// deleting the record after a failed untrust would hide the leftover binding from a later run.
 			continue
 		}
 		// os.RemoveAll is a no-op on missing paths, so this is idempotent.
@@ -1177,32 +854,18 @@ func removeState(w io.Writer, fx *hostEffects) error {
 			firstErr = fmt.Errorf("some paths could not be removed: %w", err)
 		}
 	}
-	// The local-path provisioner's volume directory goes only when it is empty:
-	// what it can hold is users' local-path volume data, which an uninstall must
-	// not delete. A missing directory is silent; a removal failure here is a
-	// reported failure, joined to any earlier one: removeLocalPathDir prints
-	// nothing for it, so the error is the only place the directory is named.
+	// users' local-path volume data: the directory goes only when it is empty.
 	if err := removeLocalPathDir(w, fx); err != nil {
 		firstErr = errors.Join(firstErr, fmt.Errorf("some paths could not be removed: %w", err))
 	}
-	// Heal a host an older stratum broke by writing its own config over
-	// /etc/containerd/config.toml: left in place it keeps the distro's containerd
-	// (and Docker) crash-looping after a reboot. Only removes a file
-	// stratum provably wrote; a host's own config is untouched. Self-logging.
-	// Runs BEFORE the joined-error return below: it is an independent healing
-	// step, so a failure to remove some other target must not skip it.
+	// left in place, the old config keeps the distro's containerd crash-looping after a reboot.
+
+	// an independent step: a target-removal failure must not skip it.
 	fx.removeLegacyHostConfig(w)
-	// The unit file above is now gone; drop it from systemd's view too. Folded
-	// into firstErr, rather than a silent best-effort call:
-	// left un-reloaded, systemd keeps serving the just-deleted unit's
-	// last-loaded definition.
+	// left un-reloaded, systemd keeps serving the just-deleted unit's definition.
 	if err := fx.reloadSystemd(); err != nil && firstErr == nil {
 		firstErr = fmt.Errorf("reload systemd: %w", err)
 	}
-	// A worker marks its Node once its state is gone, whatever else failed:
-	// the credential the mark needs went with the state, so a retry could not.
-	// With the state kept, or its removal failed, it does not: a retry still
-	// can, and a mark now could have the Node deleted under a node still there.
 	notice := unmarkedNotice
 	if mark != nil && stateRemoved {
 		if err := mark(); err != nil {
@@ -1216,7 +879,6 @@ func removeState(w io.Writer, fx *hostEffects) error {
 		if !stateRemoved {
 			return fmt.Errorf("uninstall: %w", err)
 		}
-		// Not "uninstalled", but what is left to do in the cluster is still said.
 		if notice != "" {
 			fmt.Fprintln(w, notice)
 		}
@@ -1229,16 +891,9 @@ func removeState(w io.Writer, fx *hostEffects) error {
 	return nil
 }
 
-// isCNIDir is whether t is the CNI config directory, which another runtime on
-// the host may use too.
 func isCNIDir(t string) bool { return t == host.CNIDir }
 
-// teardownUndo is what Run has changed before it could fail: the control-plane
-// manifests it removed, whether it stopped kubelet or started containerd,
-// whether it began stopping containers, and whether it asked the supervisor to
-// stop every component, with the ones it kept up beforehand. Nothing has been
-// deleted at that point, so an abort puts back what it can and says exactly
-// what it did.
+// what Run has changed before it could fail: nothing is deleted yet, so abort restores what it can.
 type teardownUndo struct {
 	manifests         map[string][]byte
 	wanted            []string
@@ -1246,30 +901,17 @@ type teardownUndo struct {
 	containerdStarted bool
 	containersStopped bool
 	hostStopped       bool
-	// unitWasEnabled is the reboot-persistence unit's enablement as found
-	// BEFORE disableSystemdUnit touched it — abort restores exactly this,
-	// never forcing the unit enabled or disabled from what an operator
-	// already had.
+	// as found; abort restores exactly this, never forcing enablement either way.
 	unitWasEnabled bool
 }
 
-// The undo path's restoration is read from fx the same way the runner reads
-// it: its effects (putManifestFn, stopStaticPodFn, startUnitFn,
-// startContainerdFn, stopContainerdFn) are fields on hostEffects, wired in
-// Run, and no probe it consults is a package variable.
-
-// abort restores what Run changed and wraps cause with an account of the node
-// as it is left, built from what was actually done. Its own restoration is a
-// set of effects too, read from fx the same way the runner reads them.
+// restores through the same effect fields the runner reads.
 func (u *teardownUndo) abort(fx *hostEffects, cause error) error {
 	var failed, notes []string
 
-	// Restore the unit exactly as this uninstall found it, first: a node left
-	// running (which every path below is trying to arrange) is worth nothing
-	// if it can no longer come back after a reboot.
-	// AllowRestart undoes suppressRestartFn unconditionally — it ran
-	// regardless of unitWasEnabled — while re-enabling only when the unit
-	// was actually enabled to begin with.
+	// a recovered node is worth nothing if it cannot come back after a reboot.
+
+	// AllowRestart ran unconditionally, so undo it unconditionally; re-enable only as found.
 	if fx.allowRestartFn == nil {
 		return unsetEffect("allowRestartFn")
 	}
@@ -1302,11 +944,7 @@ func (u *teardownUndo) abort(fx *hostEffects, cause error) error {
 		}
 		put++
 	}
-	// containerd started only for the teardown is stopped, and waited on,
-	// before anything is started again, on every path: kubelet started beside
-	// it could recreate the pods just stopped, and the supervisor's own stop,
-	// when that was asked for, only signals. kubelet is left
-	// stopped if it cannot be.
+	// kubelet started beside a live containerd would recreate the pods just stopped.
 	kubeletBack, containerdBack, kubeletSafe := false, false, true
 	if u.containerdStarted {
 		if fx.stopContainerdFn == nil {
@@ -1319,11 +957,7 @@ func (u *teardownUndo) abort(fx *hostEffects, cause error) error {
 			containerdBack = true
 		}
 	}
-	// After the supervisor was asked to stop everything, start again what it
-	// kept up before, containerd first; before that, only kubelet was stopped,
-	// and containerd if it was started for the teardown. A containerd it kept
-	// up before (one in restart backoff) is started again only now, after the
-	// one started for the teardown is gone.
+	// containerd kept up before is restarted only after the teardown's own is gone.
 	var restart []string
 	for _, name := range comps.Units {
 		wanted := slices.Contains(u.wanted, name)
@@ -1376,21 +1010,14 @@ func (u *teardownUndo) abort(fx *hostEffects, cause error) error {
 		outcome += "; " + strings.Join(notes, "; ")
 	}
 	if len(failed) > 0 {
-		// `stratum up` itself refuses while the supervisor runs, which it does
-		// on every path that reaches here.
+		// `stratum up` itself refuses while the supervisor runs, as it does on every path here.
 		return fmt.Errorf("uninstall: %w. %s. The node could not be put back as it was (%s): "+
 			"restart `stratum up` on this node (stop it, then start it again) to restore it", cause, outcome, strings.Join(failed, "; "))
 	}
 	return fmt.Errorf("uninstall: %w. %s", cause, outcome)
 }
 
-// nodeNotice is what is left to do in the cluster once this node is gone.
-// A worker cannot delete its own Node object: its credential is
-// system:node:<name>, which the Node authorizer does not allow to delete
-// nodes (measured: "cannot delete resource nodes"). A marked worker's Node is
-// removed by the operator, and the command is still printed for a
-// cluster that runs none. A control plane's Node, and its etcd member, are
-// removed from a remaining control plane.
+// a worker's credential cannot delete Nodes; the removal falls to the operator or a control plane.
 func nodeNotice(fx *hostEffects, marked bool) string {
 	st, err := fx.loadNodeState()
 	if err != nil || st.Hostname == "" {
@@ -1410,21 +1037,9 @@ func nodeNotice(fx *hostEffects, marked bool) string {
 		"  kubectl delete node %s", st.Hostname)
 }
 
-// unmountState lazy-unmounts every mount point below the directories uninstall
-// is about to remove, deepest first: kubelet's pod volumes (projected tokens,
-// secrets, emptyDirs) and any container rootfs or shm mount left behind. After
-// kubelet stops they linger, and RemoveAll fails on them with EBUSY.
-// Stratum's kubelet never uses /var/lib/kubelet (its
-// --root-dir is under version.DataDir), so matching that path unmounts
-// nothing and a node that has run pods cannot have its state removed. The
-// removed directories themselves are never unmounted: a dedicated disk at
-// version.DataDir stays mounted so removeTarget empties it, rather than
-// RemoveAll deleting an empty mount point and leaving the data on the disk.
-//
-// Every mount must be gone before anything is removed, so mountinfo is read
-// again afterwards: RemoveAll does not stop at a mount boundary, and deleting
-// through a mount it could not detach would delete what is mounted there, a
-// persistent volume or the host directory a subPath bind-mounts.
+// lingering pod and container mounts: RemoveAll would delete through them and fail with EBUSY.
+
+// the removed directories are never unmounted, so removeTarget can empty a dedicated disk there.
 func unmountState(fx *hostEffects) error {
 	if fx.unmountFn == nil {
 		return unsetEffect("unmountFn")
@@ -1432,9 +1047,6 @@ func unmountState(fx *hostEffects) error {
 	return detachMounts(fx.unmountFn, func() ([]string, error) { return stateMounts(fx) }, "below the state directories")
 }
 
-// detachMounts lazy-unmounts every mount list returns, then lists again: any
-// left is an error, naming the first and where (a phrase after "mounts"). The
-// unmount itself is an effect of the run, passed in from its effects value.
 func detachMounts(unmount func(string) error, list func() ([]string, error), where string) error {
 	mounts, err := list()
 	if err != nil {
@@ -1460,8 +1072,6 @@ func detachMounts(unmount func(string) error, list func() ([]string, error), whe
 	return nil
 }
 
-// umountMount lazy-unmounts one mount point, bounded like every tool call. It
-// is Run's production default for the effects value's unmount effect.
 func umountMount(mp string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), unmountWait)
 	defer cancel()
@@ -1477,11 +1087,7 @@ func umountMount(mp string) error {
 
 var unmountWait = 30 * time.Second
 
-// removeTarget removes t, or, when t is itself a mount point (a dedicated disk
-// at version.DataDir, or a volume in a container), removes everything in it
-// and leaves the directory: rmdir on a mount point is EBUSY, and unmounting it
-// first would let RemoveAll delete an empty mount point while the data stayed
-// on the disk.
+// a mount point cannot be removed: empty it and leave the directory, or the data stays on the disk.
 func removeTarget(w io.Writer, fx *hostEffects, t string) error {
 	if fx.removeAll == nil {
 		return unsetEffect("removeAll")
@@ -1506,9 +1112,7 @@ func removeTarget(w io.Writer, fx *hostEffects, t string) error {
 	return nil
 }
 
-// mountPoints is every mount point in the run's mountinfo, escapes decoded. Not
-// being able to read it is an error, never "no mounts": that answer is what lets
-// RemoveAll into a mounted filesystem.
+// an unreadable mountinfo is an error: "no mounts" would let RemoveAll into a mounted filesystem.
 func mountPoints(fx *hostEffects) ([]string, error) {
 	b, err := os.ReadFile(fx.mountInfoPath)
 	if err != nil {
@@ -1523,9 +1127,7 @@ func mountPoints(fx *hostEffects) ([]string, error) {
 	return mounts, nil
 }
 
-// stateMounts is every mount point strictly below one of Targets(), deepest
-// first, each once. A CNI directory that stays (cniKeepReason) contributes
-// none: another runtime's configuration may be mounted there.
+// a CNI directory that stays contributes none: another runtime's config may be mounted there.
 func stateMounts(fx *hostEffects) ([]string, error) {
 	all, err := mountPoints(fx)
 	if err != nil {
@@ -1553,7 +1155,7 @@ func stateMounts(fx *hostEffects) ([]string, error) {
 	return slices.Compact(mounts), nil
 }
 
-// unescapeMount decodes mountinfo's octal escapes (\040 is a space).
+// mountinfo escapes spaces and friends as octal (\040).
 func unescapeMount(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

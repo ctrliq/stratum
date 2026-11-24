@@ -18,7 +18,7 @@ const (
 	helmReleaseType     = "helm.sh/release.v1"
 )
 
-// secretSummary is everything the SPA's live load keeps of a Secret.
+// Everything the SPA's live load keeps of a Secret.
 type secretSummary struct {
 	Name              string       `json:"name"`
 	Namespace         string       `json:"namespace"`
@@ -28,14 +28,14 @@ type secretSummary struct {
 	Helm              *helmRelease `json:"helm,omitempty"`
 }
 
-// helmRelease is the release identity Helm puts in a release Secret's labels.
+// The release identity Helm puts in a release Secret's labels.
 type helmRelease struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 	Status  string `json:"status"`
 }
 
-// secretTable is the part of a meta.k8s.io/v1 Table of Secrets this reads.
+// The part of a meta.k8s.io/v1 Table of Secrets this reads.
 type secretTable struct {
 	ColumnDefinitions []struct {
 		Name string `json:"name"`
@@ -48,9 +48,7 @@ type secretTable struct {
 	} `json:"rows"`
 }
 
-// secretSummaries lists every Secret the caller may list, cluster-wide, as
-// the session's own user, and answers with name, namespace, type, key count,
-// age and Helm release labels only.
+// Answers with name, namespace, type, key count, age and Helm release labels only.
 func (s *server) secretSummaries(w http.ResponseWriter, r *http.Request) {
 	token, _ := tokenFrom(r.Context())
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)

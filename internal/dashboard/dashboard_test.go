@@ -29,10 +29,9 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// goodToken is the only token the fake apiserver authenticates.
+// The only token the fake apiserver authenticates.
 const goodToken = "sha256~good-token"
 
-// seenRequest is what the fake apiserver recorded.
 type seenRequest struct {
 	Method string
 	Path   string
@@ -41,21 +40,16 @@ type seenRequest struct {
 	Body   string
 }
 
-// fakeAPIServer stands in for the cluster's apiserver. It answers
-// SelfSubjectReview for goodToken and 401 for anything else, and records every
-// other request so a test can assert on exactly what the proxy forwarded.
+// SelfSubjectReview for goodToken, 401 otherwise; records every other request for assertions.
 type fakeAPIServer struct {
 	*httptest.Server
 	seen []seenRequest
-	// authStatus, when non-zero, is the status SelfSubjectReview answers with
-	// instead of authenticating: 401 for a revoked token, 500 for an
-	// apiserver that cannot answer at all.
+	// Status SelfSubjectReview answers instead of authenticating, when non-zero.
 	authStatus int
-	// blankUsername makes SelfSubjectReview succeed but name nobody.
+	// SelfSubjectReview succeeds but names nobody.
 	blankUsername bool
 	authReview    http.HandlerFunc
-	// reply, when set, answers every recorded request in place of the
-	// default Pod.
+	// Answers every recorded request in place of the default Pod.
 	reply http.HandlerFunc
 }
 
@@ -104,7 +98,6 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		// A Set-Cookie the dashboard must strip on the way back.
 		w.Header().Set("Set-Cookie", "upstream=1")
 		_, _ = w.Write([]byte(`{"kind":"Pod","apiVersion":"v1","metadata":{"name":"proxied"}}`))
 	}))
@@ -112,7 +105,6 @@ func newFakeAPIServer(t *testing.T) *fakeAPIServer {
 	return f
 }
 
-// last is the most recent request the fake apiserver actually received.
 func (f *fakeAPIServer) last(t *testing.T) seenRequest {
 	t.Helper()
 	if len(f.seen) == 0 {
@@ -121,8 +113,7 @@ func (f *fakeAPIServer) last(t *testing.T) seenRequest {
 	return f.seen[len(f.seen)-1]
 }
 
-// harness is a fully wired dashboard in front of a fake apiserver, driven
-// through the real mux and the real middleware stack.
+// A fully wired dashboard in front of a fake apiserver, through the real middleware stack.
 type harness struct {
 	*fakeAPIServer
 	srv  *server
@@ -139,15 +130,12 @@ func newHarness(t *testing.T, nodeShell bool) *harness {
 	if err != nil {
 		t.Fatalf("localTarget: %v", err)
 	}
-	// secure=false: the test server is plain HTTP, and a Secure cookie would
-	// never come back.
+	// The test server is plain HTTP, so the session cookie must not be marked Secure.
 	sess, err := newSessions([]byte("test-secret-material"), time.Hour, false)
 	if err != nil {
 		t.Fatalf("newSessions: %v", err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// The image the SPA is told to run the node-shell pod with. Mirrors run(),
-	// which sets it from version.NsenterImage only when the feature is on.
 	nodeShellImage := ""
 	if nodeShell {
 		nodeShellImage = testNodeShellImage
@@ -168,8 +156,6 @@ func newHarness(t *testing.T, nodeShell bool) *harness {
 	return h
 }
 
-// do sends a request to the dashboard, carrying whatever session the harness
-// holds and the CSRF token that goes with it.
 func (h *harness) do(t *testing.T, method, path string, body string) *http.Response {
 	t.Helper()
 	var rdr io.Reader
@@ -197,7 +183,6 @@ func (h *harness) do(t *testing.T, method, path string, body string) *http.Respo
 	return resp
 }
 
-// login signs in with token and stores the resulting session.
 func (h *harness) login(t *testing.T, token string) *http.Response {
 	t.Helper()
 	body, _ := json.Marshal(loginRequest{Token: token})
@@ -229,8 +214,6 @@ func bodyOf(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
-// ---- token validation ------------------------------------------------------
-
 func TestLoginRequiresATokenTheClusterAccepts(t *testing.T) {
 	for _, tc := range []struct {
 		name, token string
@@ -261,8 +244,7 @@ func TestLoginRequiresATokenTheClusterAccepts(t *testing.T) {
 	}
 }
 
-// decodeJSON must refuse a body that carries anything after the first JSON
-// value, not just ignore it. Trailing whitespace stays legal.
+// Trailing whitespace stays legal; anything else after the first JSON value is refused.
 func TestDecodeJSONRejectsTrailingData(t *testing.T) {
 	valid := `{"token":"` + goodToken + `"}`
 	for _, tc := range []struct {
@@ -290,8 +272,7 @@ func TestDecodeJSONRejectsTrailingData(t *testing.T) {
 	}
 }
 
-// A rejected login must not leave anything behind that the rest of the stack
-// would treat as a session.
+// A rejected login must not leave anything the stack would treat as a session.
 func TestRejectedTokenYieldsNoUsableSession(t *testing.T) {
 	h := newHarness(t, false)
 	resp := h.login(t, "not-a-real-token")
@@ -337,8 +318,6 @@ func TestMeReportsTheIdentityTheClusterGave(t *testing.T) {
 	}
 }
 
-// ---- header scrubbing and token passthrough --------------------------------
-
 func TestProxyForwardsTheSessionTokenAndScrubsCallerHeaders(t *testing.T) {
 	h := newHarness(t, false)
 	if got := h.login(t, goodToken).StatusCode; got != http.StatusOK {
@@ -349,7 +328,6 @@ func TestProxyForwardsTheSessionTokenAndScrubsCallerHeaders(t *testing.T) {
 	for _, c := range h.jar {
 		req.AddCookie(c)
 	}
-	// Everything a hostile caller might try to smuggle through.
 	req.Header.Set("Authorization", "Bearer someone-elses-token")
 	req.Header.Set("Impersonate-User", "system:admin")
 	req.Header.Set("Impersonate-Group", "system:masters")
@@ -357,17 +335,14 @@ func TestProxyForwardsTheSessionTokenAndScrubsCallerHeaders(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 	req.Header.Set("X-Forwarded-Host", "evil.example")
 	req.Header.Set("X-Forwarded-Proto", "https")
-	// Port and Uri matter as much as the three net/http's ReverseProxy drops
-	// on its own: without them in the list this assertion passes whether or
-	// not the scrub list exists.
+	// Port and Uri exceed what net/http drops on its own; without them the assertion proves nothing.
 	req.Header.Set("X-Forwarded-Port", "8443")
 	req.Header.Set("X-Forwarded-Uri", "/somewhere-else")
 	req.Header.Set("X-Forwarded-Server", "evil.example")
 	req.Header.Set("X-Forwarded-For-Extra", "10.0.0.2")
 	req.Header.Set("Forwarded", "for=10.0.0.1")
 	req.Header.Set(csrfHeader, h.csrf)
-	// Stored non-canonically on purpose: Header.Del canonicalises before
-	// deleting, so a prefix scrub that used it would leave this one in place.
+	// Stored non-canonically: a Del-based prefix scrub would leave this one in place.
 	req.Header["impersonate-uid"] = []string{"1234"}
 
 	resp, err := h.dash.Client().Do(req)
@@ -403,8 +378,7 @@ func TestProxyForwardsTheSessionTokenAndScrubsCallerHeaders(t *testing.T) {
 	}
 }
 
-// A pod's own HTML, served through pods/proxy from the dashboard's origin, must
-// not run script with the signed-in user's session.
+// Workload HTML served through pods/proxy must not run script as the signed-in user.
 func TestProxySandboxesWorkloadHTML(t *testing.T) {
 	h := newHarness(t, false)
 	h.reply = func(w http.ResponseWriter, _ *http.Request) {
@@ -447,15 +421,6 @@ func TestProxyRequiresASessionAndACSRFTokenForWrites(t *testing.T) {
 	}
 }
 
-// ---- a write without a session answers 401, not the CSRF 403 ---------------
-
-// The SPA routes any 401 to the sign-in screen, so a write made after the
-// session ended must come back as 401 unauthenticated — not the CSRF
-// middleware's 403. Without a session this is the one case where the order of
-// the two layers in authed (server.go) answers differently: requireSession
-// outermost refuses with 401 before the CSRF middleware ever sees the
-// request, while swapped, the CSRF layer finds no session in the request
-// context and answers 403 csrf (csrf.go).
 func TestProxyAnswersAWriteWithoutASessionWith401(t *testing.T) {
 	const path = "/k8s/api/v1/namespaces/default/pods/demo"
 	t.Run("never signed in", func(t *testing.T) {
@@ -471,17 +436,14 @@ func TestProxyAnswersAWriteWithoutASessionWith401(t *testing.T) {
 		if resp.StatusCode != http.StatusNoContent {
 			t.Fatalf("logout: got %d", resp.StatusCode)
 		}
-		// The browser keeps whatever logout Set-Cookie'd, and the SPA's logout
-		// drops the CSRF token together with the session.
+		// The SPA's logout drops the CSRF token together with the session.
 		h.jar = resp.Cookies()
 		h.csrf = ""
 		assertUnauthenticatedWrite(t, h, path)
 	})
 }
 
-// assertUnauthenticatedWrite sends a pod DELETE with whatever session the
-// harness holds and pins the answer: 401 unauthenticated, and nothing
-// forwarded.
+// Pins the answer: 401 unauthenticated, nothing forwarded.
 func assertUnauthenticatedWrite(t *testing.T, h *harness, path string) {
 	t.Helper()
 	resp := h.do(t, http.MethodDelete, path, "")
@@ -500,8 +462,6 @@ func assertUnauthenticatedWrite(t *testing.T, h *harness, path string) {
 	}
 }
 
-// ---- the node-shell gate ---------------------------------------------------
-
 const nodeShellPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"generateName":"stratum-node-shell-",` +
 	`"labels":{"app":"stratum-node-shell"}},"spec":{"nodeName":"n1","hostPID":true,"restartPolicy":"Never",` +
 	`"containers":[{"name":"shell","image":"alpine:3.20","securityContext":{"privileged":true}}]}}`
@@ -509,9 +469,7 @@ const nodeShellPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"generateN
 const hostPIDPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"generateName":"innocuous-"},` +
 	`"spec":{"hostPID":true,"containers":[{"name":"c","image":"alpine:3.20"}]}}`
 
-// namedNodeShellPodJSON carries the node-shell name but NOT hostPID, so only
-// the name check can catch it. Without this case the hostPID check alone
-// covers the real node-shell body and a broken name check goes unnoticed.
+// Carries the node-shell name but NOT hostPID, so only the name check can catch it.
 const namedNodeShellPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"generateName":"stratum-node-shell-"},` +
 	`"spec":{"containers":[{"name":"c","image":"alpine:3.20"}]}}`
 
@@ -531,9 +489,7 @@ const (
 	jsonPatch      = "application/json-patch+json"
 )
 
-// The case-folded bodies carry the same key twice, differing only in case. The
-// apiserver reads only the exact-case key and drops the other, so the gate has
-// to read them the same way whichever order they come in.
+// Two keys differing only in case: the apiserver reads only the exact-case key.
 const (
 	hostPIDThenCaseFoldedPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"generateName":"innocuous-"},` +
 		`"spec":{"hostPID":true,"HOSTPID":false,"containers":[{"name":"c","image":"alpine:3.20"}]}}`
@@ -548,19 +504,9 @@ const (
 const ordinaryPodJSON = `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"ordinary"},` +
 	`"spec":{"containers":[{"name":"c","image":"alpine:3.20"}]}}`
 
-// ---- the gate against the Job redesign ------------------------------------
-//
-// The shell stops being a pod the SPA creates directly and becomes a batch/v1
-// Job whose template carries the same pod. The Job is only another way to ask
-// for the same host shell, so the gate judges a Job create or patch by its
-// template the way it judges a pod body, and exec/attach keep matching the
-// Job-derived pod names (a Job pod's name is the Job's generateName plus a
-// suffix, so it carries the same prefix).
+// A Job's pods take its generateName plus a suffix, so exec/attach still match by prefix.
 
-// nodeShellJobJSON is the Job the SPA's NodeShell POSTs: a batch/v1 Job whose
-// template carries today's pod spec — hostPID, privileged nsenter shell — and
-// whose spec carries ttlSecondsAfterFinished (the TTL controller's cleanup)
-// and a Job-level activeDeadlineSeconds.
+// The Job the SPA's NodeShell POSTs.
 const nodeShellJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"generateName":"stratum-node-shell-",` +
 	`"labels":{"app":"stratum-node-shell"}},"spec":{"activeDeadlineSeconds":3600,"ttlSecondsAfterFinished":600,` +
 	`"template":{"metadata":{"labels":{"app":"stratum-node-shell"}},` +
@@ -568,27 +514,22 @@ const nodeShellJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"gen
 	`"tolerations":[{"operator":"Exists"}],"containers":[{"name":"shell","image":"alpine:3.20",` +
 	`"command":["sleep","3600"],"stdin":true,"tty":true,"securityContext":{"privileged":true}}]}}}}`
 
-// namedNodeShellJobJSON carries the node-shell generateName in the template
-// but NOT hostPID, so only the template's name check can catch it.
+// Node-shell generateName in the template but NOT hostPID; only the name check catches it.
 const namedNodeShellJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"generateName":"ordinary-"},` +
 	`"spec":{"template":{"metadata":{"generateName":"stratum-node-shell-"},` +
 	`"spec":{"containers":[{"name":"c","image":"alpine:3.20"}]}}}}`
 
-// explicitlyNamedNodeShellJobJSON names the template's pod outright, the way a
-// server-side apply to a fresh name would.
+// Names the template's pod outright, the way a server-side apply to a fresh name would.
 const explicitlyNamedNodeShellJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"generateName":"ordinary-"},` +
 	`"spec":{"template":{"metadata":{"name":"stratum-node-shell-fixed"},` +
 	`"spec":{"containers":[{"name":"c","image":"alpine:3.20"}]}}}}`
 
-// hostPIDJobJSON hides the hostPID behind an innocuous template name: renaming
-// the Job must not be enough to reach the host, exactly as for pods.
+// Renaming the Job must not be enough to reach the host.
 const hostPIDJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"generateName":"innocuous-"},` +
 	`"spec":{"template":{"metadata":{"generateName":"ordinary-"},` +
 	`"spec":{"hostPID":true,"containers":[{"name":"c","image":"alpine:3.20"}]}}}}`
 
-// The case-folded Job bodies carry the same key twice, differing only in case,
-// shaped like their pod versions: the apiserver reads only the exact-case key
-// and drops the other, so the gate has to read the template the same way.
+// Case-folded Job bodies shaped like their pod versions above.
 const (
 	hostPIDThenCaseFoldedJobJSON = `{"apiVersion":"batch/v1","kind":"Job","metadata":{"generateName":"innocuous-"},` +
 		`"spec":{"template":{"metadata":{"generateName":"ordinary-"},` +
@@ -608,11 +549,7 @@ const hostPIDJobApplyYAML = "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name:
 const ordinaryJobApplyYAML = "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: ordinary\n" +
 	"spec:\n  template:\n    spec:\n      containers:\n      - name: c\n        image: alpine:3.20\n"
 
-// TestNodeShellDefaultsToEnabled pins the default the command ships with: the
-// node shell is available unless an operator withholds it.
 func TestNodeShellDefaultsToEnabled(t *testing.T) {
-	// The flag's default is what most deployments will run with, so it is
-	// asserted on the command itself, not only on a hand-built server.
 	f := Command().Flags().Lookup("enable-node-shell")
 	if f == nil {
 		t.Fatal("stratum dash has no --enable-node-shell flag")
@@ -727,7 +664,7 @@ func TestNodeShellGateRefusesBeforeForwarding(t *testing.T) {
 			if out.Error != "node-shell-disabled" {
 				t.Errorf("error code = %q, want node-shell-disabled", out.Error)
 			}
-			// The whole point of a server-side gate: the apiserver never sees it.
+			// The apiserver never sees a refused request.
 			if len(h.seen) != 0 {
 				t.Fatalf("the request reached the apiserver anyway: %+v", h.seen)
 			}
@@ -785,8 +722,6 @@ func TestNodeShellGateForwardsWhatItDoesNotGuard(t *testing.T) {
 				t.Fatalf("got %d, want 200 (%s)", resp.StatusCode, bodyOf(t, resp))
 			}
 			seen := h.last(t)
-			// The body has to survive being read for inspection, or the
-			// gate would quietly break every pod create it allows.
 			if tc.body != "" && seen.Body != tc.body {
 				t.Errorf("the apiserver received body %q, want it forwarded intact", seen.Body)
 			}
@@ -794,12 +729,7 @@ func TestNodeShellGateForwardsWhatItDoesNotGuard(t *testing.T) {
 	}
 }
 
-// The Job redesign makes sign-out's shell delete a best-effort acceleration of
-// the TTL teardown: one DELETE against the Job, sent while the session still
-// stands. When the token the session carries is already revoked, that delete
-// comes back 401 — the gate must not have swallowed it, because it judges
-// creates and patches, never deletes — and sign-out still completes: logout
-// clears the cookie with a 204 exactly as it does with no shell open.
+// A revoked token must not block the Job teardown (the gate never judges deletes) or logout.
 func TestRevokedTokenDoesNotBlockTheShellJobTeardownOrLogout(t *testing.T) {
 	h := newHarness(t, false)
 	if got := h.login(t, goodToken).StatusCode; got != http.StatusOK {
@@ -811,8 +741,7 @@ func TestRevokedTokenDoesNotBlockTheShellJobTeardownOrLogout(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Unauthorized","code":401,"message":"Unauthorized"}`))
 	}
-	// The SPA's sign-out recovers the logout CSRF from the refused identity
-	// probe, the way TestRevokedMeAllowsExplicitLogout pins it.
+	// The SPA recovers the logout CSRF from the refused identity probe.
 	me := h.do(t, http.MethodGet, "/api/v1/me", "")
 	if me.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("revoked identity probe: got %d, want 401", me.StatusCode)
@@ -826,8 +755,7 @@ func TestRevokedTokenDoesNotBlockTheShellJobTeardownOrLogout(t *testing.T) {
 	}
 	h.csrf = rejected.CSRFToken
 
-	// The best-effort teardown reaches the apiserver ungated and fails there on
-	// the dead token; the failure is the SPA's to report and ignore.
+	// The teardown reaches the apiserver ungated and fails there on the dead token.
 	teardown := h.do(t, http.MethodDelete,
 		"/k8s/apis/batch/v1/namespaces/default/jobs/stratum-node-shell-abc12?gracePeriodSeconds=1", "")
 	if teardown.StatusCode != http.StatusUnauthorized {
@@ -853,16 +781,9 @@ func TestRevokedTokenDoesNotBlockTheShellJobTeardownOrLogout(t *testing.T) {
 	}
 }
 
-// dashReadme is the dashboard's README, read relative to the package directory
-// go test runs in — the same stance spa_contract_test.go takes: the contract is
-// with the SPA tree's own sources.
 const dashReadme = "../../dash/README.md"
 
-// The Job design changes what an operator must hold and what remains behind:
-// the signing user's own RBAC needs batch jobs create and jobs delete, and
-// the finished object's story is the TTL controller's —
-// spec.ttlSecondsAfterFinished — not a pending sweep. The README is where
-// both live for the operator, so this pins that it says so.
+// The README is where the operator-facing RBAC and TTL story live, so this pins it.
 func TestDashReadmeDocumentsTheNodeShellJobRBACAndTTL(t *testing.T) {
 	src, err := os.ReadFile(dashReadme)
 	if err != nil {
@@ -877,13 +798,7 @@ func TestDashReadmeDocumentsTheNodeShellJobRBACAndTTL(t *testing.T) {
 	if strings.Contains(readme, "provides no controller") {
 		t.Error("dash/README.md still says this build provides no controller for finished node-shell objects; ttlSecondsAfterFinished is that controller")
 	}
-	// The error panel is the hint an operator actually sees when a shell fails
-	// for lack of RBAC; the shell runs as a Job, so
-	// advice naming pods create/delete is neither necessary nor sufficient.
-	// The create alone is not sufficient either: the readiness poll lists and
-	// gets the Job's pod before the exec opens, so a hint naming only the Job
-	// verbs and pods/exec sends a token granted exactly that into a two-minute
-	// timeout it cannot read its way out of.
+	// The error panel is what an operator sees when a shell fails for lack of RBAC.
 	hint, err := os.ReadFile(filepath.Join("..", "..", "dash", "src", "screens", "terminal.jsx"))
 	if err != nil {
 		t.Fatalf("read the terminal screen: %v", err)
@@ -899,15 +814,9 @@ func TestDashReadmeDocumentsTheNodeShellJobRBACAndTTL(t *testing.T) {
 	}
 }
 
-// ---- /api/v1/config --------------------------------------------------------
-
-// testNodeShellImage is a stamped-looking payload image the harness serves when
-// node-shell is enabled — anything without the ":unknown" sentinel.
+// A stamped-looking payload image: anything without the ":unknown" sentinel.
 const testNodeShellImage = "ghcr.io/ctrliq/stratum/busybox:1.37.0"
 
-// TestNodeShellImageOrErr pins the fail-closed guard: with the feature on, an
-// unstamped build must refuse rather than let the SPA fall back to a public
-// registry on an airgapped node.
 func TestNodeShellImageOrErr(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -967,8 +876,7 @@ func TestConfigReportsTheNodeShellFlagAndTheProxyBase(t *testing.T) {
 		if cfg.Features.NodeShell != nodeShell {
 			t.Errorf("features.nodeShell = %t, want %t", cfg.Features.NodeShell, nodeShell)
 		}
-		// The SPA must get the debug-pod image from here, never hard-code it, so
-		// the node shell works on an airgapped node.
+		// The SPA must get the image from here, never hard-code one.
 		wantImage := ""
 		if nodeShell {
 			wantImage = testNodeShellImage
@@ -994,8 +902,7 @@ func TestConfigReportsTheNodeShellFlagAndTheProxyBase(t *testing.T) {
 	}
 }
 
-// /config and /login are the only routes reachable without a session; the
-// proxy and /me must not be.
+// /config and /login are the only routes reachable without a session.
 func TestOnlyConfigAndLoginAreUnauthenticated(t *testing.T) {
 	h := newHarness(t, false)
 	for _, path := range []string{"/api/v1/me", secretSummariesPath, "/k8s/api/v1/pods", "/k8s"} {
@@ -1023,8 +930,6 @@ func TestLogoutClearsTheSession(t *testing.T) {
 	}
 }
 
-// ---- the SPA ---------------------------------------------------------------
-
 func TestSPAServesIndexForClientRoutesButNotForAPIPaths(t *testing.T) {
 	h := newHarness(t, false)
 	if body := bodyOf(t, h.do(t, http.MethodGet, "/nodes", "")); !strings.Contains(body, "spa") {
@@ -1035,8 +940,6 @@ func TestSPAServesIndexForClientRoutesButNotForAPIPaths(t *testing.T) {
 		t.Errorf("GET /api/v1/nope: got %d, want 404 rather than the SPA", resp.StatusCode)
 	}
 }
-
-// ---- origin policy ---------------------------------------------------------
 
 func TestOriginPolicyRejectsForeignWritesAndUpgrades(t *testing.T) {
 	h := newHarness(t, false)
@@ -1076,8 +979,6 @@ func TestOriginPolicyRejectsForeignWritesAndUpgrades(t *testing.T) {
 	}
 }
 
-// ---- refusing plaintext on a routable address ------------------------------
-
 func TestLoopbackOnly(t *testing.T) {
 	for _, tc := range []struct {
 		addr string
@@ -1086,8 +987,6 @@ func TestLoopbackOnly(t *testing.T) {
 		{"127.0.0.1:8443", true},
 		{"[::1]:8443", true},
 		{"localhost:8443", true},
-		// The cases this guard exists for: an unspecified address is reachable
-		// from the network, and so is a named host.
 		{":8443", false},
 		{"0.0.0.0:8443", false},
 		{"[::]:8443", false},
@@ -1102,9 +1001,7 @@ func TestLoopbackOnly(t *testing.T) {
 	}
 }
 
-// The session cookie carries a live bearer token, so run() refuses plaintext
-// on anything the network can reach — before it touches a cluster, which is
-// why a nonexistent kubeconfig still produces the plaintext error.
+// The refusal precedes any cluster access, so a nonexistent kubeconfig still errors.
 func TestRunRefusesPlainHTTPOffLoopback(t *testing.T) {
 	err := run(t.Context(), options{Listen: "0.0.0.0:0", Kubeconfig: "/nonexistent", Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "plain HTTP") {
@@ -1142,7 +1039,6 @@ func TestPublicOriginIsValidated(t *testing.T) {
 			t.Errorf("publicOrigin(%q) was accepted", bad)
 		}
 	}
-	// The cookie's Secure flag and HSTS both follow this.
 	if !reachedOverHTTPS(false, "https://dash.example") || reachedOverHTTPS(false, "http://dash.example") || reachedOverHTTPS(false, "") {
 		t.Error("reachedOverHTTPS does not follow the public URL's scheme")
 	}
@@ -1151,10 +1047,7 @@ func TestPublicOriginIsValidated(t *testing.T) {
 	}
 }
 
-// ---- security headers, revocation, rate limiting ---------------------------
-
-// The security headers are middleware precisely so a new route cannot forget
-// them, which only holds if something checks they are there.
+// The headers are middleware precisely so a new route cannot forget them.
 func TestSecurityHeadersAreSetOnEveryRoute(t *testing.T) {
 	h := newHarness(t, false)
 	for _, path := range []string{"/", "/nodes", "/api/v1/config", "/api/v1/me", "/healthz"} {
@@ -1169,15 +1062,11 @@ func TestSecurityHeadersAreSetOnEveryRoute(t *testing.T) {
 				t.Errorf("GET %s: %s = %q, want %q", path, header, got, want)
 			}
 		}
-		// HSTS only where the browser actually reaches us over TLS.
-		// Announcing it from the plain-HTTP loopback default would be wrong.
 		if got := resp.Header.Get("Strict-Transport-Security"); got != "" {
 			t.Errorf("GET %s: HSTS announced over plain HTTP: %q", path, got)
 		}
 	}
-	// The CSP has to stay all-'self': the fonts, tokens and
-	// icons are vendored, so an air-gapped cluster reaches for nothing it cannot
-	// see.
+	// The CSP stays all-'self': fonts, tokens and icons are vendored.
 	if strings.Contains(contentSecurityPolicy, "http") {
 		t.Errorf("the CSP names an off-origin source: %q", contentSecurityPolicy)
 	}
@@ -1202,8 +1091,7 @@ func TestSecurityHeadersAnnounceHSTSOnlyWhenReachedOverTLS(t *testing.T) {
 	}
 }
 
-// Browser cookie updates happen before JavaScript sees a response. An old
-// identity probe must not erase a login that completed while it was waiting.
+// A slow old identity probe must not erase a newer login's cookie.
 func TestDelayedRevokedMeDoesNotClearANewerLogin(t *testing.T) {
 	h := newHarness(t, false)
 	started, finish := make(chan struct{}), make(chan struct{})
@@ -1273,8 +1161,7 @@ func TestDelayedRevokedMeDoesNotClearANewerLogin(t *testing.T) {
 	}
 }
 
-// Re-asking the apiserver detects revoked tokens without mutating a cookie
-// that may already belong to a newer login.
+// Detects revoked tokens without mutating a cookie a newer login may own.
 func TestMeEndsTheSessionWhenTheTokenIsRevoked(t *testing.T) {
 	h := newHarness(t, false)
 	if got := h.login(t, goodToken).StatusCode; got != http.StatusOK {
@@ -1332,8 +1219,7 @@ func TestRevokedMeAllowsExplicitLogout(t *testing.T) {
 	}
 }
 
-// ...but an apiserver that merely cannot answer must not sign everyone out.
-// The cookie is signed and unexpired, so it is still a session.
+// An apiserver that cannot answer must not sign everyone out; the cookie is still a session.
 func TestMeSurvivesAnApiserverThatCannotAnswer(t *testing.T) {
 	h := newHarness(t, false)
 	if got := h.login(t, goodToken).StatusCode; got != http.StatusOK {
@@ -1354,8 +1240,7 @@ func TestMeSurvivesAnApiserverThatCannotAnswer(t *testing.T) {
 	}
 }
 
-// login is unauthenticated and makes the dashboard call the apiserver, so it
-// is the one place an anonymous caller can drive load into the control plane.
+// Login is unauthenticated, the one place an anonymous caller can drive apiserver load.
 func TestLoginIsRateLimited(t *testing.T) {
 	h := newHarness(t, false)
 	h.srv.logins = rate.NewLimiter(0, 1) // one attempt, then nothing refills
@@ -1369,9 +1254,7 @@ func TestLoginIsRateLimited(t *testing.T) {
 	}
 }
 
-// A SelfSubjectReview that succeeds but names nobody must be refused at
-// login. Minting the session instead would produce a cookie that parse()
-// then rejects forever: signed in, and 401 on everything.
+// A SelfSubjectReview naming nobody must be refused; parse() would refuse the session forever.
 func TestLoginRefusesAnIdentityWithNoUsername(t *testing.T) {
 	h := newHarness(t, false)
 	h.blankUsername = true
@@ -1386,13 +1269,6 @@ func TestLoginRefusesAnIdentityWithNoUsername(t *testing.T) {
 	}
 }
 
-// ---- the body cap cannot be lifted by a header -----------------------------
-
-// The 4 MiB cap covers everything, Upgrade headers included:
-// checkNodeShell reads a pod create into memory whole — so an authenticated
-// caller could otherwise POST an unbounded body with `Upgrade: websocket` and
-// make the dashboard buffer all of it. The gate is on by default, so this is
-// the default configuration.
 func TestOversizedBodyIsCappedEvenWithAnUpgradeHeader(t *testing.T) {
 	for _, upgrade := range []bool{false, true} {
 		name := "plain POST"
@@ -1404,8 +1280,7 @@ func TestOversizedBodyIsCappedEvenWithAnUpgradeHeader(t *testing.T) {
 			if got := h.login(t, goodToken).StatusCode; got != http.StatusOK {
 				t.Fatalf("login: got %d", got)
 			}
-			// Comfortably over maxBodyBytes, and shaped like a pod create so
-			// it reaches the gate's body inspection.
+			// Comfortably over maxBodyBytes, shaped like a pod create.
 			huge := `{"kind":"Pod","apiVersion":"v1","metadata":{"name":"big"},"spec":{"nodeName":"` +
 				strings.Repeat("x", maxBodyBytes+(1<<20)) + `"}}`
 			req, _ := http.NewRequest(http.MethodPost, h.dash.URL+"/k8s/api/v1/namespaces/default/pods", strings.NewReader(huge))
@@ -1433,31 +1308,23 @@ func TestOversizedBodyIsCappedEvenWithAnUpgradeHeader(t *testing.T) {
 	}
 }
 
-// ---- --insecure-http has to say what scheme users arrive on ----------------
-
-// Behind a TLS terminator the browser is on HTTPS, so the cookie must be
-// Secure — and this process cannot know that unless it is told.
 func TestInsecureHTTPRequiresAPublicURL(t *testing.T) {
 	err := run(t.Context(), options{Listen: "0.0.0.0:0", AllowInsecure: true, Kubeconfig: "/nonexistent", Out: io.Discard})
 	if err == nil || !strings.Contains(err.Error(), "--insecure-http requires --public-url") {
 		t.Fatalf("err = %v, want the missing-public-url refusal", err)
 	}
-	// With one, it gets past this check and fails on the cluster instead.
 	err = run(t.Context(), options{Listen: "0.0.0.0:0", AllowInsecure: true, PublicURL: "https://dash.example",
 		Kubeconfig: "/nonexistent", Out: io.Discard})
 	if err == nil || strings.Contains(err.Error(), "--public-url") {
 		t.Fatalf("err = %v, want it past the public-url check", err)
 	}
-	// Loopback needs no public URL: nothing observes the connection, and the
-	// flag is a no-op there.
+	// Loopback needs no public URL: nothing observes the connection.
 	err = run(t.Context(), options{Listen: "127.0.0.1:0", AllowInsecure: true, Kubeconfig: "/nonexistent", Out: io.Discard})
 	if err == nil || strings.Contains(err.Error(), "--public-url") {
 		t.Fatalf("err = %v, want loopback exempt from the public-url requirement", err)
 	}
 }
 
-// The cookie's Secure flag follows the scheme users actually arrive on, which
-// is the point of requiring the public URL above.
 func TestCookieIsSecureWhenUsersArriveOverHTTPS(t *testing.T) {
 	for _, tc := range []struct {
 		name, publicURL string
@@ -1485,14 +1352,6 @@ func TestCookieIsSecureWhenUsersArriveOverHTTPS(t *testing.T) {
 	}
 }
 
-// ---- login CSRF ------------------------------------------------------------
-
-// Login sets a cookie and has no session to derive a CSRF token from, so the
-// session csrf() middleware cannot protect it. Unguarded, a cross-site form
-// POST (a simple request — no CORS preflight to stop it) submits the
-// ATTACKER'S token, the browser keeps the Set-Cookie that comes back, and the
-// victim then drives the dashboard as whoever that token belongs to. SameSite
-// does not help: it decides when a cookie is SENT, not whether one is stored.
 func TestLoginRefusesACrossSiteOrigin(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -1540,11 +1399,10 @@ func TestLoginRefusesACrossSiteOrigin(t *testing.T) {
 	}
 }
 
-// The guard has to run before the token is spent: a foreign origin must not
-// cost an apiserver round trip or a slot in the login rate limiter.
+// The guard runs before the token is spent: a foreign origin costs no round trip or limiter slot.
 func TestLoginGuardRunsBeforeTheRateLimiterAndTheApiserver(t *testing.T) {
 	h := newHarness(t, false)
-	h.srv.logins = rate.NewLimiter(0, 1) // exactly one attempt available
+	h.srv.logins = rate.NewLimiter(0, 1)
 
 	req, _ := http.NewRequest(http.MethodPost, h.dash.URL+"/api/v1/login", strings.NewReader(`{"token":"`+goodToken+`"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -1557,23 +1415,13 @@ func TestLoginGuardRunsBeforeTheRateLimiterAndTheApiserver(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign origin: got %d, want 403", resp.StatusCode)
 	}
-	// The one available attempt must still be there for a legitimate caller.
+	// The one available attempt must remain for a legitimate caller.
 	if got := h.login(t, goodToken).StatusCode; got != http.StatusOK {
 		t.Fatalf("a real login after a refused one: got %d, want 200 — the refusal spent the rate limit", got)
 	}
 }
 
-// whoami is the other client built from s.base, and the one where an ambient
-// credential is worst. It sets BearerToken to the token the caller presented,
-// so a leaked client certificate is the only identity that could survive — and
-// if one did, the apiserver would authenticate the REQUEST by certificate after
-// the garbage token failed, hand back a SelfSubjectReview naming the dashboard,
-// and whoami would report success. Login would then mint a session as the
-// dashboard's own ServiceAccount for any string a caller typed into the token
-// box: a full authentication bypass, not merely a privilege leak.
-//
-// The fake apiserver here behaves like that: cert present means authenticated
-// as the dashboard whatever the token says, no cert means 401.
+// A surviving ambient credential would authenticate garbage tokens by certificate: a bypass.
 func TestWhoamiCannotAuthenticateByProcessCertificate(t *testing.T) {
 	const dashboardIdentity = "system:serviceaccount:stratum-system:dashboard"
 	_, clientPEM, clientKeyPEM := generateCert(t, "the-dashboard-process")
@@ -1599,8 +1447,7 @@ func TestWhoamiCannotAuthenticateByProcessCertificate(t *testing.T) {
 		CertData: clientPEM, KeyData: clientKeyPEM,
 	}}
 
-	// Control arm: the fixture really can authenticate by certificate alone,
-	// so a pass below means whoami declined to, not that mTLS never happened.
+	// Control arm: proves the fixture really authenticates by certificate.
 	control, err := kubernetes.NewForConfig(rest.CopyConfig(base))
 	if err != nil {
 		t.Fatalf("control client: %v", err)
@@ -1614,7 +1461,6 @@ func TestWhoamiCannotAuthenticateByProcessCertificate(t *testing.T) {
 		t.Fatalf("control arm got %q, want %q", rev.Status.UserInfo.Username, dashboardIdentity)
 	}
 
-	// The real path, with a token the apiserver would never accept.
 	s := &server{base: base}
 	got, err := s.whoami(context.Background(), "not-a-real-token")
 	if err == nil {

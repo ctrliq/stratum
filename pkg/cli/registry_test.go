@@ -15,10 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirectRegistry points the registry paths at a temp tree — the redirect of
-// internal/registry's own tests, inlined because it lives in another package —
-// and points the supervisor's control socket at an absent path so containerd
-// reports not running and `apply` never restarts anything.
 func redirectRegistry(t *testing.T) (certsDir, confd, regYaml string) {
 	t.Helper()
 	root := t.TempDir()
@@ -36,14 +32,6 @@ func redirectRegistry(t *testing.T) (certsDir, confd, regYaml string) {
 	return certsDir, confd, regYaml
 }
 
-// TestRegistryApply_PrintsMirrorsAndWarnings pins what `stratum registry apply`
-// reports through stdout: the per-registry warnings (a mirror told to skip TLS
-// verification is an operator-visible risk) and the list of registries it
-// applied mirrors for. The restart line it deliberately asserts nothing about:
-// the restart line follows runtime.ApplyRegistry's Restarted result, never
-// res.Changed alone (Changed says the config changed, not that a running
-// containerd was restarted), so
-// TestRegistryApply_ReportsNoRestartWhenContainerdIsStopped pins that side.
 func TestRegistryApply_PrintsMirrorsAndWarnings(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	yaml := `mirrors:
@@ -75,14 +63,7 @@ configs:
 	}
 }
 
-// fakeSupervisor serves the supervisor control protocol on a temp unix socket
-// and points version.ControlSocket at it, so the runtime package sees
-// containerd running: status reports pid 100 until a restart op is served,
-// then pid 101 — the new pid comps.Restart's replacement check waits for.
-// Returns a func counting the restart ops served. Call it AFTER
-// redirectRegistry: it replaces the absent socket path that helper points at
-// containerd-stopped, and its cleanup restores that path before
-// redirectRegistry's cleanup restores the real one.
+// Call AFTER redirectRegistry: cleanup must restore the absent socket path first.
 func fakeSupervisor(t *testing.T) (restarts func() int) {
 	t.Helper()
 	socket := filepath.Join(t.TempDir(), "control.sock")
@@ -134,8 +115,6 @@ func fakeSupervisor(t *testing.T) (restarts func() int) {
 	return func() int { mu.Lock(); defer mu.Unlock(); return served }
 }
 
-// writeOneMirror writes a one-mirror registries.yaml at the redirected path,
-// so a first apply creates the conf.d drop-in and reports Changed.
 func writeOneMirror(t *testing.T, regYaml string) {
 	t.Helper()
 	const oneMirror = "mirrors:\n  docker.io:\n    endpoint: [\"https://mirror.internal:5000\"]\n"
@@ -144,9 +123,7 @@ func writeOneMirror(t *testing.T, regYaml string) {
 	}
 }
 
-// runRegistryApply runs `stratum registry apply` and returns its stdout. The
-// command prints with fmt.Printf to the process's own stdout, so the pipe
-// swap is the only way to see its output.
+// Prints with fmt.Printf, so swapping the process stdout is the only capture.
 func runRegistryApply(t *testing.T) string {
 	t.Helper()
 	var err error
@@ -162,11 +139,6 @@ func runRegistryApply(t *testing.T) string {
 	return out
 }
 
-// TestRegistryApply_ReportsNoRestartWhenContainerdIsStopped pins that on a
-// first apply the drop-in changes, but with containerd not running nothing
-// was restarted, so the restart line must be absent. The CLI prints it from
-// runtime.ApplyRegistry's Restarted result, not from Changed alone, which
-// would report a restart that did not happen.
 func TestRegistryApply_ReportsNoRestartWhenContainerdIsStopped(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	writeOneMirror(t, regYaml)
@@ -180,11 +152,6 @@ func TestRegistryApply_ReportsNoRestartWhenContainerdIsStopped(t *testing.T) {
 	}
 }
 
-// TestRegistryApply_PrintsTheRestartLineOnlyWhenContainerdWasRestarted pins
-// the other side of that contract: with containerd active the first apply restarts
-// it and prints the restart line; an identical re-apply changes nothing,
-// restarts nothing and prints none — exactly what the returned Restarted
-// says, never what Changed alone says.
 func TestRegistryApply_PrintsTheRestartLineOnlyWhenContainerdWasRestarted(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	restarts := fakeSupervisor(t)
@@ -207,9 +174,6 @@ func TestRegistryApply_PrintsTheRestartLineOnlyWhenContainerdWasRestarted(t *tes
 	}
 }
 
-// TestRegistryApplyConfigsOnly pins that a configs-only registries.yaml applies
-// (the registry is listed, no "nothing configured" line) and that the success
-// line says "configuration": a configs-only host is not a mirror.
 func TestRegistryApplyConfigsOnly(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\":\n    auth: {username: u, password: p}\n"), 0o600); err != nil {
@@ -224,9 +188,6 @@ func TestRegistryApplyConfigsOnly(t *testing.T) {
 	}
 }
 
-// TestRegistryApplyEmptyFilePrintsNothingConfigured pins the empty-file wording:
-// the shared NothingConfigured sentence with the file's path, not the old
-// "registry mirrors cleared" claim (an existing file is not "no <path>").
 func TestRegistryApplyEmptyFilePrintsNothingConfigured(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	if err := os.WriteFile(regYaml, []byte("{}\n"), 0o600); err != nil {
@@ -241,8 +202,6 @@ func TestRegistryApplyEmptyFilePrintsNothingConfigured(t *testing.T) {
 	}
 }
 
-// TestRegistryCheckConfigsOnly pins that `registry check` lists a configs-only
-// registry as direct (no endpoints) with its auth kind, no secrets.
 func TestRegistryCheckConfigsOnly(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\":\n    auth: {username: u, password: p}\n"), 0o600); err != nil {
@@ -269,10 +228,6 @@ func TestRegistryCheckConfigsOnly(t *testing.T) {
 	}
 }
 
-// TestRegistryCheckShowsClientCertAndKey pins that the TLS row of `registry
-// check` reports client cert/key paths, not just CA and skip_verify: a
-// configs-only host with cert_file+key_file is configured with a client
-// certificate, and the preview must show it.
 func TestRegistryCheckShowsClientCertAndKey(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\":\n    tls: {cert_file: /etc/stratum/client.crt, key_file: /etc/stratum/client.key}\n"), 0o600); err != nil {
@@ -296,9 +251,6 @@ func TestRegistryCheckShowsClientCertAndKey(t *testing.T) {
 	}
 }
 
-// TestRegistryCheckWildcardCredentialsWarn pins that `registry check` warns that
-// configs."*" credentials and client certificate are not applied, and shows
-// only what is: the catch-all CA, with no auth row.
 func TestRegistryCheckWildcardCredentialsWarn(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"*\":\n    auth: {username: u, password: p}\n    tls: {ca_file: /etc/pki/ca.crt, cert_file: /c.crt, key_file: /c.key}\n"), 0o600); err != nil {
@@ -325,9 +277,6 @@ func TestRegistryCheckWildcardCredentialsWarn(t *testing.T) {
 	}
 }
 
-// TestRegistryCheckAuthlessConfigsIsNothing pins that `registry check` treats a
-// configs entry with neither auth nor TLS as nothing configured, using the
-// shared sentence — the same predicate as `registry apply`.
 func TestRegistryCheckAuthlessConfigsIsNothing(t *testing.T) {
 	_, _, regYaml := redirectRegistry(t)
 	if err := os.WriteFile(regYaml, []byte("configs:\n  \"registry.corp:5000\": {}\n"), 0o600); err != nil {

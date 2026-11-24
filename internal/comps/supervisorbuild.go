@@ -11,23 +11,16 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// RunningSupervisor is the process serving the control socket: its pid, the
-// binary it runs as /proc reports it, and whether that is the stratum
-// installed on this node.
 type RunningSupervisor struct {
 	PID       int
 	Exe       string
 	Installed bool
 }
 
-// Stale reports a supervisor that is not running the installed stratum: an
-// upgrade replaced the binary under it, so it runs the previous build while
-// the processes it starts run the new one.
+// It runs the previous build while the processes it starts run the new one.
 func (r RunningSupervisor) Stale() bool { return !r.Installed }
 
-// Supervisor finds the process serving the control socket from the socket's
-// peer credentials, which every supervisor build has, and compares the binary
-// it runs with version.StratumInstallPath.
+// Peer credentials work with every supervisor build.
 func Supervisor() (RunningSupervisor, error) {
 	pid, err := socketPeerPID(version.ControlSocket)
 	if err != nil {
@@ -55,9 +48,7 @@ func Supervisor() (RunningSupervisor, error) {
 	return RunningSupervisor{PID: pid, Exe: exe, Installed: same}, nil
 }
 
-// sameContent reports whether two files hold the same bytes. A rollback
-// restores the build a supervisor already runs as a new file, which is the
-// same build under another inode.
+// A rollback restores the same build as a new file, under another inode.
 func sameContent(a, b string) (bool, error) {
 	ha, err := fileSHA256(a)
 	if err != nil {
@@ -85,9 +76,7 @@ func fileSHA256(path string) ([sha256.Size]byte, error) {
 	return sum, nil
 }
 
-// socketPeerPID and procExePath are seams over the control socket's peer
-// credentials and the /proc path of a process's binary, so Supervisor is
-// testable without a running supervisor.
+// Seams so Supervisor is testable without a running supervisor.
 var (
 	socketPeerPID = peerPID
 	procExePath   = func(pid int) string { return filepath.Join("/proc", strconv.Itoa(pid), "exe") }

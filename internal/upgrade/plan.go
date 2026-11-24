@@ -1,18 +1,12 @@
 package upgrade
 
-// Plan owns the classification, preflight and ordering shared by the CLI
-// dry run, MCP preview and cluster rollout. Only the Stratum control-plane
-// label set to "true" qualifies; when no node has it, the local etcd member
-// roster identifies control planes before preflight counts quorum.
-
 import (
 	"context"
 
 	"k8s.io/client-go/kubernetes"
 )
 
-// PlanStep is one step of the rollout: the nodes it upgrades together, their
-// role, and whether it must not run alongside another step.
+// PlanStep is one step of the rollout.
 type PlanStep struct {
 	Order  int
 	Nodes  []string
@@ -20,10 +14,7 @@ type PlanStep struct {
 	Serial bool
 }
 
-// ClusterPlan is what a cluster upgrade to Target would do: the nodes as
-// classified, whether preflight allows the upgrade, and the steps it would
-// roll in. A refused plan (Allowed false) carries the reason in Blocker and
-// no steps.
+// A refused plan (Allowed false) names the reason in Blocker and carries no steps.
 type ClusterPlan struct {
 	Target    string
 	Allowed   bool
@@ -33,12 +24,7 @@ type ClusterPlan struct {
 	Steps     []PlanStep
 }
 
-// Plan classifies the cluster by the Stratum label rule (NodeFromAPI), falling
-// back to this node's etcd roster for an unlabeled cluster, runs Preflight and
-// the upgrade-Job-name gate, and orders the rollout: control planes one at a
-// time in API order, then workers in batches of at most workersMaxUnavailable
-// (below one means one). A node-list or roster failure is an error; a preflight
-// or Job-name refusal is Allowed false with Blocker set.
+// Plan classifies the cluster, runs Preflight and the Job-name gate, and orders the rollout.
 func Plan(ctx context.Context, cs kubernetes.Interface, target string, workersMaxUnavailable int) (ClusterPlan, error) {
 	nodes, err := classifyNodes(ctx, cs)
 	if err != nil {
@@ -50,18 +36,13 @@ func Plan(ctx context.Context, cs kubernetes.Interface, target string, workersMa
 	return planFromNodes(target, nodes, workersMaxUnavailable), nil
 }
 
-// planFromNodes is Preflight, the Job-name gate and the rollout ordering over
-// already-classified nodes.
 func planFromNodes(target string, nodes []Node, workersMaxUnavailable int) ClusterPlan {
 	p := ClusterPlan{Target: target, NodeCount: len(nodes), Nodes: nodes}
 	if reason := Preflight(target, nodes); reason != "" {
 		p.Blocker = reason
 		return p
 	}
-	// The Job-name gate travels with the plan, so upgrade_plan reports the
-	// same refusal the rollout makes: a long node's hashed Job name can equal
-	// a short node's own name, and the rollout refuses the pair before any
-	// node is cordoned.
+	// The gate travels with the plan, so upgrade_plan reports the same refusal the rollout makes.
 	if err := validateUpgradeJobNames(nodes); err != nil {
 		p.Blocker = err.Error()
 		return p
@@ -71,9 +52,6 @@ func planFromNodes(target string, nodes []Node, workersMaxUnavailable int) Clust
 	return p
 }
 
-// planSteps is the rollout's ordering as steps, from orderedNodes' list:
-// every control plane serially first, then workers in batches of at most
-// workersMaxUnavailable.
 func planSteps(ordered []Node, workersMaxUnavailable int) []PlanStep {
 	if workersMaxUnavailable < 1 {
 		workersMaxUnavailable = 1

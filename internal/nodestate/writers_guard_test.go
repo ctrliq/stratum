@@ -7,7 +7,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// withStatePath points node.yaml at a temp directory for the test.
+// Points node.yaml at a temp directory for the test.
 func withStatePath(t *testing.T) {
 	t.Helper()
 	old := version.K8sConfDir
@@ -15,8 +15,7 @@ func withStatePath(t *testing.T) {
 	t.Cleanup(func() { version.K8sConfDir = old })
 }
 
-// wantOnDisk loads node.yaml and requires it to equal want exactly: every
-// field every writer recorded, still in the one file.
+// wantOnDisk fails unless node.yaml equals want exactly.
 func wantOnDisk(t *testing.T, want *NodeState) {
 	t.Helper()
 	got, err := LoadState()
@@ -28,21 +27,11 @@ func wantOnDisk(t *testing.T, want *NodeState) {
 	}
 }
 
-// TestNodeYAMLWritersConverge pins the retention contract the node.yaml
-// writers rely on: every writer after bring-up records its fields by
-// load-modify-save on the shared file (recordConfigPath, the worker DNS
-// learner, the etcd growth recorder, and the HA join and restore all write
-// this way), so a writer's save must keep what the other writers — and
-// bring-up — recorded. Two mock writers converge on one node.yaml the way
-// those do: if a save writes a fresh struct instead of the loaded one, or the
-// serializer drops a field, the file stops equaling the accumulated state and
-// this fails.
+// Every node.yaml writer records its fields by load-modify-save on the shared file.
 func TestNodeYAMLWritersConverge(t *testing.T) {
 	withStatePath(t)
 
-	// Bring-up (PrepareController, and the join that prepares a member) writes
-	// the base state. Every non-zero value here is one the round-trip through
-	// the file must keep.
+	// Bring-up writes the base state; the round-trip must keep every value here.
 	base := &NodeState{
 		Role:               "controller",
 		Hostname:           "cp1",
@@ -65,9 +54,6 @@ func TestNodeYAMLWritersConverge(t *testing.T) {
 	}
 	wantOnDisk(t, base)
 
-	// The controller-run writer records the config file the controller was
-	// started with (recordConfigPath) and that etcd grew past one member (the
-	// HA join's membership record): load, record, save.
 	st, err := LoadState()
 	if err != nil {
 		t.Fatal(err)
@@ -82,9 +68,7 @@ func TestNodeYAMLWritersConverge(t *testing.T) {
 	after.EtcdHasPeers = true
 	wantOnDisk(t, &after)
 
-	// A second writer — the worker's DNS learner — records the DNS Service
-	// address it learned: load, record, save. The first writer's fields, and
-	// bring-up's, must all still be there.
+	// A second writer records the DNS Service address it learned.
 	st, err = LoadState()
 	if err != nil {
 		t.Fatal(err)
@@ -96,8 +80,7 @@ func TestNodeYAMLWritersConverge(t *testing.T) {
 	after.ClusterDNSIP = "10.96.0.10"
 	wantOnDisk(t, &after)
 
-	// The first writer records again on a restart (a new --config path): the
-	// second writer's field survives it.
+	// The first writer records again on a restart.
 	st, err = LoadState()
 	if err != nil {
 		t.Fatal(err)

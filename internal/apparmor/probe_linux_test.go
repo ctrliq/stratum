@@ -19,8 +19,6 @@ func redirectBinDir(t *testing.T, dir string) {
 	version.BinDir = dir
 }
 
-// The real probe against a stand-in runc: the child stops at exec, its label
-// is read, or the kernel has no label to read, and it is killed and reaped.
 func TestProbeRuncLabelStopsReadsAndReapsTheChild(t *testing.T) {
 	src, err := os.ReadFile("/bin/true")
 	if err != nil {

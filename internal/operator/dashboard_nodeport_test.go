@@ -32,7 +32,6 @@ func nodePortService(ns, name string, port int32) *corev1.Service {
 	}
 }
 
-// renderedDashboardService is the dashboard Service as the stack renders it.
 func renderedDashboardService(t *testing.T, nodePort int) *unstructured.Unstructured {
 	t.Helper()
 	dec := utilyaml.NewYAMLOrJSONDecoder(bytes.NewReader(addons.RenderDashboard(addons.DashboardSettings{NodePort: nodePort})), 4096)
@@ -62,9 +61,6 @@ func serviceSpec(t *testing.T, obj *unstructured.Unstructured) (typ string, node
 	return typ, nodePorts
 }
 
-// TestYieldDashboardNodePort pins when the dashboard gives up its NodePort:
-// only when another Service holds it, never for its own Service, and never for
-// any object other than the dashboard Service.
 func TestYieldDashboardNodePort(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -128,11 +124,6 @@ func TestYieldDashboardNodePort(t *testing.T) {
 	}
 }
 
-// TestHeldDashboardNodePortStillAppliesTheStack pins that, with the dashboard
-// NodePort held by another Service, the whole dashboard stack applies: the
-// Service as a ClusterIP, and the Deployment after it. Applied as rendered, the
-// apiserver would refuse the Service, and the refusal would stop the
-// Deployment from applying and suspend pruning cluster-wide.
 func TestHeldDashboardNodePortStillAppliesTheStack(t *testing.T) {
 	r := deployFixture(t)
 	if _, err := r.fakeCs.CoreV1().Services("monitoring").Create(context.Background(),
@@ -170,11 +161,6 @@ func TestHeldDashboardNodePortStillAppliesTheStack(t *testing.T) {
 	}
 }
 
-// TestDashboardRegainsItsNodePortOnTheNextPass pins that a dashboard served on
-// a ClusterIP is applied again every pass while its NodePort is held, logging
-// the held port once, and is applied with its NodePort on the first pass after
-// the port is freed, well inside the resync window that otherwise holds an
-// unchanged file back.
 func TestDashboardRegainsItsNodePortOnTheNextPass(t *testing.T) {
 	ctx := context.Background()
 	r := deployFixture(t, cp("cp1", "10.0.0.11"))
@@ -229,12 +215,7 @@ func TestDashboardRegainsItsNodePortOnTheNextPass(t *testing.T) {
 	}
 }
 
-// TestDashboardRollbackAfterAYieldIsApplied replays a rollback inside the
-// resync window: a rendering on a free port is applied and cached, a change to
-// a held port is served on a ClusterIP, and the first rendering is restored.
-// Its sum is the one cached before the yield, so unless the yield dropped that
-// entry the pass would skip it and leave the dashboard on a ClusterIP with its
-// own port free.
+// The restored rendering's sum matches the pre-yield cache entry; a dropped one would be skipped.
 func TestDashboardRollbackAfterAYieldIsApplied(t *testing.T) {
 	ctx := context.Background()
 	r := deployFixture(t, cp("cp1", "10.0.0.11"))

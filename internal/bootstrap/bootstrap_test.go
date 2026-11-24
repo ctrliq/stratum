@@ -34,8 +34,7 @@ const (
 	testSecret = "0123456789abcdef"
 )
 
-// makeCA returns a self-signed CA cert (PEM) and its
-// "sha256:<hex of SubjectPublicKeyInfo>" hash.
+// makeCA returns a self-signed CA cert (PEM) and its "sha256:<hex>" pin.
 func makeCA(t *testing.T) (pemBytes []byte, hash string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -69,10 +68,7 @@ func kubeconfigWith(caPEM []byte) string {
 		"\n    server: https://10.0.0.1:6443\n  name: \"\"\ncontexts: null\ncurrent-context: \"\"\nkind: Config\nusers: null\n"
 }
 
-// clusterInfoServer serves a cluster-info ConfigMap over TLS with a self-signed
-// certificate — exactly what an on-path attacker presents, and exactly what
-// fetchClusterInfoData's InsecureSkipVerify transport accepts. It counts
-// requests so tests can assert that no request was made at all.
+// A TLS server with a self-signed cert, like an on-path attacker; counts requests.
 func clusterInfoServer(t *testing.T, data map[string]string) (url string, requests *atomic.Int32) {
 	t.Helper()
 	requests = &atomic.Int32{}
@@ -91,12 +87,7 @@ func clusterInfoServer(t *testing.T, data map[string]string) (url string, reques
 	return srv.URL, requests
 }
 
-// TestMain shortens the signature-wait budget so the unsigned-cluster-info tests
-// do not each burn the production 30s. Retry behaviour is asserted by REQUEST
-// COUNT (see TestDiscoverCAMissingSignatureCarriesRemediation, which requires
-// more than one attempt, and TestDiscoverCARejectsTamperedSignedBundleImmediately,
-// which requires exactly one), so shortening the wall-clock budget does not
-// weaken what is checked.
+// Shortens the retry budgets; retry behaviour is asserted by request count, not wall clock.
 func TestMain(m *testing.M) {
 	signatureWaitInterval = 5 * time.Millisecond
 	signatureWaitTimeout = 60 * time.Millisecond
@@ -112,12 +103,7 @@ func signedData(kubeconfig string) map[string]string {
 	}
 }
 
-// signatureFor produces the detached JWS the bootstrapsigner publishes, built
-// here from the standard library rather than from the production code under
-// test, so these fixtures are an independent check on it. The authority on the
-// encoding is TestGoldenVectorMatchesUpstreamSigner in the clusterinfo package,
-// which pins real upstream output; if this and the implementation ever disagree,
-// that test says which one is wrong.
+// Built from the standard library, not the code under test, so the fixtures check it independently.
 func signatureFor(kubeconfig string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","kid":"` + testID + `"}`))
 	mac := hmac.New(sha256.New, []byte(testSecret))
@@ -125,16 +111,6 @@ func signatureFor(kubeconfig string) string {
 	return header + ".." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// TestDiscoverCARejectsUnpinnedCAsInBundle is the regression test for accepting
-// an unpinned CA from an authenticated bundle.
-//
-// DiscoverCA must not trust a fetched bundle on a first-match pin alone:
-// trusted that way, `[attacker-CA ‖ genuine-CA]` — pinned to the genuine
-// cert — is accepted and the attacker's CA is written to ca-bundle.crt, the
-// kubelet's x509.clientCAFile.
-//
-// The bundle is unsigned because that is the actual attack: with no JWS
-// published and none verified, an on-path attacker needs no credentials at all.
 func TestDiscoverCARejectsUnpinnedCAsInBundle(t *testing.T) {
 	attackerPEM, attackerPin := makeCA(t)
 	genuinePEM, genuinePin := makeCA(t)
@@ -148,17 +124,12 @@ func TestDiscoverCARejectsUnpinnedCAsInBundle(t *testing.T) {
 	if err == nil {
 		t.Fatal("unsigned cluster-info accepted: an on-path attacker can inject a trusted client CA")
 	}
-	// Belt and braces: whatever the resolution, the attacker's CA must never be
-	// in what the caller writes to ca-bundle.crt.
+	// The attacker's CA must never be in what the caller writes to ca-bundle.crt.
 	if containsPin(t, out, attackerPin) {
 		t.Errorf("attacker CA present in the returned bundle (%d bytes)", len(out))
 	}
 }
 
-// TestDiscoverCARejectsSignedAttackerBundle is the same bypass one level up: a
-// well-formed signature over a bundle that does not contain the pinned CA. The
-// JWS authenticates the document; the pin is what binds it to the CA we expect.
-// Both must hold.
 func TestDiscoverCARejectsSignedAttackerBundle(t *testing.T) {
 	attackerPEM, _ := makeCA(t)
 	_, genuinePin := makeCA(t)
@@ -170,10 +141,6 @@ func TestDiscoverCARejectsSignedAttackerBundle(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAAcceptsSignedRotationBundle is the counterweight: the same
-// two-CA shape, correctly signed, must be ACCEPTED with both certificates
-// intact. This is the test that fails if someone later narrows the bundle to the
-// pinned certificate and breaks staged CA rotation.
 func TestDiscoverCAAcceptsSignedRotationBundle(t *testing.T) {
 	oldPEM, oldPin := makeCA(t)
 	newPEM, newPin := makeCA(t)
@@ -194,9 +161,6 @@ func TestDiscoverCAAcceptsSignedRotationBundle(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAValidatesTokenBeforeAnyRequest: a malformed token must fail
-// without contacting an endpoint we cannot yet verify, and — the property C2
-// exists to guarantee — there is no token value that skips verification.
 func TestDiscoverCAValidatesTokenBeforeAnyRequest(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	url, requests := clusterInfoServer(t, signedData(kubeconfigWith(caPEM)))
@@ -211,13 +175,6 @@ func TestDiscoverCAValidatesTokenBeforeAnyRequest(t *testing.T) {
 	}
 }
 
-// TestDiscoverCARequiresHTTPS: a plaintext endpoint would put the bootstrap
-// token on the wire as a bearer credential during TLS bootstrap — and that token
-// is the HMAC key this whole control rests on.
-//
-// The server is PLAINTEXT and serves valid, correctly-signed cluster-info, so
-// the join would succeed were it not for the scheme guard — only requireHTTPS
-// can fail this request.
 func TestDiscoverCARequiresHTTPS(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	body, err := json.Marshal(map[string]any{
@@ -238,7 +195,7 @@ func TestDiscoverCARequiresHTTPS(t *testing.T) {
 	if err == nil {
 		t.Fatal("accepted an http:// server; the bootstrap token would go out in cleartext")
 	}
-	// Pin the guard's own message: without this the test passes on any error.
+	// Without this the test passes on any error.
 	if !strings.Contains(err.Error(), "cleartext") {
 		t.Errorf("got %v; want the explicit scheme guard", err)
 	}
@@ -247,9 +204,6 @@ func TestDiscoverCARequiresHTTPS(t *testing.T) {
 	}
 }
 
-// TestDiscoverCARefusesRedirects: cluster-info is one fixed endpoint. Following a
-// redirect would let a server we have not authenticated steer this pre-auth
-// request to an arbitrary host, or downgrade it to plaintext.
 func TestDiscoverCARefusesRedirects(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	var targetHits atomic.Int32
@@ -277,18 +231,7 @@ func TestDiscoverCARefusesRedirects(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAStopsReadingAtTheLimit pins the BOUND, not merely the rejection.
-//
-// TestDiscoverCARejectsOversizedBody below sends maxClusterInfoBytes+64, so the
-// `len(body) > max` check fires whether or not the read is bounded — removing the
-// io.LimitReader leaves that test green. The property that actually matters is
-// that a hostile endpoint streaming gigabytes cannot make the joiner buffer them
-// before deciding: the transport skips TLS verification and DiscoverCA re-fetches
-// on a retry loop, so an unbounded read is a remote memory-exhaustion primitive.
-//
-// This serves far more than the limit and asserts on how much the server managed
-// to push. With the LimitReader the client stops at max+1 and the handler's next
-// Write fails; without it, io.ReadAll drains everything.
+// Pins the bound, not the rejection: the oversized-body test passes with the LimitReader removed.
 func TestDiscoverCAStopsReadingAtTheLimit(t *testing.T) {
 	const chunk = 1 << 20
 	const total = 64 * chunk // far beyond any bound the code might use
@@ -326,9 +269,7 @@ func TestDiscoverCAStopsReadingAtTheLimit(t *testing.T) {
 	got := served
 	mu.Unlock()
 
-	// Generous slack for socket and http server buffering — the point is to
-	// separate "stopped near the limit" from "drained 64 MiB", not to pin an exact
-	// byte count.
+	// Slack for socket and server buffering; the point is stopped-near-limit, not an exact count.
 	const ceiling = 16 * chunk
 	if got > ceiling {
 		t.Errorf("server pushed %d bytes; the client did not stop near the %d-byte limit "+
@@ -336,8 +277,6 @@ func TestDiscoverCAStopsReadingAtTheLimit(t *testing.T) {
 	}
 }
 
-// TestDiscoverCARejectsOversizedBody: the body is attacker-controlled before
-// authentication and the retry loop re-fetches, so the read must be bounded.
 func TestDiscoverCARejectsOversizedBody(t *testing.T) {
 	_, pin := makeCA(t)
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -350,10 +289,6 @@ func TestDiscoverCARejectsOversizedBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("accepted an oversized cluster-info body")
 	}
-	// The cap bounds a hostile endpoint, but the way a real cluster reaches it is
-	// benign accumulation of bootstrap-token signatures. A bare read error would
-	// make a token-lifecycle problem look like a network fault on the joiner, so
-	// the message has to name the cause and where the lifecycle work lives.
 	for _, want := range []string{
 		"exceeds the " + strconv.Itoa(maxClusterInfoBytes) + "-byte limit",
 		"bootstrap-token signatures", "never expire",
@@ -364,16 +299,12 @@ func TestDiscoverCARejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// TestDiscoverCARejectsTamperedSignedBundleImmediately: a signature that is
-// present and does not verify is the MITM signal. It must fail fast, not sit in
-// the missing-signature retry loop for the full budget.
 func TestDiscoverCARejectsTamperedSignedBundleImmediately(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	attackerPEM, _ := makeCA(t)
 
 	kc := kubeconfigWith(caPEM)
 	data := signedData(kc)
-	// Signature stays; the document it covers is swapped underneath it.
 	data[clusterinfo.KubeConfigKey] = kubeconfigWith(append(append([]byte{}, attackerPEM...), caPEM...))
 	url, requests := clusterInfoServer(t, data)
 
@@ -385,10 +316,6 @@ func TestDiscoverCARejectsTamperedSignedBundleImmediately(t *testing.T) {
 	}
 }
 
-// TestDiscoverCAMissingSignatureCarriesRemediation: the joiner-side message is
-// the actual control for a control plane that does not run the bootstrapsigner
-// yet, so it must carry the whole remedy — the flag,
-// where to verify it, and "every control plane".
 func TestDiscoverCAMissingSignatureCarriesRemediation(t *testing.T) {
 	caPEM, pin := makeCA(t)
 	url, requests := clusterInfoServer(t, map[string]string{
@@ -399,9 +326,6 @@ func TestDiscoverCAMissingSignatureCarriesRemediation(t *testing.T) {
 	if err == nil {
 		t.Fatal("unsigned cluster-info accepted")
 	}
-	// The signature is patched in a moment after the ConfigMap is written, so a
-	// missing one must be waited out, not failed on the first read. Without this
-	// assertion a one-attempt implementation passes the whole suite.
 	if n := requests.Load(); n < 2 {
 		t.Errorf("made %d request(s); a missing signature must be retried until the budget expires", n)
 	}
@@ -440,8 +364,6 @@ func TestParseClusterInfoBody(t *testing.T) {
 	}
 }
 
-// TestParseClusterInfoBodyKeepsSignatures: the signature travels in the same
-// data map as the kubeconfig, so the transport layer must not drop unknown keys.
 func TestParseClusterInfoBodyKeepsSignatures(t *testing.T) {
 	cm := map[string]any{
 		"apiVersion": "v1",
@@ -483,19 +405,12 @@ func containsPin(t *testing.T, bundle []byte, pin string) bool {
 	}
 }
 
-// TestWriteBootstrapKubeconfigReplacesAtomically pins the write rule the
-// node-file record (version.NodeFileOwners) and make lint's write guard put on
-// this file: the kubelet's TLS-bootstrap kubeconfig is start-critical, so it
-// is rendered to bytes and written through the shared atomic writer — never
-// truncated in place — at mode 0600, and the directory is left holding the
-// written file alone.
 func TestWriteBootstrapKubeconfigReplacesAtomically(t *testing.T) {
 	data, conf, run := version.DataDir, version.ConfDir, version.RunDir
 	version.SetRoots(t.TempDir(), t.TempDir(), t.TempDir())
 	t.Cleanup(func() { version.SetRoots(data, conf, run) })
 
-	// A longer file already at the path: a truncating writer that dies
-	// mid-write would leave the residue behind; the replacement must be whole.
+	// A truncating writer that dies mid-write would leave residue behind.
 	if err := os.MkdirAll(filepath.Dir(version.BootstrapKubeconfig), 0o755); err != nil {
 		t.Fatal(err)
 	}

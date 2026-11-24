@@ -23,10 +23,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The etcd step of a rollback, indirected for tests: the version it restores,
-// reading the local member's storage version, asking for the downgrade and
-// waiting for it, and, when etcd does not answer, stopping it, reading its data
-// offline, and keeping its manifest while it is stopped.
+// The etcd step of a rollback, indirected for tests.
 var (
 	rollbackEtcdTarget       = backedUpEtcdMinor
 	rollbackEtcdStorage      = ha.EtcdStorageAt
@@ -40,15 +37,11 @@ var (
 	etcdDowngradeSleep       = time.Sleep
 )
 
-// stoppedEtcdManifest is where a rollback keeps etcd's manifest while it has
-// etcd stopped: from just before the stop until the restore replaces it, so a
-// rollback that fails in between, or dies, leaves a copy to start etcd from.
+// Kept while etcd is stopped, so a failed rollback leaves a copy to start etcd from.
 func stoppedEtcdManifest() string {
 	return filepath.Join(version.DataDir, "upgrade", "etcd-manifest-stopped.yaml")
 }
 
-// stoppedEtcdNote is what a failed restore adds while etcd is stopped for the
-// rollback, "" when it is not.
 func stoppedEtcdNote() string {
 	if _, err := os.Stat(stoppedEtcdManifest()); err != nil || etcdHasManifest() {
 		return ""
@@ -57,10 +50,7 @@ func stoppedEtcdNote() string {
 		"again, or copy %s to %s to start it as it was", stoppedEtcdManifest(), staticpod.Path("etcd"))
 }
 
-// settleStoppedEtcdManifest drops the kept manifest once etcd has a manifest
-// of its own again, whatever else failed to restore: the kept one is the newer
-// etcd's, which must not be copied back over the restored one. An error means
-// it could not be removed and is still there.
+// The kept manifest is the newer etcd's; it must not outlive the restored one.
 func settleStoppedEtcdManifest() error {
 	if !etcdHasManifest() {
 		return nil
@@ -77,22 +67,9 @@ func etcdHasManifest() bool {
 	return err == nil
 }
 
-// localEtcd is the address a control plane's own etcd member answers on.
 const localEtcd = "127.0.0.1"
 
-// prepareEtcdForRollback brings this node's etcd storage down to the version
-// the etcd in a backup set can open, before that etcd is restored. A newer
-// etcd migrates its data's storage version as soon as it runs, and an older
-// one refuses to start on data stored at a version above its own, so
-// restoring the older manifest alone leaves etcd crash-looping.
-//
-// manifestBak is the backup set's manifest directory, "" when the set has
-// none. With etcd answering, nothing is changed unless the storage version is
-// above the restored etcd's: then a single-member cluster is downgraded by
-// etcd's own procedure, which keeps every write, and a larger one is refused,
-// because the downgrade is cluster-wide and this rollback changes one node.
-// With etcd not answering, see checkStoppedEtcd: etcd is stopped, and left
-// stopped for the restore that must follow.
+// A newer etcd migrates storage at once; its own downgrade keeps every write, a single member only.
 func prepareEtcdForRollback(w io.Writer, manifestBak string, dryRun bool) error {
 	if manifestBak == "" {
 		return nil
@@ -183,9 +160,7 @@ func prepareEtcdForRollback(w io.Writer, manifestBak string, dryRun bool) error 
 	}
 }
 
-// downgradeUnlessStarted asks for the downgrade unless one to target is
-// already enabled: etcd refuses to validate a second, and a rerun after a lost
-// enable reply has nothing left to ask for, only to wait.
+// etcd refuses a second downgrade; a rerun after a lost reply only needs to wait.
 func downgradeUnlessStarted(started bool, target string) error {
 	if started {
 		return nil
@@ -193,7 +168,6 @@ func downgradeUnlessStarted(started bool, target string) error {
 	return rollbackEtcdDowngrade(localEtcd, target)
 }
 
-// sameMinor reports whether two versions share a major.minor.
 func sameMinor(a, b string) (bool, error) {
 	aMaj, aMin, err := parseMinor(a)
 	if err != nil {
@@ -206,12 +180,7 @@ func sameMinor(a, b string) (bool, error) {
 	return aMaj == bMaj && aMin == bMin, nil
 }
 
-// checkStoppedEtcd handles an etcd that does not answer: its data is read from
-// disk instead. Nothing may start the newer etcd on that data again before the
-// older manifest is restored, or it migrates the data this read found old
-// enough. So the etcd static pod is stopped before the read and left stopped
-// for the restore, with its manifest kept at stoppedEtcdManifest until then;
-// a refusal puts the manifest back. A dry run reads without stopping anything.
+// Nothing may start the newer etcd on this data before the restore, or it migrates the data.
 func checkStoppedEtcd(w io.Writer, liveErr error, target string, dryRun bool) error {
 	verdict := func(stored string, offErr error) (error, string) {
 		if offErr != nil {
@@ -302,8 +271,6 @@ func checkStoppedEtcd(w io.Writer, liveErr error, target string, dryRun bool) er
 	return nil
 }
 
-// backedUpEtcdMinor is the major.minor version of the etcd image in the etcd
-// manifest under manifestBak, "" when there is none.
 func backedUpEtcdMinor(manifestBak string) (string, error) {
 	path := filepath.Join(manifestBak, "etcd.yaml")
 	b, err := os.ReadFile(path)
@@ -330,8 +297,7 @@ func backedUpEtcdMinor(manifestBak string) (string, error) {
 	return "", fmt.Errorf("%s has no etcd container", path)
 }
 
-// imageMinor is the major and minor version in an etcd image's tag, which is
-// <major>.<minor>.<patch>-<build>.
+// The tag is <major>.<minor>.<patch>-<build>.
 func imageMinor(image string) (int, int, error) {
 	ref, _, _ := strings.Cut(image, "@")
 	i := strings.LastIndex(ref, ":")
@@ -345,8 +311,6 @@ func imageMinor(image string) (int, int, error) {
 	return major, minor, nil
 }
 
-// minorAbove reports whether version, a major.minor.patch, is above target's
-// major.minor.
 func minorAbove(version, target string) (bool, error) {
 	vMaj, vMin, err := parseMinor(version)
 	if err != nil {
@@ -367,11 +331,7 @@ func parseMinor(v string) (int, int, error) {
 	return p.Major, p.Minor, nil
 }
 
-// offlineEtcdStorageVersion reads the storage version recorded in this node's
-// etcd database while etcd is not running, "" when none is recorded. A held
-// lock means etcd is running after all, and is an error (bolt's ErrTimeout).
-// bbolt panics on a corrupt page rather than returning an error, and a corrupt
-// database is a likely reason etcd stopped answering, so that is an error too.
+// A held lock means etcd is running; bbolt panics on a corrupt page, so both are errors.
 func offlineEtcdStorageVersion() (stored string, err error) {
 	path := filepath.Join(version.EtcdDataDir, "member", "snap", "db")
 	defer func() {

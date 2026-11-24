@@ -22,13 +22,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// controllerUpgradeFixture is a controller whose UpgradeNode can run to the
-// end: every host-bound step is stubbed, the node's files live in temp dirs,
-// and the returned slice records, in order, each health-gate wait and each
-// stamp. Health gates are called in a fixed order: 1 the apiserver's
-// component gate, 2 the node gate before the config refresh, 3 the node gate
-// after it. failGate makes that numbered call fail (0 = none). The payload's
-// kubelet reports payloadVer; the installed one reports v1.37.8.
 func controllerUpgradeFixture(t *testing.T, payloadVer string, failGate int) *[]string {
 	t.Helper()
 	resumeFixture(t)
@@ -64,10 +57,7 @@ func controllerUpgradeFixture(t *testing.T, payloadVer string, failGate int) *[]
 		}
 		return nil
 	})
-	// Containerd reads active and reloads cleanly, so applyHostConfigs goes on
-	// to the legacy-config heal; stubbed, the test cannot delete the host's
-	// /etc/containerd/config.toml. unitActive is already stubbed by nodeUp,
-	// restated so the fixture does not depend on it.
+	// unitActive is already stubbed by nodeUp; restated so this fixture does not depend on it.
 	swap(t, &unitActive, func(context.Context, string) bool { return true })
 	swap(t, &removeLegacyConfig, func(io.Writer) {})
 	swap(t, &legacyConfigPresent, func() (string, bool) { return "", false })
@@ -79,7 +69,6 @@ func controllerUpgradeFixture(t *testing.T, payloadVer string, failGate int) *[]
 	return &events
 }
 
-// swap replaces *p with v for the test.
 func swap[T any](t *testing.T, p *T, v T) {
 	t.Helper()
 	old := *p
@@ -87,9 +76,6 @@ func swap[T any](t *testing.T, p *T, v T) {
 	t.Cleanup(func() { *p = old })
 }
 
-// stampUpgraded is covered alone elsewhere; nothing failed if the
-// call left UpgradeNode's success path. Once, with the persisted node name,
-// after every health gate and the version check.
 func TestUpgradeNodeStampsAControllerOnceItIsVerified(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	if _, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{SkipSnapshot: true}) }); err != nil {
@@ -101,8 +87,6 @@ func TestUpgradeNodeStampsAControllerOnceItIsVerified(t *testing.T) {
 	}
 }
 
-// The other side of the same contract: an upgrade that did not land verified
-// at target does not stamp the node as upgraded.
 func TestUpgradeNodeDoesNotStampAnUpgradeThatFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -130,10 +114,6 @@ func TestUpgradeNodeDoesNotStampAnUpgradeThatFailed(t *testing.T) {
 	}
 }
 
-// The runtime-version checks sit inside the same node
-// gate the stamp waits on. An orphaned containerd on the CRI socket, or a
-// kubelet whose Node still reports the old version, fails the gate, the node
-// rolls back, and nothing is stamped as upgraded.
 func TestUpgradeNodeDoesNotStampWhenTheRuntimeIsNotTheInstalledOne(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -163,23 +143,10 @@ func TestUpgradeNodeDoesNotStampWhenTheRuntimeIsNotTheInstalledOne(t *testing.T)
 	}
 }
 
-// The upgrade's refreshes sit in a fixed order around its health gates, and
-// the shared render that replaces them must keep it. The certificate pass and
-// the CIS config write come before the apiserver's re-render, so the pod the
-// new image recreates reads this release's Pod Security pin rather than a
-// later restart's. Nothing that changes a host process's on-disk config or
-// argv runs before the node gate proves the new binaries.
-// The stamp follows every host change. A supervisor still running the
-// previous build is handed to the installed one after the stamp, and the node
-// is gated again once it is back; that restarts the operator too, so it is not
-// restarted on its own. Each seam records an event; only the relative order
-// is asserted.
+// the new apiserver pod reads this release's Pod Security pin, so certs and CIS configs come first
 func TestUpgradeNodeKeepsItsRefreshOrder(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
-	// A CIS controller, so the CIS refresh runs at all; the fixture's
-	// node.yaml is not one. The CIS paths join the fixture's redirected config
-	// dir, the way withCISConfigs redirects them, so nothing outside the test
-	// is read.
+	// a CIS controller, so the CIS refresh runs at all; the fixture's node.yaml is not one
 	writeFile(t, filepath.Join(version.K8sConfDir, "node.yaml"),
 		"role: controller\nhostname: cp-1.registered\nnodeIP: 10.0.0.1\ncis: true\n", 0o600)
 	redirect(t, &version.AdmissionConfigPath, filepath.Join(version.K8sConfDir, "admission-config.yaml"))
@@ -244,13 +211,7 @@ func TestUpgradeNodeKeepsItsRefreshOrder(t *testing.T) {
 	}
 }
 
-// A node-gate failure rolls the node back, and the rollback must return the
-// static-pod manifest set byte for byte with no stray file: kubelet parses
-// every visible file in that directory, so a manifest left on the new render,
-// or a leftover, changes pods on a node reported as rolled back. The derived
-// admission-webhook.yaml is restored itself, with its own mode, because a
-// rollback's manifests are not re-rendered — and a config the upgrade created
-// is removed again, because it did not exist before it.
+// kubelet parses every visible file in the static-pod dir; a rollback must restore it byte for byte
 func TestGateRollbackRestoresTheManifestSetByteForByte(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -276,8 +237,6 @@ func TestGateRollbackRestoresTheManifestSetByteForByte(t *testing.T) {
 			}
 			writeFile(t, filepath.Join(version.K8sConfDir, "node.yaml"), nodeYAML, 0o600)
 
-			// What the node started from, and the visible legacy leftover the
-			// old writer could leave between its write and its rename.
 			type savedFile struct {
 				data string
 				mode os.FileMode
@@ -294,6 +253,7 @@ func TestGateRollbackRestoresTheManifestSetByteForByte(t *testing.T) {
 				}
 				original[n+".yaml"] = savedFile{string(b), fi.Mode().Perm()}
 			}
+			// a stray .tmp a legacy writer could leave between its write and its rename
 			writeFile(t, filepath.Join(staticpod.Dir(), "kube-scheduler.yaml.tmp"), "ghost", 0o600)
 
 			// The re-render a gate-failing upgrade still performs.
@@ -359,17 +319,10 @@ func TestGateRollbackRestoresTheManifestSetByteForByte(t *testing.T) {
 	}
 }
 
-// The supervisor that survives an in-place upgrade keeps starting the host
-// processes, so the upgrade hands it THIS release's definitions for them: it
-// renders containerd's and the kubelet's argv the way `stratum up` does — from
-// the node state, with the operator switch off since neither argv depends on
-// it — and pushes one spec each through the reload op. Any other process, or
-// another release's argv, leaves a node running an old definition while the
-// upgrade claims it landed.
+// any other argv leaves a node on an old definition while the upgrade claims it landed
 func TestUpgradeHandsTheSupervisorThisReleasesHostArgv(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
-	// The kubelet render picks its flags by whether kubelet.kubeconfig exists;
-	// an empty dir makes that deterministic on every machine.
+	// kubelet's render flags depend on kubelet.kubeconfig; an empty dir keeps it deterministic
 	redirect(t, &version.KubeconfigDir, t.TempDir())
 
 	type handed struct {
@@ -413,12 +366,6 @@ func TestUpgradeHandsTheSupervisorThisReleasesHostArgv(t *testing.T) {
 	}
 }
 
-// The supervisor that survives the upgrade can be one release older than the
-// binary running it, and answer the reload op with the refusal that predates
-// it. Only that exact case — ErrReloadUnsupported — defers the new host
-// process argv: the upgrade still succeeds, still stamps the node, and says
-// the new argv applies on the next `stratum up` or reboot rather than
-// claiming it landed or failing the node.
 func TestUpgradeAgainstAnOldSupervisorDefersTheNewArgv(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	swap(t, &reloadUnit, func(name string, _ supervisor.ProcSpec) error {
@@ -437,9 +384,7 @@ func TestUpgradeAgainstAnOldSupervisorDefersTheNewArgv(t *testing.T) {
 	}
 }
 
-// Exercise the successful upgrade's prune wiring, rather than supplying the
-// prune patterns ourselves: dropping a kind from that wiring must leave an
-// old backup behind and fail this guard.
+// the prune patterns come from the wiring, so dropping a kind leaves an old backup and fails
 func TestSuccessfulUpgradePrunesEveryBackupKind(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	const currentStamp = "20260404-000000"
@@ -492,9 +437,7 @@ func TestSuccessfulUpgradePrunesEveryBackupKind(t *testing.T) {
 	}
 }
 
-// UpgradeNode's gates read the Node kubelet registered under,
-// the persisted hostname, which is what the stamp uses too. The fixture's
-// node.yaml names it "cp-1.registered", which no OS hostname matches.
+// the fixture's node.yaml names it cp-1.registered, which no OS hostname matches
 func TestUpgradeNodeReadsTheKubeletNodeItRegisteredUnder(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	var asked []string
@@ -518,10 +461,7 @@ func TestUpgradeNodeReadsTheKubeletNodeItRegisteredUnder(t *testing.T) {
 	}
 }
 
-// TestUpgradeNodeWaitsForTheReplacedProcess: a component whose manifest
-// changed is gated only once the process kubelet is replacing has exited,
-// so its gate cannot be answered by the old one, and nothing restarts
-// kubelet or containerd while kubelet is still replacing it.
+// a changed component's gate must not be answered by the process it replaces
 func TestUpgradeNodeWaitsForTheReplacedProcess(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	swap(t, &startStaticPod, func(name string) error {
@@ -539,9 +479,7 @@ func TestUpgradeNodeWaitsForTheReplacedProcess(t *testing.T) {
 	}
 }
 
-// TestUpgradeNodeWaitsForTheApiserverRestartedOntoItsCert: the restart onto a
-// reissued certificate changes the manifest again, so its gate also waits for
-// the apiserver it replaces to be gone.
+// the cert restart changes the manifest again, so its gate also waits out the old apiserver
 func TestUpgradeNodeWaitsForTheApiserverRestartedOntoItsCert(t *testing.T) {
 	events := controllerUpgradeFixture(t, "v1.37.9", 0)
 	swap(t, &refreshCerts, func(io.Writer, *nodestate.NodeState, string) (bool, error) { return true, nil })

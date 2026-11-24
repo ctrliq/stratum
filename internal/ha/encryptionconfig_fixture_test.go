@@ -17,8 +17,6 @@ func testEncryptionKey(t testing.TB) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-// testEncryptionConfig is the EncryptionConfiguration a hardened profile mints
-// as its shared secret: secretbox over secrets, with an identity fallback.
 func testEncryptionConfig(keyB64 string) string {
 	return fmt.Sprintf(`apiVersion: apiserver.config.k8s.io/v1
 kind: EncryptionConfiguration

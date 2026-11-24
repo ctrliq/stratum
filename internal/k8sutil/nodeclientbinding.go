@@ -9,21 +9,13 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-// NodeClientBindingAPI is the part of the ClusterRoleBinding client needed to
-// disable upstream node-client approval without freeing its binding name.
 type NodeClientBindingAPI interface {
 	Get(context.Context, string, metav1.GetOptions) (*rbacv1.ClusterRoleBinding, error)
 	Create(context.Context, *rbacv1.ClusterRoleBinding, metav1.CreateOptions) (*rbacv1.ClusterRoleBinding, error)
 	Update(context.Context, *rbacv1.ClusterRoleBinding, metav1.UpdateOptions) (*rbacv1.ClusterRoleBinding, error)
 }
 
-// DisableNodeClientAutoApprove keeps NodeClientAutoApproveBinding present with
-// no subjects, so the upstream approver never approves a bootstrap client CSR.
-// Releases before this one create the binding with BootstrapGroup on `stratum
-// token create` and treat AlreadyExists as success: an occupied, empty binding
-// turns that create into a no-op, where a deleted one would let an older
-// control plane grant takeover again. Subjects are cleared by Update, never by
-// deleting the binding.
+// Never deleted: a deleted binding would let an older control plane grant takeover again.
 func DisableNodeClientAutoApprove(ctx context.Context, crbs NodeClientBindingAPI) error {
 	return retry.OnError(retry.DefaultRetry, func(err error) bool {
 		return apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err)

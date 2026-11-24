@@ -44,12 +44,7 @@ func TestStartLockSurvivesUninstall(t *testing.T) {
 	}
 }
 
-// TestTheStartLockIsTheOneTheProbesRead pins the agreement the lock's safety
-// rests on: `stratum up` acquires startLockPath here (pkg/cli), while the
-// uninstall, restore and upgrade probes open version.StartLockPath
-// (internal/etcddata/lock.go). Each side is tested on its own; nothing else
-// proves they are the same file, and a path that drifted apart would let
-// uninstall, restore or an upgrade replace etcd data while a node start runs.
+// Nothing else proves the locks are one file; drift lets uninstall replace etcd data mid-start.
 func TestTheStartLockIsTheOneTheProbesRead(t *testing.T) {
 	if startLockPath != version.StartLockPath {
 		t.Fatalf("the package default startLockPath = %q, want version.StartLockPath %q: the probes read the latter",
@@ -74,10 +69,7 @@ func TestTheStartLockIsTheOneTheProbesRead(t *testing.T) {
 	if !held {
 		t.Error("StartLockHeld reports the node free while `stratum up` holds the lock: the probes read a different file")
 	}
-	// No supervisor runs in a unit test, which is exactly the window the
-	// probe exists for: preparation is under way, nothing is visible yet.
-	// The real lock probe is passed so the whole path — acquisition to
-	// probe — agrees, not just the two functions in isolation.
+	// The real probe is passed so the whole path, acquisition to probe, agrees.
 	if err := etcddata.RefuseStartInProgress("test op", "replacing its data",
 		func() bool { return false }, etcddata.StartLockHeld); err == nil {
 		t.Error("RefuseStartInProgress allowed the operation while `stratum up` holds the lock")
@@ -98,10 +90,6 @@ func TestTheStartLockIsTheOneTheProbesRead(t *testing.T) {
 	}
 }
 
-// TestRunUpTakesTheStartLockBeforeStaging: a `stratum up` that finds another
-// start holding the node-start lock must refuse before it stages the payload,
-// takes the etcd data lock or prepares the node, so the start already under way
-// keeps the host to itself.
 func TestRunUpTakesTheStartLockBeforeStaging(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -117,8 +105,7 @@ func TestRunUpTakesTheStartLockBeforeStaging(t *testing.T) {
 		t.Cleanup(func() { *sw.p = old })
 	}
 
-	// Stub every step past staging so that a runUp which skipped the lock
-	// still never touches the test machine.
+	// Stub every step past staging so a runUp that skipped the lock touches nothing.
 	oldInstall, oldRunController, oldPrepare := installUnit, runControllerFn, prepareControllerFn
 	t.Cleanup(func() {
 		installUnit, runControllerFn, prepareControllerFn = oldInstall, oldRunController, oldPrepare
@@ -155,13 +142,7 @@ func TestRunUpTakesTheStartLockBeforeStaging(t *testing.T) {
 	}
 }
 
-// TestRunUpPreparesUnderTheHeldDataLock: runUp hands preparation the release
-// of the etcd data lock it holds, and the lock is held while preparation runs.
-// Preparation saves node.yaml under that lock and refuses a nil release, so a
-// runUp that passed nil would fail every controller start at its last step.
-// node.yaml's directory and the control socket are redirected too: runUp reads
-// the recorded state and probes for a running node before preparation, and the
-// host's own record or node must not decide the test.
+// runUp hands preparation the held data lock's release; nil is refused before node.yaml is saved.
 func TestRunUpPreparesUnderTheHeldDataLock(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -210,12 +191,7 @@ func TestRunUpPreparesUnderTheHeldDataLock(t *testing.T) {
 	}
 }
 
-// TestRunUpRechecksThePreflightUnderTheStartLock pins the part of runUp's
-// start-lock wiring a unit test cannot drive: the read-only preflight runs
-// again once the lock is held, so a node that came up between the first
-// preflight and the lock is still refused. A source pin because
-// preflightNoRunningNode probes the host's sockets and has no seam that could
-// pass the first call and fail the second.
+// A source pin: preflightNoRunningNode probes the host's sockets and has no seam to stub.
 func TestRunUpRechecksThePreflightUnderTheStartLock(t *testing.T) {
 	src, err := os.ReadFile("up.go")
 	if err != nil {

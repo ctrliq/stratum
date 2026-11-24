@@ -23,9 +23,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Kill a join after its membership commits, on either side of node.yaml's
-// publication. The next process must recover using durable local preparation
-// and a quorumless member list, without another add or access to the API.
 func TestJoinRecoversAfterForceStop(t *testing.T) {
 	if root := os.Getenv("STRATUM_JOIN_FORCE_ROOT"); root != "" {
 		runForceStopJoinChild(t, root, os.Getenv("STRATUM_JOIN_FORCE_PHASE"))
@@ -270,7 +267,6 @@ func runForceStopJoinChild(t *testing.T, root, phase string) {
 	if phase != "resume" {
 		t.Fatal("join never reached the force-stop barrier")
 	}
-	// The real state save and journal remain readable in this new process.
 	if _, err := nodestate.LoadState(); err != nil {
 		t.Fatal(err)
 	}

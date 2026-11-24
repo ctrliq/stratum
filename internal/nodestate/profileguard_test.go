@@ -10,10 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestRequireNodeProfileRefusesInTheCallersVoice: one guard for every
-// destructive entry, so each refusal names its own command, the profile, the
-// cis note and that nothing was changed; a node without state runs
-// no profile and is let through.
+// One guard for every destructive entry, so each refusal names its own command.
 func TestRequireNodeProfileRefusesInTheCallersVoice(t *testing.T) {
 	oldConf := version.K8sConfDir
 	version.K8sConfDir = filepath.Join(t.TempDir(), "kubernetes")

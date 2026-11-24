@@ -1,10 +1,4 @@
-// Package comps speaks systemctl-shaped verbs (restart, stop, is-active) to
-// the stratum supervisor's control socket, for the components that are still
-// supervised HOST processes: containerd, kubelet, and the operator.
-//
-// The control plane is not a host process here: it runs as
-// kubelet-managed static pods, and internal/staticpod owns its lifecycle
-// (manifest re-render to restart, manifest removal to stop).
+// Package comps drives the host processes; the control plane is static pods in internal/staticpod.
 package comps
 
 import (
@@ -24,19 +18,13 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Units is the canonical component roster in start/restart order — the
-// supervisor equivalent of a systemd unit list. Upgrade and
-// uninstall derive their lists from this so adding a component is a one-place
-// change. Not every node runs every entry (workers have no control plane;
-// isolated controllers have no kubelet); callers filter by IsActive.
+// In start/restart order, which upgrade and uninstall reuse; not every node runs every entry.
 var Units = []string{
 	"containerd",
 	"kubelet",
 	"operator",
 }
 
-// Normalize maps a legacy unit name (stratum-kubelet) or an alias onto the
-// supervisor's component name (kubelet). Unknown names pass through.
 func Normalize(unit string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(unit, "stratum-"), ".service")
 }
@@ -46,9 +34,7 @@ func dial(op, name string) error {
 	return err
 }
 
-// Restart bounces a component and waits until it is RUNNING AGAIN — systemctl
-// semantics, which the ported call sites assume. "all" keeps the
-// fire-and-forget behaviour.
+// Return once the replacement runs, as the ported call sites assume; "all" stays fire-and-forget.
 func Restart(name string) error {
 	if Normalize(name) == "all" {
 		return dial("restart", name)
@@ -74,9 +60,7 @@ func waitForReplacement(name string, before int, operation string, timeout time.
 	return fmt.Errorf("%s did not come back within %s of %s", Normalize(name), timeout, operation)
 }
 
-// find looks a component up in the supervisor's roster. ok is false when the
-// supervisor manages no such component — or when there is no supervisor to ask,
-// which for every caller here means the same thing: not running on this node.
+// ok is false too when there is no supervisor to ask: not running on this node.
 func find(name string) (supervisor.ProcStatus, bool) {
 	p, err := lookup(name)
 	return p, err == nil
@@ -105,8 +89,7 @@ func pidOf(name string) int {
 	return pid
 }
 
-// A failed baseline query must not be mistaken for a stopped component: zero
-// would let the still-running old PID satisfy the replacement check.
+// A failed baseline must not read as stopped: zero would satisfy the PID check.
 func checkedPID(name string) (int, error) {
 	p, err := lookup(name)
 	if err != nil {
@@ -118,19 +101,12 @@ func checkedPID(name string) (int, error) {
 	return 0, nil
 }
 
-// Stop takes a component down and keeps it down until Start.
 func Stop(name string) error { return dial("stop", name) }
 
-// EnableNow starts a component (enablement is the supervisor's default state,
-// so this is just start — the name survives from the systemd call sites).
+// The name survives from the systemd call sites; the supervisor starts by default.
 func EnableNow(name string) error { return dial("start", name) }
 
-// Reload updates a supervised component's exec definition (path/args/env) in the
-// running supervisor and waits for a new running PID, just like Restart.
-// In-place `stratum upgrade` uses this so a
-// new binary's changed args — e.g. containerd's --config path — take
-// effect immediately instead of the supervisor keeping the old argv until the
-// next full `stratum up`.
+// Used by in-place upgrade so changed args take effect without a full restart.
 func Reload(name string, spec supervisor.ProcSpec) error {
 	before, err := checkedPID(name)
 	if err != nil {
@@ -142,9 +118,7 @@ func Reload(name string, spec supervisor.ProcSpec) error {
 	return waitForReplacement(name, before, "reload", 90*time.Second)
 }
 
-// StopAllIfPresent disables every roster entry, including pending starts.
-// Missing/refusing sockets require independent process checks; other errors
-// must not be interpreted as successful shutdown.
+// A missing or refused socket is not a failed shutdown; other errors are real.
 func StopAllIfPresent() error {
 	err := dial("stop", "all")
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
@@ -153,7 +127,6 @@ func StopAllIfPresent() error {
 	return err
 }
 
-// StartAndWaitActive starts a component and polls until it is running.
 func StartAndWaitActive(name string, timeout time.Duration) error {
 	if err := dial("start", name); err != nil {
 		return err
@@ -168,20 +141,15 @@ func StartAndWaitActive(name string, timeout time.Duration) error {
 	return fmt.Errorf("%s did not become active within %v", Normalize(name), timeout)
 }
 
-// IsActive reports whether the component is currently running under the
-// supervisor. No socket (controller not running) means not active, and neither
-// does a component whose socket another process serves.
+// No socket or a foreign socket owner means not active.
 func IsActive(name string) bool { return IsActiveContext(context.Background(), name) }
 
-// IsActiveContext is IsActive with the supervisor request bounded by ctx.
 func IsActiveContext(ctx context.Context, name string) bool {
 	p, err := lookupContext(ctx, name)
 	return err == nil && p.Running && !p.Foreign
 }
 
-// Status is the supervisor's roster as one snapshot, by component name. An
-// error means the supervisor could not be asked, never that nothing runs:
-// callers deciding what is safe to stop fail closed on it.
+// An error means the supervisor could not be asked, never that nothing runs.
 func Status() (map[string]supervisor.ProcStatus, error) {
 	procs, err := supervisor.Dial(version.ControlSocket, "status", "")
 	if err != nil {
@@ -194,38 +162,24 @@ func Status() (map[string]supervisor.ProcStatus, error) {
 	return st, nil
 }
 
-// UnitExists reports whether this node's supervisor manages the component at
-// all (workers have no operator entry).
 func UnitExists(name string) bool {
 	_, ok := find(name)
 	return ok
 }
 
-// SupervisorRunning reports whether a stratum supervisor is serving the control
-// socket on this node at all.
 func SupervisorRunning() bool {
 	_, err := supervisor.Dial(version.ControlSocket, "status", "")
 	return err == nil
 }
 
-// ProcessRunning reports whether a Stratum-managed host process is still live,
-// even if its supervisor and control socket have died. It deliberately matches
-// the payload paths for containerd and kubelet so a distro-owned process with
-// the same basename does not block uninstall. The operator is recognized only
-// as the stratum binary's explicit subcommand. A probe error means liveness is
-// unknown; callers that would delete the process's state must refuse to act.
+// Error means liveness unknown: refuse to delete state; payload-path match ignores a distro twin.
 func ProcessRunning(name string) (bool, error) {
 	pids, err := processPIDs("/proc", name, 1)
 	return len(pids) > 0, err
 }
 
-// ProcessPIDs returns the PIDs of every live Stratum-managed process that
-// ProcessRunning would match for name.
 func ProcessPIDs(name string) ([]int, error) { return processPIDs("/proc", name, 0) }
 
-// processPIDs scans procRoot for name, stopping after max matches when
-// max > 0. The walk and the exited-process policy are procid's; this only
-// applies name's predicate and collects PIDs.
 func processPIDs(procRoot, name string, max int) ([]int, error) {
 	var pids []int
 	err := procid.Walk(procRoot, func(p procid.Process) (bool, error) {
@@ -243,14 +197,7 @@ func processPIDs(procRoot, name string, max int) ([]int, error) {
 	return pids, nil
 }
 
-// processPredicates is the identity table: one predicate per name uninstall
-// and the liveness probes may ask about, keyed by the supervisor's component
-// name. Every comps.Units entry must have one — checked in init — because a
-// roster unit without a predicate would answer false for every process and
-// uninstall would leave it running once the supervisor has died. The
-// top-level stratum name and runtime-shim are not roster units, but uninstall
-// probes both after the supervisor is gone, so they hold predicates here too;
-// their boundaries are procid's tests.
+// Uninstall probes stratum and runtime-shim after the supervisor dies, so they are here too.
 var processPredicates = map[string]func(procid.Process) bool{
 	"containerd":   func(p procid.Process) bool { return procid.HasPayloadPath("containerd", p) },
 	"kubelet":      func(p procid.Process) bool { return procid.HasPayloadPath("kubelet", p) },
@@ -267,9 +214,6 @@ func init() {
 	}
 }
 
-// isStratumProcess answers the uninstall probe: is the named roster unit the
-// process running here? Each predicate lives in procid beside the /proc walk
-// both it and the supervisor share.
 func isStratumProcess(name string, p procid.Process) bool {
 	if pred, ok := processPredicates[Normalize(name)]; ok {
 		return pred(p)
@@ -277,14 +221,7 @@ func isStratumProcess(name string, p procid.Process) bool {
 	return false
 }
 
-// OperatorCommandLinePattern is procid.IsOperator as an extended regular
-// expression over a process's whole command line, for `pkill -f`, which can match
-// nothing else. The executable is any single word, so a release artifact name
-// like stratum-linux-amd64 matches as the supervisor accepts it; what makes it
-// the operator is argv[1] and the Stratum-owned flags, built from the same
-// constants. Those flags are matched in the order cluster.Processes assembles
-// them, where procid.IsOperator accepts any order: TestOperatorPatternAgrees
-// pins the two together, and a cluster test pins the pattern to the real argv.
+// Flags are matched in cluster.Processes' order, which IsOperator does not require.
 func OperatorCommandLinePattern() string {
 	q := regexp.QuoteMeta
 	const any = "( [^[:space:]]+)*"
@@ -295,8 +232,7 @@ func OperatorCommandLinePattern() string {
 		" --leader-elect([[:space:]]|$)"
 }
 
-// procExe is a seam over reading /proc/<pid>/exe, so the supervisor-build
-// check is testable without a real process tree.
+// A seam so the supervisor-build check is testable without a real process tree.
 var procExe = func(pid int) (string, error) {
 	return os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe"))
 }

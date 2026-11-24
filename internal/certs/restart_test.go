@@ -111,8 +111,6 @@ func TestRestartControlPlaneFailures(t *testing.T) {
 	}
 }
 
-// A failed etcd or apiserver gate must not end the sequence, and the
-// failure must still reach the caller.
 func TestRestartControlPlaneCarriesOnAfterGateFailure(t *testing.T) {
 	oldConf, oldSocket, oldHealthz := version.K8sConfDir, version.ControlSocket, waitHealthz
 	t.Cleanup(func() { version.K8sConfDir, version.ControlSocket, waitHealthz = oldConf, oldSocket, oldHealthz })
@@ -174,10 +172,6 @@ func TestRestartControlPlaneCarriesOnAfterGateFailure(t *testing.T) {
 	}
 }
 
-// A failed restart of etcd or kube-apiserver (not just a failed
-// gate) must not end the sequence either. Here etcd restarts but never comes back,
-// then kube-apiserver's restart itself fails: both errors are reported, the failed
-// restart is not gated, and every later pod is still restarted.
 func TestRestartControlPlaneCarriesOnAfterAFailedRestart(t *testing.T) {
 	oldConf, oldSocket, oldHealthz := version.K8sConfDir, version.ControlSocket, waitHealthz
 	t.Cleanup(func() { version.K8sConfDir, version.ControlSocket, waitHealthz = oldConf, oldSocket, oldHealthz })
@@ -233,8 +227,7 @@ func TestRestartControlPlaneCarriesOnAfterAFailedRestart(t *testing.T) {
 }
 
 func TestServeBudget(t *testing.T) {
-	// 163s is the slowest kubelet recreate seen on an idle node; 5 min
-	// clears it with room to spare. The others keep the 90s they always had.
+	// 5m covers the slowest kubelet recreate seen on an idle node.
 	if got := serveBudget("etcd"); got != 5*time.Minute {
 		t.Errorf("etcd budget = %v, want 5m0s", got)
 	}
@@ -252,8 +245,7 @@ func TestRestartThenReportsFilesWrittenWithoutARecoveryCommand(t *testing.T) {
 		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "files are written on this node") {
 			t.Errorf("%s: error = %v, want the cause plus a note that the files are written", phase, err)
 		}
-		// Which command is safe depends on the other nodes; a node-local phase
-		// cannot know, so it must not suggest one.
+		// A node-local phase cannot know which recovery command is safe on the others.
 		if strings.Contains(err.Error(), "rotate-ca") {
 			t.Errorf("%s: error = %v, must not name a recovery command", phase, err)
 		}
@@ -263,9 +255,6 @@ func TestRestartThenReportsFilesWrittenWithoutARecoveryCommand(t *testing.T) {
 	}
 }
 
-// A halt between trust-new and sign-new has one recovery path: sign-new then
-// finalize per node, with rollback as the stated alternative, and no advice that
-// contradicts it.
 func TestHaltedBeforeSignNewGivesOneResumePath(t *testing.T) {
 	if haltedBeforeSignNew("restart in-cluster API clients", nil) != nil {
 		t.Fatal("nil must stay nil")
@@ -281,8 +270,7 @@ func TestHaltedBeforeSignNewGivesOneResumePath(t *testing.T) {
 		"after trust-new",
 		"`stratum certs rotate-ca --phase=sign-new --yes` on each control plane and then on each worker",
 		"`kubectl get csr` shows none pending and the local apiserver /healthz responds",
-		// Finalize goes through the documented procedure, which scans every node's
-		// tokens first; a node's own finalize checks only that node.
+		// The documented finalize scans every node's tokens; a node's own checks one.
 		"\"Finishing a rotation by hand\"",
 		"checks every node's mounted service-account tokens before the first finalize",
 		"`stratum certs rotate-ca --rollback --yes` on each control plane and then on each worker",
@@ -293,8 +281,6 @@ func TestHaltedBeforeSignNewGivesOneResumePath(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"run this phase again", "do not run a single --phase", "on each node", "on every node",
-		// Finalize one node at a time, or retry after a refusal, is what the
-		// documented procedure replaces.
 		"--phase=finalize --yes", "run it again",
 	} {
 		if strings.Contains(msg, bad) {
@@ -303,8 +289,6 @@ func TestHaltedBeforeSignNewGivesOneResumePath(t *testing.T) {
 	}
 }
 
-// The wiring of the two halts after trust-new: a failed client restart carries the
-// resume path, and so does a failed client rebuild, which must not restart them.
 func TestRunAfterTrustNewPicksTheHaltPerStep(t *testing.T) {
 	ok := func() error { return nil }
 	boom := errors.New("boom")
@@ -333,9 +317,6 @@ func TestRunAfterTrustNewPicksTheHaltPerStep(t *testing.T) {
 	}
 }
 
-// A --cluster run that halts must not point at a node-local phase command: after
-// a failed trust-new, sign-new would promote a CA the followers never trusted;
-// after a failed sign-new, finalize would drop the old CA before FinalizePreflight.
 func TestHaltedAtNamesOnlyClusterSafeNextSteps(t *testing.T) {
 	cause := errors.New("initiator sign-new: static pod etcd not serving")
 	for _, phase := range []string{PhaseTrustNew, PhaseSignNew} {
@@ -361,11 +342,6 @@ func TestHaltedAtNamesOnlyClusterSafeNextSteps(t *testing.T) {
 	}
 }
 
-// TestHaltedResumeLineCarriesTheFirstRunsWorkloadFlags: every re-run of
-// rotate-ca --cluster passes the workload preflight again, which refuses a
-// cluster with API-using workloads unless --restart-workloads or
-// --skip-workload-check is given, so a resume line without them names a
-// command that refuses on exactly the clusters that needed them first time.
 func TestHaltedResumeLineCarriesTheFirstRunsWorkloadFlags(t *testing.T) {
 	old := version.PKIDir
 	t.Cleanup(func() { version.PKIDir = old })
@@ -384,10 +360,6 @@ func TestHaltedResumeLineCarriesTheFirstRunsWorkloadFlags(t *testing.T) {
 	}
 }
 
-// A rotation started with --force must not send anyone to --rollback: a control
-// plane that lost a key refuses it, and rolling back the others splits the
-// cluster. Before sign-new the run resumes with --cluster --force; after it each
-// node finishes sign-new and then the documented finish.
 func TestHaltGuidanceForAForcedRotation(t *testing.T) {
 	old := version.PKIDir
 	t.Cleanup(func() { version.PKIDir = old })
@@ -493,11 +465,6 @@ func TestRestartFailureSurvivesLaterFenceCancellation(t *testing.T) {
 	}
 }
 
-// TestKubeVipRequiredFailsTheRestart pins that a kube-vip restart,
-// best-effort otherwise, fails the restart when the caller requires it: when
-// the restart request fails, and when the manifest is rewritten but kubelet
-// does not replace the process that ran before it. Only a required restart
-// waits for the replacement.
 func TestKubeVipRequiredFailsTheRestart(t *testing.T) {
 	redirectVar(t, &version.K8sConfDir, t.TempDir())
 	redirectVar(t, &version.ControlSocket, filepath.Join(t.TempDir(), "absent.sock"))

@@ -59,7 +59,6 @@ func TestRepointKubeconfigsCoversBootstrapConf(t *testing.T) {
 	version.BootstrapKubeconfig = filepath.Join(dir, "bootstrap.conf")
 
 	const body = "apiVersion: v1\nkind: Config\nclusters:\n- name: c\n  cluster:\n    server: https://127.0.0.1:6443\nusers:\n- name: u\n  user:\n    token: tok\ncontexts:\n- name: x\n  context:\n    cluster: c\n    user: u\ncurrent-context: x\n"
-	// Only some files exist, as on a worker; absent ones must be skipped.
 	for _, f := range []string{version.BootstrapKubeconfig, filepath.Join(dir, "kubelet.kubeconfig")} {
 		if err := os.WriteFile(f, []byte(body), 0600); err != nil {
 			t.Fatal(err)
@@ -86,14 +85,6 @@ func TestRepointKubeconfigsCoversBootstrapConf(t *testing.T) {
 	}
 }
 
-// TestNodeRepoint_ReturnsTheKubeletRestartWarning pins the outcome contract
-// for the node repoint: a local consumer that fails to restart after the
-// kubeconfigs were rewritten comes back as a warning beside a nil error —
-// data a caller can report, not only a printed line and not a repoint
-// failure — because a kubelet that does not come back leaves the node NotReady
-// while the repoint itself landed. The supervisor's control socket points at
-// an absent path so the kubelet restart fails, and no static-pod manifests
-// exist, so the kubelet is the only consumer that can warn.
 func TestNodeRepoint_ReturnsTheKubeletRestartWarning(t *testing.T) {
 	servingVIP(t)
 	root := t.TempDir()
@@ -118,11 +109,6 @@ func TestNodeRepoint_ReturnsTheKubeletRestartWarning(t *testing.T) {
 	}
 }
 
-// TestRepointCiliumWith_ReturnsTheStuckRolloutAsAWarning pins the Cilium
-// repoint's outcome contract: the env change is applied first, and a rollout
-// that does not finish in time is reported as a warning beside a nil error —
-// the change is already live, so the repoint is not a failure, and the caller
-// reads what happened from the warnings list instead of a sentinel error.
 func TestRepointCiliumWith_ReturnsTheStuckRolloutAsAWarning(t *testing.T) {
 	servingVIP(t)
 	oldPoll := rolloutPoll
@@ -152,9 +138,6 @@ func TestRepointCiliumWith_ReturnsTheStuckRolloutAsAWarning(t *testing.T) {
 	}
 }
 
-// TestRepointCiliumWith_CleanRolloutCarriesNoWarnings pins the other side of
-// the outcome contract: a rollout that finishes leaves the repoint's success
-// carrying no warnings beside its nil error.
 func TestRepointCiliumWith_CleanRolloutCarriesNoWarnings(t *testing.T) {
 	servingVIP(t)
 	oldPoll := rolloutPoll
@@ -171,15 +154,6 @@ func TestRepointCiliumWith_CleanRolloutCarriesNoWarnings(t *testing.T) {
 	}
 }
 
-// ── the stdout-guard retirement pins ─────────────────────────────────────────
-//
-// The wrapped ha operations take an io.Writer FIRST (after any ctx) and
-// report their progress and warnings through it, so internal/mcp needs no
-// captureRun/captureWarns stdout bridge around them. ha.Join's prints are
-// outside the retirement surface.
-
-// captureRealStdout captures the process's ACTUAL stdout while fn runs, so a
-// test can prove an operation left it alone.
 func captureRealStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -202,10 +176,6 @@ func captureRealStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestNodeRepoint_WritesItsProgressToTheWriter pins the node repoint's half of
-// the convention: NodeRepoint takes the writer first, its step headers, the
-// kubelet-restart warning and the closing "clients now target" line are
-// written there, and os.Stdout never sees them.
 func TestNodeRepoint_WritesItsProgressToTheWriter(t *testing.T) {
 	servingVIP(t)
 	root := t.TempDir()
@@ -238,10 +208,6 @@ func TestNodeRepoint_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestRepointCiliumWith_WritesItsProgressToTheWriter pins the Cilium repoint's
-// half: the writer comes right after the context, the VIP check and the
-// closing "Cilium now targets the VIP" line reach it, and a clean rollout
-// leaves os.Stdout untouched.
 func TestRepointCiliumWith_WritesItsProgressToTheWriter(t *testing.T) {
 	servingVIP(t)
 	oldPoll := rolloutPoll
@@ -274,11 +240,6 @@ func TestRepointCiliumWith_WritesItsProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestRejoinEtcd_WritesItsWaitingProgressToTheWriter pins the rejoin wait's
-// half (the restore.go report loop): RejoinEtcd takes the writer after its
-// context, and the periodic "still waiting for etcd member" report is written
-// there, never to os.Stdout. The fake clock advances a member that answers
-// after four minutes, so the report loop fires several times on the way.
 func TestRejoinEtcd_WritesItsWaitingProgressToTheWriter(t *testing.T) {
 	f := newFakeRejoin(t, seedWith(), controller())
 	f.local = servingAfter(4*time.Minute, addedID, true)
@@ -299,13 +260,6 @@ func TestRejoinEtcd_WritesItsWaitingProgressToTheWriter(t *testing.T) {
 	}
 }
 
-// TestRepointRecordsTheServer pins that `stratum ha-repoint` survives the next
-// `stratum up`, because the repoint records the server it wrote in the node
-// state's Server — the record every kubeconfig writer reads — instead of only
-// rewriting the files from its own list. The state here is what a single
-// controller carries before it grows into HA (clients on loopback, no VIP in
-// the record, per nodeRepoint's documented use): the drift today is that the
-// repointed kubeconfigs are rewritten from the stale record at the next start.
 func TestRepointRecordsTheServer(t *testing.T) {
 	oldData := version.DataDir
 	version.DataDir = t.TempDir()
@@ -324,9 +278,6 @@ func TestRepointRecordsTheServer(t *testing.T) {
 	version.K8sConfDir = filepath.Join(dir, "kubernetes")
 	t.Cleanup(func() { version.K8sConfDir = oldConf })
 
-	// The kubeconfig the repoint rewrites, and the node state it must record
-	// into: the directory setup of TestRepointKubeconfigs plus the saved
-	// state a controller has.
 	in := strings.Join([]string{
 		"apiVersion: v1",
 		"kind: Config",
@@ -370,13 +321,7 @@ func TestRepointRecordsTheServer(t *testing.T) {
 			saved.Server, server)
 	}
 
-	// A growth recorder holds this same lock while persisting EtcdHasPeers.
-	// Repoint must refuse rather than save an independently loaded snapshot —
-	// and since the rewrites and the record land under one lock acquisition,
-	// the refused repoint leaves the kubeconfigs unchanged too: a repoint
-	// that rewrote the files and then lost the state write would leave files
-	// targeting one endpoint under a state recording another, and the next
-	// start's recorded server would discard the deliberate endpoint.
+	// a growth recorder holds this same lock while persisting EtcdHasPeers
 	release, err := etcddata.Lock(version.EtcdDataDir)
 	if err != nil {
 		t.Fatal(err)

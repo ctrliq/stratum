@@ -30,23 +30,18 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The Stratum read toolset — the half a generic Kubernetes MCP
-// server cannot provide, because it knows nothing about the distribution
-// underneath the cluster.
+// The read toolset: the distribution-specific half a generic Kubernetes server cannot provide.
 
-// errNotStratumHost is what every tool here reports when the machine is not
-// a Stratum node.
 var errNotStratumHost = errors.New(
 	"this machine is not a Stratum node: " + version.ConfDir + " and " + version.DataDir +
 		" are both absent. These tools read the distribution's own state from the host, " +
 		"so they only answer on a machine running Stratum. The generic Kubernetes tools " +
 		"(pod_list, resource_get and the rest) work against any cluster and are unaffected")
 
-// stratumHostDirs are the paths whose presence means "this is a Stratum
-// node".
+// Paths whose presence means this is a Stratum node.
 var stratumHostDirs = []string{version.ConfDir, version.DataDir}
 
-// SetStratumHostDirsForTest makes the host check look for dirs instead, and returns a func that restores the previous ones.
+// SetStratumHostDirsForTest points the host check at dirs and returns the restore func.
 func SetStratumHostDirsForTest(dirs []string) (restore func()) {
 	prev := stratumHostDirs
 	stratumHostDirs = dirs
@@ -70,8 +65,6 @@ func requireStratumHost() error {
 	return nil
 }
 
-// ------------------------------------------------------------ cluster_status
-
 // ClusterStatusIn is cluster_status's (empty) input.
 type ClusterStatusIn struct{}
 
@@ -94,9 +87,7 @@ type ClusterStatusOut struct {
 	Note            string    `json:"note,omitempty"`
 }
 
-// summarizeProcs turns the supervisor's roster into rows, a health verdict and
-// the note saying why it is not healthy. A component is unhealthy when it is
-// wanted but not running, or when another process serves its socket (Foreign).
+// A component is unhealthy when it is wanted but not running, or another process serves its socket.
 func summarizeProcs(procs []supervisor.ProcStatus) (rows []ProcRow, healthy bool, note string) {
 	healthy = true
 	var down, foreign []string
@@ -125,9 +116,7 @@ func summarizeProcs(procs []supervisor.ProcStatus) (rows []ProcRow, healthy bool
 // runningSupervisor is comps.Supervisor, indirected for tests.
 var runningSupervisor = comps.Supervisor
 
-// noteStaleSupervisor marks out when the supervisor runs a binary other than
-// the installed stratum. A supervisor that cannot be read adds nothing: the
-// process table already says whether it answers.
+// An unreadable supervisor adds no note: the process table already says whether it answers.
 func noteStaleSupervisor(out *ClusterStatusOut, read func() (comps.RunningSupervisor, error)) {
 	cur, err := read()
 	if err != nil || !cur.Stale() {
@@ -154,9 +143,7 @@ func ClusterStatusHandler() sdk.ToolHandlerFor[ClusterStatusIn, ClusterStatusOut
 
 		procs, err := supervisor.Dial(version.ControlSocket, "status", "")
 		if err != nil {
-			// A socket that will not answer is a real answer: the node is
-			// installed but its supervisor is down, which is a different
-			// and more alarming state than "not a Stratum node".
+			// A socket that will not answer is a real answer: the node is installed but its supervisor is down.
 			out.Supervisor = "unreachable"
 			out.Note = fmt.Sprintf("Could not reach the supervisor at %s (%v). "+
 				"Stratum is installed here but its supervisor is not answering — "+
@@ -171,14 +158,7 @@ func ClusterStatusHandler() sdk.ToolHandlerFor[ClusterStatusIn, ClusterStatusOut
 	}
 }
 
-// -------------------------------------------------------------- certs_check
-
 // CertsCheckIn is certs_check's input.
-//
-// WarnDays' description states the renewal window's value. A struct tag must
-// be a string literal, so it cannot cite version.CertRenewWindowDays; the
-// number is written here and TestCertsCheckSchemaStatesTheRenewalWindow
-// fails the build when the tag and the constant drift apart.
 type CertsCheckIn struct {
 	WarnDays int `json:"warn_days,omitempty" jsonschema:"how many days ahead counts as expiring; defaults to 45"`
 }
@@ -210,9 +190,7 @@ func CertsCheckHandler() sdk.ToolHandlerFor[CertsCheckIn, CertsCheckOut] {
 			return nil, CertsCheckOut{}, err
 		}
 
-		// WarnDays 0 means "use the package default"
-		// (version.CertRenewWindowDays), which is exactly what an omitted
-		// argument should do, so it passes straight through.
+		// WarnDays 0 passes through, so the package default (version.CertRenewWindowDays) applies.
 		statuses, err := certs.Check(certs.Options{WarnDays: in.WarnDays, Quiet: true})
 		if err != nil {
 			return nil, CertsCheckOut{}, fmt.Errorf("check certificates: %w", err)
@@ -279,8 +257,6 @@ func summarizeCerts(statuses []certs.CertStatus) CertsCheckOut {
 	return out
 }
 
-// ----------------------------------------------------------- snapshot_list
-
 // SnapshotListIn is snapshot_list's input.
 type SnapshotListIn struct {
 	Continue string `json:"continue_token,omitempty" jsonschema:"continuation from the preceding page; restart if the snapshot inventory changes"`
@@ -315,14 +291,11 @@ func SnapshotListHandler() sdk.ToolHandlerFor[SnapshotListIn, SnapshotListOut] {
 			return nil, SnapshotListOut{}, fmt.Errorf("read snapshot config: %w", err)
 		}
 
-		// The listing names the directory it listed: the one the resolved
-		// settings carry, which snapshot_save writes and snapshot_restore
-		// resolves a bare name in.
+		// The listing names the directory the resolved settings carry.
 		items, err := snapshotList(cfg.Dir, cfg.S3Target())
 		out := SnapshotListOut{Dir: cfg.Dir}
 
-		// A local, not out.Note: SnapshotListOut embeds ListMeta and
-		// declares no Note, so the ListMeta assignment below overwrites it.
+		// A local, not out.Note: the ListMeta assignment below overwrites it.
 		var partial string
 		if err != nil {
 			// List returns local results alongside an S3 error.
@@ -358,8 +331,7 @@ func SnapshotListHandler() sdk.ToolHandlerFor[SnapshotListIn, SnapshotListOut] {
 	}
 }
 
-// snapshotPage ties the cursor to the sorted inventory: changes between pages
-// require a restart rather than silently skipping or duplicating snapshots.
+// snapshotPage ties the cursor to the sorted inventory; changes between pages force a restart.
 func snapshotPage(items []etcdsnap.SnapItem, limit int, cursor string) ([]etcdsnap.SnapItem, string, error) {
 	sort.Slice(items, func(i, j int) bool {
 		if !items[i].Modified.Equal(items[j].Modified) {
@@ -372,8 +344,6 @@ func snapshotPage(items []etcdsnap.SnapItem, limit int, cursor string) ([]etcdsn
 	})
 	return fingerprintPage(items, items, limit, cursor, "snapshot_list")
 }
-
-// -------------------------------------------------------------- token_list
 
 // TokenListIn is token_list's paging input (the cluster is always local).
 type TokenListIn struct {
@@ -394,13 +364,7 @@ type TokenListOut struct {
 	Items []TokenRow `json:"items"`
 }
 
-// TokenListHandler lists bootstrap tokens. Tokens are Secrets in
-// kube-system, which the server's credential should not be able to read, so
-// the tool returns only ids and expiry. The server supplies its shared node
-// connector, pinned to the node's own admin credential — super-admin.conf
-// where the node has one, admin.conf until its first new-release up writes it
-// — independently of the configurable connector, and invalidates both after a
-// rotation or repoint.
+// Tokens are kube-system Secrets, beyond the server's credential: this runs on the node connector.
 func TokenListHandler(conn *kube.Connector) sdk.ToolHandlerFor[TokenListIn, TokenListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in TokenListIn) (*sdk.CallToolResult, TokenListOut, error) {
 		if err := requireStratumHost(); err != nil {
@@ -440,8 +404,6 @@ func TokenListHandler(conn *kube.Connector) sdk.ToolHandlerFor[TokenListIn, Toke
 	}
 }
 
-// ---------------------------------------------------------- registry_check
-
 // RegistryCheckIn is registry_check's (empty) input.
 type RegistryCheckIn struct{}
 
@@ -452,8 +414,7 @@ type MirrorRow struct {
 	Rewrites  int      `json:"rewrites,omitempty" jsonschema:"how many path-rewrite rules this mirror carries"`
 }
 
-// RegistryAuthRow reports THAT a registry has credentials, never what they
-// are.
+// RegistryAuthRow reports THAT a registry has credentials, never what they are.
 type RegistryAuthRow struct {
 	Registry      string `json:"registry"`
 	HasAuth       bool   `json:"hasAuth" jsonschema:"credentials are configured; the values are never returned"`
@@ -505,8 +466,7 @@ func RegistryCheckHandler() sdk.ToolHandlerFor[RegistryCheckIn, RegistryCheckOut
 		for name, c := range cfg.Configs {
 			c, _ = registry.Effective(name, c)
 			row := RegistryAuthRow{
-				Registry: name,
-				// Presence only.
+				Registry:      name,
 				HasAuth:       c.Auth.Username != "" || c.Auth.Password != "" || c.Auth.Auth != "" || c.Auth.IdentityToken != "",
 				InsecureHTTPS: c.TLS.InsecureSkipVerify,
 				HasCA:         c.TLS.CAFile != "",
@@ -528,8 +488,6 @@ func RegistryCheckHandler() sdk.ToolHandlerFor[RegistryCheckIn, RegistryCheckOut
 	}
 }
 
-// ----------------------------------------------------------- runtime_check
-
 // RuntimeCheckIn is runtime_check's (empty) input.
 type RuntimeCheckIn struct{}
 
@@ -540,8 +498,7 @@ type RuntimeCheckOut struct {
 	Failed   bool                     `json:"failed" jsonschema:"true when any finding is an error: containerd will not run every handler this node declares, or runc does not run under the AppArmor profile its containers need to signal their own processes"`
 }
 
-// RuntimeCheckHandler reports whether containerd will run this node's
-// runtime handlers.
+// RuntimeCheckHandler reports whether containerd will run this node's runtime handlers.
 func RuntimeCheckHandler() sdk.ToolHandlerFor[RuntimeCheckIn, RuntimeCheckOut] {
 	return func(context.Context, *sdk.CallToolRequest, RuntimeCheckIn) (*sdk.CallToolResult, RuntimeCheckOut, error) {
 		if err := requireStratumHost(); err != nil {
@@ -559,10 +516,7 @@ func RuntimeCheckHandler() sdk.ToolHandlerFor[RuntimeCheckIn, RuntimeCheckOut] {
 	}
 }
 
-// ----------------------------------------------------------- upgrade_plan
-
-// UpgradePlanIn is upgrade_plan's input. There is no context argument, on
-// purpose: the plan previews the one cluster upgrade_apply rolls.
+// UpgradePlanIn is upgrade_plan's input; there is no context argument on purpose.
 type UpgradePlanIn struct {
 	Target                string `json:"target" jsonschema:"the Kubernetes version to upgrade to, as vMAJOR.MINOR.PATCH"`
 	WorkersMaxUnavailable int    `json:"workers_max_unavailable,omitempty" jsonschema:"how many workers may be upgraded at once; defaults to 1"`
@@ -597,19 +551,12 @@ func UpgradePlanHandler(conn *kube.Connector) sdk.ToolHandlerFor[UpgradePlanIn, 
 			return nil, UpgradePlanOut{}, fmt.Errorf("target is required, as vMAJOR.MINOR.PATCH")
 		}
 
-		// The node connector's client, in its default context — the same
-		// connector upgrade_apply's cluster scope proves this node with
-		// before it rolls anything. A plan is a preview of that rollout, so
-		// reading it through --kubeconfig or a per-call context would let the
-		// plan describe an upgrade the apply refuses to run: a narrowed
-		// credential can point anywhere, and the two tools must not split.
+		// The plan previews the rollout upgrade_apply runs, so it reads the same node connector.
 		cl, err := cluster(conn, "")
 		if err != nil {
 			return nil, UpgradePlanOut{}, err
 		}
-		// The orchestrator's own plan (internal/upgrade.Plan): one
-		// classification, preflight and ordering for `upgrade --cluster`'s
-		// dry run and this tool, so the two cannot drift.
+		// One plan for the CLI dry run and this tool, so the two cannot drift.
 		plan, err := upgrade.Plan(ctx, cl.Typed, in.Target, in.WorkersMaxUnavailable)
 		if err != nil {
 			return nil, UpgradePlanOut{}, err
@@ -633,8 +580,6 @@ func UpgradePlanHandler(conn *kube.Connector) sdk.ToolHandlerFor[UpgradePlanIn, 
 	}
 }
 
-// ------------------------------------------------------ uninstall_preview
-
 // UninstallPreviewIn is uninstall_preview's (empty) input.
 type UninstallPreviewIn struct{}
 
@@ -650,9 +595,7 @@ type UninstallTarget struct {
 type UninstallPreviewOut struct {
 	Targets []UninstallTarget `json:"targets"`
 	Present int               `json:"present" jsonschema:"how many of them exist on this node"`
-	// Conditionals is the shared preview's items, unchanged: the same
-	// uninstall.Preview() the CLI dry run renders, so the two surfaces
-	// enumerate the same effects. Schema change reviewed under api-compat.
+	// The same uninstall.Preview() the CLI dry run renders, so the surfaces enumerate the same effects.
 	Conditionals []uninstall.PreviewItem `json:"conditionals" jsonschema:"the effects beyond the plain path deletions — the netns, Cilium, cgroup, legacy-kubelet and local-path directory layout, plus the host-dependent conditionals; an item whose probe could not answer reports that error in unknown, since the effect would be left in place"`
 	Note         string                  `json:"note"`
 }
@@ -664,9 +607,6 @@ func UninstallPreviewHandler() sdk.ToolHandlerFor[UninstallPreviewIn, UninstallP
 			return nil, UninstallPreviewOut{}, err
 		}
 
-		// One preview for both surfaces: the conditionals come from the same
-		// uninstall.Preview() the CLI dry run renders its prose from, so the
-		// tool cannot enumerate a different set of effects.
 		report := uninstall.Preview()
 
 		out := UninstallPreviewOut{Conditionals: report.Items}
@@ -684,10 +624,7 @@ func UninstallPreviewHandler() sdk.ToolHandlerFor[UninstallPreviewIn, UninstallP
 		}
 		sort.Slice(out.Targets, func(i, j int) bool { return out.Targets[i].Path < out.Targets[j].Path })
 
-		// The note is about the directory the resolved snapshot settings name —
-		// the one snapshot_list lists — not one this handler resolved on its
-		// own. A settings read that failed leaves the bare-name resolver's dir
-		// as the fallback, so the note still says something true.
+		// The note names the resolved settings' dir; a failed settings read falls back to snapshotDir().
 		dir := ""
 		if cfg, err := loadSnapshotConfig(); err == nil {
 			dir = cfg.Dir
@@ -705,13 +642,7 @@ func UninstallPreviewHandler() sdk.ToolHandlerFor[UninstallPreviewIn, UninstallP
 	}
 }
 
-// snapshotDirNote says whether an uninstall removes the snapshots in dir.
-// spec.snapshots.dir may be any absolute path, including one inside a removal
-// target such as /var/lib/stratum, or a symlink into or out of one.
-//
-// dir is resolved fully. A target is resolved up to its parent only: removal
-// follows every parent component, but unlinks a final component that is a
-// symlink without following it.
+// Removal resolves every parent of a target but not the target's own symlink.
 func snapshotDirNote(dir string, targets []string) string {
 	hedge := func(what string, err error) string {
 		return fmt.Sprintf("Snapshots under %s are listed by snapshot_list, but %s could not be resolved (%v), "+
@@ -735,9 +666,7 @@ func snapshotDirNote(dir string, targets []string) string {
 	return fmt.Sprintf("Snapshots under %s are listed by snapshot_list and are NOT part of this set.", dir)
 }
 
-// resolveExisting is filepath.EvalSymlinks for a path whose tail may not exist
-// yet: the snapshot dir is created on first save. It resolves the nearest
-// existing ancestor and re-appends the rest. A dangling symlink is an error.
+// resolveExisting is EvalSymlinks for a missing tail: the snapshot dir is created on first save.
 func resolveExisting(path string) (string, error) {
 	rest := ""
 	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
@@ -755,8 +684,6 @@ func resolveExisting(path string) (string, error) {
 		rest = filepath.Join(filepath.Base(p), rest)
 	}
 }
-
-// ------------------------------------------------ snapshot_restore_copies
 
 // SnapshotRestoreCopiesIn is snapshot_restore_copies's paging input.
 type SnapshotRestoreCopiesIn struct {
@@ -780,10 +707,7 @@ type SnapshotRestoreCopiesOut struct {
 	PageBytes int64            `json:"pageBytes" jsonschema:"the total size of the copies on this page"`
 }
 
-// SnapshotRestoreCopiesHandler lists the etcd data copies snapshot restore
-// kept, the MCP side of `stratum snapshot prune-restores`. It pages
-// over the copies' names, which is cheap, and walks into only the copies it
-// returns, so neither the result nor the work is unbounded.
+// SnapshotRestoreCopiesHandler pages over copy names and walks only the copies it returns.
 func SnapshotRestoreCopiesHandler() sdk.ToolHandlerFor[SnapshotRestoreCopiesIn, SnapshotRestoreCopiesOut] {
 	return func(_ context.Context, _ *sdk.CallToolRequest, in SnapshotRestoreCopiesIn) (*sdk.CallToolResult, SnapshotRestoreCopiesOut, error) {
 		if err := requireStratumHost(); err != nil {
@@ -823,8 +747,7 @@ func SnapshotRestoreCopiesHandler() sdk.ToolHandlerFor[SnapshotRestoreCopiesIn, 
 	}
 }
 
-// restoreCopyPage ties the cursor to the list of copy paths, so a copy added
-// or removed between pages forces a restart rather than a skip or a repeat.
+// restoreCopyPage ties the cursor to the copy paths; a change between pages forces a restart.
 func restoreCopyPage(copies []etcdsnap.RestoreCopy, limit int, cursor string) ([]etcdsnap.RestoreCopy, string, error) {
 	paths := make([]string, len(copies))
 	for i, c := range copies {
@@ -833,19 +756,14 @@ func restoreCopyPage(copies []etcdsnap.RestoreCopy, limit int, cursor string) ([
 	return fingerprintPage(copies, paths, limit, cursor, "snapshot_restore_copies")
 }
 
-// ---------------------------------------------------------- backup_evidence
-
-// BackupEvidenceIn is backup_evidence's input: the caller's optional caps on
-// the one bounded read. Each cap reaches the engine read unchanged; zero or
-// negative means that budget's engine built-in, never an unbounded read.
+// BackupEvidenceIn is backup_evidence's input; zero or negative caps mean the engine's built-in.
 type BackupEvidenceIn struct {
 	MaxEntries int   `json:"max_entries,omitempty" jsonschema:"cap on how many backups — local artifacts and remote copies together — one read may describe; 0 means the engine's built-in page budget"`
 	MaxBytes   int64 `json:"max_bytes,omitempty" jsonschema:"cap on how many artifact bytes the read may account for across the local walk and the remote listing; 0 means the engine's built-in byte budget"`
 	MaxSeconds int   `json:"max_seconds,omitempty" jsonschema:"bound on how long the whole read may take, however patient the caller; 0 means the engine's built-in deadline"`
 }
 
-// BackupPolicyRow is the effective backup policy the scheduled snapshot loop
-// enforces, every resolved value paired with its provenance.
+// BackupPolicyRow is the effective backup policy the scheduled snapshot loop enforces.
 type BackupPolicyRow struct {
 	State           string   `json:"state" jsonschema:"configured, disabled, unconfigured, unknown or unreadable"`
 	IntervalSeconds int64    `json:"intervalSeconds" jsonschema:"how often the scheduled loop takes a snapshot, in seconds; 0 with unknown provenance when the schedule is unknown"`
@@ -859,8 +777,7 @@ type BackupPolicyRow struct {
 	Warnings        []string `json:"warnings" jsonschema:"the engine's WARN conditions that shaped this policy, as safe diagnostics"`
 }
 
-// BackupArtifactRow is one backup file the evidence enumerated — a local
-// snapshot or a remote copy.
+// BackupArtifactRow is one backup file: a local snapshot or a remote copy.
 type BackupArtifactRow struct {
 	LocationID string `json:"locationID" jsonschema:"opaque effective store identity; empty means unknown"`
 	CopyID     string `json:"copyID" jsonschema:"stable backup identity at that location; empty means unknown"`
@@ -871,8 +788,7 @@ type BackupArtifactRow struct {
 	Digest     string `json:"digest" jsonschema:"the digest when one is cheaply known — a valid sha256 sidecar beside the local file — else unknown"`
 }
 
-// BackupLocalRow is the bounded local half of the evidence: the snapshot
-// files enumerated in the snapshot directory.
+// BackupLocalRow is the bounded local half: the snapshot files in the snapshot directory.
 type BackupLocalRow struct {
 	Node      string              `json:"node" jsonschema:"the node the local artifacts are scoped to"`
 	Artifacts []BackupArtifactRow `json:"artifacts"`
@@ -880,11 +796,7 @@ type BackupLocalRow struct {
 	Warnings  []string            `json:"warnings" jsonschema:"the walk's WARN conditions as safe diagnostics"`
 }
 
-// BackupRemoteRow is the bounded remote half of the evidence: the copies
-// enumerated on the S3 target, and which predate the retention window. On a
-// multi-controller cluster the target's prefix is shared — every controller
-// uploads under it and prunes only its own — so the copies span every
-// controller, not only this node's: the cluster's off-box inventory.
+// BackupRemoteRow is the bounded remote half: the S3 copies, spanning every controller.
 type BackupRemoteRow struct {
 	Copies   []BackupArtifactRow `json:"copies" jsonschema:"every completed .db copy the target holds; on a multi-controller cluster the shared prefix holds every controller's copies, not only this node's"`
 	Old      []BackupArtifactRow `json:"old" jsonschema:"reserved for age diagnostics; empty under count retention"`
@@ -892,8 +804,7 @@ type BackupRemoteRow struct {
 	Warnings []string            `json:"warnings" jsonschema:"the listing's WARN conditions: they name the condition, never the store's address or a raw error"`
 }
 
-// BackupCensusEntryRow is one stable backup ID counted once in the
-// deduplicated census: its local artifact, its remote copy, or both.
+// BackupCensusEntryRow is one stable backup ID counted once: local artifact, remote copy, or both.
 type BackupCensusEntryRow struct {
 	ID        string             `json:"id"`
 	Local     *BackupArtifactRow `json:"local,omitempty" jsonschema:"the ID's local artifact, absent when the local store does not hold it"`
@@ -901,8 +812,7 @@ type BackupCensusEntryRow struct {
 	OldRemote bool               `json:"oldRemote,omitempty" jsonschema:"reserved for age diagnostics; false under count retention"`
 }
 
-// BackupCensusRow is the deduplicated union of the local and remote catalogs:
-// every stable backup ID counted once, with whether the total is exact.
+// BackupCensusRow is the deduplicated union of the local and remote catalogs.
 type BackupCensusRow struct {
 	Node      string                 `json:"node"`
 	Entries   []BackupCensusEntryRow `json:"entries" jsonschema:"the distinct backups, sorted by id; a remote-only entry can be another controller's snapshot, held by the cluster's shared remote store"`
@@ -911,15 +821,13 @@ type BackupCensusRow struct {
 	Retention []string               `json:"retention" jsonschema:"reserved for age diagnostics; empty under count retention"`
 }
 
-// BackupAttemptRow is one recorded maintenance attempt as a safe diagnostic:
-// when it ran and the typed outcome, never the error text.
+// BackupAttemptRow is one recorded maintenance attempt: when it ran and the typed outcome.
 type BackupAttemptRow struct {
 	AttemptedAt string `json:"attemptedAt,omitempty" jsonschema:"RFC 3339; absent when the loop has not run the attempt"`
 	Outcome     string `json:"outcome,omitempty" jsonschema:"succeeded or failed; absent when no attempt is recorded"`
 }
 
-// BackupMaintenanceRow is the scheduled loop's durable maintenance state as
-// safe diagnostics.
+// BackupMaintenanceRow is the scheduled loop's durable maintenance state as diagnostics.
 type BackupMaintenanceRow struct {
 	Save              BackupAttemptRow `json:"save" jsonschema:"the latest recorded save attempt"`
 	Upload            BackupAttemptRow `json:"upload" jsonschema:"the latest recorded upload attempt"`
@@ -930,9 +838,7 @@ type BackupMaintenanceRow struct {
 	AttemptsKnown     bool             `json:"attemptsKnown" jsonschema:"false means the diagnostics are unknown — the record could not be read — never that no attempt was made"`
 }
 
-// BackupEvidenceOut is backup_evidence's result: the shared machine-readable
-// backup-evidence contract, the same rows `stratum snapshot list -o json`
-// prints, so the two surfaces cannot drift.
+// BackupEvidenceOut matches `stratum snapshot list -o json`, so the surfaces cannot drift.
 type BackupEvidenceOut struct {
 	NodeUID     string               `json:"nodeUID" jsonschema:"immutable Kubernetes node UID; empty means unknown"`
 	Policy      BackupPolicyRow      `json:"policy"`
@@ -945,13 +851,7 @@ type BackupEvidenceOut struct {
 	Warnings    []string             `json:"warnings" jsonschema:"the read's own safe diagnostics"`
 }
 
-// BackupEvidenceRead serves backup_evidence with the engine's supported
-// pkg/cli evidence surface: the same bounded BackupEvidence read an external
-// pinned binary calls. This package cannot import pkg/cli — pkg/cli imports
-// this one — so the CLI wires the surface in at startup, the same
-// seam-wired-from-above shape the controller's evidence sampler uses; a
-// server whose host never wired a reader answers that the tool is unavailable
-// rather than inventing evidence.
+// pkg/cli imports this package, so the CLI wires the reader in at startup.
 var BackupEvidenceRead func(ctx context.Context, in BackupEvidenceIn) BackupEvidenceOut
 
 // BackupEvidenceHandler reports the engine's own backup evidence.
@@ -968,10 +868,7 @@ func BackupEvidenceHandler() sdk.ToolHandlerFor[BackupEvidenceIn, BackupEvidence
 	}
 }
 
-// fingerprintPage pages items by an offset cursor tied to a fingerprint of
-// key, the value that identifies the list: a change to it between pages makes
-// the cursor stale, forcing a restart rather than a skip or a repeat. tool
-// names the tool the restart message points at.
+// fingerprintPage ties the cursor to a fingerprint of key: a change forces a restart, not a skip.
 func fingerprintPage[T any](items []T, key any, limit int, cursor, tool string) ([]T, string, error) {
 	data, err := json.Marshal(key)
 	if err != nil {

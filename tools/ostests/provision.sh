@@ -24,7 +24,7 @@
 # instance-level BGP, so the path we ship cannot run there — joiners point at cp1
 # and VIP failover is tested on a lab with real layer-2 networking, where ARP
 # actually works.
-# cfg.Spec.VIP is optional and staticpod.go:70 skips the kube-vip pod when unset.
+# cfg.Spec.VIP is optional and staticpod.go:47 skips the kube-vip pod when unset.
 set -euo pipefail
 # fd 3 keeps the caller's stdout for the kubeconfig path; everything else goes
 # to stderr, so a remote command's chatter (dnf's progress lines) cannot corrupt it.
@@ -218,7 +218,7 @@ source "$REPO/tools/ostests/provision-lib.sh"
 CP1_H=${CONTROLLER_H[0]}
 # The join URL is the node_ip — the PRIVATE address on GCP. The firewall permits
 # intra-cluster traffic by network tag, and a private address is in the
-# apiserver cert SANs (internal/pki/pki.go:239) while the public one is not, so a
+# apiserver cert SANs (internal/pki/pki.go:427) while the public one is not, so a
 # join pointed at a public IP fails TLS verification.
 SERVER="https://${CONTROLLER_IP[0]}:6443"
 
@@ -251,8 +251,8 @@ cp_line=$(grep -F -- '--join' <<<"$TOKEN_OUT" | head -1) || true
 # could defeat flag-keyed matching. So the value-shaped rules catch the secrets
 # by their generators' own shapes, which do not drift with the output text:
 # a bootstrap token is randStr(6)"."randStr(16) over [a-z0-9]
-# (internal/token/token.go:121) and a certificate-key is 32 random bytes hex
-# (internal/ha/certs.go:161-167). The 64-hex rule also eats the CA hash, which
+# (internal/token/token.go:118) and a certificate-key is 32 random bytes hex
+# (internal/ha/certs.go:235-240). The 64-hex rule also eats the CA hash, which
 # is not secret — acceptable.
 [[ -n $cp_line ]] || {
   sed -E -e 's/--token [^ ]*/--token REDACTED/g' \

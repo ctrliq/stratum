@@ -18,8 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/maintlease"
 )
 
-// peerAPIServerClientset is this node's admin client pointed at the apiserver
-// at server instead of the one its kubeconfig names; a test replaces it.
+// A package var so a test can point it at another apiserver.
 var peerAPIServerClientset = func(server string) (kubernetes.Interface, error) {
 	cfg, err := k8sutil.AdminRESTConfig()
 	if err != nil {
@@ -30,19 +29,7 @@ var peerAPIServerClientset = func(server string) (kubernetes.Interface, error) {
 	return kubernetes.NewForConfig(cfg)
 }
 
-// rideLeaseOffLocalAPIServer moves the maintenance lease's API calls to
-// another control plane's apiserver before a rotation restarts this one.
-// Without a VIP every kubeconfig on a control plane names its own apiserver,
-// which answers nothing while its etcd and apiserver restart, so a restart
-// that outlasts the lease lets the next control plane take it and restart
-// beside this one. The candidates are the apiservers the kubernetes Service
-// publishes, other than one at this node's nodeIP ("v4" or "v4,v6"), tried in
-// turn until one renews the lease.
-//
-// The lease stays on local, the client it was taken on, when there is no
-// other apiserver: no other control plane can take it while this one's is
-// down. It stays there too, with a warning, when none of the others renews it
-// or they cannot be listed. A lease found taken is lost, and stops the run.
+// Without a VIP every kubeconfig names its own apiserver, which stops during the restart.
 func rideLeaseOffLocalAPIServer(ctx context.Context, w io.Writer, rider *leaseRider, guard *maintlease.Guard,
 	local kubernetes.Interface, nodeIP string) error {
 	peers, err := peerAPIServers(ctx, local, strings.Split(nodeIP, ","))
@@ -72,8 +59,6 @@ func rideLeaseOffLocalAPIServer(ctx context.Context, w io.Writer, rider *leaseRi
 	return nil
 }
 
-// peerAPIServers lists, as URLs, the ready apiservers the kubernetes Service
-// publishes, other than one at any of nodeIPs.
 func peerAPIServers(ctx context.Context, cs kubernetes.Interface, nodeIPs []string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, maintlease.CallTimeout)
 	defer cancel()

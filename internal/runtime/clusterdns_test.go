@@ -11,9 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestClusterDNSIPFollowsTheRecordedServiceCIDR: the kubelet hands pods the DNS
-// IP of the node's recorded service range, and the historical
-// 10.96.0.10 when none is recorded (every existing worker, every default node).
 func TestClusterDNSIPFollowsTheRecordedServiceCIDR(t *testing.T) {
 	for _, tc := range []struct{ cidr, want string }{
 		{"", "10.96.0.10"},
@@ -31,14 +28,7 @@ func TestClusterDNSIPFollowsTheRecordedServiceCIDR(t *testing.T) {
 	}
 }
 
-// TestClusterDNSIPPrefersTheServiceCIDR: the one derivation both sides of a
-// node's resolver run — CoreDNS's staged stack (writeBundles, internal/cluster)
-// and the kubelet's clusterDNS (writeKubeletConfig) — takes the service range's
-// DNS address even when the state also records one, and falls back to the
-// recorded address only when no range is recorded (a worker that learned it
-// from the kube-dns Service). internal/cluster/clusterdns_test.go pins the
-// CoreDNS side to this same table, so a change that reaches only one side
-// fails there.
+// internal/cluster/clusterdns_test.go pins the CoreDNS side to this same table.
 func TestClusterDNSIPPrefersTheServiceCIDR(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -59,19 +49,12 @@ func TestClusterDNSIPPrefersTheServiceCIDR(t *testing.T) {
 			}
 		})
 	}
-	// A range the DNS address cannot be derived from is an error even with a
-	// recorded address to fall back on: the range is the authority where it exists.
+	// An underivable range is an error even with a recorded address to fall back on.
 	if _, err := ClusterDNSIP(&nodestate.NodeState{ServiceCIDR: "10.43.0.0/30", ClusterDNSIP: "10.43.0.10"}); err == nil {
 		t.Error("a service CIDR too small for a DNS IP was accepted although an address is recorded")
 	}
 }
 
-// TestKubeletRendersTheDerivedDNSAddress: the resolver the kubelet actually
-// renders into kubelet.conf is the one derivation's address. With a service
-// range and a recorded address that disagree, the range decides — so the
-// kubelet's pods and the staged CoreDNS stack (pinned to the same table in
-// internal/cluster/clusterdns_test.go) hand pods one resolver, reached through
-// the one exported derivation rather than two private rules.
 func TestKubeletRendersTheDerivedDNSAddress(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })

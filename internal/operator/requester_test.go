@@ -17,13 +17,10 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// testSigner is a fixed-key signer so tests can produce authentic stamps.
 func testSigner() *requesterSigner {
 	return &requesterSigner{key: []byte("test-hmac-key-0123456789abcdef0123456789"), bindingVersion: stampBindingV2}
 }
 
-// signedHC builds a HelmChart CR carrying an authentic (signer-signed) requester
-// stamp bound to resource identity and desired state.
 func signedHC(ns, name, uid string, info requesterInfo, signer *requesterSigner) *unstructured.Unstructured {
 	o := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": k8sutil.HelmChartGroup + "/" + k8sutil.HelmChartVersion,
@@ -126,7 +123,6 @@ func TestVerifiedRequester(t *testing.T) {
 	})
 	t.Run("tampered (valid sig for a different identity)", func(t *testing.T) {
 		hc := signedHC("team-a", "app", "uid-1", info, s)
-		// Swap the username but keep the old signature.
 		ann := hc.GetAnnotations()
 		ann[annRequester] = "system:masters"
 		hc.SetAnnotations(ann)
@@ -136,7 +132,7 @@ func TestVerifiedRequester(t *testing.T) {
 	})
 	t.Run("signature bound to resource (cannot be copied to another object)", func(t *testing.T) {
 		hc := signedHC("team-a", "app", "uid-1", info, s)
-		hc.SetName("other") // move the stamp to a different object
+		hc.SetName("other")
 		if _, ok, _ := verifiedRequester(hc, s); ok {
 			t.Error("a stamp must not verify on another resource")
 		}
@@ -204,21 +200,12 @@ func TestUninstallIdentityFailsClosed(t *testing.T) {
 	}
 }
 
-// TestRequesterVerifyFailureDistinguishesWrongKeyFromTampered: a stamp naming a
-// key this operator does not hold and a stamp whose signature does not match its
-// key both fail verification, with different messages — after a rotation,
-// troubleshooting must be able to tell "key not retained" from "content was
-// modified under a retained key".
 func TestRequesterVerifyFailureDistinguishesWrongKeyFromTampered(t *testing.T) {
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
 	spec := map[string]any{"chart": "app"}
 
 	s := keyringFromSecret(t, fake.NewSimpleClientset(), "k1", map[string][]byte{"k1": testRotationKey(1)})
 	wrongKey := stampedV2("team-a", "app", "uid-1", info, s, "k1", spec)
-	// Both signatures come from a key this operator never held, while the stamp
-	// claims key id k-gone: the key-id path cannot resolve the key AND no
-	// retained key verifies the legacy signature, so the fallback has nothing
-	// to authenticate with and the refusal names the unretained key id.
 	foreign := keyringFromSecret(t, fake.NewSimpleClientset(), "k-gone", map[string][]byte{"k-gone": testRotationKey(9)})
 	ann := wrongKey.GetAnnotations()
 	ann[annRequesterSig] = foreign.sign(requesterBinding(wrongKey), info)
@@ -247,21 +234,11 @@ func TestRequesterVerifyFailureDistinguishesWrongKeyFromTampered(t *testing.T) {
 	}
 }
 
-// TestRequesterStampV2FallbackForLegacyRestamp: each control-plane node serves
-// admission from its own webhook endpoint, and a pre-migration node's re-stamp
-// refreshes only the legacy annotations, leaving the stored v2 signature over an
-// older binding. Verification must authenticate the object through the fresh
-// legacy MAC over the CURRENT binding in that state — including when the stamp
-// names a key the operator no longer holds — refuse it when the legacy signature
-// is stale too, and ignore a stale legacy signature when the v2 signature does
-// verify.
 func TestRequesterStampV2FallbackForLegacyRestamp(t *testing.T) {
 	s := testSigner()
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
 	stamped := stampedV2("team-a", "app", "uid-1", info, s, derivedKeyID(s.key), map[string]any{"chart": "app", "valuesContent": "replicas: 1"})
 
-	// The pre-migration re-stamp: a new spec is signed with the legacy MAC
-	// only; the v2 signature left on the object still covers the OLD binding.
 	restamped := stamped.DeepCopy()
 	restamped.Object["spec"].(map[string]any)["valuesContent"] = "replicas: 2"
 	ann := restamped.GetAnnotations()
@@ -271,8 +248,6 @@ func TestRequesterStampV2FallbackForLegacyRestamp(t *testing.T) {
 		t.Fatalf("a fresh legacy signature must authenticate the object when the stored v2 signature is stale: %s", reason)
 	}
 
-	// The same state with the stamp naming an unretained key: the retained-key
-	// legacy signature still proves identity and desired state.
 	foreignKeyID := restamped.DeepCopy()
 	ann = foreignKeyID.GetAnnotations()
 	ann[annRequesterKeyID] = "k-gone"
@@ -282,8 +257,7 @@ func TestRequesterStampV2FallbackForLegacyRestamp(t *testing.T) {
 		t.Fatalf("a retained-key legacy signature must authenticate a stamp naming an unretained key: %s", reason)
 	}
 
-	// Genuine tampering fails both signatures and is refused as a
-	// signature-verification failure.
+	// genuine tampering fails both signatures: the refusal names the verification failure.
 	tampered := restamped.DeepCopy()
 	tampered.Object["spec"].(map[string]any)["chart"] = "other"
 	if _, ok, reason := verifiedRequester(tampered, s); ok {
@@ -292,8 +266,6 @@ func TestRequesterStampV2FallbackForLegacyRestamp(t *testing.T) {
 		t.Errorf("tampered refusal = %q, want a signature-verification failure", reason)
 	}
 
-	// When the v2 signature DOES verify, a stale legacy signature is ignored:
-	// the versioned binding is the migration's authority.
 	v2ok := stamped.DeepCopy()
 	ann = v2ok.GetAnnotations()
 	ann[annRequesterSig] = "stale-legacy-signature"
@@ -303,9 +275,6 @@ func TestRequesterStampV2FallbackForLegacyRestamp(t *testing.T) {
 	}
 }
 
-// TestUninstallRefusalNamesTheUninstall: a refused cleanup is logged with the
-// finalizer held, so its message must say uninstall, not install, and name the
-// finalizer as the way out besides re-stamping.
 func TestUninstallRefusalNamesTheUninstall(t *testing.T) {
 	s := testSigner()
 	priv := []string{"kube-system"}
@@ -344,10 +313,6 @@ func TestUninstallRefusalNamesTheUninstall(t *testing.T) {
 	}
 }
 
-// TestRequesterKeyedStampInstallsAndUninstalls: the identity decision accepts a
-// v2 (key-identified) stamp exactly as it accepts a legacy one — install and
-// uninstall impersonate the stamped requester — and a stamp signed under a key
-// outside the signer's keyring fails closed.
 func TestRequesterKeyedStampInstallsAndUninstalls(t *testing.T) {
 	s := keyringFromSecret(t, fake.NewSimpleClientset(), "k1", map[string][]byte{"k1": testRotationKey(1), "k0": testRotationKey(0)})
 	info := requesterInfo{Username: "alice", UID: "u1", Groups: []string{"team-a"}}
@@ -363,11 +328,7 @@ func TestRequesterKeyedStampInstallsAndUninstalls(t *testing.T) {
 		t.Fatalf("a v2-stamped CR must uninstall impersonated: imp=%+v refuse=%v msg=%s", uimp, urefuse, umsg)
 	}
 
-	// A stamp signed entirely under an unretained key fails closed: the key-id
-	// path cannot resolve k-gone and no retained key verifies the legacy
-	// signature. (A stamp whose LEGACY signature verifies under a retained key
-	// authenticates via the fallback — see
-	// TestRequesterStampV2FallbackForLegacyRestamp.)
+	// a stamp signed entirely under an unretained key fails closed.
 	foreign := keyringFromSecret(t, fake.NewSimpleClientset(), "k-gone", map[string][]byte{"k-gone": testRotationKey(9)})
 	gone := stampedV2("team-a", "app", "uid-1", info, foreign, "k-gone", map[string]any{"chart": "app"})
 	if _, refuse, _ := installIdentity(gone, priv, s); !refuse {
@@ -412,9 +373,6 @@ func TestHccInstallAllowed(t *testing.T) {
 	})
 }
 
-// TestReconcileBackstopRefusesUnstampedTenantCR: an adopted, non-privileged CR
-// with no requester stamp is set Failed with the backstop message and never
-// reaches a helm install.
 func TestReconcileBackstopRefusesUnstampedTenantCR(t *testing.T) {
 	hc := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": k8sutil.HelmChartGroup + "/" + k8sutil.HelmChartVersion,
@@ -444,8 +402,6 @@ func TestReconcileBackstopRefusesUnstampedTenantCR(t *testing.T) {
 	}
 }
 
-// TestReconcileBackstopRefusesForgedStamp: a non-privileged CR whose stamp is not
-// authentically signed is refused, never installed as the forged identity.
 func TestReconcileBackstopRefusesForgedStamp(t *testing.T) {
 	hc := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": k8sutil.HelmChartGroup + "/" + k8sutil.HelmChartVersion,
@@ -474,8 +430,6 @@ func TestReconcileBackstopRefusesForgedStamp(t *testing.T) {
 	}
 }
 
-// TestReconcileBackstopExemptsPrivilegedNamespace: a kube-system CR with no stamp
-// is adopted (bundled add-on path), not refused.
 func TestReconcileBackstopExemptsPrivilegedNamespace(t *testing.T) {
 	hc := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": k8sutil.HelmChartGroup + "/" + k8sutil.HelmChartVersion,

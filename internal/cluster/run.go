@@ -37,26 +37,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// processes is the roster seam: a var like pkg/cli's prepareControllerFn, so
-// a test can substitute the supervised children (whose real gates dial this
-// host's containerd socket) while RunController's own flow — the supervisor,
-// its OnStart hook, the run group and the first-start consume/restore — runs
-// for real.
+// a var so a test can substitute the supervised children.
 var processes = Processes
 
-// RunController prepares (unless already prepared by a join) and supervises a
-// controller until ctx is cancelled. The optional evidence sampler wires the
-// backup-evidence publisher's read of the engine's backup evidence from
-// above: the assembled reader lives in internal/backupevidence, which
-// imports this package, so the reader can only arrive here as a function
-// passed in — pkg/cli's runUp wiring passes backupevidence.Evidence behind
-// it. Absent, the sample seam keeps its no-op default and the publisher
-// records nothing. The parameter is optional so the callers and tests that
-// predate the publisher compile unchanged.
+// RunController supervises a controller until ctx is cancelled.
 func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampleEvidence ...EvidenceSampler) error {
-	// The seam is reset on every call, not only wired: absent a sampler it
-	// stands at its no-op default again, so a later start never publishes
-	// through the sampler a previous call left behind.
+	// reset every call: a later start must not publish through an earlier call's sampler
 	evidenceSampler = noopEvidenceSampler
 	if len(sampleEvidence) > 0 {
 		evidenceSampler = sampleEvidence[0]
@@ -71,11 +57,7 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampl
 	if err := writeCoreDNSUpstream(st); err != nil {
 		return fmt.Errorf("write the CoreDNS upstream: %w", err)
 	}
-	// The control plane is static pod manifests; kubelet launches
-	// them once the supervisor brings it up. Rendered before the supervisor
-	// starts so a kubelet that is already running picks changes up immediately.
-	// Keep it before supervisor.Run: upgrade and rollback treat an answering
-	// supervisor as proof this write is done (ensureSupervisor).
+	// before supervisor.Run: upgrade and rollback treat a live supervisor as proof this write is done
 	if err := staticpod.WriteAll(st); err != nil {
 		return err
 	}
@@ -84,15 +66,7 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampl
 		return err
 	}
 
-	// Post-start housekeeping: label/stamp the node, then the long-lived
-	// cert-renew, snapshot and etcd-growth-recorder loops. The run group owns
-	// every task for the controller's whole run — each one is panic-recovered
-	// and backoff-restarted, and none is abandoned mid-flight at shutdown. The
-	// tasks park on the group's context, so the group gets one derived from the
-	// controller's that RunController cancels itself: supervisor.Run can also
-	// return early on a failure (a log dir it cannot create, a control socket
-	// it cannot bind) while the controller context is still live, and nothing
-	// else would ever end the parked tasks then.
+	// a derived context: supervisor.Run can return early while ctx is still live
 	gctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	tasks := newRunGroup(gctx)
@@ -113,32 +87,13 @@ func RunController(ctx context.Context, cfg *ClusterConfig, st *NodeState, sampl
 		OnStart:       onStart,
 		ReExec:        UpArgv(version.StratumInstallPath, false, configPath, cfg.ProfileName()),
 	})
-	// End the tasks' context now that supervisor.Run has returned: a no-op on
-	// the normal shutdown path, where the parent context is already done by
-	// the time Run does, and on the early-failure path the thing that frees
-	// the tasks parked on it.
+	// a no-op on normal shutdown; frees the parked tasks on the early-failure path
 	cancel()
-	// This wait extends the supervisor's join to the in-process tasks, so
-	// RunController returns with nothing it started still in flight.
 	tasks.wait()
 	return err
 }
 
-// UpArgv is the steady-state `stratum up` command line run from exe: what the
-// reboot-persistence unit runs, and what a supervisor re-execs into after an
-// upgrade. It never carries --join/--token/--certificate-key: those are
-// one-shot join credentials, valid only for the join that consumed them. A
-// worker's restart needs nothing but --worker, because PrepareWorker's restart path
-// resumes from the persisted NodeState, its profile included. A control
-// plane's carries its profile, so a restart keeps the one the node was
-// brought up with.
-//
-// The cis profile is spelled --cis, not --profile cis: an upgrade rollback
-// restores the previous binary and re-execs it with this argv, and a binary
-// that predates --profile rejects the flag it does not know, which would leave
-// a rolled-back CIS control plane unable to start. Every binary reads --cis.
-// Any other profile is spelled --profile <name>; no earlier binary could have
-// run it.
+// restart argv; --cis, not --profile cis, for a rollback binary predating --profile.
 func UpArgv(exe string, worker bool, configPath string, profileName string) []string {
 	argv := []string{exe, "up"}
 	if worker {
@@ -155,10 +110,7 @@ func UpArgv(exe string, worker bool, configPath string, profileName string) []st
 	return argv
 }
 
-// prepareWorkerKubelet is a worker start's only kubelet.conf render, and its
-// CoreDNS upstream. kubelet.conf before the state: a state saved ahead of a
-// kubelet.conf that failed to write would read as already learned on the next
-// start, which would never rewrite it.
+// prepareWorkerKubelet renders kubelet.conf before the state: a state saved first reads as learned.
 func prepareWorkerKubelet(st *NodeState) error {
 	if err := writeCoreDNSUpstream(st); err != nil {
 		return fmt.Errorf("write the CoreDNS upstream: %w", err)
@@ -168,10 +120,7 @@ func prepareWorkerKubelet(st *NodeState) error {
 		return fmt.Errorf("write kubelet.conf: %w", err)
 	}
 	if learned {
-		// The DNS address is this save's one field, recorded through the
-		// mutation owner against the state on disk: the kubelet.conf render
-		// above can take long enough for another writer to land a field the
-		// whole-file save of the state this start loaded would drop.
+		// a whole-file save of st could drop a field another writer landed during the render above
 		if err := nodestate.MutateSave(func(cur *NodeState) error { cur.ClusterDNSIP = st.ClusterDNSIP; return nil }, saveState); err != nil {
 			return fmt.Errorf("record the cluster DNS address %s: %w", st.ClusterDNSIP, err)
 		}
@@ -181,28 +130,13 @@ func prepareWorkerKubelet(st *NodeState) error {
 
 // RunWorker supervises a worker node (containerd + kubelet).
 func RunWorker(ctx context.Context, st *NodeState) error {
-	// Ensure the containerd config exists (and reap a legacy host config)
-	// unconditionally, before the supervisor launches containerd against
-	// version.ContainerdConfig. A worker's first start is its join, and a
-	// restarted worker reuses persisted state, so this is the one place both
-	// get it. The config lives at a stratum-owned path, so a
-	// worker upgraded from a build that wrote /etc/containerd/config.toml would
-	// otherwise start containerd against a path that was never written — and its
-	// legacy host config would never be healed. EnsureConfig is idempotent.
-	//
-	// The render reports whether it changed the config and restarts nothing;
-	// this start owns no restart: preflight has already refused a node with a
-	// running containerd, so the supervisor below brings containerd up on the
-	// config just written. A changed config reaches a running containerd only
-	// through whoever owns it — `stratum registry apply` (runtime.ApplyRegistry)
-	// or the in-place upgrade's own host reload.
+	// preflight has refused a running containerd, so this start writes the config but restarts nothing
 	if _, err := runtime.EnsureContainerdConfigs(os.Stdout, st); err != nil {
 		return fmt.Errorf("prepare containerd: %w", err)
 	}
 	if err := prepareWorkerKubelet(st); err != nil {
 		return err
 	}
-	// A worker never runs the operator, so the switch is off.
 	procs := Processes(st, false)
 	if err := writeComponentArgs(procs); err != nil {
 		return err
@@ -227,10 +161,7 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 	return err
 }
 
-// writeBundles stages the versioned add-on manifests into the deployer's
-// directory: the operator server-side-applies each stack and prunes what a
-// release removes. Files are only rewritten on content change so the
-// deployer's change detection stays quiet across restarts.
+// writeBundles stages the add-on manifests the operator server-side-applies and prunes.
 func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 	if err := refuseOrphaningTheDashboard(cfg); err != nil {
 		return err
@@ -241,15 +172,7 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 	if err := refuseForeignRuntimeClassFiles(); err != nil {
 		return err
 	}
-	// Cilium's apiserver address is left as a sentinel: the operator fills it
-	// in at apply time from the cluster's control planes, so every control
-	// plane stages the same bytes and a leader change re-applies nothing
-	// (addons.APIServerFor has the why). The four per-cluster inputs — the
-	// CoreDNS pair, Cilium's dual-stack toggle and the local-path default
-	// claim — are staged as sentinels too (addons.RenderCoreDNS,
-	// RenderCiliumStaged, RenderLocalPath), for the deployer to fill at apply
-	// time from the cluster-inputs record this staging writes: the applied
-	// bytes are the cluster's, not the staging node's.
+	// sentinels: the operator fills them at apply time, so every control plane stages the same bytes
 	stacks := map[string][]byte{
 		"crds/stratum-crds.yaml":          addons.RenderHelmCRDs(),
 		"node-mark/node-mark-policy.yaml": addons.RenderNodeMarkPolicy(),
@@ -281,11 +204,7 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 		if cur, err := os.ReadFile(dst); err == nil && string(cur) == string(content) {
 			continue
 		}
-		// The shared atomic writer, not os.WriteFile: the deployer
-		// server-side-applies these manifests, so a crash mid-write must
-		// never leave a torn one where a working one was, and a replaced
-		// manifest must land at the declared mode (os.WriteFile applies perm
-		// on create only, the atomic writer on every write).
+		// atomic writer: a torn manifest must never stand where a working one was
 		if err := host.WriteFileAtomically(dst, content, 0o644); err != nil {
 			return err
 		}
@@ -297,8 +216,7 @@ func writeBundles(cfg *ClusterConfig, st *NodeState) error {
 		return err
 	}
 
-	// Publish the staged generation and sentinel inputs together. Cold first
-	// boot cannot reach the API yet; postStart retries the persisted request.
+	// best-effort: a cold first boot cannot reach the API; postStart retries the persisted request
 	recordDesiredBundles(cfg, st, stacks)
 
 	return saveCiliumSettings(cfg.Spec.Network.Cilium.Settings())
@@ -310,9 +228,7 @@ const (
 	runtimeClassFile = addons.RuntimeClassStack + "/runtime-classes.yaml"
 )
 
-// refuseOrphaningTheDashboard refuses spec.operator: false while the dashboard
-// stack is still staged: with no operator left, nothing would prune it or renew
-// its certificate.
+// refuseOrphaningTheDashboard refuses spec.operator: false while the dashboard is still staged.
 func refuseOrphaningTheDashboard(cfg *ClusterConfig) error {
 	if cfg.OperatorEnabled() {
 		return nil
@@ -325,9 +241,6 @@ func refuseOrphaningTheDashboard(cfg *ClusterConfig) error {
 		"`stratum kubectl get ns " + addons.DashboardNamespace + "` reports NotFound, then turn the operator off")
 }
 
-// refuseRuntimeClassesWithoutTheOperator refuses spec.runtimeClasses with
-// spec.operator: false, which nothing would publish, and spec.operator: false
-// while RuntimeClasses are still staged, which nothing would prune.
 func refuseRuntimeClassesWithoutTheOperator(cfg *ClusterConfig) error {
 	if cfg.OperatorEnabled() {
 		return nil
@@ -344,12 +257,6 @@ func refuseRuntimeClassesWithoutTheOperator(cfg *ClusterConfig) error {
 		"`stratum kubectl get runtimeclass` no longer lists them, then turn the operator off")
 }
 
-// refuseForeignRuntimeClassFiles refuses a start while the runtime-classes
-// stack directory holds a manifest Stratum did not stage there: one other than
-// its runtime-classes.yaml, or one without RuntimeClassHeader. Earlier releases
-// staged nothing there, so an administrator may have dropped their own
-// RuntimeClasses in it, and this start would overwrite that file or remove it,
-// and the operator would then delete what it declares.
 func refuseForeignRuntimeClassFiles() error {
 	dir := filepath.Join(version.ManifestsDir, addons.RuntimeClassStack)
 	entries, err := os.ReadDir(dir)
@@ -385,17 +292,7 @@ func refuseForeignRuntimeClassFiles() error {
 		dir, strings.Join(foreign, ", "), version.ManifestsDir)
 }
 
-// removeStaleBundledFiles deletes files an earlier start staged under the
-// bundled stacks and this one did not render. writeBundles only rewrites, so
-// without this a bundle the config no longer asks for — local-path after
-// spec.storage.default moves off it — would sit in the manifests directory
-// forever: nothing applies it, its recorded objects never prune, and the
-// deployer's digest gate would refuse the whole tree against a record that no
-// longer renders it. Only the bundled stacks are cleaned: they are the
-// staging's own namespace (an importer may not name one, and a loose file or
-// a hand-dropped stack directory is the operator's drop-a-file contract,
-// never the staging's to delete). An emptied stack directory goes with its
-// files, like removeStaleImporterFiles's.
+// deletes dropped bundles only under the bundled stacks, never hand-dropped or loose files
 func removeStaleBundledFiles(stacks map[string][]byte) error {
 	for _, stack := range bundledStacks {
 		var files []string
@@ -423,25 +320,17 @@ func removeStaleBundledFiles(stacks map[string][]byte) error {
 	return nil
 }
 
-// desiredRecordBudget bounds one desired-generation recording. The recording
-// is best-effort (see recordDesiredBundles), so `stratum up` never waits long
-// on an apiserver that is not there yet.
+// desiredRecordBudget bounds one desired-generation recording, which is best-effort.
 const desiredRecordBudget = 15 * time.Second
 
-// recordDesiredBundles publishes the rendered bytes and sentinel inputs as one
-// generation. A pending request survives a cold first boot until postStart can
-// reach the apiserver; an unchanged restart preserves existing cluster intent.
+// recordDesiredBundles publishes the stacks as one generation; postStart retries it.
 func recordDesiredBundles(cfg *ClusterConfig, st *NodeState, stacks map[string][]byte) {
 	if err := stageDesiredBundles(cfg, st, stacks); err != nil {
 		fmt.Fprintf(os.Stderr, "stratum: WARN: record the staged bundle generation: %v (the post-start task retries; existing cluster intent is preserved)\n", err)
 	}
 }
 
-// renderedStacks names the stack directories a rendered bundle set covers: the
-// first path component of every bundle — "cilium" from "cilium/cilium.yaml".
-// The desired record carries them beside the digest, so the deployer's gate
-// digests only the stacks the staging owns and leaves a hand-dropped stack
-// directory out of it.
+// renderedStacks names the stack directories a bundle set covers, for the deployer's digest gate.
 func renderedStacks(bundles map[string][]byte) []string {
 	seen := make(map[string]bool, len(bundles))
 	var out []string
@@ -456,9 +345,6 @@ func renderedStacks(bundles map[string][]byte) []string {
 	return out
 }
 
-// clusterInputs derives the cluster-inputs document from the cluster config
-// and the node state: the four values every control plane's deployer resolves
-// the apply-time sentinels from.
 func clusterInputs(cfg *ClusterConfig, st *NodeState) (operator.ClusterInputs, error) {
 	dnsIP, err := runtime.ClusterDNSIP(st)
 	if err != nil {
@@ -472,9 +358,7 @@ func clusterInputs(cfg *ClusterConfig, st *NodeState) (operator.ClusterInputs, e
 	}, nil
 }
 
-// writeComponentArgs records each component's rendered argv under
-// /var/lib/stratum/config/components/ — the on-disk truth of what each
-// component runs (the supervisor has no readable unit files to audit).
+// writeComponentArgs records each component's argv; the supervisor has no readable unit files.
 func writeComponentArgs(procs []supervisor.Process) error {
 	dir := filepath.Join(version.K8sConfDir, "components")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -486,9 +370,7 @@ func writeComponentArgs(procs []supervisor.Process) error {
 			args = p.ArgsFn()
 		}
 		body := p.Path + " \\\n  " + strings.Join(args, " \\\n  ") + "\n"
-		// The shared atomic writer: these files are the on-disk truth of each
-		// component's rendered argv, so a torn .args file would record an argv
-		// the component does not run.
+		// a torn .args file would record an argv the component does not run
 		if err := host.WriteFileAtomically(filepath.Join(dir, p.Name+".args"), []byte(body), 0o644); err != nil {
 			return err
 		}
@@ -496,78 +378,40 @@ func writeComponentArgs(procs []supervisor.Process) error {
 	return nil
 }
 
-// startEtcdGrowthRecorder, the four loop seams and the node-registered
-// task's seams below are behind seams so a test can run postStart without
-// an apiserver or a host, see what it starts, and drive a loop's ticks by
-// sleeping instead of waiting out a day of renewal or a whole snapshot
-// interval: certRenewInterval and snapshotInterval carry each loop's
-// cadence, certRenewRotate and snapshotSave its per-tick work. There is
-// deliberately no wait-API seam here: every task checks its own
-// precondition per tick, and run_test.go's source pin holds that no gate
-// comes back in front of them.
-// runSupervisor is behind one so a test can stand where the supervisor
-// stands — after every render, before any process starts — and see what a
-// start path has written without running processes.
+// seams, so a test can run postStart and drive the loops without an apiserver or a host.
 var (
-	// startEtcdGrowthRecorder runs recordEtcdGrowth and then holds until
-	// shutdown: the run group restarts a task that returns before the
-	// context ends, right for a loop but wrong for the recorder, whose job
-	// is one pass — returning would re-run a finished job every backoff.
+	// one job, then holds: an early return would be re-run by the run group every backoff
 	startEtcdGrowthRecorder = func(ctx context.Context) {
 		recordEtcdGrowth(ctx)
 		<-ctx.Done()
 	}
 
 	runSupervisor = supervisor.Run
-	// Keep the daemon's warning delivery testable without rotating host PKI.
+	// a seam, so a test can pin warning delivery without rotating host PKI
 	renewCertificates = certs.RotateContext
 
 	certRenewInterval = 24 * time.Hour
 	certRenewRotate   = func(ctx context.Context) error {
-		// Quiet suppresses routine progress, but restart and endpoint warnings
-		// still belong in the daemon's log, including when rotation succeeds.
+		// quiet: routine progress off; restart and endpoint warnings still belong in the log
 		_, err := renewCertificates(ctx, os.Stdout, certs.Options{IfExpiringDays: version.CertRenewWindowDays, Quiet: true})
 		return err
 	}
 	snapshotInterval = func(c *ClusterConfig) time.Duration {
 		return time.Duration(c.Spec.Snapshot.IntervalHours) * time.Hour
 	}
-	// snapshotLoadConfig reads the operator-managed snapshot.conf over the
-	// cluster config's snapshot base — the read every scheduled tick resolves
-	// its retention and S3 target through. A seam, so a test can supply or
-	// break the conf without touching /etc.
+	// a seam, so a test can supply or break snapshot.conf without touching /etc
 	snapshotLoadConfig = etcdsnap.LoadConfigOr
-	// How often snapshotLoop's start phase retries the first save while
-	// etcd is still coming up (see snapshotLoop).
 	snapshotStartRetry = time.Minute
-	// snapshotSave returns SaveContext's path beside its error: a path with
-	// an error is a local snapshot whose S3 upload failed, which the loop's
-	// start phase must not mistake for etcd not being up yet.
+	// a path beside an error is a local save whose upload failed, not etcd being down
 	snapshotSave = func(ctx context.Context, c *ClusterConfig) (string, error) {
-		// The save's prune warnings are the daemon's log: the controller's
-		// stdout is that log, so the writer is os.Stdout, passed explicitly.
-		// The same stream carries the tick's scheduling warnings into the
-		// evidence record: what scheduledSaveOptions prints for an unreadable
-		// snapshot.conf is the warning recorded beside the tick's attempts,
-		// captured on its way to the log rather than re-derived.
+		// the daemon's log is stdout; MultiWriter also records tick warnings for the evidence record
 		var warns tickWarnings
 		opts := scheduledSaveOptions(c, snapshotLoadConfig, io.MultiWriter(os.Stdout, &warns))
 		opts.EvidenceWarnings = warns.recorded()
 		return etcdsnap.SaveContext(ctx, os.Stdout, opts)
 	}
 
-	// The node-registered task's seams: nodeRegistered is ONE registration
-	// check — a single attempt of k8sutil.WaitNodeRegistered, whose poll is
-	// the one kubectl get node in the tree — no retry loop inside, because
-	// the tick is the poll — labelControlPlane and stampNode are the two
-	// writes the tick that finds the node registered makes, both ctx-bounded
-	// so shutdown cuts them off instead of waiting a hung apiserver out,
-	// nodeRegistrationInterval is the tick cadence and nodeRegistrationGiveUp
-	// the ONE give-up budget: the documented policy for every
-	// node-registration wait in the tree. Nothing beside the controller —
-	// the kubelet-start restamp, postStart's label-and-stamp, pkg/cli's
-	// joined-member labelling — may run its own registration wait or carry
-	// its own give-up point; the node-registered task holds both.
+	// the controller's one registration wait and give-up budget; no second controller wait or give-up
 	nodeRegistrationInterval = 3 * time.Second
 	nodeRegistrationGiveUp   = 10 * time.Minute
 	nodeRegistered           = func(ctx context.Context, hostname string) bool {
@@ -575,9 +419,6 @@ var (
 	}
 	labelControlPlane = k8sutil.LabelControlPlaneContext
 
-	// reserveNodeClientBinding empties the upstream node-client auto-approval
-	// binding; nodeClientBindingRetry paces its retries until the apiserver
-	// answers.
 	reserveNodeClientBinding = func(ctx context.Context) error {
 		cs, err := k8sutil.AdminClientset()
 		if err != nil {
@@ -586,17 +427,12 @@ var (
 		return k8sutil.DisableNodeClientAutoApprove(ctx, cs.RbacV1().ClusterRoleBindings())
 	}
 	nodeClientBindingRetry = 30 * time.Second
-	// bindingWarnAfter is how long a binding task fails before it warns.
-	bindingWarnAfter = 5 * time.Minute
-	// clusterAdminsRetry paces the cluster-admins binding's retries: admin.conf
-	// answers 403 until it lands.
+	bindingWarnAfter       = 5 * time.Minute
+	// admin.conf answers 403 until the binding lands
 	clusterAdminsRetry = 2 * time.Second
-	// clusterAdminsResync re-runs the cluster-admins binding after a success:
-	// a snapshot restore replaces the marker under a task that does not restart.
+	// a snapshot restore drops the binding marker under a task that does not restart
 	clusterAdminsResync = time.Minute
 
-	// ensureKubeletAPIAdminBinding binds apiserver-kubelet-client's user to
-	// system:kubelet-api-admin.
 	ensureKubeletAPIAdminBinding = func(ctx context.Context) error {
 		cs, err := k8sutil.AdminClientset()
 		if err != nil {
@@ -605,8 +441,6 @@ var (
 		return k8sutil.EnsureKubeletAPIAdminBinding(ctx, cs.RbacV1().ClusterRoleBindings())
 	}
 
-	// ensureClusterAdminsBinding gives admin.conf's group cluster-admin, once
-	// per cluster, holder being this controller's node name.
 	ensureClusterAdminsBinding = func(ctx context.Context, holder string) error {
 		cs, err := k8sutil.AdminClientset()
 		if err != nil {
@@ -615,8 +449,7 @@ var (
 		return k8sutil.EnsureClusterAdminsBinding(ctx, cs, holder)
 	}
 
-	// ensureKubeVipRBAC lets kube-vip's user hold its election lease, through
-	// the local apiserver because admin.conf may name the VIP kube-vip holds.
+	// through the local apiserver: admin.conf may name the VIP kube-vip holds
 	ensureKubeVipRBAC = func(ctx context.Context) error {
 		cs, err := k8sutil.LocalAdminClientset()
 		if err != nil {
@@ -626,28 +459,17 @@ var (
 	}
 	kubeVipRBACResync = 5 * time.Minute
 
-	// leafSubjectDrift lists this node's leaves whose subject this release no
-	// longer issues; rotateLeaves reissues every leaf and restarts the control
-	// plane onto them.
 	leafSubjectDrift = certs.SubjectDrift
 	rotateLeaves     = func(ctx context.Context) error {
-		// Quiet suppresses routine progress, but restart and endpoint warnings
-		// still belong in the daemon's log. Nothing-to-rotate is a fine
-		// outcome here, so the rotated flag goes unread.
+		// nothing-to-rotate is a fine outcome here, so the rotated flag goes unread
 		_, err := certs.RotateContext(ctx, os.Stdout, certs.Options{Quiet: true, KubeVipRequired: true})
 		return err
 	}
-	// leafReissueBackoff is the first wait after a leaf reissue fails for a
-	// reason other than the maintenance lease being held, doubling on each
-	// failure up to leafReissueBackoffMax: every attempt restarts the
-	// control plane, so a component that will not come back must not bounce
-	// etcd and the apiserver every nodeClientBindingRetry.
+	// every attempt restarts the control plane, so failures must not bounce etcd on a fast retry
 	leafReissueBackoff    = time.Minute
 	leafReissueBackoffMax = 30 * time.Minute
 
-	// stampNode re-asserts the node's version annotations; non-fatal, but
-	// logged. Both controller registration and restamping use the run group's
-	// context so shutdown cancels and joins their API calls.
+	// both registration and restamp use the group's context so shutdown cancels and joins them
 	stampNode = func(ctx context.Context, hostname string) {
 		if err := k8sutil.StampNodeContext(ctx, hostname); err != nil {
 			fmt.Fprintf(os.Stderr, "stratum: stamp version on %s: %v (non-fatal)\n", hostname, err)
@@ -656,15 +478,7 @@ var (
 
 	reconcileOwnNodeLabels = k8sutil.ReconcileOwnNodeLabels
 
-	// labelOwnNode labels this node's Node by reconcileNodeLabels, as its
-	// kubelet, on every kubelet start of both roles. A label that fails is
-	// retried until it lands or ctx ends (retryUntilApplied), as the
-	// control-plane label is: a node without its handler labels takes none of
-	// its RuntimeClasses' pods, and nothing else would label it before the
-	// next kubelet start. Non-fatal, but logged. Each attempt labels from
-	// node.yaml as it is then, falling back to st: `stratum runtime apply`
-	// changes the handlers under a running supervisor, whose st predates the
-	// change.
+	// labels from node.yaml as it is then: a running apply changes the handlers under this st
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
 		label := func(ctx context.Context) error {
 			cur := st
@@ -687,39 +501,22 @@ var (
 		}
 	}
 
-	// loadedHandlers narrows a node's declared runtime handlers to those its
-	// running containerd has loaded.
 	loadedHandlers = runtime.LoadedHandlers
 
-	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
-	// register, giving up after timeout.
-	waitOwnNodeRegistered = k8sutil.WaitOwnNodeRegistered
-	stampOwnNode          = k8sutil.StampOwnNode
-	ownNodeTaints         = k8sutil.OwnNodeTaints
-	// ownNodeRegistrationWarnAfter is how long a worker waits for its own
-	// Node before it says it is still waiting; it waits on after. A worker
-	// runs no node-registered task, so this is its one registration wait.
+	waitOwnNodeRegistered        = k8sutil.WaitOwnNodeRegistered
+	stampOwnNode                 = k8sutil.StampOwnNode
+	ownNodeTaints                = k8sutil.OwnNodeTaints
 	ownNodeRegistrationWarnAfter = 5 * time.Minute
 
-	// checkHandlerBinary reports whether a runtime handler's binary is an
-	// executable file.
 	checkHandlerBinary = runtime.CheckHandlerBinary
 
-	// ownNodeRegistered reports, as the kubelet, whether a worker's Node is
-	// registered. It waits briefly: a first join's containerd starts before
-	// the kubelet has a credential or a Node.
+	// brief wait: a first join's containerd starts before the kubelet has a credential
 	ownNodeRegistered = func(hostname string) bool {
 		return k8sutil.WaitOwnNodeRegistered(hostname, 10*time.Second) == nil
 	}
 )
 
-// reconcileNodeLabels gives this node's Node its spec.node labels and the
-// label of each runtime handler its containerd has loaded and whose binary is
-// executable, which its RuntimeClasses select nodes by, and removes the rest,
-// from st as its caller has it. A worker restart only warns about a missing
-// binary, so its handler stays unlabelled until a relabel after the binary is
-// installed. It is the one labelling rule for a kubelet or containerd start,
-// `stratum runtime apply` and `stratum runtime restart`.
+// the one labelling rule for a kubelet or containerd start, apply and restart.
 func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
 		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
@@ -727,23 +524,7 @@ func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
 }
 
-// kubeletOnStart is the supervisor's OnStart hook, for a controller and a
-// worker alike: every kubelet start, including the restart `stratum upgrade`
-// triggers in a still-running supervisor, calls restamp, which is the role's
-// own (a controller's through admin.conf, a worker's through its kubelet
-// credential). It runs in the background, and the role's restamp decides what
-// it needs before stamping: a worker's waits out its TLS bootstrap and
-// registration, a controller's checks registration once — the wait for a
-// first registration belongs to the node-registered task. At most one
-// restamp runs at a time: a crash-looping kubelet would otherwise stack up
-// overlapping restamps, so a start during one drops out and the one in flight
-// stamps.
-//
-// Every containerd start calls relabel the same way, apart from restamp. A
-// containerd that restarts without its kubelet, by `stratum registry apply`
-// or the supervisor, loads the runtime-handler drop-in on disk, which may
-// name a handler an apply wrote without restarting, and no kubelet start
-// follows to label the node for it. A nil relabel is never called.
+// a containerd restart may load a handler an apply wrote without a kubelet start following.
 func kubeletOnStart(hostname string, restamp, relabel func(hostname string)) func(string, int) {
 	onKubelet, onContainerd := singleFlight(hostname, restamp), singleFlight(hostname, relabel)
 	return func(name string, pid int) {
@@ -757,8 +538,6 @@ func kubeletOnStart(hostname string, restamp, relabel func(hostname string)) fun
 	}
 }
 
-// singleFlight runs fn(hostname) in the background each time the returned func
-// is called, unless a run is still in flight. A nil fn never runs.
 func singleFlight(hostname string, fn func(string)) func() {
 	if fn == nil {
 		return func() {}
@@ -774,10 +553,7 @@ func singleFlight(hostname string, fn func(string)) func() {
 	}
 }
 
-// managedKubeletOnStart is kubeletOnStart for a controller, with its restamps
-// and relabels under the run group's panic recovery and shutdown join. Starts
-// while a run is queued or in progress are coalesced; the supervisor hook
-// itself never waits for the API.
+// managedKubeletOnStart is kubeletOnStart under the run group's recovery and shutdown join.
 func managedKubeletOnStart(g *runGroup, hostname string, restamp, relabel func(context.Context, string)) func(string, int) {
 	onKubelet := managedSingleFlight(g, "kubelet restamp", hostname, restamp)
 	onContainerd := managedSingleFlight(g, "containerd relabel", hostname, relabel)
@@ -792,8 +568,7 @@ func managedKubeletOnStart(g *runGroup, hostname string, restamp, relabel func(c
 	}
 }
 
-// managedSingleFlight is singleFlight as the run-group task named task. A nil
-// fn adds no task.
+// managedSingleFlight is singleFlight as the run-group task named task.
 func managedSingleFlight(g *runGroup, task, hostname string, fn func(context.Context, string)) func() {
 	if fn == nil {
 		return func() {}
@@ -822,8 +597,6 @@ func managedSingleFlight(g *runGroup, task, hostname string, fn func(context.Con
 	}
 }
 
-// controllerKubeletStart is a controller's kubelet-start restamp: once its
-// Node is registered, its version stamp and then its own labels.
 func controllerKubeletStart(st *NodeState) func(context.Context, string) {
 	return func(ctx context.Context, hostname string) {
 		if restampWhenRegistered(ctx, hostname) {
@@ -832,9 +605,6 @@ func controllerKubeletStart(st *NodeState) func(context.Context, string) {
 	}
 }
 
-// workerKubeletStart is a worker's kubelet-start restamp: once its Node is
-// registered, its version stamp, the check of a join's taints, and then its
-// own labels, under the worker's run context.
 func workerKubeletStart(ctx context.Context, st *NodeState) func(string) {
 	return func(hostname string) {
 		if restampOwnNodeWhenRegistered(ctx, hostname) {
@@ -844,14 +614,7 @@ func workerKubeletStart(ctx context.Context, st *NodeState) func(string) {
 	}
 }
 
-// checkJoinedTaints warns when a worker that joined with taints finds its
-// registered Node without one of them, once per join
-// (NodeTaintsCheckPending). The kubelet applies registerWithTaints only when
-// it creates the Node, so a node reinstalled and joined again while its old
-// Node is still there re-registers onto that Node untainted, and takes
-// workloads its taints were to hold off. The kubelet may not taint its own
-// Node, so the warning names the fixes a control plane has. A check that
-// cannot read the Node stays pending for the next start.
+// the kubelet taints only a Node it creates, so a rejoin onto an old Node lands untainted.
 func checkJoinedTaints(ctx context.Context, st *NodeState) {
 	if !st.NodeTaintsCheckPending {
 		return
@@ -889,16 +652,7 @@ func checkJoinedTaints(ctx context.Context, st *NodeState) {
 	st.NodeTaintsCheckPending = false
 }
 
-// restampWhenRegistered is the controller's kubelet-start restamp: it
-// re-asserts the node's version annotations when the node is already
-// registered, with one check and no waiting. The supervisor outlives
-// `stratum upgrade`, so a kubelet restart is the moment a new kubelet's
-// version must reach the Node object, and on a running node that object is
-// already there. The wait for a first registration — with the control-plane
-// label that rides with it — belongs to the node-registered task on the run
-// group. A first-boot kubelet that has not registered yet therefore leaves
-// the stamp to the task and stamps nothing itself. It reports whether the node
-// is registered, so the node's own labels can follow without a second check.
+// the first-registration wait belongs to the node-registered task; a first boot stamps nothing.
 func restampWhenRegistered(ctx context.Context, hostname string) bool {
 	if !nodeRegistered(ctx, hostname) {
 		return false
@@ -907,13 +661,7 @@ func restampWhenRegistered(ctx context.Context, hostname string) bool {
 	return true
 }
 
-// restampOwnNodeWhenRegistered stamps a worker's own Node and reports
-// whether the Node is registered, so its labels can follow. A first start
-// waits out TLS bootstrap, which writes the kubeconfig this reads, and
-// registration, until ctx ends: a slow first join must still be labelled for
-// its runtime handlers, or their RuntimeClasses' pods would wait for the next
-// kubelet start. It says so once registration has taken
-// ownNodeRegistrationWarnAfter.
+// a first start waits out TLS bootstrap, which writes the kubeconfig stampOwnNode reads.
 func restampOwnNodeWhenRegistered(ctx context.Context, hostname string) bool {
 	for warned := false; ; {
 		err := waitOwnNodeRegistered(hostname, ownNodeRegistrationWarnAfter)
@@ -934,29 +682,15 @@ func restampOwnNodeWhenRegistered(ctx context.Context, hostname string) bool {
 	return true
 }
 
-// postStart starts the controller's post-start housekeeping: the etcd growth
-// recorder for an ungrown seed, the learner promotion for a joined member, the
-// node-registered task, the AppArmor runc profile loop, the long-lived
-// cert-renew and snapshot loops the config enables, and the backup-evidence
-// publisher beside the snapshot loop, each a run-group task with the
-// controller's context. No task waits on the apiserver to start, and none
-// needs it: renewal reads and reissues local certificates only, a snapshot
-// needs only the local etcd, the publisher only the node's own stores and
-// records, the recorder and the learner promotion only etcd, the AppArmor loop
-// only the host's AppArmor, and the node-registered task's per-tick
-// registration check is itself the apiserver wait.
+// no task waits on the apiserver: each checks its own precondition per tick.
 func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
-	// Only this node's own etcd, no apiserver: started first, so a seed whose
-	// apiserver never becomes ready still records HA growth.
+	// started first: a seed whose apiserver never comes up still records HA growth
 	if st.EtcdState == "new" && !st.EtcdHasPeers {
 		g.add("etcd growth recorder", startEtcdGrowthRecorder)
 	}
 	if st.EtcdPromotePending {
 		g.add("etcd learner promotion", promoteLearner)
 	}
-	// The node-registered task is the one cluster-facing piece: it waits out
-	// the node's registration itself, per tick, so a slow apiserver delays
-	// its ticks, never the loops beside it.
 	g.add("node registration", func(ctx context.Context) { nodeRegisteredTask(ctx, st, dashboardHint(cfg, st.NodeIP)) })
 	g.add("AppArmor runc profile", appArmorProfileLoop)
 	if cfg.CertRenewEnabled() {
@@ -965,11 +699,7 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	if !cfg.Spec.Snapshot.Disabled {
 		warnRelativeSnapshotDir(cfg, "stratum: WARN: ")
 		g.add("etcd snapshots", func(ctx context.Context) { snapshotLoop(ctx, cfg) })
-		// The publisher shares the snapshot loop's gate: with snapshots
-		// disabled there is no backup evidence to publish. Like every
-		// other task it needs no operator — the reader samples local
-		// artifacts, the remote store and the durable attempt record, all
-		// node-owned — so an operator-off controller publishes too.
+		// the publisher shares the snapshot loop's gate: no snapshots, no evidence
 		g.add("backup evidence publisher", func(ctx context.Context) { publishEvidenceLoop(ctx, evidenceSampler) })
 	}
 	g.add("cluster-admins binding", reconcileTask("bind admin.conf's group to cluster-admin", clusterAdminsRetry, clusterAdminsResync,
@@ -980,9 +710,7 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 		g.add("kube-vip lease role", reconcileTask("let kube-vip hold its election lease", nodeClientBindingRetry, kubeVipRBACResync,
 			func(ctx context.Context) error { return ensureKubeVipRBAC(ctx) }))
 	}
-	// Publishing can first succeed only after this node starts its apiserver.
-	// Retry the exact persisted staging request, including its previous local
-	// fingerprint, so transient failures never authorize a stale restart.
+	// retry the exact persisted request, so a transient failure never authorizes a stale restart
 	g.add("staged bundle generation", bindingTask("record the staged bundle generation", func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, desiredRecordBudget)
 		defer cancel()
@@ -995,24 +723,12 @@ func postStart(g *runGroup, cfg *ClusterConfig, st *NodeState) {
 	g.add("leaf subjects", bindingTask("move this node's leaves off the subjects an earlier release issued", leafSubjectMigration(st)))
 }
 
-// leafSubjectMigrationMarker records a leaf reissue that has started and
-// not finished, holding the drift that started it.
+// leafSubjectMigrationMarker records a started-but-unfinished reissue and its drift.
 func leafSubjectMigrationMarker() string {
 	return filepath.Join(version.K8sConfDir, "leaf-subject-migration")
 }
 
-// leafSubjectMigration returns the apply step of the task that moves a node
-// upgraded from an earlier release onto the subjects this release issues: it
-// finds leaves with an old subject, records that in
-// leafSubjectMigrationMarker, puts in place the bindings their new subjects
-// need, rotates every leaf, then removes the marker. While the marker exists
-// the rotation is retried, across restarts too, because one cut short can
-// leave the leaves reissued, and so no longer drifting, while a running
-// component still holds the old certificate.
-//
-// It reports every failed reissue as it happens, rather than through the
-// task's one delayed warning, and waits out a held maintenance lease, which
-// an upgrade holds for its whole run, without counting it as a failure.
+// retried across restarts: a cut-short reissue leaves no drift, but components still hold old certs
 func leafSubjectMigration(st *NodeState) func(context.Context) error {
 	resumed := false
 	var retryAt time.Time
@@ -1034,11 +750,7 @@ func leafSubjectMigration(st *NodeState) func(context.Context) error {
 				return nil
 			}
 			list := strings.Join(drifted, ", ")
-			// The marker is a later start's resume record: a later start
-			// reads it to say what the migration it is resuming was for. A
-			// raw write here can leave a truncated record, so it goes
-			// through the atomic single-file writer like the renewal record
-			// it works alongside.
+			// atomic write: a raw one could leave a truncated record a later start reads
 			if err := atomicfile.WriteFile(marker, []byte(list+"\n"), 0o600); err != nil {
 				return fmt.Errorf("record the leaf reissue: %w", err)
 			}
@@ -1084,16 +796,12 @@ func leafSubjectMigration(st *NodeState) func(context.Context) error {
 	}
 }
 
-// bindingTask returns a run-group task that applies one cluster RBAC binding
-// once the apiserver answers, retrying every nodeClientBindingRetry, then holds
-// until shutdown.
+// bindingTask is a run-group task applying one binding once the apiserver answers, then holding.
 func bindingTask(what string, apply func(context.Context) error) func(context.Context) {
 	return reconcileTask(what, nodeClientBindingRetry, 0, apply)
 }
 
-// reconcileTask is bindingTask retrying every retry that, with a non-zero
-// resync, applies again every resync after a success instead of holding. It
-// warns once when failures have lasted bindingWarnAfter.
+// reconcileTask is bindingTask applying again every resync after a success instead of holding.
 func reconcileTask(what string, retry, resync time.Duration, apply func(context.Context) error) func(context.Context) {
 	return func(ctx context.Context) {
 		var failingSince time.Time
@@ -1121,39 +829,17 @@ func reconcileTask(what string, retry, resync time.Duration, apply func(context.
 	}
 }
 
-// nodeRegisteredTask is the controller's ONE node-registered task: it owns
-// the wait for this node's kubelet to register, and the control-plane label,
-// version stamp and the node's own spec.node labels that ride with it. It is the single waiter: a wait of
-// its own in the kubelet-start restamp, in postStart, or in a joined-member
-// labelling pkg/cli fires beside the controller (ha.LabelJoinedControlPlane)
-// would each give up on its own schedule. This one waits on one cadence
-// under the one give-up budget. Per tick it checks registration once; the tick that
-// finds the node registered labels it control-plane and stamps its version
-// annotations exactly once, then holds until shutdown: re-asserting every
-// tick would churn the API, and returning would have the run group restart
-// it into a second label-and-stamp. A label that fails is retried until it
-// lands (labelUntilApplied): the label is the role every cluster-wide
-// operation reads, and a join registers while the VIP may still be moving,
-// so one refused connection must not leave a controller classified a
-// worker. The kubelet-restart re-stamp stays with
-// the OnStart hook's single flight. When the give-up budget runs out with
-// the node still unregistered, the task logs the hand-labelling instruction
-// — an unlabeled control plane is classified a worker by `stratum upgrade
-// --cluster` — and holds until shutdown too: giving up is final for this
-// run, and a late auto-label would contradict the instruction it printed.
+// nodeRegisteredTask is the one registration wait; after give-up it holds rather than relabelling.
 func nodeRegisteredTask(ctx context.Context, st *NodeState, hint []string) {
 	hostname := st.Hostname
 	fmt.Fprintf(os.Stderr, "stratum: waiting up to %v for node %s to register\n", nodeRegistrationGiveUp, hostname)
 	start := time.Now()
-	// The budget covers each API request as well as the waits between them:
-	// a stalled registration probe must not outlive the give-up deadline.
+	// the budget covers each API request too: a stalled probe must not outlive the deadline
 	registrationCtx, cancelRegistration := context.WithTimeout(ctx, nodeRegistrationGiveUp)
 	defer cancelRegistration()
 	t := time.NewTicker(nodeRegistrationInterval)
 	defer t.Stop()
-	// nodeRegistrationInterval ticks a minute every progressEveryTicks ticks;
-	// the progress line is what keeps a slow first boot readable in the
-	// journal instead of silent until give-up.
+	// the progress line keeps a slow first boot readable instead of silent until give-up
 	const progressEveryTicks = 20
 waitForRegistration:
 	for ticks := 0; ; ticks++ {
@@ -1194,11 +880,7 @@ waitForRegistration:
 	<-ctx.Done()
 }
 
-// labelUntilApplied retries the control-plane label that first failed with
-// err, every nodeRegistrationInterval until it lands or ctx ends. It says so
-// on the first failure, and once the label has failed for bindingWarnAfter
-// it prints the hand-labelling instruction, still retrying: an operator who
-// labels the node by hand meets an idempotent retry, not a contradiction.
+// labelUntilApplied keeps retrying: a hand-label meets an idempotent retry.
 func labelUntilApplied(ctx context.Context, hostname string, err error) {
 	fmt.Fprintf(os.Stderr, "stratum: label control-plane %s: %v; retrying\n", hostname, err)
 	took, ok := retryUntilApplied(ctx, func(ctx context.Context) error { return labelControlPlane(ctx, hostname) }, func(err error) {
@@ -1211,10 +893,6 @@ func labelUntilApplied(ctx context.Context, hostname string, err error) {
 	}
 }
 
-// retryUntilApplied calls apply every nodeRegistrationInterval until it
-// succeeds or ctx ends, after a first attempt that failed, and calls warn
-// once with the latest error after it has failed for bindingWarnAfter. It
-// reports how long apply failed for and whether it landed.
 func retryUntilApplied(ctx context.Context, apply func(context.Context) error, warn func(error)) (time.Duration, bool) {
 	failingSince := time.Now()
 	warned := false
@@ -1238,23 +916,9 @@ func retryUntilApplied(ctx context.Context, apply func(context.Context) error, w
 	}
 }
 
-// certRenewLoop rotates expiring leaves daily — the supervisor-native
-// equivalent of a systemd renewal timer. The rotation itself
-// (internal/certs) restarts components through the control socket.
-//
-// RotateContext takes the cluster fence before the host lock and holds both
-// through readiness. A refused renewal — fence contention included — is
-// skipped and retried on the next tick.
-//
-// The loop's first fire comes at this node's jitter offset (renewalJitter),
-// not a whole interval later: a node restarted more often than once a day
-// would otherwise never renew. Every attempt is recorded
-// (certs.SaveRenewalRecord) so `stratum certs check` can show when renewal
-// last ran and how it went — a dead or failing loop is invisible otherwise.
+// first fire at the jitter offset: a node restarted more often would never renew.
 func certRenewLoop(ctx context.Context, hostname string) {
-	// The offset waits out before the ticker starts, so the ticker's own
-	// fires sit one plain interval apart for the loop's whole life: the
-	// spread the first fire bought holds without drifting.
+	// the offset waits before the ticker starts, so later fires sit one plain interval apart
 	select {
 	case <-ctx.Done():
 		return
@@ -1263,8 +927,7 @@ func certRenewLoop(ctx context.Context, hostname string) {
 	t := time.NewTicker(certRenewInterval)
 	defer t.Stop()
 	for {
-		// A ready tick can win the select beside a cancelled context. Stop
-		// before starting a new renewal or changing its last-attempt record.
+		// a ready tick can win the select beside a cancelled context
 		if ctx.Err() != nil {
 			return
 		}
@@ -1279,9 +942,7 @@ func certRenewLoop(ctx context.Context, hostname string) {
 	}
 }
 
-// certRenewAttempt records failures even when rotation panics. Re-panicking
-// preserves the run group's recovery, stack logging and restart policy.
-// Expected shutdown cancellation leaves the previous attempt record alone.
+// certRenewAttempt records even a panic, then re-panics into the run group's recovery.
 func certRenewAttempt(ctx context.Context) (keepRunning bool) {
 	at := time.Now()
 	result := ""
@@ -1312,30 +973,18 @@ func certRenewAttempt(ctx context.Context) (keepRunning bool) {
 	return true
 }
 
-// renewalJitter is the per-node offset on the renewal loop's first fire,
-// seeded by the hostname: deterministic, so a node keeps its slot across
-// restarts and a test can predict it, and different for different nodes, so
-// control planes installed together — same leaf lifetimes — renew at spread
-// times instead of all at the same minute every day. The offset lands inside
-// (0, interval): 0 would be no jitter at all, and a whole interval would only
-// swap which nodes collide. This is the renewal loop's only contention
-// reduction; RotateContext coordinates disruptive renewals through the
-// shared maintenance lease and the node lock.
+// renewalJitter spreads same-day installs; deterministic per node, so each keeps its slot.
 func renewalJitter(hostname string, interval time.Duration) time.Duration {
 	if interval <= 1 {
 		return 0
 	}
 	seed := fnv.New64a()
 	seed.Write([]byte(hostname))
-	// The FNV-1a sum of the hostname is uniform over the interval, so the
-	// offsets of a same-day install spread out; % (interval-1) + 1 lands
-	// in (0, interval).
+	// % (interval-1) + 1 lands in (0, interval): 0 would be no jitter at all
 	return time.Duration(seed.Sum64()%uint64(interval-1) + 1)
 }
 
-// SnapshotBase is the snapshot config this cluster config asks for: what
-// applies when no snapshot.conf exists. Credentials never live in config.yaml;
-// they come from the environment (stratum.env) via etcdsnap.
+// SnapshotBase is what applies when no snapshot.conf exists; credentials come from the environment.
 func (c *ClusterConfig) SnapshotBase() etcdsnap.Config {
 	base := etcdsnap.Config{Retain: c.Spec.Snapshot.Retain}
 	if s3 := c.Spec.Snapshot.S3; s3 != nil {
@@ -1344,21 +993,10 @@ func (c *ClusterConfig) SnapshotBase() etcdsnap.Config {
 	return base
 }
 
-// defaultSnapshotDir is where snapshots go when no directory is resolved: the
-// value the resolver owns and hands out as part of the resolved settings. It
-// must stay identical to etcdsnap's own unexported default, which the save
-// path falls back to when a caller passes no directory at all, so the loop and
-// every reader keep naming the same place.
+// defaultSnapshotDir must match etcdsnap's own unexported default save-path fallback.
 const defaultSnapshotDir = "/var/backups/etcd"
 
-// SnapshotDir is the local directory this cluster config writes scheduled
-// snapshots to: spec.snapshots.dir, else defaultSnapshotDir. A relative
-// dir is ignored, not resolved: it would name a different place for every
-// process with a different working directory, and one starting with "-" would
-// reach etcdutl as a flag. A dir with a ".." element is ignored too: the kernel
-// resolves ".." after symlinks and filepath.Clean before them, so the callers
-// would not agree on which directory it names. Other unclean forms ("/a//b",
-// "/a/./b", "/a/") mean the same to both and are cleaned.
+// ignores a relative dir ("-" would read as a flag) and ".." dirs Clean and the kernel disagree on
 func (c *ClusterConfig) SnapshotDir() string {
 	if d := c.Spec.Snapshot.Dir; filepath.IsAbs(d) && !hasParentElem(d) {
 		return filepath.Clean(d)
@@ -1370,10 +1008,7 @@ func hasParentElem(d string) bool {
 	return slices.Contains(strings.Split(d, string(filepath.Separator)), "..")
 }
 
-// LoadSnapshotDir is the directory the scheduled loop writes to, for the
-// commands that read or prune what it wrote. It reads the same
-// cluster config as LoadSnapshotConfig; an unreadable one yields the default
-// dir, and LoadSnapshotConfig has already warned about it.
+// LoadSnapshotDir reads the same config as LoadSnapshotConfig; unreadable yields the default.
 func LoadSnapshotDir() string {
 	path, _ := activeConfigPath(LoadState, io.Discard)
 	return snapshotDirFrom(path)
@@ -1400,19 +1035,7 @@ func warnRelativeSnapshotDir(c *ClusterConfig, prefix string) {
 	}
 }
 
-// recordConfigPath persists the config file this controller was started with
-// in the node state, for activeConfigPath. The default path is recorded as
-// empty: it is where readers look anyway, and a missing default config is the
-// ordinary no-config case, not a deleted one.
-//
-// The save goes through the mutation owner's standalone lock contract: it
-// re-reads the state under the etcd data lock and applies the path to what it
-// read. The state this start prepared is stale the moment a restore or a
-// rejoin of this node lands while the start runs — `stratum up` released the
-// data lock before RunController — and a save of the prepared copy would drop
-// that writer's record. While another operation holds the lock the save
-// refuses: it is best-effort (RunController only warns), and the next start
-// records the path again.
+// the default path records as empty; MutateSave re-reads, so a mid-start rejoin is not dropped
 func recordConfigPath(cfg *ClusterConfig, st *NodeState, save func(*NodeState) error) error {
 	if cfg.path == "" {
 		return nil
@@ -1428,12 +1051,7 @@ func recordConfigPath(cfg *ClusterConfig, st *NodeState, save func(*NodeState) e
 	return nodestate.MutateSave(func(cur *NodeState) error { cur.ConfigPath = want; return nil }, save)
 }
 
-// activeConfigPath is the cluster config file the running controller reads:
-// the one `stratum up --config` recorded, else DefaultConfigPath. recorded
-// reports whether it came from the node state; such a file is expected to
-// exist. A node state that does not exist yet is the ordinary default case. Any
-// other read or parse error is warned about, since it can leave a node started
-// with a custom --config reading the default path (and its retention) instead.
+// a state error other than missing warns: the running config may not be this node's.
 func activeConfigPath(loadState func() (*NodeState, error), warn io.Writer) (path string, recorded bool) {
 	st, err := loadState()
 	switch {
@@ -1445,17 +1063,7 @@ func activeConfigPath(loadState func() (*NodeState, error), warn io.Writer) (pat
 	return DefaultConfigPath, false
 }
 
-// LoadSnapshotConfig is the effective snapshot config for the CLI and the MCP
-// server, resolved the way the scheduled loop resolves it: from the cluster
-// config the controller was started with (`stratum up --config`), with
-// snapshot.conf winning when it exists. The resolved settings carry the
-// directory too (Config.Dir): spec.snapshots.dir, else the default, so both
-// front ends act in the directory the scheduled loop owns. An unreadable
-// cluster config, or a recorded one that has since been deleted, falls back to
-// the built-in defaults, as these callers did before the cluster config was
-// consulted at all; that is warned about on stderr, since it can make a manual
-// save prune to the default retention or `schedule` persist a local-only
-// config.
+// LoadSnapshotConfig resolves as the loop does: the recorded cluster config, snapshot.conf winning.
 func LoadSnapshotConfig() (etcdsnap.Config, error) {
 	path, recorded := activeConfigPath(LoadState, os.Stderr)
 	return loadSnapshotConfig(path, recorded, func(base etcdsnap.Config) (etcdsnap.Config, bool, error) {
@@ -1464,12 +1072,7 @@ func LoadSnapshotConfig() (etcdsnap.Config, error) {
 	}, os.Stderr)
 }
 
-// loadSnapshotConfig resolves snapshot.conf over the cluster config base and
-// reports whether the file supplied the result. An absent config.yaml is not
-// an error (LoadConfig yields defaults), unless mustExist says the controller
-// recorded it, in which case its disappearance is treated like an unreadable
-// file. The warning fires only when that failure actually left the defaults in
-// effect.
+// loadSnapshotConfig treats a vanished recorded config as unreadable; warns only if defaults land.
 func loadSnapshotConfig(clusterPath string, mustExist bool, load func(etcdsnap.Config) (etcdsnap.Config, bool, error), warn io.Writer) (etcdsnap.Config, error) {
 	base := etcdsnap.DefaultConfig()
 	cc, cerr := LoadConfig(clusterPath)
@@ -1485,12 +1088,7 @@ func loadSnapshotConfig(clusterPath string, mustExist bool, load func(etcdsnap.C
 	if cerr != nil && !fromFile && err == nil {
 		fmt.Fprintf(warn, "stratum: WARN: spec.snapshots ignored, using built-in snapshot defaults (retain %d, no S3): %v\n", base.Retain, cerr)
 	}
-	// The directory is part of the resolved settings: every caller that reads
-	// them acts in the directory the scheduled loop writes — spec.snapshots.dir,
-	// else the default. An unreadable cluster config yields the default dir,
-	// exactly as LoadSnapshotDir does for the same case, and the warning about
-	// a dir the resolver ignored (relative, or with a ".." element) moves here
-	// with the resolution.
+	// the resolved dir keeps every caller acting where the scheduled loop writes
 	if cerr == nil {
 		warnRelativeSnapshotDir(cc, "warning: ")
 		c.Dir = cc.SnapshotDir()
@@ -1500,19 +1098,7 @@ func loadSnapshotConfig(clusterPath string, mustExist bool, load func(etcdsnap.C
 	return c, err
 }
 
-// scheduledSaveOptions resolves one scheduled snapshot's options. The snapshot
-// config file wins when it exists; when it is absent the cluster config's
-// retain and s3 apply, so a config.yaml-only controller still offloads and
-// prunes as configured. The options it resolves are the scheduled ones:
-// Evidence is on, so the save records its attempts into the durable snapshot
-// evidence record — the one behaviour that tells a scheduled save from a
-// manual one beside the seams that drive it.
-//
-// An unreadable snapshot.conf is not fatal — the backup itself is still worth
-// taking — but its retention settings cannot be trusted, so the returned
-// options prune nothing and offload nothing (Retain 0 keeps every snapshot,
-// a nil S3 target skips the upload), and a WARN names the read error. That
-// fires on every tick, since each tick re-resolves the config.
+// scheduledSaveOptions prunes and uploads nothing when snapshot.conf is unreadable.
 func scheduledSaveOptions(cfg *ClusterConfig, load func(etcdsnap.Config) (etcdsnap.Config, error), warn io.Writer) etcdsnap.SaveOptions {
 	base := cfg.SnapshotBase()
 	opts := etcdsnap.SaveOptions{Retain: base.Retain, S3: base.S3Target(), Dir: cfg.SnapshotDir(), Evidence: true}
@@ -1526,10 +1112,7 @@ func scheduledSaveOptions(cfg *ClusterConfig, load func(etcdsnap.Config) (etcdsn
 	return opts
 }
 
-// tickWarnings collects the complete warning lines one scheduled tick
-// printed, trimmed: the tick's scheduling warnings — an unreadable
-// snapshot.conf — recorded beside its attempts in the snapshot evidence
-// record, the same lines the daemon's log carries.
+// tickWarnings collects one tick's warning lines for the snapshot evidence record.
 type tickWarnings struct {
 	lines []string
 }
@@ -1543,37 +1126,16 @@ func (w *tickWarnings) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// recorded is the lines collected so far.
 func (w *tickWarnings) recorded() []string { return w.lines }
 
-// snapshotLoop saves etcd snapshots on the configured interval — the
-// supervisor-native stratum-etcd-snapshot.timer. The loop starts before the
-// supervisor has etcd up, so its first scheduled snapshot is taken as soon
-// as etcd can take one: the first save is retried every snapshotStartRetry
-// until one succeeds, the context ends, or a full snapshot interval has
-// passed since the loop started — a window that ends without a success
-// reports the last error once, and a control plane restarted more often
-// than the interval still snapshots once per daemon lifetime. A start save
-// still running when the window ends is stopped there. A save that
-// wrote the local snapshot but failed its S3 upload ends the start phase:
-// retrying it would prune the pre-restart snapshots away. A start phase
-// still failing after bindingWarnAfter warns once and keeps retrying. Config
-// precedence: the
-// operator-managed snapshot config file (written by `stratum snapshot
-// schedule` and the MCP `snapshot_schedule` tool) wins
-// over the cluster config's inline settings.
+// retry the first save for one interval; a failed upload ends it: a retry would prune old snapshots
 func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 	if ctx.Err() != nil {
 		return
 	}
 	interval := snapshotInterval(cfg)
 	started := time.Now()
-	// The start phase's saves run under the window's deadline: etcdctl has no
-	// timeout of its own, so a save that hangs while etcd comes up is cut off
-	// when the window ends and the window's log line still comes. A window
-	// that ends during a retry wait ends the wait too, with no save under the
-	// expired deadline: the line reports the last real failure. The ticks
-	// keep the controller's context.
+	// a hanging save is cut off at the window's end; a window ending during a wait ends the wait
 	deadline := started.Add(interval)
 	startCtx, cancelStart := context.WithDeadline(ctx, deadline)
 	defer cancelStart()
@@ -1623,12 +1185,7 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 	}
 }
 
-// EvidenceSample is one publisher sample: the projection of one bounded
-// read of the engine's backup evidence the publisher records durably. It
-// carries no internal/backupevidence type — that package imports this one,
-// so the reader reaches the publisher only through the sampler seam wired
-// from above, never through an import — only the summary the durable record
-// holds.
+// EvidenceSample is one sample's summary; internal/backupevidence imports this package.
 type EvidenceSample struct {
 	// NodeUID is the immutable Kubernetes identity; empty means unknown.
 	NodeUID string
@@ -1636,60 +1193,39 @@ type EvidenceSample struct {
 	Node string
 	// Complete says the whole read ran within its bounds.
 	Complete bool
-	// LocalArtifacts and RemoteCopies are the bounded counts of the local
-	// artifacts and remote copies the read described.
+	// LocalArtifacts and RemoteCopies are the read's bounded counts.
 	LocalArtifacts int
 	RemoteCopies   int
-	// Backups is the deduplicated total: each stable backup ID once across
-	// both locations. Exact says it is the exact total; false means it is
-	// a floor and the true total is unknown.
+	// Backups is the deduplicated total; Exact false means it is a floor, the true total unknown.
 	Backups int
 	Exact   bool
 	// Warnings are the read's typed safe diagnostics.
 	Warnings []string
 }
 
-// EvidenceSampler is the publisher's sample seam: one bounded read of the
-// engine's assembled backup evidence. ok false means nothing was sampled.
+// EvidenceSampler is the sample seam; ok false means nothing was sampled.
 type EvidenceSampler func(ctx context.Context) (sample EvidenceSample, ok bool)
 
-// The publisher's seams: the sampler stands where the assembled evidence
-// reader (internal/backupevidence.Evidence) stands, and a test drives it
-// with a stub the way the loop tests drive snapshotSave; the cadence is a
-// var so a test shrinks it the way it shrinks certRenewInterval.
+// seams: the sampler stands where internal/backupevidence.Evidence stands.
 var (
 	evidenceSampler         = noopEvidenceSampler
 	evidencePublishInterval = time.Minute
 )
 
-// noopEvidenceSampler is the default sample seam: nothing is sampled and
-// nothing is recorded — a start that wired no sampler (every caller below
-// pkg/cli) runs a publisher that records no evidence.
+// noopEvidenceSampler is the default: a start that wired no sampler records no evidence.
 func noopEvidenceSampler(context.Context) (EvidenceSample, bool) {
 	return EvidenceSample{}, false
 }
 
-// evidenceRecordSchemaVersion is the schema version of the publisher's
-// durable record, stamped by every save so a later revision of the record
-// can refuse a newer one instead of misreading it.
+// evidenceRecordSchemaVersion lets a later revision refuse a newer record.
 const evidenceRecordSchemaVersion = 1
 
-// evidenceRecordPath is where the publisher's durable record persists:
-// beside the snapshot evidence record under the node's config area, the
-// renewal-record precedent's location for a node-local record a start and
-// the CLI both read.
+// evidenceRecordPath sits beside the snapshot evidence record, the node-local-record precedent.
 func evidenceRecordPath() string {
 	return filepath.Join(version.K8sConfDir, "backup-evidence.yaml")
 }
 
-// evidenceRecord is the publisher's durable record: what the publisher's
-// last sample of the engine's backup evidence said and when it was taken,
-// persisted the way the snapshot evidence record persists so it survives
-// restarts. It holds the sample's bounded summary — the deduplicated census
-// with its exactness and the read's safe diagnostics — not the artifacts
-// themselves: the supported surfaces (pkg/cli's exported reader, the MCP
-// tool) describe those, and the record is the node's own proof of what the
-// publisher last saw, readable without calling any interface.
+// evidenceRecord is what the publisher last saw, persisted so it survives restarts.
 type evidenceRecord struct {
 	NodeUID        string    `json:"nodeUID"`
 	SchemaVersion  int       `json:"schemaVersion"`
@@ -1703,17 +1239,7 @@ type evidenceRecord struct {
 	Warnings       []string  `json:"warnings,omitempty"`
 }
 
-// publishEvidenceLoop is the node-owned backup-evidence publisher: on the
-// contract cadence it samples the engine's assembled backup evidence
-// through the seam wired from above and refreshes the durable record. It is
-// a postStart loop like the snapshot and renewal loops: it parks on the
-// group's context — a sample in flight at shutdown finishes and joins
-// before the group's wait returns, and its record does not land: a read a
-// shutdown reached describes a node that is going down, not one that is up
-// — and the run group recovers its panics and backoff-restarts its early
-// returns. The first sample lands at once, not a whole cadence later: a
-// node that just started shows a fresh record immediately, and a restarted
-// publisher replaces a stale one without waiting out the interval.
+// publishEvidenceLoop samples at once, then per cadence; an in-flight sample at shutdown joins.
 func publishEvidenceLoop(ctx context.Context, sample EvidenceSampler) {
 	if sample == nil {
 		sample = noopEvidenceSampler
@@ -1731,17 +1257,7 @@ func publishEvidenceLoop(ctx context.Context, sample EvidenceSampler) {
 	}
 }
 
-// publishEvidenceSample takes one sample through the seam and records it
-// durably. A sample that did not happen — the no-op default — records
-// nothing; one that did replaces the record whole, so the record is the
-// last sample by design, last-writer-wins with no lock and no
-// read-modify-write to lose. A sample whose context ended mid-flight — a
-// shutdown that reached it — records nothing, the renewal loop's own rule:
-// the work still finishes and joins, but a cancelled read describes a node
-// that is going down, not one that is up. A write that fails is a warning
-// in the daemon's log, never the end of the task: the next tick retries
-// with a fresh sample, and a config area that heals starts recording again
-// without a restart.
+// publishEvidenceSample replaces the record whole; a cancelled sample records nothing.
 func publishEvidenceSample(ctx context.Context, sample EvidenceSampler) {
 	if ctx.Err() != nil {
 		return
@@ -1763,19 +1279,11 @@ func publishEvidenceSample(ctx context.Context, sample EvidenceSampler) {
 		Warnings:       s.Warnings,
 	})
 	if err == nil {
-		// The config area first, the discipline every node-record writer
-		// follows (the snapshot evidence record, the renewal record, the
-		// node state): a start whose config area is missing — wiped under
-		// a running controller, a state save that failed — still records,
-		// instead of warning on every tick that the atomic write found no
-		// directory.
+		// a start whose config area was wiped under a running controller still records
 		err = os.MkdirAll(filepath.Dir(evidenceRecordPath()), 0o755)
 	}
 	if err == nil {
-		// The shared atomic writer at 0600, the discipline every node
-		// record follows: a torn record must never stand where a working
-		// one was, and a node-local record of what this node backs up
-		// must not be world-readable.
+		// a torn record must never stand where a working one was, and it is not world-readable
 		err = atomicfile.WriteFile(evidenceRecordPath(), b, 0o600)
 	}
 	if err != nil {
@@ -1783,17 +1291,7 @@ func publishEvidenceSample(ctx context.Context, sample EvidenceSampler) {
 	}
 }
 
-// importPayloadImages loads the staged OCI archive into containerd's k8s.io
-// namespace once the socket is up — the airgap contract: the
-// artifact carries its images, so no node ever needs a registry to reach
-// Ready. Idempotent by containerd's own import semantics (matching digests
-// no-op), so restarts re-run it harmlessly. The operator's archives in
-// version.ImagesDropInDir follow, so they are on the node before kubelet starts.
-// kubelet.conf was rendered before they were imported, and exempts only the
-// archives already imported, so when this start imports a new one it is
-// rendered again for kubelet to read as it starts. A render that fails only
-// warns: the new images stay subject to the credential check until the next
-// start, the safe side.
+// importPayloadImages imports the staged OCI archive once the socket is up.
 func importPayloadImages(ctx context.Context) error {
 	if err := ImportImages(ctx, filepath.Join(version.DataDir, assets.ImagesDir)); err != nil {
 		return err
@@ -1802,8 +1300,7 @@ func importPayloadImages(ctx context.Context) error {
 	return nil
 }
 
-// importOperatorImages imports the operator's archives and, when it imported a
-// new one, renders kubelet.conf again so kubelet exempts its images.
+// importOperatorImages re-renders kubelet.conf after a new import, so kubelet exempts it.
 func importOperatorImages(ctx context.Context, w, warn io.Writer) {
 	if !importDropInImages(ctx, w, warn) {
 		return
@@ -1817,16 +1314,7 @@ func importOperatorImages(ctx context.Context, w, warn io.Writer) {
 	}
 }
 
-// importDropInImages imports and pins the operator's image archives and
-// reports whether it recorded a fresh import this start. Unlike a payload
-// archive, one that fails is skipped with a warning rather than failing
-// kubelet's start: the payload is the node's own, while a bad file an operator
-// dropped must not take every pod on the node down with it. An archive's stamp
-// is written only once its images are pinned, so one whose pin failed is
-// imported and pinned again on the next start rather than left to image garbage
-// collection. The stamp records the archive as it was before its import, and
-// one that changed while it was imported is skipped, so a stamp never vouches
-// for content containerd did not consume.
+// skips a bad archive (a dropped file must not fail kubelet); a stamp lands only once pins succeed
 func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 	tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
 	if len(tars) == 0 {
@@ -1883,8 +1371,7 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 	return stamped
 }
 
-// writeDropInStamp records that the operator archive tar, as value describes
-// it, was imported and its images pinned.
+// writeDropInStamp records that the operator archive tar was imported and its images pinned.
 func writeDropInStamp(tar, value string) error {
 	stamp := runtime.DropInImportStamp(tar)
 	if err := os.MkdirAll(filepath.Dir(stamp), 0o755); err != nil {
@@ -1893,9 +1380,7 @@ func writeDropInStamp(tar, value string) error {
 	return atomicfile.WriteFile(stamp, []byte(value), 0o644)
 }
 
-// ImportImages is importPayloadImages pointed at an explicit archive dir —
-// the per-node upgrade (internal/upgrade) imports the upgrade binary's staged
-// images from it before re-rendering the static pod manifests.
+// ImportImages imports an explicit archive dir; internal/upgrade stages the upgrade images there.
 func ImportImages(ctx context.Context, dir string) error {
 	return ImportImagesWithWriter(ctx, os.Stdout, dir)
 }
@@ -1912,18 +1397,13 @@ func ImportImagesWithWriter(ctx context.Context, w io.Writer, dir string) error 
 	sock := strings.TrimPrefix(version.ContainerdSock, "unix://")
 	ctr := filepath.Join(version.BinDir, "ctr")
 	for _, tar := range tars {
-		// This runs in kubelet's WaitFor, i.e. on EVERY kubelet (re)start.
-		// Re-reading a ~1G archive each time would turn every kubelet bounce
-		// into a minute of import; a size+mtime stamp makes the re-check as
-		// cheap as assets.Stage's equivalent skip.
+		// runs in kubelet's WaitFor on every restart: a size+mtime stamp keeps the re-check cheap
 		if stampCurrent(tar) {
 			continue
 		}
 		cmd := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar)
 		if out, err := cmd.CombinedOutput(); err != nil {
-			// Failing here fails kubelet's WaitFor, which the supervisor
-			// retries with backoff — a visible crash-loop instead of a node
-			// that comes up and ImagePullBackOffs forever on airgap.
+			// fails kubelet's WaitFor: a visible crash-loop, not a forever ImagePullBackOff on airgap
 			return fmt.Errorf("import %s: %w\n%s", tar, err, out)
 		}
 		fmt.Fprintf(w, "stratum: imported payload images from %s\n", filepath.Base(tar))
@@ -1933,20 +1413,14 @@ func ImportImagesWithWriter(ctx context.Context, w io.Writer, dir string) error 
 	if err != nil {
 		return err
 	}
-	// Pinning is a handful of ctr calls — cheap enough to re-assert every
-	// start, and it also covers images imported before a stratum upgrade
-	// introduced pinning.
+	// cheap to re-assert every start, and covers images imported before pinning existed
 	return pinPayloadImages(ctx, ctr, sock, names)
 }
 
-// importWaitContainerd is waitContainerd behind a seam, so a test can run ImportImages against a fake ctr.
+// importWaitContainerd is a seam, so a test can run ImportImages against a fake ctr.
 var importWaitContainerd = waitContainerd
 
-// stampCurrent reports whether tar was already imported by this exact archive
-// (size+mtime match, the same two-field comparison assets.Stage uses). The
-// stamp lives under the CONFIG dir, not next to the tar: assets.Stage stages
-// the images dir read-only, so a sibling stamp file fails to write silently
-// and every kubelet restart would re-read the whole archive again.
+// stampCurrent's stamp lives under the config dir: assets.Stage stages the images dir read-only.
 func stampCurrent(tar string) bool {
 	fi, err := os.Stat(tar)
 	if err != nil {
@@ -1968,9 +1442,7 @@ func stampPath(tar string) string {
 
 func stampValue(fi os.FileInfo) string { return runtime.ImportStampValue(fi) }
 
-// payloadImageRows picks the (ref, digest) rows of `ctr images ls` to pin:
-// every name a payload archive carries, and every image under the engine's
-// registry, which also catches the repo@digest aliases an earlier start made.
+// archived names plus engine-registry images, which catch aliases an earlier start made
 func payloadImageRows(ls string, archived map[string]bool) [][2]string {
 	var rows [][2]string
 	for _, line := range strings.Split(ls, "\n") {
@@ -1985,21 +1457,7 @@ func payloadImageRows(ls string, archived map[string]bool) [][2]string {
 	return rows
 }
 
-// pinPayloadImages does two post-import fixups on every payload image (see
-// payloadImageRows):
-//
-//  1. Registers a digest-named alias (repo@sha256:…). The bundled manifests pin
-//     images as name:tag@digest, and CRI resolves such a reference by DIGEST —
-//     but `ctr images import` registers only the name:tag from the archive, so
-//     without the alias every digest-pinned pod tries the registry and an
-//     airgapped node ImagePullBackOffs forever with the image already on disk.
-//  2. Labels it io.cri-containerd.pinned=pinned, excluding it from kubelet's
-//     image GC and disk-pressure reclaim. A GC'd payload image cannot be
-//     re-pulled on an airgapped node, so "unused" images (an add-on whose pod
-//     has not scheduled yet, kube-vip with no VIP) must survive tight disks.
-//
-// Both were found by CI, not invented: the digest miss is why add-ons pulled
-// from a cold mirror, and a tight runner disk GC'd them minutes after import.
+// the alias serves CRI's name:tag@digest resolution; the pin keeps airgap images off kubelet's GC
 func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string]bool) error {
 	out, err := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "ls").Output()
 	if err != nil {
@@ -2008,11 +1466,7 @@ func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string
 	for _, row := range payloadImageRows(string(out), archived) {
 		ref, digest := row[0], row[1]
 		names := []string{ref}
-		// A ref that already carries "@" IS a digest name — either an alias
-		// this loop created on a previous start or a digest-pulled image.
-		// Deriving repo by last-colon on such a ref would split inside
-		// "@sha256:" and build an invalid double-digest name that ctr rejects
-		// — which, inside kubelet's WaitFor, is a kubelet that never starts.
+		// deriving repo by last-colon on a ref that carries "@" would split inside "@sha256:"
 		if !strings.Contains(ref, "@") {
 			repo := ref
 			if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") {
@@ -2037,10 +1491,7 @@ func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string
 	return nil
 }
 
-// saveCiliumSettings records the Cilium settings this control plane renders,
-// for the shared certs to carry to a joining one. The shipped settings leave no
-// file, so a cluster that never set any shares no entry an older binary would
-// refuse.
+// default settings leave no file: a joining older binary must not meet an entry it cannot decode
 func saveCiliumSettings(s addons.CiliumSettings) error {
 	if s.IsDefault() {
 		if err := os.Remove(version.CiliumSettingsPath); err != nil && !errors.Is(err, fs.ErrNotExist) {

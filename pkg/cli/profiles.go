@@ -178,9 +178,6 @@ func toProfile(p Profile) profile.Profile {
 	return out
 }
 
-// registerProfiles is what the node commands call before they read a
-// profile: it validates the importer's declarations and makes them the
-// binary's registered set.
 func registerProfiles(cfg rootConfig) error {
 	ps, err := importerProfiles(cfg.profiles)
 	if err != nil {
@@ -189,13 +186,7 @@ func registerProfiles(cfg rootConfig) error {
 	return profile.SetRegistered(ps)
 }
 
-// registerProfilesForRender registers the importer's profiles for every
-// command, not only up: upgrade, the certs commands, ha repoint and snapshot
-// restore render static pods and kubelet.conf too, and must render a node's
-// profile as up does. A declaration that does not validate is recorded rather
-// than returned, so a command that renders nothing, such as version or help,
-// still runs; a renderer that needs a profile gets the reason from
-// profile.ForNode. up validates again and refuses to start.
+// Records validation errors, so commands that render nothing still run; up validates and refuses.
 func registerProfilesForRender(cfg rootConfig) {
 	profile.SetRegistrationError(registerProfiles(cfg))
 }

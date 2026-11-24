@@ -13,8 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirectNodeLock points the node maintenance lock at a fresh file, so these
-// tests never touch the production lock at /run/stratum-upgrade.lock.
+// these tests must never touch the production lock at /run/stratum-upgrade.lock
 func redirectNodeLock(t *testing.T) {
 	t.Helper()
 	old := version.NodeUpgradeLockPath
@@ -22,9 +21,6 @@ func redirectNodeLock(t *testing.T) {
 	t.Cleanup(func() { version.NodeUpgradeLockPath = old })
 }
 
-// holdNodeLock holds the node maintenance lock for op until the test ends, the
-// way another maintenance operation — an upgrade, a rollback, a CA rotation —
-// holds it while a rejoin runs beside it.
 func holdNodeLock(t *testing.T, op string) {
 	t.Helper()
 	release, err := nodelock.Acquire(op)
@@ -34,8 +30,7 @@ func holdNodeLock(t *testing.T, op string) {
 	t.Cleanup(release)
 }
 
-// nodeLockHeld reports whether the node maintenance lock is held right now: a
-// probe Acquire refuses exactly while another holder has it.
+// Acquire refuses exactly while another holder has the lock
 func nodeLockHeld() bool {
 	release, err := nodelock.Acquire("fence probe")
 	if err != nil {
@@ -45,11 +40,6 @@ func nodeLockHeld() bool {
 	return false
 }
 
-// TestRejoinRefusesWhileAMaintenanceOperationHoldsTheNodeLock is the fence:
-// a rejoin stops this node's control plane and wipes its etcd data dir, so
-// while any other maintenance operation — an upgrade, a rollback, a CA
-// rotation — holds the node maintenance lock, RejoinEtcd refuses, names the
-// holder, and touches nothing.
 func TestRejoinRefusesWhileAMaintenanceOperationHoldsTheNodeLock(t *testing.T) {
 	touched := []string{}
 	restoreSeams(t,
@@ -77,12 +67,6 @@ func TestRejoinRefusesWhileAMaintenanceOperationHoldsTheNodeLock(t *testing.T) {
 	}
 }
 
-// TestRejoinTakesTheNodeLockBeforeTheDataLock pins the order: the node
-// maintenance lock first, then the etcd data lock. The data lock alone fences
-// only other data-dir writers, and an upgrade or CA rotation takes no data
-// lock, so a rejoin that took it first would run beside them. The fixture
-// fails at the wipe, so this is also the error exit: the lock is released
-// again when the rejoin ends.
 func TestRejoinTakesTheNodeLockBeforeTheDataLock(t *testing.T) {
 	restoreSeams(t, func() error { return nil }, func(string) error { return nil },
 		func(w io.Writer) error { return errors.New("stop after the wipe") })
@@ -105,9 +89,6 @@ func TestRejoinTakesTheNodeLockBeforeTheDataLock(t *testing.T) {
 	}
 }
 
-// TestRejoinReleasesTheNodeLockWhenTheRejoinSucceeds: a rejoin that finishes —
-// learner added, member promoted, apiserver started — must hand the node on
-// unlocked, or the next maintenance operation refuses for nothing.
 func TestRejoinReleasesTheNodeLockWhenTheRejoinSucceeds(t *testing.T) {
 	f := newFakeRejoin(t, seedWith(), controller())
 	f.local = servingAfter(0, addedID, true)

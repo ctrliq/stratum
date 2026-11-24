@@ -15,8 +15,6 @@ import (
 
 const testCABundle = "-----BEGIN CERTIFICATE-----\nY2x1c3Rlcg==\n-----END CERTIFICATE-----\n"
 
-// joinedPKIDir is a PKI directory as a joined node has it: the cluster trust
-// bundle is on disk.
 func joinedPKIDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -45,9 +43,7 @@ func kubeletClientCAFile(t *testing.T) string {
 	return conf.Authentication.X509.ClientCAFile
 }
 
-// The kubelet authenticates :10250 clients against its own bundle, not the
-// cluster trust bundle, so what it trusts can narrow without touching the
-// trust every other component reads.
+// What the kubelet trusts can narrow without touching the trust every other component reads.
 func TestKubeletClientCAFileIsItsOwnBundle(t *testing.T) {
 	profiletest.Register(t)
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
@@ -72,9 +68,7 @@ func TestKubeletClientCAFileIsItsOwnBundle(t *testing.T) {
 	}
 }
 
-// A node installed before the kubelet had its own clientCAFile gets one
-// holding the trust its kubelet already had, so re-rendering kubelet.conf on
-// upgrade neither stops the kubelet starting nor locks the apiserver out.
+// Re-rendering on upgrade must neither stop the kubelet nor lock the apiserver out.
 func TestKubeletConfigSeedsTheClientCABundleOnUpgrade(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })
@@ -92,8 +86,7 @@ func TestKubeletConfigSeedsTheClientCABundleOnUpgrade(t *testing.T) {
 	}
 }
 
-// Re-rendering kubelet.conf leaves an existing clientCAFile alone: what it
-// trusts is decided where trust changes, not on every kubelet.conf write.
+// What clientCAFile trusts is decided where trust changes, not on every write.
 func TestKubeletConfigKeepsAnExistingClientCABundle(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })
@@ -115,9 +108,7 @@ func TestKubeletConfigKeepsAnExistingClientCABundle(t *testing.T) {
 	}
 }
 
-// With no cluster trust bundle there is nothing to seed the clientCAFile
-// from, and a kubelet.conf naming a file that does not exist would only fail
-// later, at kubelet start.
+// A kubelet.conf naming a file that does not exist would only fail later, at kubelet start.
 func TestKubeletConfigRefusesWithoutATrustBundle(t *testing.T) {
 	oldPKI, oldConf := version.PKIDir, version.K8sConfDir
 	t.Cleanup(func() { version.PKIDir, version.K8sConfDir = oldPKI, oldConf })

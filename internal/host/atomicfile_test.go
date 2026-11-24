@@ -10,16 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/atomicfile"
 )
 
-// The durable single-file writer now lives in internal/atomicfile; the host
-// helpers are thin delegating wrappers kept so existing callers are
-// untouched. These tests pin what delegation must preserve for those
-// callers: the sentinels they match on are the ones the writer actually
-// returns, and the wrappers write exactly what atomicfile.WriteFile writes.
-
-// TestHostWriteFileAtomicallySurfacesAtomicfileErrNotDurable: a caller that
-// matches host.ErrNotDurable (ha/certs.go's take-the-file-back-off path) must
-// keep matching through the wrapper, and the sentinel the wrapper returns
-// must be atomicfile.ErrNotDurable, not a divergent copy of it.
 func TestHostWriteFileAtomicallySurfacesAtomicfileErrNotDurable(t *testing.T) {
 	saved := syncDir
 	t.Cleanup(func() { syncDir = saved })
@@ -37,10 +27,6 @@ func TestHostWriteFileAtomicallySurfacesAtomicfileErrNotDurable(t *testing.T) {
 	}
 }
 
-// TestHostCreateFileExclusivelySurfacesAtomicfileErrStrayCopy: a caller that
-// matches host.ErrStrayCopy (cluster/ciskey.go's key rollback) must keep
-// matching through the wrapper, and the sentinel the wrapper returns must be
-// atomicfile.ErrStrayCopy, not a divergent copy of it.
 func TestHostCreateFileExclusivelySurfacesAtomicfileErrStrayCopy(t *testing.T) {
 	saved := removeTempName
 	t.Cleanup(func() { removeTempName = saved })
@@ -62,10 +48,6 @@ func TestHostCreateFileExclusivelySurfacesAtomicfileErrStrayCopy(t *testing.T) {
 	}
 }
 
-// TestHostWriteFileAtomicallyMatchesAtomicfileWriteFile: the wrapper writes
-// what the moved writer writes -- the same contents at the same mode, one
-// entry per directory -- and fails for the same reason when the write cannot
-// even start.
 func TestHostWriteFileAtomicallyMatchesAtomicfileWriteFile(t *testing.T) {
 	hostDir, atomicDir := t.TempDir(), t.TempDir()
 	hostPath := filepath.Join(hostDir, "f")
@@ -113,10 +95,6 @@ func TestHostWriteFileAtomicallyMatchesAtomicfileWriteFile(t *testing.T) {
 	}
 }
 
-// TestHostSyncDirMatchesAtomicfileSyncDir: SyncDir keeps working for its own
-// callers (the ha and cluster key-directory syncs hold it behind seams) and
-// answers the same as atomicfile.SyncDir: a real directory syncs, a missing
-// one is an error.
 func TestHostSyncDirMatchesAtomicfileSyncDir(t *testing.T) {
 	if err := SyncDir(t.TempDir()); err != nil {
 		t.Errorf("SyncDir on a real directory: %v", err)

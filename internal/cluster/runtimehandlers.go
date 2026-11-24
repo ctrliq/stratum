@@ -16,18 +16,14 @@ import (
 	"github.com/ctrliq/stratum/internal/runtime"
 )
 
-// RuntimeApplyOptions is `stratum runtime apply`'s request. Handlers, when
-// non-nil, replaces a worker's saved handlers; Clear removes them all. A
-// control plane takes neither: its handlers are its config file's. Restart
-// restarts a running containerd when the drop-in changed.
+// RuntimeApplyOptions is `stratum runtime apply`'s request.
 type RuntimeApplyOptions struct {
 	Handlers map[string]string
 	Clear    bool
 	Restart  bool
 }
 
-// RuntimeApplyResult is what ApplyRuntimeHandlers applied: the handlers the
-// node now declares, where they came from, and the drop-in's outcome.
+// RuntimeApplyResult is what ApplyRuntimeHandlers applied.
 type RuntimeApplyResult struct {
 	runtime.ApplyHandlersResult
 	Handlers map[string]string
@@ -43,29 +39,7 @@ var (
 	restartContainerd     = runtime.RestartContainerd
 )
 
-// ApplyRuntimeHandlers resolves the runtime handlers this node declares,
-// writes containerd's drop-in, and then saves them to node.yaml when they
-// changed: a drop-in that could not be written leaves node.yaml naming only
-// handlers containerd was given, so no start labels the node for the rest.
-// One written but whose containerd restart failed is saved all the same,
-// since the next containerd start loads it, and node.yaml naming the old
-// handlers would have that start labelled for them.
-// A worker's are its saved handlers, replaced by o.Handlers or cleared by
-// o.Clear. A control plane rebuilds its handlers from spec.node.runtimeHandlers
-// at every `stratum up`, so it re-reads the config file it was started with
-// and refuses o.Handlers and o.Clear: saving them to node.yaml alone would be
-// undone by its next start. Every handler is validated, its binary checked,
-// and containerd's config checked to import the drop-in before anything is
-// written, every file in the shared conf.d checked to parse, since a restart
-// would stop a working containerd for one that cannot start, and a drop-in
-// stratum did not write refused rather than replaced. The
-// Node's runtime-handler labels follow for the handlers its
-// containerd has loaded, so a RuntimeClass schedules onto the node without
-// waiting for its next start but not before containerd can run the handler;
-// a label update that fails only warns. It holds the node maintenance lock
-// from the read of node.yaml to the labels, so a second apply, a restart or
-// an upgrade refuses rather than interleaving its save and its drop-in with
-// this one's.
+// ApplyRuntimeHandlers saves node.yaml only once the drop-in lands; the lock spans read to relabel.
 func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResult, error) {
 	if o.Clear && o.Handlers != nil {
 		return RuntimeApplyResult{}, errors.New("--clear and --runtime-handler cannot be combined")
@@ -125,10 +99,7 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 	return out, nil
 }
 
-// RestartRuntime restarts the supervisor's containerd, then labels this node
-// for the runtime handlers the restart loaded. It refuses, restarting
-// nothing, when a file in the shared conf.d does not parse. A label update that fails only
-// warns. It holds the node maintenance lock, as ApplyRuntimeHandlers does.
+// RestartRuntime restarts containerd, then relabels for the loaded handlers; holds the node lock.
 func RestartRuntime(w io.Writer) error {
 	release, err := nodelock.Acquire("runtime restart")
 	if err != nil {
@@ -152,11 +123,7 @@ func RestartRuntime(w io.Writer) error {
 	return nil
 }
 
-// declaredRuntimeHandlers is the handler set ApplyRuntimeHandlers applies and
-// a description of its source. A control plane's recorded config file that
-// has gone is refused rather than read as one declaring no handlers, which
-// would remove them all; only the default path may be absent, as at `stratum
-// up`.
+// declaredRuntimeHandlers refuses a recorded config that is gone, not reads it as no handlers.
 func declaredRuntimeHandlers(st *NodeState, o RuntimeApplyOptions, w io.Writer) (map[string]string, string, error) {
 	if st.Role == "worker" {
 		switch {
@@ -184,15 +151,12 @@ func declaredRuntimeHandlers(st *NodeState, o RuntimeApplyOptions, w io.Writer) 
 	return cfg.Spec.Node.RuntimeHandlers, "spec.node.runtimeHandlers in " + path, nil
 }
 
-// checkAppArmor and stackedAppArmor are apparmor.Check and apparmor.Stacked;
 // vars so a test can answer for the host's AppArmor.
 var (
 	checkAppArmor   = apparmor.Check
 	stackedAppArmor = apparmor.Stacked
 )
 
-// stackedMessage names the processes the kernel stacked and what recreates
-// them, listing the first few.
 func stackedMessage(procs []apparmor.StackedProcess) string {
 	const listed = 5
 	var names []string
@@ -208,12 +172,7 @@ func stackedMessage(procs []apparmor.StackedProcess) string {
 		"a pod whose runtime handler runs its own OCI runtime is stacked again unless /etc/apparmor.d/runc also attaches to that runtime", len(procs), strings.Join(names, ", "))
 }
 
-// CheckRuntimeHandlers reports on this node's runtime handlers, on the
-// AppArmor runc profile the default handler's containers need where the
-// kernel would otherwise stack their profile, and on the containers it
-// stacked already. On a control plane it also reports a config file whose
-// spec.node.runtimeHandlers differ from what node.yaml saved, which the next
-// `stratum up` or `stratum runtime apply` would write.
+// CheckRuntimeHandlers reports this node's handlers, the AppArmor profile they need, and drift.
 func CheckRuntimeHandlers(w io.Writer) (runtime.HandlerReport, error) {
 	st, err := LoadState()
 	if err != nil {

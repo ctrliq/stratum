@@ -10,32 +10,12 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// localCluster is this node's own etcd's view of the cluster it belongs to.
 type localCluster struct {
 	ClusterID uint64
 	SelfID    uint64
 	Members   []*etcdserverpb.Member
 }
 
-// confirmQuorumLost returns nil only when it can show that this node's own etcd
-// cluster has lost quorum. Every other outcome is an error, so a caller that
-// needs that proof refuses on "still has quorum" and on "cannot rule it out"
-// alike: an etcd that is down, a TLS or timeout failure, or a
-// peer that does not answer says nothing about whether the rest of the old
-// cluster still holds a majority.
-//
-// It enumerates the voting members from the local etcd's serializable member
-// list, which answers without quorum, and sorts them three ways: those that
-// answer in this cluster (this member, and every peer reporting the same
-// cluster ID), those that answer in another cluster (the restored seed that
-// took over the old member's address), and those that cannot be reached. The
-// first two are known. An unreachable peer may be down, or may be on the far
-// side of a partition from this node with a majority of its own, so it counts
-// as possibly in the cluster. Quorum loss is confirmed only when the answering
-// members plus every unreachable one still fall short of a majority.
-//
-// The member list itself can be stale, so a confirmed loss is still evidence
-// from this node's vantage, not proof; it is the strongest this node can get.
 func confirmQuorumLost(list func() (localCluster, error), peerClusterID func(*etcdserverpb.Member) (uint64, bool)) error {
 	lc, err := list()
 	if err != nil {
@@ -69,8 +49,7 @@ func confirmQuorumLost(list func() (localCluster, error), peerClusterID func(*et
 	return nil
 }
 
-// rejoinConfirmQuorumLost is confirmQuorumLost against the real etcd; a var so
-// RejoinEtcd's tests can answer for one they do not run.
+// a var so RejoinEtcd's tests can substitute the real etcd
 var rejoinConfirmQuorumLost = func() error {
 	return confirmQuorumLost(localMembership, peerClusterID)
 }
@@ -90,9 +69,7 @@ func localMembership() (localCluster, error) {
 	return localCluster{ClusterID: ml.Header.ClusterId, SelfID: ml.Header.MemberId, Members: ml.Members}, nil
 }
 
-// peerClusterID asks one member, on its advertised client URLs, which cluster it
-// is in. Status is served without quorum. Loopback URLs are skipped: a peer's
-// 127.0.0.1 is this node.
+// a peer's loopback URL is this node's etcd; Status is served without quorum, so a peer can answer
 func peerClusterID(m *etcdserverpb.Member) (uint64, bool) {
 	tc, err := etcdTLS()
 	if err != nil {

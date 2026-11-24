@@ -13,8 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// configuredSchemaTag reads the Configured field's jsonschema tag off a
-// registry tool's output struct, so the pin follows the real tag.
 func configuredSchemaTag(t *testing.T, out any) string {
 	t.Helper()
 	f, ok := reflect.TypeOf(out).FieldByName("Configured")
@@ -24,9 +22,6 @@ func configuredSchemaTag(t *testing.T, out any) string {
 	return f.Tag.Get("jsonschema")
 }
 
-// redirectRegistryPaths points the registry paths at a temp tree so the MCP
-// registry handlers act on test files only — never the node's real
-// /etc/containerd or /etc/stratum.
 func redirectRegistryPaths(t *testing.T) (certsDir, regYaml string) {
 	t.Helper()
 	root := t.TempDir()
@@ -40,9 +35,6 @@ func redirectRegistryPaths(t *testing.T) (certsDir, regYaml string) {
 	return certsDir, regYaml
 }
 
-// TestRegistryToolsConfigsOnly pins that registry_apply and registry_check agree
-// on a configs-only file: both report configured=true (a configs-only file
-// must count as configured, and apply must keep it, not silently drop it).
 func TestRegistryToolsConfigsOnly(t *testing.T) {
 	fakeStratumHost(t)
 	_, regYaml := redirectRegistryPaths(t)
@@ -83,9 +75,6 @@ func TestRegistryToolsConfigsOnly(t *testing.T) {
 	}
 }
 
-// TestRegistryToolsEmptyFileAgree pins that an empty registries.yaml makes BOTH
-// tools report configured=false with the shared NothingConfigured sentence, so
-// their answers cannot drift apart again.
 func TestRegistryToolsEmptyFileAgree(t *testing.T) {
 	fakeStratumHost(t)
 	_, regYaml := redirectRegistryPaths(t)
@@ -117,9 +106,6 @@ func TestRegistryToolsEmptyFileAgree(t *testing.T) {
 	}
 }
 
-// TestRegistryToolsAuthlessConfigsIsNothing pins the predicate agreement on its
-// sharp edge: a configs entry that carries neither auth nor TLS configures
-// nothing, so BOTH tools must report configured=false with the shared note.
 func TestRegistryToolsAuthlessConfigsIsNothing(t *testing.T) {
 	fakeStratumHost(t)
 	_, regYaml := redirectRegistryPaths(t)
@@ -147,10 +133,6 @@ func TestRegistryToolsAuthlessConfigsIsNothing(t *testing.T) {
 	}
 }
 
-// TestRegistryToolsWildcardCredentialsWarn pins that both tools say configs."*"
-// credentials are not applied, and that registry_check does not report the
-// catch-all entry as carrying credentials. With credentials alone the file
-// configures nothing, and the check note still carries the warning.
 func TestRegistryToolsWildcardCredentialsWarn(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml     string
@@ -197,10 +179,6 @@ func TestRegistryToolsWildcardCredentialsWarn(t *testing.T) {
 	}
 }
 
-// TestRegistryConfiguredSchemaStrings pins the jsonschema descriptions of the
-// `configured` fields: they must say "mirrors or credentials" (a plain
-// "registries.yaml was present" is wrong once a file can exist and still
-// configure nothing).
 func TestRegistryConfiguredSchemaStrings(t *testing.T) {
 	for _, row := range []struct {
 		typeName string

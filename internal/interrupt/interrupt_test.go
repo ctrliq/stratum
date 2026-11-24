@@ -15,14 +15,6 @@ import (
 	"time"
 )
 
-// TestContextSecondSignalKills re-executes the test binary as a child that
-// installs Context and then hangs, as a stalled phase would. The first SIGINT,
-// SIGTERM or SIGHUP — the one shared signal set — must cancel the context, and
-// cancellation cause must identify a signal: CleanStop recognizes that cause,
-// while Err must be exactly context.Canceled for library callers that compare
-// sentinels directly. The second signal must kill the
-// process. signal.NotifyContext alone swallows every signal until stop is
-// called, so a bare NotifyContext child survives both.
 func TestContextSecondSignalKills(t *testing.T) {
 	if os.Getenv("STRATUM_INTERRUPT_CHILD") == "1" {
 		if sig, _ := strconv.Atoi(os.Getenv("STRATUM_INTERRUPT_IGNORE")); sig != 0 {
@@ -62,8 +54,7 @@ func TestContextSecondSignalKills(t *testing.T) {
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			// Wait closes the stdout pipe once the child exits. Drain it
-			// first so a fast exit cannot lose its last lines to that close.
+			// Drain before Wait: the pipe close can drop the child's last lines.
 			drained := make(chan struct{})
 			waited := make(chan error, 1)
 			go func() {
@@ -103,7 +94,6 @@ func TestContextSecondSignalKills(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitFor("cancelled")
-			// The cause identifies a signal stop; Err stays the standard sentinel.
 			select {
 			case l, ok := <-lines:
 				if !ok {
@@ -115,8 +105,6 @@ func TestContextSecondSignalKills(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("child never printed its verdict line")
 			}
-			// The second signal goes out the instant the cancellation is visible: the
-			// default handler must already be back, not restored after ctx.Done() fires.
 			select {
 			case err := <-waited:
 				t.Fatalf("child exited after one %s (%v); the first signal should only cancel the context", tc.name, err)
@@ -145,13 +133,6 @@ func TestContextSecondSignalKills(t *testing.T) {
 	}
 }
 
-// TestCleanStopDistinguishesThePackagesOwnCancellation pins the helper's
-// negative half: nothing but the package's own cancellation reports a clean
-// stop, so a run that stopped for any other reason — another caller's
-// context.Canceled, a deadline, a real failure, or a clean nil return — never
-// reads as the signal-asked stop that must exit 0. The positive half, a real
-// signal's cancellation reporting a clean stop, is pinned by
-// TestContextSecondSignalKills above.
 func TestCleanStopDistinguishesThePackagesOwnCancellation(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -169,12 +150,6 @@ func TestCleanStopDistinguishesThePackagesOwnCancellation(t *testing.T) {
 	}
 }
 
-// TestDerivedContextWithoutAParentBehavesAsContext pins the Background case:
-// main calls Execute rather than ExecuteContext, so a command's parent
-// context can be Background, whose Done is nil — nothing to derive from, and
-// no goroutine to hold open for it. DerivedContext must then return exactly
-// what Context returns: a signal from the shared set cancels the run, the
-// cause identifies a signal stop, while Err remains context.Canceled.
 func TestDerivedContextWithoutAParentBehavesAsContext(t *testing.T) {
 	ctx, stop := DerivedContext(context.Background())
 	defer stop()
@@ -195,12 +170,6 @@ func TestDerivedContextWithoutAParentBehavesAsContext(t *testing.T) {
 	}
 }
 
-// TestDerivedContextFollowsItsParent pins the derivation both bridges rely
-// on: with a real parent, the returned context is cancelled when the parent's
-// is — a host that cancels the context it passed to ExecuteContext stops the
-// command instead of leaving it running — and that stop reaches the run as a
-// plain cancellation, never the signal's own stop error, so it keeps its own
-// meaning and exit code.
 func TestDerivedContextFollowsItsParent(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	ctx, stop := DerivedContext(parent)
@@ -220,10 +189,6 @@ func TestDerivedContextFollowsItsParent(t *testing.T) {
 	}
 }
 
-// TestDerivedContextKeepsThePackageSignalStop pins the other direction of the
-// derivation: the shared signal set still owns the returned context. A signal
-// cancels it as the package's own clean stop even though the parent is still
-// alive, exactly as Context would — the derivation must not mute the signals.
 func TestDerivedContextKeepsThePackageSignalStop(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
@@ -246,9 +211,6 @@ func TestDerivedContextKeepsThePackageSignalStop(t *testing.T) {
 	}
 }
 
-// TestDerivedContextCancelFuncEndsTheWatcher pins the returned CancelFunc: it
-// cancels the derived context and ends the goroutine that bridges parent and
-// interrupt contexts, so a stopped run holds no goroutine open on its parent.
 func TestDerivedContextCancelFuncEndsTheWatcher(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	defer cancelParent()
@@ -270,10 +232,6 @@ func TestDerivedContextCancelFuncEndsTheWatcher(t *testing.T) {
 	}
 }
 
-// TestDerivedContextWithAnAlreadyCancelledParent pins the install edge: a
-// parent that is already cancelled when the context is derived must not leave
-// the run waiting forever — the returned context is cancelled promptly, as a
-// plain cancellation, never a signal's clean stop.
 func TestDerivedContextWithAnAlreadyCancelledParent(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	cancelParent()
@@ -345,8 +303,6 @@ func TestExpectedStopPreservesChildContextProvenanceAndFailures(t *testing.T) {
 		}
 		<-child.Done()
 		<-cancelChild.Done()
-		// Libraries may compare Err directly to the standard sentinel. Signal
-		// provenance belongs in Cause for both the owner and derived contexts.
 		for name, c := range map[string]context.Context{"owner": ctx, "timeout child": child, "cancel child": cancelChild} {
 			if c.Err() != context.Canceled || !CleanStop(context.Cause(c)) {
 				t.Errorf("%s: Err = %v, Cause = %v; want context.Canceled and a signal cause", name, c.Err(), context.Cause(c))

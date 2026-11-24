@@ -13,11 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestWorkerJoinLineCarriesANonDefaultServiceCIDR pins the worker half of the service
-// range: a worker learns the cluster's service range only from its join line,
-// so on a custom range `token create` must print --service-cidr — after the CA
-// pin, so the partial-write accounting of the token stays where it was — and on
-// a default cluster the line must be exactly what it always was.
+// A worker learns the range only from its join line, printed past the token's handover boundary.
 func TestWorkerJoinLineCarriesANonDefaultServiceCIDR(t *testing.T) {
 	orig := version.NetConfigPath
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")
@@ -40,8 +36,7 @@ func TestWorkerJoinLineCarriesANonDefaultServiceCIDR(t *testing.T) {
 	if got, err := workerJoinExtra(); err != nil || got != " --service-cidr '10.43.0.0/16'" {
 		t.Errorf("custom service range only: extra = %q, %v", got, err)
 	}
-	// A custom pod range reaches the worker too and remains in its state for
-	// compatibility with earlier builds.
+	// A custom pod range reaches the worker too and stays in its state for compatibility.
 	write("10.42.0.0/16", netdefault.ServiceCIDR)
 	if got, err := workerJoinExtra(); err != nil || got != " --pod-cidr '10.42.0.0/16'" {
 		t.Errorf("custom pod range only: extra = %q, %v", got, err)
@@ -70,9 +65,6 @@ func TestWorkerJoinLineCarriesANonDefaultServiceCIDR(t *testing.T) {
 	}
 }
 
-// TestWorkerJoinExtraRefusesAnUnreadableNetconfig: a netconfig
-// that exists but cannot be read or parsed is not a default cluster, and
-// treating it as one printed a worker join line without --service-cidr.
 func TestWorkerJoinExtraRefusesAnUnreadableNetconfig(t *testing.T) {
 	orig := version.NetConfigPath
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")
@@ -104,8 +96,7 @@ func TestWorkerJoinLineCarriesANonDefaultClusterDomain(t *testing.T) {
 	}
 }
 
-// `token create` on a custom-domain control plane that lost netconfig
-// still prints --cluster-domain, recovered from node state.
+// A custom-domain control plane that lost netconfig still prints the recorded domain.
 func TestWorkerJoinLineKeepsTheClusterDomainWithoutNetConfig(t *testing.T) {
 	origNet, origConf, origPKI := version.NetConfigPath, version.K8sConfDir, version.PKIDir
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig") // never written: lost
@@ -119,9 +110,7 @@ func TestWorkerJoinLineKeepsTheClusterDomainWithoutNetConfig(t *testing.T) {
 	}
 }
 
-// `token create` on a custom-range, custom-domain
-// control plane that lost netconfig still prints the recorded ranges, not the
-// defaults.
+// A control plane that lost netconfig still prints the recorded ranges, not defaults.
 func TestWorkerJoinLineKeepsTheRangesWithoutNetConfig(t *testing.T) {
 	origNet, origConf, origPKI := version.NetConfigPath, version.K8sConfDir, version.PKIDir
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig") // never written: lost

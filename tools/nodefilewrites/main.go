@@ -1,30 +1,4 @@
-// Command nodefilewrites is the node-file write rule's lint guard, run by
-// make lint over the whole repository. The rule: every node file — the paths
-// internal/version's owning-package record carries — is written by its owning
-// package through the shared atomic writer (internal/atomicfile), so a failed
-// or crashed write can never leave a torn file where a working one was. A raw
-// os.WriteFile or clientcmd.WriteToFile, in any import spelling, in a package
-// that writes node files is a violation: the finding names the call's
-// file:line and states the owning-package rule, so the next writer finds the
-// rule at lint time instead of rediscovering it at incident time.
-//
-// Arguments name files, directories, or directory/... package patterns,
-// resolved relative to the working directory — the repository root in every
-// real invocation. Test files and testdata are exempt (the rule governs
-// production writers, and a _test.go fixture write is deliberate), as are
-// vendor, node_modules and hidden directories. An allowlisted file is a
-// deliberate exception whose entry states the reason its raw writers are not
-// start-critical and the exact number of raw writes that reason covers: the
-// guard scans allowlisted files like any other and fails when the file's raw
-// writes no longer match the entry, so a new raw write cannot hide behind an
-// exception written for a different write, and an entry whose write has
-// moved onto the shared atomic writer is re-justified or dropped in the same
-// change.
-//
-// Exit codes: 0 when every guarded package is clean; 1 when a raw node-file
-// write was found; 2 when the check cannot run — a bad argument, an
-// unreadable file, a file that does not parse. A file the guard cannot vouch
-// for must fail the check, never pass it silently.
+// Exit 0 clean, 1 raw write found, 2 cannot run: a file the guard cannot vouch for fails the run.
 package main
 
 import (
@@ -43,12 +17,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// guarded is the set of packages that write node files, derived from the
-// owning-package record in internal/version: the record puts each node file's
-// owning package beside its path, so the rule and its guard cannot drift
-// apart. A scanned file belongs to a guarded package when that package's
-// directory is the file's directory or an ancestor of it, compared with "/"
-// separators on directory boundaries — internal/pkia is not internal/pki.
 var guarded = func() map[string]bool {
 	pkgs := make(map[string]bool, len(version.NodeFileOwners))
 	for _, pkg := range version.NodeFileOwners {
@@ -57,77 +25,37 @@ var guarded = func() map[string]bool {
 	return pkgs
 }()
 
-// allowEntry is one deliberate exception: the stated reason the file's raw
-// writer is not start-critical, and the exact number of raw writes the
-// reason covers. The guard scans an allowlisted file like any other and
-// fails when the file's raw writes no longer match the entry, so the stated
-// exception and the enforced one cannot drift apart.
 type allowEntry struct {
 	reason string
 	want   int
 }
 
-// allowlist holds the deliberate exceptions, keyed by the file's path
-// relative to the working directory. An exception is per file, never per
-// package: a writer that belongs on the shared atomic writer gets no entry
-// here.
 var allowlist = map[string]allowEntry{
-	// The CA rotation's scratch: the zero-byte carotate progress markers and
-	// the .pre-carotate backups are written once mid-rotation and read only
-	// by the rotation itself; the live file behind every backup is replaced
-	// by an atomic rename. A torn marker or backup costs a rotation step,
-	// never a bring-up.
 	"internal/pki/pki.go": {reason: "CA-rotation scratch, deliberately not start-critical: zero-byte carotate markers and .pre-carotate backups written and read only by the rotation; the live file behind each backup is replaced by an atomic rename", want: 5},
 
-	// The carotate run id is best-effort by design: its writer already
-	// downgrades a failure to a WARN, because it only schedules the
-	// leftover-key cleanup and gates no start.
 	"internal/certs/carotate.go": {reason: "the carotate run id is a best-effort node-local marker, deliberately not start-critical: it only schedules leftover-key cleanup, and its writer already downgrades a failure to a WARN", want: 1},
 
-	// The CIS-config backup record is written into the backup's hidden
-	// staging directory, which one rename publishes whole; no live node path
-	// is ever written raw.
 	"internal/upgrade/node.go": {reason: "writes only inside the CIS-config backup's hidden staging directory, deliberately not start-critical: one rename publishes the backup whole, and no live node path is written raw", want: 1},
 
-	// The image-import stamp marker is best-effort by design: writeStamp
-	// discards the error because the marker only makes the next kubelet
-	// restart's import re-check cheap (stampCurrent compares it to skip the
-	// re-import), and a stale or torn marker costs one re-import of the
-	// archive, never a bring-up.
 	"internal/cluster/run.go": {reason: "the image-import stamp marker is best-effort, deliberately not start-critical: it only makes the next kubelet restart's import re-check cheap, its writer already discards the error, and a torn marker costs one re-import of the archive", want: 1},
 
-	// SuppressRestart's runtime drop-in lives under /run, is written only
-	// during uninstall's teardown of the unit it disarms Restart= for, and is
-	// read by systemd only through the daemon-reload the same function runs
-	// after the write; a reboot clears /run on its own. Nothing reads it at
-	// bring-up, so a torn one cannot break a start.
 	"internal/host/systemd.go": {reason: "the uninstall teardown's runtime drop-in under /run is deliberately not start-critical: it disarms Restart= only for the unit being torn down, systemd reads it through the daemon-reload the same function runs after the write, and a reboot clears /run on its own", want: 1},
 }
 
-// rawWrites are the calls the rule rejects, by import path and selector.
-// clientcmd.WriteToFile stands beside os.WriteFile because it is a plain
-// os.WriteFile underneath: no temp file, no fsync, a torn kubeconfig where a
-// working one was.
+// clientcmd.WriteToFile is a plain os.WriteFile underneath: no temp file, no fsync.
 var rawWrites = map[string]string{
 	"os":                               "WriteFile",
 	"k8s.io/client-go/tools/clientcmd": "WriteToFile",
 }
 
-// finding is one raw node-file write.
 type finding struct {
-	path string // the file's path relative to the working directory
-	line int    // the call's line
-	call string // the call's canonical spelling ("os.WriteFile")
-	// allowed and reason are set only when the finding sits in an
-	// allowlisted file: the entry covers allowed raw writes and its reason
-	// states why they are not start-critical, so the finding names the
-	// entry's own terms and the fix is to re-justify it in the same change.
+	path    string
+	line    int
+	call    string
 	allowed int
 	reason  string
 }
 
-// staleEntry is an allowlist entry whose file no longer carries the raw
-// writes the entry's reason covers.
 type staleEntry struct {
 	path string
 	want int
@@ -138,8 +66,6 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run checks args and returns the process exit code: 0 clean, 1 findings,
-// 2 tool error.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "nodefilewrites: no arguments: name files, directories, or directory/... patterns to check")
@@ -152,8 +78,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var findings []finding
 	var stale []staleEntry
 	for _, path := range files {
-		// Parse every file the argv names, guarded or not: a file the guard
-		// cannot vouch for is a tool error, whatever package it sits in.
+		// Parsed before the guarded check: an unparseable argv file fails the run.
 		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", path, err))
@@ -163,15 +88,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if entry, ok := allowlist[path]; ok {
-			// An allowlisted file is scanned like any other: the entry
-			// covers an exact number of raw writes, so a new write fails
-			// the lint instead of hiding behind the entry, and an entry
-			// whose writes have moved onto the atomic writer fails until
-			// it is shrunk.
 			found := scan(fset, f, path)
 			switch {
 			case len(found) == entry.want:
-				// The exception the entry states still exists.
 			case len(found) > entry.want:
 				for _, fd := range found {
 					fd.allowed = entry.want
@@ -218,7 +137,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// guardedDir reports whether dir is a guarded package or inside one.
 func guardedDir(dir string) bool {
 	for pkg := range guarded {
 		if dir == pkg || strings.HasPrefix(dir, pkg+"/") {
@@ -228,9 +146,6 @@ func guardedDir(dir string) bool {
 	return false
 }
 
-// collect resolves the argv to the Go files to check, appending tool errors
-// (a missing path, an explicitly named non-Go file, an unreadable directory)
-// to errs. Test files are dropped here: the rule governs production writers.
 func collect(args []string, errs *[]error) []string {
 	var files []string
 	consider := func(path string) {
@@ -270,15 +185,10 @@ func collect(args []string, errs *[]error) []string {
 	return files
 }
 
-// walk walks root recursively, considering every regular .go file. A skipped
-// directory is not a judgment call: testdata is invisible to the go tool,
-// vendor and node_modules are not ours to guard, and a hidden directory is
-// .git and its friends.
 func walk(root string, consider func(string), errs *[]error) {
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// Keep the rest of the tree; the recorded error already fails
-			// the run.
+			// Keep walking; the recorded error already fails the run.
 			*errs = append(*errs, fmt.Errorf("%s: %w", path, err))
 			return nil
 		}
@@ -304,13 +214,9 @@ func skipDir(name string) bool {
 		strings.HasPrefix(name, ".")
 }
 
-// scan reports the raw node-file writes in one parsed file. Calls are
-// resolved through the file's imports, so an import under another name — or
-// a dot import, which puts the write at its bare name — is still the call the
-// rule rejects.
 func scan(fset *token.FileSet, file *ast.File, path string) []finding {
-	callees := make(map[string]string) // local name -> import path
-	dot := make(map[string]bool)       // dot-imported paths
+	callees := make(map[string]string)
+	dot := make(map[string]bool)
 	for _, imp := range file.Imports {
 		importPath, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
@@ -366,14 +272,11 @@ func scan(fset *token.FileSet, file *ast.File, path string) []finding {
 	return findings
 }
 
-// canonical spells the call the way the rule names it, whatever the file
-// called its import.
 func canonical(importPath, sel string) string {
 	return importPath[strings.LastIndex(importPath, "/")+1:] + "." + sel
 }
 
-// defaultName is the local name a file calls an import through when it names
-// no alias: the path's last element, below a semantic major-version suffix.
+// defaultName: the path's last element, below a semantic major-version suffix.
 func defaultName(importPath string) string {
 	base := importPath[strings.LastIndex(importPath, "/")+1:]
 	if len(base) > 1 && base[0] == 'v' && allDigits(base[1:]) {

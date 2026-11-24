@@ -73,8 +73,7 @@ func TestCheckVIP(t *testing.T) {
 	}
 }
 
-// TestResolveSnapshotPath covers the path handling shared by
-// snapshot_restore and rollback.
+// TestResolveSnapshotPath covers the path handling snapshot_restore and rollback share.
 func TestResolveSnapshotPath(t *testing.T) {
 	t.Run("a bare name resolves inside the snapshot directory", func(t *testing.T) {
 		old := snapshotDir
@@ -90,8 +89,7 @@ func TestResolveSnapshotPath(t *testing.T) {
 		}
 	})
 
-	// snapshot_list's names must resolve where `stratum snapshot restore NAME`
-	// resolves them.
+	// snapshot_list's names must resolve where `stratum snapshot restore NAME` resolves them.
 	t.Run("a bare name resolves inside a custom spec.snapshots.dir", func(t *testing.T) {
 		old := snapshotDir
 		t.Cleanup(func() { snapshotDir = old })
@@ -131,9 +129,7 @@ func TestResolveSnapshotPath(t *testing.T) {
 	}
 }
 
-// TestSnapshotRejoinServerValidation pins what the tool accepts. Only the
-// host is passed to ha.RejoinEtcd, so a URL carrying anything else is
-// describing a target that would not be contacted.
+// Only the host reaches ha.RejoinEtcd, so a URL carrying anything else names an uncontacted target.
 func TestSnapshotRejoinServerValidation(t *testing.T) {
 	handler := SnapshotRejoinHandler()
 
@@ -156,13 +152,9 @@ func TestSnapshotRejoinServerValidation(t *testing.T) {
 		})
 	}
 
-	// A well-formed server must get past validation. Off a Stratum node
-	// it then stops at the host check, which is the next gate and proves
-	// validation did not reject it.
+	// Off a Stratum node it stops at the host check, proving validation did not reject it.
 	t.Run("accepts a bare https host and port", func(t *testing.T) {
-		// The probe is pointed away from this machine's own Stratum
-		// directories, so the host check answers on every host, not only
-		// on a machine that happens not to be a Stratum node.
+		// The probe points away from the host's Stratum dirs, so the host check answers everywhere.
 		notStratumHost(t)
 		_, _, err := handler(t.Context(), nil, SnapshotRejoinIn{Server: "https://10.0.0.1:6443"})
 		if err != nil && !errors.Is(err, errNotStratumHost) {
@@ -171,8 +163,7 @@ func TestSnapshotRejoinServerValidation(t *testing.T) {
 	})
 }
 
-// snapshotRestore runs the snapshot_restore tool with the restore itself
-// replaced by restoreErr.
+// snapshotRestore runs the restore tool with the restore replaced by restoreErr.
 func snapshotRestore(t *testing.T, restoreErr error) (destructiveOut, error) {
 	t.Helper()
 	fakeStratumHost(t)
@@ -183,16 +174,10 @@ func snapshotRestore(t *testing.T, restoreErr error) (destructiveOut, error) {
 	return out, err
 }
 
-// flat folds every whitespace run into one space, so an assertion about a
-// prose sentence does not depend on where the rendering wraps its lines.
+// flat folds whitespace runs into one space, so assertions do not depend on line wrapping.
 func flat(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// pkillNames reports whether text gives a `sudo pkill` command that names
-// name. The guidance embeds each command whole inside backticks, so the
-// segments between backticks are the commands; the square brackets around a
-// pattern's first character (the [k] trick that keeps pkill from matching its
-// own invocation) are ignored, so a pattern that spells the name that way
-// counts too. A mention of the name in prose does not count.
+// Backtick segments are the commands; [k]-style brackets are ignored, so either spelling counts.
 func pkillNames(text, name string) bool {
 	for _, seg := range strings.Split(text, "`") {
 		if !strings.Contains(seg, "sudo pkill") {
@@ -206,9 +191,7 @@ func pkillNames(text, name string) bool {
 	return false
 }
 
-// restartCommandsInGuidance asserts the commands for restarting a control
-// plane's watchers by hand are given word for word, and that kube-vip is among
-// them.
+// restartCommandsInGuidance asserts the restart commands word for word, kube-vip included.
 func restartCommandsInGuidance(t *testing.T, text string) {
 	t.Helper()
 	for _, want := range []string{
@@ -217,8 +200,7 @@ func restartCommandsInGuidance(t *testing.T, text string) {
 		`sudo pkill -TERM -f '^([^[:space:]]*/)?[k]ube-scheduler([[:space:]]|$)'`,
 		// the operator's, which names its subcommand and Stratum's flags, not its executable
 		"sudo pkill -TERM -f '^[^[:space:]]+ operator( [^[:space:]]+)* --kubeconfig (/var/lib/stratum/kubeconfig/super-admin\\.conf|/var/lib/stratum/kubeconfig/admin\\.conf)",
-		// the in-cluster workloads, one command per namespace, and the pattern for
-		// third-party controllers the restore does not restart
+		// the in-cluster workloads and the third-party controllers the restore does not restart
 		"stratum kubectl -n kube-system rollout restart ds/cilium deploy/cilium-operator deploy/coredns",
 		"stratum kubectl -n local-path-storage rollout restart deploy/local-path-provisioner",
 		"stratum kubectl -n <namespace> rollout restart deploy/<name>",
@@ -227,10 +209,7 @@ func restartCommandsInGuidance(t *testing.T, text string) {
 			t.Errorf("guidance missing the restart command %q:\n%s", want, text)
 		}
 	}
-	// kube-vip is restarted from its manifest like the controller manager and
-	// scheduler, and its omission from the pkill list was accidental. Its
-	// command is pinned by presence, not word for word: the exact pattern is
-	// the restart set's to derive, and the set's own test pins it.
+	// Pinned by presence only: the exact pattern is the restart set's to derive and its test to pin.
 	if !pkillNames(text, "kube-vip") {
 		t.Errorf("guidance has no pkill for kube-vip:\n%s", text)
 	}
@@ -252,11 +231,7 @@ func TestSnapshotRestoreOutcomeSuccess(t *testing.T) {
 	restartCommandsInGuidance(t, out.Next)
 }
 
-// TestSnapshotRestoreNextIsRenderedFromTheRestartSet: the tool's next-step
-// text — the sentence naming what was restarted, and both command blocks, in
-// the success and the partial outcome — is rendered from the restore's restart
-// set, so a component added to the set reaches the answer without the text
-// being edited by hand.
+// TestSnapshotRestoreNextIsRenderedFromTheRestartSet: a new component reaches the answer.
 func TestSnapshotRestoreNextIsRenderedFromTheRestartSet(t *testing.T) {
 	old := restoreRestartSet
 	t.Cleanup(func() { restoreRestartSet = old })
@@ -283,9 +258,7 @@ func TestSnapshotRestoreNextIsRenderedFromTheRestartSet(t *testing.T) {
 		}
 	}
 
-	// The partial outcome's recovery steps are rendered from the same set: a
-	// component named as not restarted is restarted by hand with the commands
-	// the set carries for it.
+	// The partial outcome's recovery steps render from the same set.
 	_, err = snapshotRestore(t, fmt.Errorf("%w: synthetic-agent", etcdsnap.ErrWatchersNotRestarted))
 	if !errors.Is(err, etcdsnap.ErrWatchersNotRestarted) {
 		t.Fatalf("err = %v", err)
@@ -301,9 +274,7 @@ func TestSnapshotRestoreNextIsRenderedFromTheRestartSet(t *testing.T) {
 	}
 }
 
-// TestSnapshotRestoreOutcomePartial: the data is restored, so the
-// operator is told what is left and not to restore again, but the call still
-// fails and Done stays false.
+// TestSnapshotRestoreOutcomePartial: the call still fails and Done stays false.
 func TestSnapshotRestoreOutcomePartial(t *testing.T) {
 	out, err := snapshotRestore(t, fmt.Errorf("%w: kubelet", etcdsnap.ErrWatchersNotRestarted))
 	if !errors.Is(err, etcdsnap.ErrWatchersNotRestarted) || out.Done {
@@ -344,10 +315,7 @@ func rollbackWith(t *testing.T, in RollbackIn, err error) (destructiveOut, error
 	return out, rerr
 }
 
-// TestRollbackResultCarriesTheOtherNodeSteps: a
-// rollback that restored etcd tells the operator what is left on the other
-// nodes, as `stratum snapshot restore` does, and without the control-plane
-// rejoin items a single-member rollback does not have.
+// TestRollbackResultCarriesTheOtherNodeSteps: what is left on the other nodes after a restore.
 func TestRollbackResultCarriesTheOtherNodeSteps(t *testing.T) {
 	out, err := rollbackWith(t, RollbackIn{EtcdSnapshot: "/var/backups/etcd/x.db"}, nil)
 	if err != nil || !out.Done {
@@ -381,11 +349,7 @@ func TestRollbackFailureStaysAFailure(t *testing.T) {
 	}
 }
 
-// TestSnapshotRestoreNextDoesNotPointAtAToolThatDeadEnds: after
-// a restore the other control planes normally still hold the old cluster's
-// quorum, and snapshot_rejoin never passes force, so telling the caller that it
-// is the next step sends them to a refusal. The text must name the CLI with
-// --force and say why the tool cannot.
+// TestSnapshotRestoreNextDoesNotPointAtAToolThatDeadEnds: snapshot_rejoin cannot pass --force.
 func TestSnapshotRestoreNextDoesNotPointAtAToolThatDeadEnds(t *testing.T) {
 	for _, want := range []string{
 		"stratum snapshot rejoin",
@@ -402,8 +366,7 @@ func TestSnapshotRestoreNextDoesNotPointAtAToolThatDeadEnds(t *testing.T) {
 	}
 }
 
-// Cluster certificate tools must retain request cancellation before loading
-// admin credentials or starting any phase.
+// Cluster certificate tools must cancel before loading admin credentials or starting a phase.
 func TestClusterCAToolsPreserveRequestCancellation(t *testing.T) {
 	fakeStratumHost(t)
 	oldAdmin := version.AdminConf
@@ -454,9 +417,7 @@ func TestCertsRotateCARefusesWhatTheCLIRefuses(t *testing.T) {
 		{"both workload flags", CertsRotateCAIn{Cluster: true, RestartWorkloads: true, SkipWorkloadCheck: true}, "contradict each other"},
 		{"skip the token check without force", CertsRotateCAIn{Cluster: true, SkipTokenCheck: true}, "goes with --force"},
 		{"restart without cluster", CertsRotateCAIn{Phase: "sign-new", RestartWorkloads: true}, "goes with --cluster"},
-		// The refusal is the shared validator's (certs.CARotateFlags.Validate),
-		// spelled with the CLI's flag names, because the tool routes through it
-		// rather than keeping its own wording.
+		// The refusal is the shared validator's, in the CLI's flag names.
 		{"cluster with a phase", CertsRotateCAIn{Cluster: true, Phase: "sign-new", SkipWorkloadCheck: true}, "use either --cluster (all phases) or --phase (one node), not both"},
 		{"neither", CertsRotateCAIn{}, "phase is required"},
 		{"unknown phase", CertsRotateCAIn{Phase: "drop-all"}, "unknown phase"},
@@ -470,22 +431,11 @@ func TestCertsRotateCARefusesWhatTheCLIRefuses(t *testing.T) {
 	}
 }
 
-// The pins below hold each front end's current rules while those rules move
-// into the operations' own packages. Each is named for the drift it fails
-// on, and none asserts anything the tool does not already do today.
-
-// TestCATools_RefuseABadPhaseBeforeTheHostCheck pins that both CA tools
-// refuse a missing or unknown phase before run(), whose host check is the
-// first thing that touches the node. The refusal must also name every phase
-// the operation accepts, so a caller can correct the call.
+// TestCATools_RefuseABadPhaseBeforeTheHostCheck: the refusal must also name every phase.
 func TestCATools_RefuseABadPhaseBeforeTheHostCheck(t *testing.T) {
 	notStratumHost(t)
 
-	// The phases are pinned as literals, not read back from the exported
-	// phase lists (certs.CARotatePhases and certs.EtcdCAPhases,
-	// which the handler's caPhases alias points at): an accepted-phase list
-	// that drops or renames a phase must fail here, not pass because the
-	// error and the assertion were built from the same variable.
+	// Pinned as literals, not the exported lists: the error and the assertion share no variable.
 	rotate := []string{"trust-new", "sign-new", "finalize"}
 	migrate := []string{"trust-both", "issue-new", "drop-root", "rollback"}
 	kubelet := []string{"trust-both", "issue-new", "drop-root", "re-add-root", "reissue-root", "remove-ca"}
@@ -537,17 +487,11 @@ func TestCATools_RefuseABadPhaseBeforeTheHostCheck(t *testing.T) {
 	}
 }
 
-// TestHARepointTool_RefusesAMalformedVIPBeforeRunning pins that ha_repoint
-// applies checkVIP before run(). The check is the only thing keeping URL
-// structure out of the https://<vip> URLs that get written into every
-// kubeconfig on this node, so the refusal must not be deferred to the
-// operation behind the host check.
+// TestHARepointTool_RefusesAMalformedVIPBeforeRunning: it keeps URL structure out of kubeconfigs.
 func TestHARepointTool_RefusesAMalformedVIPBeforeRunning(t *testing.T) {
 	notStratumHost(t)
 
-	// Every value TestCheckVIP refuses, driven through the tool rather
-	// than the helper: the handler must run the same check before it
-	// starts anything.
+	// Every value TestCheckVIP refuses, driven through the tool: the same check must run first.
 	for _, vip := range []string{
 		"10.0.0.1:6443",
 		"evil.example.com/steal",
@@ -574,12 +518,7 @@ func TestHARepointTool_RefusesAMalformedVIPBeforeRunning(t *testing.T) {
 	}
 }
 
-// TestRun_CleanCallIsDoneWithItsProgress pins how run, the destructive
-// tools' shared body, reports a call: done true with the progress the
-// operation wrote through the writer run hands it when the operation
-// succeeds, and the progress kept beside the error when it fails, because a
-// half-finished destructive procedure is exactly when the operator needs to
-// know how far it got.
+// TestRun_CleanCallIsDoneWithItsProgress pins run's done/progress reporting in both outcomes.
 func TestRun_CleanCallIsDoneWithItsProgress(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -626,12 +565,7 @@ func TestRun_CleanCallIsDoneWithItsProgress(t *testing.T) {
 	})
 }
 
-// TestRun_WarningsMakeAPartialResult pins that when the operation run drives
-// returns warnings beside a nil error — steps that did not complete while
-// the operation itself succeeded — the result carries those warnings in
-// Warnings and reports the partial result with done false. A call that only
-// warned must not come back as done: true, and the warnings must travel as
-// data, not only as captured progress text.
+// TestRun_WarningsMakeAPartialResult: warnings travel as data, not only as captured text.
 func TestRun_WarningsMakeAPartialResult(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -662,9 +596,7 @@ func TestRun_WarningsMakeAPartialResult(t *testing.T) {
 		}
 	})
 
-	// A warning that exists only in the captured text is invisible:
-	// the data field must carry it even when the operation
-	// printed nothing.
+	// A warning that exists only in captured text is invisible.
 	t.Run("the warnings travel as data, not only as captured text", func(t *testing.T) {
 		var out destructiveOut
 		var err error
@@ -698,9 +630,7 @@ func TestRun_WarningsMakeAPartialResult(t *testing.T) {
 		}
 	})
 
-	// Done answers the operation's error, as the pin above holds; the
-	// warnings the operation returned before failing are still filed, and
-	// the progress stays beside the error.
+	// A failed call still files its warnings beside the error.
 	t.Run("a failed call is not done and keeps its warnings beside the error", func(t *testing.T) {
 		boom := errors.New("boom")
 		var out destructiveOut
@@ -726,12 +656,7 @@ func TestRun_WarningsMakeAPartialResult(t *testing.T) {
 	})
 }
 
-// TestRun_ProgressTravelsThroughTheWriter pins run's writer contract: run
-// hands the operation an io.Writer for progress and captures no stream. The
-// operation reports its progress through that writer — a buffer under the
-// MCP handlers, os.Stdout or os.Stderr under the CLI — and the process's
-// real stdout stays untouched for the length of the call: nothing redirects
-// os.Stdout around the operation.
+// TestRun_ProgressTravelsThroughTheWriter pins the writer contract; nothing captures a stream.
 func TestRun_ProgressTravelsThroughTheWriter(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -753,10 +678,7 @@ func TestRun_ProgressTravelsThroughTheWriter(t *testing.T) {
 		}
 	})
 
-	// On the stdio transport stdout is the JSON-RPC stream, so nothing may
-	// swap os.Stdout away from the process: a swap left behind a pipe would
-	// take the server with it, and an intact swap proves the redirect is
-	// gone.
+	// On the stdio transport stdout is the JSON-RPC stream, so nothing may swap os.Stdout.
 	t.Run("the operation runs with the process's real stdout", func(t *testing.T) {
 		var inner *os.File
 		_ = captureStderrDiscard(func() {
@@ -774,21 +696,7 @@ func TestRun_ProgressTravelsThroughTheWriter(t *testing.T) {
 	})
 }
 
-// TestUninstallTool_TwoCallsNeverOverlap pins that two uninstall calls
-// through one MCP server never run their operation bodies at once. The
-// exclusion is the explicit operation lock run holds around every call, the
-// destructive tools' sole one: this lock is all that serialises the tools.
-// That lock is also what
-// fences uninstall's reset and discovery shared state, which sits before the
-// etcd flock that covers only the host teardown. The shared-state window
-// itself is closed by uninstall's per-run state, and this pin keeps the MCP
-// serialization baseline on top of it.
-//
-// The first body stays at a barrier until the second handler is observed
-// blocked in the operation lock. A goroutine stack provides positive evidence
-// of contention without adding a production seam or relying on a sleep to
-// give the second handler an opportunity to run. The independent uninstall
-// guard pins how a second Run resets discovery before reaching the host lock.
+// TestUninstallTool_TwoCallsNeverOverlap pins opMu as the destructive tools' sole exclusion.
 func TestUninstallTool_TwoCallsNeverOverlap(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -798,9 +706,7 @@ func TestUninstallTool_TwoCallsNeverOverlap(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	var handlers sync.WaitGroup
-	// A failed overlap assertion must unblock and join both handlers before
-	// restoring the seam, or it strands the operation lock and hangs later
-	// tests.
+	// A failed assertion must unblock and join both handlers, or the lock strands later tests.
 	defer func() {
 		releaseOnce.Do(func() { close(release) })
 		handlers.Wait()
@@ -852,8 +758,7 @@ func TestUninstallTool_TwoCallsNeverOverlap(t *testing.T) {
 	var stacks string
 contention:
 	for {
-		// Grow the buffer until every stack is present; a truncated profile
-		// could omit the waiting handler on a busy test runner.
+		// Grow the buffer until every stack fits; a truncated profile could omit the contender.
 		for size := 64 << 10; ; size *= 2 {
 			buf := make([]byte, size)
 			n := runtime.Stack(buf, true)
@@ -863,10 +768,6 @@ contention:
 			}
 		}
 		for _, stack := range strings.Split(stacks, "\n\n") {
-			// The second handler is the one parked inside the operation
-			// lock run holds: a mutex frame under this test's handler
-			// chain. The first handler is parked on the barrier channel,
-			// so only the blocked contender matches.
 			if strings.Contains(stack, "TestUninstallTool_TwoCallsNeverOverlap") &&
 				strings.Contains(stack, "sync.(*Mutex).") {
 				break contention
@@ -894,24 +795,13 @@ contention:
 			t.Fatal("a call never finished once the first had released the lock")
 		}
 	}
-	// The authoritative instrumented check: at no instant did a second
-	// body enter while the first was still inside.
+	// The authoritative check: a second body never entered while the first was inside.
 	if overlapped.Load() {
 		t.Fatal("two uninstall bodies ran at once")
 	}
 }
 
-// TestDestructiveTools_NeverOverlapOnTheOperationLock pins that the
-// operation lock is one lock shared by the destructive tools, not a
-// per-tool mutex: two DIFFERENT tools — here uninstall and rollback — never
-// run their operations at once. They rewrite the same host state (etcd data,
-// PKI, kubeconfigs, the container runtime); the lock is the destructive
-// tools' sole exclusion, and this pin holds it to that contract.
-//
-// The body of the first tool stays at a barrier until the second handler is
-// observed blocked in the lock, the same instrumented contention
-// TestUninstallTool_TwoCallsNeverOverlap uses, with the instrumented
-// non-overlap flag as the authoritative check.
+// TestDestructiveTools_NeverOverlapOnTheOperationLock pins one shared lock, not a per-tool mutex.
 func TestDestructiveTools_NeverOverlapOnTheOperationLock(t *testing.T) {
 	fakeStratumHost(t)
 
@@ -920,9 +810,7 @@ func TestDestructiveTools_NeverOverlapOnTheOperationLock(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	var handlers sync.WaitGroup
-	// A failed overlap assertion must unblock and join both handlers before
-	// restoring the seam, or it strands the operation lock and hangs later
-	// tests.
+	// A failed assertion must unblock and join both handlers, or the lock strands later tests.
 	defer func() {
 		releaseOnce.Do(func() { close(release) })
 		handlers.Wait()
@@ -984,8 +872,7 @@ func TestDestructiveTools_NeverOverlapOnTheOperationLock(t *testing.T) {
 	var stacks string
 contention:
 	for {
-		// Grow the buffer until every stack is present; a truncated profile
-		// could omit the waiting handler on a busy test runner.
+		// Grow the buffer until every stack fits; a truncated profile could omit the contender.
 		for size := 64 << 10; ; size *= 2 {
 			buf := make([]byte, size)
 			n := runtime.Stack(buf, true)
@@ -995,10 +882,6 @@ contention:
 			}
 		}
 		for _, stack := range strings.Split(stacks, "\n\n") {
-			// The rollback handler is the one parked inside the operation
-			// lock: a mutex frame under this test's handler chain. The
-			// uninstall body is parked on the barrier channel, so only the
-			// blocked contender matches.
 			if strings.Contains(stack, "TestDestructiveTools_NeverOverlapOnTheOperationLock") &&
 				strings.Contains(stack, "sync.(*Mutex).") {
 				break contention
@@ -1026,20 +909,13 @@ contention:
 			t.Fatal("a call never finished once uninstall had released the lock")
 		}
 	}
-	// The authoritative instrumented check: at no instant did one tool's
-	// body enter while the other's was still inside.
+	// The authoritative check: no other tool's body entered while one was inside.
 	if overlapped.Load() {
 		t.Fatal("two different destructive tools ran their operations at once")
 	}
 }
 
-// TestHARepointTool_CarriesTheOperationWarnings pins that the warnings
-// ha.NodeRepoint and ha.RepointCiliumWith return beside a nil error — a
-// local consumer that did not restart, a Cilium rollout that did not finish
-// — travel in the result's Warnings as data, and the call reports the
-// partial result (done false) instead of done over a step that only warned.
-// The Cilium rollout guidance keys off the returned warnings, not off the
-// sentinel no operation returns any more.
+// TestHARepointTool_CarriesTheOperationWarnings: warnings travel as data and make done false.
 func TestHARepointTool_CarriesTheOperationWarnings(t *testing.T) {
 	fakeStratumHost(t)
 	conn := connectorToThisNode(t)
@@ -1076,10 +952,7 @@ func TestHARepointTool_CarriesTheOperationWarnings(t *testing.T) {
 		if !slices.Equal(out.Warnings, warns) {
 			t.Errorf("out.Warnings = %v, want the operation's warnings as data", out.Warnings)
 		}
-		// The guidance for an incomplete rollout must survive, keyed off
-		// the warnings: an agent fleet that did not finish rolling out is
-		// exactly when the operator must check before relying on the VIP,
-		// and must not repeat the repoint.
+		// The incomplete-rollout guidance must survive, keyed off the warnings.
 		for _, want := range []string{"did not finish rolling out", "rollout status", "Do not repeat the repoint"} {
 			if !strings.Contains(out.Next, want) {
 				t.Errorf("out.Next does not carry the incomplete-rollout guidance %q:\n%s", want, out.Next)
@@ -1104,22 +977,11 @@ func TestHARepointTool_CarriesTheOperationWarnings(t *testing.T) {
 	})
 }
 
-// TestCredentialSources_MutatingTools pins which Kubernetes credential the
-// node-local mutating tools use: the node's admin.conf, reached through the
-// node connector the handler is given (registration hands the node-local
-// handlers that connector, and each operation takes the client it is passed) —
-// not the server's configurable connector. Server A stands for admin.conf and
-// answers every request with 500, so no operation gets past its first API call;
-// server B is where the connector's credential resolution would send a request
-// (its kubeconfig fallback includes $KUBECONFIG), and it must stay empty.
-// Cluster-wide upgrade_apply and Cilium repoint use the connector they are
-// given and prove this node belongs to its cluster first; they are not
-// node-local operations.
+// TestCredentialSources_MutatingTools pins the node credential on node-local mutating tools.
 func TestCredentialSources_MutatingTools(t *testing.T) {
 	fakeStratumHost(t)
 
-	// A recording server that fails every request: the calls are expected
-	// to error, and no operation may get past its first API call.
+	// A recording server failing every request: no operation may get past its first API call.
 	recorder := func() (*httptest.Server, func() []string) {
 		var mu sync.Mutex
 		var paths []string
@@ -1142,9 +1004,7 @@ func TestCredentialSources_MutatingTools(t *testing.T) {
 	oldConf := version.AdminConf
 	version.AdminConf = kubetest.Kubeconfig(t, &rest.Config{Host: serverA.URL})
 	t.Cleanup(func() { version.AdminConf = oldConf })
-	// The credential a server started with --kubeconfig hands its
-	// connector: the $KUBECONFIG fallback, so any tool that quietly moved
-	// onto the configurable connector reaches B and fails the pin.
+	// The $KUBECONFIG fallback: a tool that moved onto the configurable connector reaches B and fails.
 	t.Setenv("KUBECONFIG", kubetest.Kubeconfig(t, &rest.Config{Host: serverB.URL}))
 
 	for _, tc := range []struct {
@@ -1157,12 +1017,7 @@ func TestCredentialSources_MutatingTools(t *testing.T) {
 			deps.nodeIP = func() (string, error) { return "10.0.0.1", nil }
 			_, _, err := tokenCreateWith(deps)(t.Context(), nil, TokenCreateIn{})
 			return err
-			// The mint's first cluster call is the maintenance fence take:
-			// every mint republishes cluster-info from local PKI, so the
-			// fence is not control-plane-scoped, and the 500s here stop the
-			// mint at the lease before it ever reaches the bootstrap Secret.
-			// Both calls are the admin credential; the pin below is that B
-			// (the server's configurable connector) sees none of them.
+			// The mint's first call is the maintenance fence take: a kube-system lease, so A sees it first.
 		}, "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1186,9 +1041,7 @@ func TestCredentialSources_MutatingTools(t *testing.T) {
 		})
 	}
 
-	// These cluster-wide operations must first prove this node belongs to
-	// the connector's cluster. B refuses that first API call; neither may
-	// bypass the refusal by falling back to the local admin credential.
+	// These must first prove this node belongs to the connector's cluster; neither may bypass that.
 	for _, name := range []string{"upgrade_apply cluster", "ha_repoint cilium"} {
 		t.Run(name+" uses the connector", func(t *testing.T) {
 			setThisNodeName(t, "cp1")
@@ -1215,12 +1068,7 @@ func TestCredentialSources_MutatingTools(t *testing.T) {
 	}
 }
 
-// TestCATools_RefuseWhatTheValidatorRefuses pins that both CA tools route
-// their arguments through the operations' own validators (certs.CARotateFlags
-// and certs.EtcdCAFlags, the ones the CLI runs): a combination the validator
-// refuses comes back as the validator's error, before run() and its host
-// check. A handler that builds its options by hand drifts here first — today
-// the migrate tool answers every refused combination with the host error.
+// TestCATools_RefuseWhatTheValidatorRefuses pins the validators' errors, before the host check.
 func TestCATools_RefuseWhatTheValidatorRefuses(t *testing.T) {
 	notStratumHost(t)
 
@@ -1261,11 +1109,7 @@ func TestCATools_RefuseWhatTheValidatorRefuses(t *testing.T) {
 	}
 }
 
-// TestCertsRotateCA_ResultCarriesTheRestartWarnings pins that the tool's
-// result returns the restart warnings the CLI prints, straight from
-// internal/certs, so an MCP-driven rotation warns about the x509 window around
-// sign-new exactly like a CLI one. The operations are stubbed, so a completed
-// rotation is reachable without a node.
+// TestCertsRotateCA_ResultCarriesTheRestartWarnings: the result carries the CLI's warnings.
 func TestCertsRotateCA_ResultCarriesTheRestartWarnings(t *testing.T) {
 	fakeStratumHost(t)
 	withDestructiveDeps(t, func(deps *destructiveDeps) {
@@ -1297,16 +1141,7 @@ func TestCertsRotateCA_ResultCarriesTheRestartWarnings(t *testing.T) {
 	}
 }
 
-// The destructive handlers reach their node operations through one struct of
-// operation functions, destructiveDeps, the way tokenDeps serves token_create
-// (internal/mcp/stratumwrite.go). defaultDestructiveDeps wires every field to
-// the real operation, and destructiveOps — the package variable the handlers
-// read — carries them. The guards below define that seam; the handlers call
-// no operation except through it.
-
-// withDestructiveDeps replaces the handlers' operations for the length of the
-// test and restores the real ones afterwards. tune adjusts the fields a test
-// records or redirects; the rest keep working defaults.
+// withDestructiveDeps swaps the handlers' operations for the test and restores them after.
 func withDestructiveDeps(t *testing.T, tune func(*destructiveDeps)) {
 	t.Helper()
 	deps := defaultDestructiveDeps()
@@ -1316,8 +1151,7 @@ func withDestructiveDeps(t *testing.T, tune func(*destructiveDeps)) {
 	setDestructiveDeps(t, deps)
 }
 
-// setDestructiveDeps installs a whole deps value — usually recordingDeps with
-// its expected-operation fields rebound — and restores the real one after.
+// setDestructiveDeps installs a whole deps value and restores the real one after.
 func setDestructiveDeps(t *testing.T, deps destructiveDeps) {
 	t.Helper()
 	old := destructiveOps
@@ -1325,11 +1159,7 @@ func setDestructiveDeps(t *testing.T, deps destructiveDeps) {
 	destructiveOps = deps
 }
 
-// recordingDeps builds deps whose every operation appends its name to fired
-// and returns zero values, so a refused argument combination proves it
-// reached no operation, and an accepted one proves it reached only the
-// operation its arguments name. A row that asserts options rebinds the field
-// it expects and records the argument there.
+// recordingDeps records what fired: a refusal must reach nothing, an acceptance only its operation.
 func recordingDeps(fired *[]string) destructiveDeps {
 	return destructiveDeps{
 		upgradeNode:    func(io.Writer, upgrade.NodeOptions) error { *fired = append(*fired, "upgradeNode"); return nil },
@@ -1367,9 +1197,7 @@ func recordingDeps(fired *[]string) destructiveDeps {
 	}
 }
 
-// assertRow checks what one handler call did. A refusal (want "") must carry
-// wantErr and reach no operation; an accepted combination must reach exactly
-// the operation named want and nothing else.
+// assertRow: a refusal must carry wantErr and reach nothing; an acceptance must reach only want.
 func assertRow(t *testing.T, fired []string, want, wantErr string, err error) {
 	t.Helper()
 	if want == "" {
@@ -1389,11 +1217,7 @@ func assertRow(t *testing.T, fired []string, want, wantErr string, err error) {
 	}
 }
 
-// connectorToThisNode returns a connector whose credential addresses a fake
-// API server that proves itself this node's own cluster: a Node named cp1 and
-// a kube-system whose UID matches the local cluster, which the stubbed
-// localCluster answers with. The cluster-wide handlers must get past
-// clusterOfThisNode before their operation runs.
+// connectorToThisNode's fake server proves itself this node's cluster, past clusterOfThisNode.
 func connectorToThisNode(t *testing.T) *kube.Connector {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1417,18 +1241,7 @@ func connectorToThisNode(t *testing.T) *kube.Connector {
 	return kube.NewConnector(kube.Options{Kubeconfig: kubetest.Kubeconfig(t, &rest.Config{Host: srv.URL})})
 }
 
-// TestDestructiveHandlers_PassTheValidatedOptions pins the validated
-// argument mapping: one table
-// per destructive handler sends each accepted argument combination and
-// records the options its operation receives, and each refused combination
-// is checked to reach no operation at all. Everything runs against the one
-// deps struct with a faked host probe, so the argument-to-operation mapping
-// the two front ends rebuild is pinned without a node.
-//
-// The refusal rows pin the validated behaviour (notably cluster
-// with phase, refused before mutation): a handler that
-// rebuilt its options by hand, or answered a refusal by calling the
-// operation anyway, fails here first.
+// TestDestructiveHandlers_PassTheValidatedOptions pins the argument-to-operation mapping.
 func TestDestructiveHandlers_PassTheValidatedOptions(t *testing.T) {
 	t.Run("certs_rotate_ca", func(t *testing.T) {
 		fakeStratumHost(t)
@@ -1476,8 +1289,7 @@ func TestDestructiveHandlers_PassTheValidatedOptions(t *testing.T) {
 			}},
 			{"neither cluster nor phase", CertsRotateCAIn{}, "", "phase is required", nil},
 			{"unknown phase", CertsRotateCAIn{Phase: "drop-all"}, "", "unknown phase", nil},
-			// Cluster with a phase answers before
-			// anything runs, with the shared validator's words.
+			// Answered before anything runs, with the shared validator's words.
 			{"cluster with a phase", CertsRotateCAIn{Cluster: true, Phase: "sign-new"}, "", "not both", nil},
 			{"contradicting workload flags", CertsRotateCAIn{Cluster: true, RestartWorkloads: true, SkipWorkloadCheck: true}, "", "contradict each other", nil},
 			{"skip_token_check without force", CertsRotateCAIn{Cluster: true, SkipTokenCheck: true}, "", "goes with --force", nil},
@@ -1528,8 +1340,7 @@ func TestDestructiveHandlers_PassTheValidatedOptions(t *testing.T) {
 					t.Errorf("MigrateEtcdCA received %+v, want %+v", gotNode, want)
 				}
 			}},
-			// cluster with no phase is the CLI's --cluster form: it runs the
-			// whole migration, on the options the validator accepted.
+			// The CLI's --cluster form: the whole migration, on the validator's options.
 			{"cluster reaches MigrateEtcdCACluster", CertsMigrateEtcdCAIn{Cluster: true}, "migrateEtcdCACluster", "", func(t *testing.T) {
 				if want := (certs.EtcdCAOptions{Quiet: true}); gotCluster != want {
 					t.Errorf("MigrateEtcdCACluster received %+v, want %+v", gotCluster, want)
@@ -1854,8 +1665,7 @@ func TestDestructiveHandlers_PassTheValidatedOptions(t *testing.T) {
 
 		_, _, err := UninstallHandler()(context.Background(), nil, UninstallIn{})
 		assertRow(t, fired, "uninstallRun", "", err)
-		// Starting the server with --allow-destructive is the confirmation,
-		// so the tool always runs the real teardown, never the preview.
+		// --allow-destructive is the confirmation, so the tool runs the real teardown, never the preview.
 		if !gotForce {
 			t.Error("Uninstall received force=false, which is the preview that removes nothing")
 		}
@@ -1935,11 +1745,7 @@ func TestDestructiveHandlers_PassTheValidatedOptions(t *testing.T) {
 	})
 }
 
-// twinClusterServer serves a one-node cluster — a Ready control plane named
-// cp1 on v1.30.0, and a kube-system whose UID is nsUID — and records every
-// request path it receives. Two instances built with different UIDs are two
-// distinguishable clusters that both hold a node named cp1, which is exactly
-// the ambiguity a cluster-wide operation must not get wrong.
+// twinClusterServer: two UIDs make two clusters that both hold a node named cp1.
 func twinClusterServer(t *testing.T, nsUID string) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -1974,10 +1780,7 @@ func twinClusterServer(t *testing.T, nsUID string) (*httptest.Server, func() []s
 	}
 }
 
-// callToolFor runs one registered tool over the in-memory transport and
-// decodes its structured result into out. A tool-reported error is the
-// caller's to judge — a test may need the reads a failed call made — so the
-// decoded text is returned and out is left at its zero value.
+// callToolFor decodes the structured result into out; a tool-reported error's text is returned.
 func callToolFor[TOut any](t *testing.T, cs *sdk.ClientSession, name string, args map[string]any, out *TOut) string {
 	t.Helper()
 	res, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
@@ -2003,22 +1806,12 @@ func callToolFor[TOut any](t *testing.T, cs *sdk.ClientSession, name string, arg
 	return msg.String()
 }
 
-// TestUpgradePlanAndApply_AddressTheSameCluster: server A stands for the
-// node's admin.conf and server B for the operator's --kubeconfig, and they
-// are two different clusters that both hold a node named cp1: A's
-// kube-system is uid-mcp, B's is uid-twin. Both catalog rows must be built
-// on the node connector, so an upgrade_plan call and an upgrade_apply
-// cluster-scope call send their node reads to the same server — A, the
-// cluster this node belongs to, the one the apply rolls — and B stays
-// silent. Fails if both rows build their handlers
-// on the configurable connector, so the plan previews B, a cluster the apply
-// refuses to roll and that a narrowed --kubeconfig can point anywhere.
+// TestUpgradePlanAndApply_AddressTheSameCluster: both rows must read the node connector's cluster.
 func TestUpgradePlanAndApply_AddressTheSameCluster(t *testing.T) {
 	fakeStratumHost(t)
 	setThisNodeName(t, "cp1")
 
-	// This node's own cluster, as clusterOfThisNode proves it: the local
-	// client holds kube-system uid-mcp, matching A and not B.
+	// This node's own cluster: the local client holds kube-system uid-mcp, matching A and not B.
 	oldLocal := localCluster
 	t.Cleanup(func() { localCluster = oldLocal })
 	localCluster = func() (kubernetes.Interface, string, error) {
@@ -2032,14 +1825,11 @@ func TestUpgradePlanAndApply_AddressTheSameCluster(t *testing.T) {
 	version.AdminConf = kubetest.Kubeconfig(t, &rest.Config{Host: serverA.URL})
 	t.Cleanup(func() { version.AdminConf = oldConf })
 
-	// The server's two connectors, as pkg/cli's newConnectors builds them:
-	// the configurable one on the operator's --kubeconfig (B), the node
-	// connector on admin.conf (A).
+	// The server's two connectors: the configurable one on B's --kubeconfig, the node one on A.
 	conn := kube.NewConnector(kube.Options{Kubeconfig: kubetest.Kubeconfig(t, &rest.Config{Host: serverB.URL})})
 	nodeConn := kube.NewConnector(kube.Options{Kubeconfig: version.AdminConf})
 
-	// The rollout itself is replaced: this guard is about which cluster the
-	// tools address, not about the upgrade running.
+	// The rollout is replaced: this guard is about which cluster the tools address.
 	withDestructiveDeps(t, func(deps *destructiveDeps) {
 		deps.upgradeCluster = func(io.Writer, upgrade.ClusterOptions) error { return nil }
 	})
@@ -2116,24 +1906,10 @@ func TestUpgradePlanAndApply_AddressTheSameCluster(t *testing.T) {
 	})
 }
 
-// TestNoStaleGuardReferences pins that no prose justifies current behaviour
-// through a guard that does not exist: the Makefile and the GitHub
-// workflows must not name guardStdout — that prose is live, it justifies
-// steps CI still runs, so it must carry the current design (opMu is the
-// destructive tools' sole exclusion, and nothing under internal/mcp
-// redirects os.Stdout) — and every .go file in this package, tests included,
-// must stay free of language that conditions the destructive tools'
-// exclusion on the guard's mutex.
-//
-// A comment sweep has no behavior a test could drive, so this is a pin on
-// the source text, the same class of pin as TestNoMCPPathRedirectsStdout. It
-// reads the files relative to this package's directory and reports the line
-// each hit sits on, so a failure names the comment to rewrite.
+// TestNoStaleGuardReferences: a comment sweep has no behavior a test could drive.
 func TestNoStaleGuardReferences(t *testing.T) {
 	t.Run("the build and CI files drop the guard", func(t *testing.T) {
-		// The scan reads the repository root's build and CI prose: the
-		// Makefile and every GitHub workflow, two directories up from the
-		// package directory go test runs in.
+		// The Makefile and every GitHub workflow, two directories up from the package directory.
 		type target struct{ display, path string }
 		targets := []target{{display: "Makefile", path: filepath.Join("..", "..", "Makefile")}}
 		workflowDir := filepath.Join("..", "..", ".github", "workflows")
@@ -2175,9 +1951,7 @@ func TestNoStaleGuardReferences(t *testing.T) {
 	})
 
 	t.Run("internal/mcp keeps no stale gate language", func(t *testing.T) {
-		// The needle is split so this pin's own source contains no line
-		// matching what it scans for: the stale gate language appears
-		// nowhere in the package, this file included, while the pin bans it.
+		// The needle is split so this pin's own source contains no line matching what it scans for.
 		needle := "R22-" + "gated"
 		var hits []string
 		err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {

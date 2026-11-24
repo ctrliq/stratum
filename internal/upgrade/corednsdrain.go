@@ -12,23 +12,15 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// CoreDNS has no PodDisruptionBudget by design, so the orchestrator gives DNS
-// the guarantee a PDB would have: at most one node hosting a replica drains at
-// a time, and only once another replica is Ready elsewhere.
+// CoreDNS has no PDB: one replica host drains at a time, once a replica is Ready elsewhere.
 const dnsSelector = "k8s-app=kube-dns"
 
-// dnsReadyWait bounds the wait for a Ready replica elsewhere. A var for tests.
+// A var for tests.
 var dnsReadyWait = 5 * time.Minute
 
 var dnsDrainMu sync.Mutex
 
-// dnsDrainState reads, for a cordoned node about to drain: whether it hosts a
-// CoreDNS replica, whether a Running and Ready replica exists on another node
-// that is itself Ready, and whether the cluster has any other node at all.
-//
-// A replica counts as serving elsewhere only if its node is NodeReady too, a
-// terminating replica here still counts as hosting, and one elsewhere does
-// not count as serving. Pure.
+// Pure. A terminating replica here still counts as hosting; one elsewhere is not serving.
 func dnsDrainState(pods []corev1.Pod, nodes []corev1.Node, node string) (hosts, readyElsewhere, otherNodes bool) {
 	ready := map[string]bool{}
 	for _, n := range nodes {
@@ -70,9 +62,7 @@ func isNodeReady(n corev1.Node) bool {
 	return false
 }
 
-// gateCoreDNSDrain runs after node has been cordoned and returns a release
-// func for once the drain is done. On timeout it fails with the node still
-// cordoned and nothing evicted.
+// Runs after node is cordoned; a timeout fails with the node left cordoned and nothing evicted.
 func gateCoreDNSDrain(w io.Writer, ctx context.Context, cs kubernetes.Interface, node string) (release func(), err error) {
 	noop := func() {}
 	read := func() (bool, bool, bool, error) {

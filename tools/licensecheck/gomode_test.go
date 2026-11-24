@@ -10,10 +10,7 @@ import (
 	"testing"
 )
 
-// TestClassifiesEachLinkedPackage runs one build that links one package per
-// case and checks each package's own verdict. Only the main module is
-// first-party; every dependency is checked, even one replaced by a directory
-// inside the main module.
+// One build links one package per case; each package's own verdict is checked.
 func TestClassifiesEachLinkedPackage(t *testing.T) {
 	mit, isc := licenseText(t, "MIT"), licenseText(t, "ISC")
 	bsd2, bsd3 := licenseText(t, "BSD-2-Clause"), licenseText(t, "BSD-3-Clause")
@@ -35,16 +32,14 @@ func TestClassifiesEachLinkedPackage(t *testing.T) {
 		{path: "example.com/copying", dir: "deps/copying", files: map[string]string{
 			"COPYING": bsd3, "copying.go": src("", "copying")}},
 
-		// SPDX headers on every compiled file, in a module with no license
-		// file: the headers alone decide each package.
+		// SPDX headers on every compiled file; the module has no license file.
 		{path: "example.com/spdx", dir: "deps/spdx", files: map[string]string{
 			"zerobsd/a.go": src(spdx("0BSD"), "zerobsd"),
 			"zlib/a.go":    src(spdx("Zlib"), "zlib"),
 			"bsl/a.go":     src(spdx("BSL-1.0"), "bsl"),
 		}},
 
-		// SPDX expressions. The module has no license file, so a checker that
-		// ignored the headers would warn on every one of these instead.
+		// SPDX expressions; the module has no license file, so headers decide.
 		{path: "example.com/expr", dir: "deps/expr", files: map[string]string{
 			"orpass/a.go":     src(spdx("MIT OR MPL-2.0"), "orpass"),
 			"orfail/a.go":     src(spdx("MPL-2.0 OR CC-BY-SA-4.0"), "orfail"),
@@ -68,33 +63,28 @@ func TestClassifiesEachLinkedPackage(t *testing.T) {
 			"mixedheaders/a.go": src(spdx("MIT"), "mixedheaders"),
 			"mixedheaders/b.go": src(spdx("MPL-2.0"), "mixedheaders"),
 		}},
-		// A header on some files still applies to them: an MPL-2.0 file
-		// beside an unheaded one fails, though the module's LICENSE is MIT.
+		// A header on some files still applies to them, beside an unheaded file.
 		{path: "example.com/partialheader", dir: "deps/partialheader", files: map[string]string{
 			"LICENSE":   mit,
 			"headed.go": src(spdx("MPL-2.0"), "partialheader"),
 			"bare.go":   src("", "partialheader")}},
-		// A prebuilt object has no header either: its LICENSE decides, but
-		// the Go file's MPL-2.0 header still fails the package.
+		// A prebuilt object has no header either; the Go file's header still fails.
 		{path: "example.com/sysoheader", dir: "deps/sysoheader", files: map[string]string{
 			"LICENSE":         mit,
 			"headed.go":       src(spdx("MPL-2.0"), "sysoheader"),
 			"blob_amd64.syso": "not an object file; go list reads only the name",
 			"blob_arm64.syso": "not an object file; go list reads only the name"}},
-		// An embedded file has no header either: the module's MPL-2.0
-		// LICENSE applies though every Go file is headed MIT.
+		// An embedded file has no header either; the MPL-2.0 LICENSE applies.
 		{path: "example.com/embedded", dir: "deps/embedded", files: map[string]string{
 			"LICENSE":     mpl,
 			"embedded.go": src(spdx("MIT"), "embedded", "embed") + "\n//go:embed data.txt\nvar data string\n",
 			"data.txt":    "shipped in the binary"}},
-		// A header the check cannot read is an unknown license for its file,
-		// though the module's LICENSE is MIT.
+		// A header the check cannot read is unknown for its file.
 		{path: "example.com/badheader", dir: "deps/badheader", files: map[string]string{
 			"LICENSE":   mit,
 			"headed.go": src(spdx("MPL 2.0"), "badheader"),
 			"bare.go":   src("", "badheader")}},
-		// Only comments before the first code are a header: an SPDX tag
-		// after "/* banner */ package p" is not one, so the LICENSE decides.
+		// Only comments before the first code are a header.
 		{path: "example.com/bannercode", dir: "deps/bannercode", files: map[string]string{
 			"LICENSE": mpl,
 			"a.go":    "/* banner */ package bannercode\n\n" + spdx("MIT") + "\n"}},
@@ -102,8 +92,7 @@ func TestClassifiesEachLinkedPackage(t *testing.T) {
 		{path: "example.com/twotags", dir: "deps/twotags", files: map[string]string{
 			"LICENSE": mit,
 			"a.go":    src(spdx("MIT")+"\n"+spdx("MPL-2.0"), "twotags")}},
-		// A header file that assembly can #include ships too, so its own
-		// header counts.
+		// A header file that assembly can #include ships too, so its header counts.
 		{path: "example.com/asmheader", dir: "deps/asmheader", files: map[string]string{
 			"LICENSE": mit,
 			"a.go":    src(spdx("MIT"), "asmheader"),
@@ -143,12 +132,10 @@ func TestClassifiesEachLinkedPackage(t *testing.T) {
 			"sub/deeper/d.go": src("", "deeper"),
 		}},
 
-		// Unknown or missing licenses warn. deps/LICENSE, written below, sits
-		// above every module root and must never be read.
+		// Unknown or missing licenses warn; deps/LICENSE below must never be read.
 		{path: "example.com/unknowntext", dir: "deps/unknowntext", files: map[string]string{
 			"LICENSE": unknownText, "unknowntext.go": src("", "unknowntext")}},
-		// An allowed text followed by terms no license matches, alone or
-		// after a copyright notice.
+		// An allowed text plus terms no license matches, alone or after a copyright notice.
 		{path: "example.com/copyrightterms", dir: "deps/copyrightterms", files: map[string]string{
 			"LICENSE":           mit + "\nCopyright (c) Example. Commercial use prohibited.\n",
 			"copyrightterms.go": src("", "copyrightterms")}},
@@ -161,16 +148,13 @@ func TestClassifiesEachLinkedPackage(t *testing.T) {
 		{path: "example.com/missing", dir: "deps/missing", files: map[string]string{
 			"missing.go": src("", "missing")}},
 
-		// The one exception (human decision "Exception: docs license") covers
-		// go-digest's CC-BY-SA-4.0 LICENSE.docs, and only go-digest: the same
-		// files under another path fail.
+		// The exception covers only go-digest; the same files under another path fail.
 		{path: "github.com/opencontainers/go-digest", dir: "deps/go-digest", files: map[string]string{
 			"LICENSE": apache, "LICENSE.docs": ccbysa, "digest.go": src("", "digest")}},
 		{path: "example.com/digestlike", dir: "deps/digestlike", files: map[string]string{
 			"LICENSE": apache, "LICENSE.docs": ccbysa, "digest.go": src("", "digestlike")}},
 
-		// A directory beside the main module whose name extends the main
-		// module's directory name is still outside it.
+		// A directory whose name extends the main module's directory name is outside it.
 		{path: "example.com/apple", dir: "apple", files: map[string]string{
 			"LICENSE": mpl, "apple.go": src("", "apple")}},
 
@@ -292,9 +276,7 @@ func TestUnknownAndMissingLicensesOnlyWarn(t *testing.T) {
 	}
 }
 
-// A package that passes only because a header's license is excepted still
-// gets its NOTE line when its other files fall back to an allowed license
-// file.
+// An excepted header still gets its NOTE line beside an allowed license file.
 func TestExceptedHeaderBesideLicenseFileNotes(t *testing.T) {
 	dir := fixture(t, map[string]string{"main.go": mainFile("github.com/opencontainers/go-digest")},
 		module{path: "github.com/opencontainers/go-digest", dir: "deps/go-digest", files: map[string]string{
@@ -309,16 +291,7 @@ func TestExceptedHeaderBesideLicenseFileNotes(t *testing.T) {
 	}
 }
 
-// classifierText returns a license file from testdata/classifier, each an
-// edge case for the license classifier. MIT-and-Apache-2.0-notice is
-// go.yaml.in/yaml/v3 v3.0.5's LICENSE, verbatim: the MIT text, then the
-// Apache-2.0 notice that covers the module's other files.
-// MIT-and-altered-Apache-2.0-notice is that file with a non-commercial
-// sentence inserted into the notice. MIT-and-AGPL-3.0-notice is
-// testdata/licenses/MIT.txt followed by the notice from the AGPL-3.0's "How to
-// Apply These Terms". BSD-3-Clause-no-nuclear is
-// testdata/licenses/BSD-3-Clause.txt with a fourth condition inserted, which
-// keeps the software out of nuclear facilities.
+// A license file from testdata/classifier, each an edge case for the classifier.
 func classifierText(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "classifier", name+".txt"))
@@ -328,11 +301,7 @@ func classifierText(t *testing.T, name string) string {
 	return string(b)
 }
 
-// A license notice outside every license text in a file is a license of its
-// own, as in go.yaml.in/yaml/v3's LICENSE: the MIT text, then an Apache-2.0
-// notice for the rest of the module. The same file with an AGPL-3.0 notice
-// must fail. The yaml file also says in prose which files each license
-// covers, which no license matches, so it warns for a human to read.
+// A notice outside every license text in a file is a license of its own.
 func TestLicenseNoticeBesideLicenseText(t *testing.T) {
 	dir := fixture(t, map[string]string{
 		"main.go": mainFile("example.com/mitagpl", "example.com/mitapache"),
@@ -348,8 +317,7 @@ func TestLicenseNoticeBesideLicenseText(t *testing.T) {
 	wantWarn(t, r, "example.com/mitapache")
 	wantOnly(t, r, failLine, "example.com/mitagpl")
 
-	// The file is classified directly to show the notice is found beside
-	// the MIT text, and that only the prose is unknown.
+	// Classified directly: the notice is found beside the MIT text, and only the prose is unknown.
 	t.Run("both licenses found", func(t *testing.T) {
 		fc := &fileClassifier{cache: map[string]fileLicenses{}}
 		got, err := fc.classify(filepath.Join("testdata", "classifier", "MIT-and-Apache-2.0-notice.txt"))
@@ -365,11 +333,7 @@ func TestLicenseNoticeBesideLicenseText(t *testing.T) {
 	})
 }
 
-// A text the classifier matches only loosely is not the license it resembles,
-// but a different one: a BSD-3-Clause text with a clause added, or an
-// Apache-2.0 notice that forbids commercial use. Such a text is unknown, so
-// its package warns, naming what it resembles and how closely, even beside a
-// license the file identifies.
+// A loose match is not the license it resembles but a different one: unknown, so warn.
 func TestLooseMatchIsUnknownLicense(t *testing.T) {
 	dir := fixture(t, map[string]string{
 		"main.go": mainFile("example.com/nonuclear", "example.com/noncommercial"),
@@ -398,9 +362,7 @@ func TestLooseMatchIsUnknownLicense(t *testing.T) {
 	}
 }
 
-// The checker loads the build exactly as `make build` compiles it: one go
-// list per -goarch, for -goos, with cgo off and -tags applied, whatever the
-// caller's own environment says, and without changing that environment.
+// Loads the build as make build does: one go list per arch, cgo off, -tags applied.
 func TestLoadsEachTargetLikeTheShippedBuild(t *testing.T) {
 	mpl := licenseText(t, "MPL-2.0")
 	only := func(name string) module {
@@ -418,8 +380,7 @@ func TestLoadsEachTargetLikeTheShippedBuild(t *testing.T) {
 			"LICENSE": licenseText(t, "MIT"), "mit.go": src("", "mit")}},
 		only("armonly"), only("darwinonly"), only("cgoonly"), only("tagonly"),
 	)
-	// The caller's environment names a different target; the checker must
-	// override it for go list and leave it untouched.
+	// The caller's env names another target; override it for go list, leave it be.
 	callerEnv := map[string]string{"GOOS": "darwin", "GOARCH": "arm64", "CGO_ENABLED": "1"}
 	for key, value := range callerEnv {
 		t.Setenv(key, value)
@@ -459,10 +420,7 @@ func TestLoadsEachTargetLikeTheShippedBuild(t *testing.T) {
 	})
 }
 
-// The shipped build uses no workspace, so a go.work, whether GOWORK names it
-// or the go command finds it in a parent directory, must not change what is
-// checked. In a workspace every module it uses is a main module, which the
-// checker would take for first-party code and skip.
+// A go.work must not change what is checked: its modules would be "main".
 func TestIgnoresGoWorkspace(t *testing.T) {
 	dir := fixture(t, map[string]string{"main.go": mainFile("example.com/mpl")},
 		module{path: "example.com/mpl", dir: "deps/mpl", files: map[string]string{
@@ -479,8 +437,7 @@ func TestIgnoresGoWorkspace(t *testing.T) {
 			} else {
 				t.Setenv("GOWORK", gowork)
 			}
-			// The workspace is in effect for the caller, so a pass could only
-			// be the checker's doing.
+			// The workspace is in effect for the caller, so a pass could only be the checker's doing.
 			cmd := exec.Command("go", "env", "GOWORK")
 			cmd.Dir = dir
 			out, err := cmd.Output()
@@ -498,8 +455,6 @@ func TestIgnoresGoWorkspace(t *testing.T) {
 	}
 }
 
-// samePath reports whether a and b name the same file once symbolic links
-// are resolved, as on macOS, where the temporary directory is a link.
 func samePath(t *testing.T, a, b string) bool {
 	t.Helper()
 	if a == "" || b == "" {
@@ -516,8 +471,7 @@ func samePath(t *testing.T, a, b string) bool {
 	return ra == rb
 }
 
-// A package that fails to load is a tool error, never skipped: a dropped
-// package would pass silently. It exits 2 even when other packages fail.
+// A package that fails to load is a tool error, never skipped; it exits 2.
 func TestPackageLoadErrorExits2(t *testing.T) {
 	mpl := licenseText(t, "MPL-2.0")
 

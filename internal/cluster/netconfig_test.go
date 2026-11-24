@@ -13,9 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestResolveNetConfigKeepsPersistedCIDRs: a joined control plane has
-// the cluster's custom CIDRs in netconfig and usually no spec.network. A
-// restart must not overwrite them with the built-in defaults.
 func TestResolveNetConfigKeepsPersistedCIDRs(t *testing.T) {
 	const pod, svc = "10.42.0.0/16", "10.43.0.0/16"
 	for _, tc := range []struct {
@@ -40,7 +37,7 @@ func TestResolveNetConfigKeepsPersistedCIDRs(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			for i := 1; i <= 2; i++ { // the start, then a restart
+			for i := 1; i <= 2; i++ {
 				cfg, err := LoadConfig(path)
 				if err != nil {
 					t.Fatal(err)
@@ -64,8 +61,6 @@ func TestResolveNetConfigKeepsPersistedCIDRs(t *testing.T) {
 	}
 }
 
-// First boot (no netconfig) honours spec.network, filling an unset half from the
-// defaults; a later edit does not move the recorded CIDRs.
 func TestResolveNetConfigFirstBootAndLaterEdit(t *testing.T) {
 	orig := version.NetConfigPath
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")
@@ -89,8 +84,6 @@ func TestResolveNetConfigFirstBootAndLaterEdit(t *testing.T) {
 	}
 }
 
-// A config that names CIDRs other than the recorded ones warns on stderr, and
-// says so only then: unset, or equal to the recorded ones, is silent.
 func TestResolveNetConfigWarnsOnlyOnADifferingConfig(t *testing.T) {
 	const pod, svc = "10.42.0.0/16", "10.43.0.0/16"
 	for _, tc := range []struct {
@@ -145,9 +138,6 @@ func TestResolveNetConfigWarnsOnlyOnADifferingConfig(t *testing.T) {
 	}
 }
 
-// A node with state but no netconfig predates netconfig (or lost it). Its state
-// records the cluster's CIDRs: use them, persist them, and let a differing
-// spec.network lose, rather than apply defaults or the config's own ranges.
 func TestResolveNetConfigFallsBackToNodeState(t *testing.T) {
 	const pod, svc = "10.42.0.0/16", "10.43.0.0/16"
 	for _, tc := range []struct {
@@ -191,13 +181,6 @@ func TestResolveNetConfigFallsBackToNodeState(t *testing.T) {
 	})
 }
 
-// TestRetryAfterAFailedFirstStartKeepsTheFirstNetConfig pins what a retry does
-// today after a failed first start: the first start resolves spec.network and
-// persists netconfig, and dies at the certificate step with no node state
-// written. The retry with a corrected network must not take the correction —
-// netconfig exists, so the recorded CIDRs win — and a different configured
-// domain is refused with both named. Step 6 changes this on purpose and deletes
-// this test in the same pull request that lands the corrected-network guard.
 func TestRetryAfterAFailedFirstStartKeepsTheFirstNetConfig(t *testing.T) {
 	const podA, svcA = "10.42.0.0/16", "10.43.0.0/16"
 	const podB, svcB = "10.99.0.0/16", "10.98.0.0/16"
@@ -215,7 +198,6 @@ func TestRetryAfterAFailedFirstStartKeepsTheFirstNetConfig(t *testing.T) {
 		t.Fatalf("node state read = %v; a failed first start must have saved none", err)
 	}
 
-	// The retry with a corrected network: the recorded CIDRs win.
 	netc, err = resolveNetConfig(Network{PodCIDR: podB, ServiceCIDR: svcB, ClusterDomain: "a.internal"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +212,6 @@ func TestRetryAfterAFailedFirstStartKeepsTheFirstNetConfig(t *testing.T) {
 		t.Fatalf("netconfig = %q, want the first start's %q", got, want)
 	}
 
-	// A retry that names another cluster domain is refused, naming both.
 	_, err = resolveNetConfig(Network{ClusterDomain: "b.internal"}, nil)
 	if err == nil {
 		t.Fatal("a retry naming another cluster domain was accepted")
@@ -247,10 +228,7 @@ func TestRetryAfterAFailedFirstStartKeepsTheFirstNetConfig(t *testing.T) {
 	}
 }
 
-// isolateNodeFiles points the node state and PKI directories at empty temp ones.
-// resolveNetConfig resolves the cluster domain through netcfg.ResolveDomain, which
-// reads them to tell an established node from a first start, so a test that
-// means a first start must not see a real host's files.
+// resolveNetConfig reads the state and PKI dirs to tell a first start from an established node.
 func isolateNodeFiles(t *testing.T) {
 	t.Helper()
 	origConf, origPKI := version.K8sConfDir, version.PKIDir
@@ -258,12 +236,7 @@ func isolateNodeFiles(t *testing.T) {
 	t.Cleanup(func() { version.K8sConfDir, version.PKIDir = origConf, origPKI })
 }
 
-// resolveNetConfig carries the cluster domain with the
-// CIDRs. A first boot takes spec.network.clusterDomain and persists it (the
-// third line only for a custom domain, so a default-domain file stays rollback-
-// safe); once netconfig exists the recorded domain wins, a different configured
-// one is refused with nothing rewritten, and a node that lost the file recovers
-// both from its state.
+// The domain is a third line only when custom, so a default-domain file stays rollback-safe.
 func TestResolveNetConfigDomain(t *testing.T) {
 	const pod, svc = "10.42.0.0/16", "10.43.0.0/16"
 	read := func(t *testing.T) string {

@@ -10,8 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Every dir that holds etcd data, private keys, credentialed kubeconfigs or
-// audit logs is in the private (0700) list, and none of them is public.
 func TestDirsKeepThePrivateDirsPrivate(t *testing.T) {
 	pub, priv := publicDirs(), privateDirs()
 	for _, d := range []string{version.EtcdDataDir, version.PKIDir, version.KubeconfigDir, version.AuditLogDir} {
@@ -24,7 +22,6 @@ func TestDirsKeepThePrivateDirsPrivate(t *testing.T) {
 	}
 }
 
-// privateMode is d's permission bits, failing the test if d cannot be read.
 func privateMode(t *testing.T, d string) os.FileMode {
 	t.Helper()
 	fi, err := os.Stat(d)
@@ -34,8 +31,7 @@ func privateMode(t *testing.T, d string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// looseDir creates d at exactly 0755, whatever the umask, so a test that
-// expects it tightened is not satisfied by the umask alone.
+// Exactly 0755, whatever the umask, so an expecting test is not satisfied by it alone.
 func looseDir(t *testing.T, d string) {
 	t.Helper()
 	if err := os.MkdirAll(d, 0o755); err != nil {
@@ -57,7 +53,6 @@ func TestPrivateDirTightensAnExistingDir(t *testing.T) {
 	}
 }
 
-// A dir that does not exist yet is created private.
 func TestPrivateDirCreatesANewDirPrivate(t *testing.T) {
 	d := filepath.Join(t.TempDir(), "new")
 	if err := ensurePrivateDir(d); err != nil {
@@ -68,8 +63,6 @@ func TestPrivateDirCreatesANewDirPrivate(t *testing.T) {
 	}
 }
 
-// A restore kept before the data dir was private left a 0755 copy of the
-// whole cluster state beside it; every start tightens those copies too.
 func TestDirsTightenEtcdRestoreCopies(t *testing.T) {
 	// A path with glob metacharacters: the copies are matched by prefix.
 	root := filepath.Join(t.TempDir(), "a[b*c?")
@@ -77,8 +70,7 @@ func TestDirsTightenEtcdRestoreCopies(t *testing.T) {
 	pre := data + ".pre-restore-20261016-120000"
 	failed := data + ".failed-restore-20261016-120000"
 	other := filepath.Join(root, "etcd-unrelated")
-	// Names that share a prefix but are not restore copies: no "-" after the
-	// kind, or nothing after it.
+	// Names that share a prefix but are not restore copies.
 	nearPre := data + ".pre-restorefoo"
 	nearFailed := data + ".failed-restore"
 	for _, d := range []string{pre, failed, other, nearPre, nearFailed} {
@@ -100,15 +92,12 @@ func TestDirsTightenEtcdRestoreCopies(t *testing.T) {
 	}
 }
 
-// A data dir whose parent does not exist yet has no copies to tighten.
 func TestTightenEtcdRestoreCopiesWithoutAParent(t *testing.T) {
 	if err := tightenEtcdRestoreCopies(filepath.Join(t.TempDir(), "missing", "etcd")); err != nil {
 		t.Errorf("tightenEtcdRestoreCopies with no parent = %v, want nil", err)
 	}
 }
 
-// A parent that cannot be listed warns and does not fail the start: the live
-// data dir is already private, and the copies cannot be found to tighten.
 func TestTightenEtcdRestoreCopiesWarnsWhenItCannotList(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "parent")
 	if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
@@ -124,8 +113,6 @@ func TestTightenEtcdRestoreCopiesWarnsWhenItCannotList(t *testing.T) {
 	}
 }
 
-// Dirs makes every private dir, the etcd data dir's restore copies included,
-// 0700 on every start, whatever an older release left them at.
 func TestDirsMakesTheEtcdDataDirAndItsCopiesPrivate(t *testing.T) {
 	root := t.TempDir()
 	oldData, oldConf, oldRun := version.DataDir, version.ConfDir, version.RunDir

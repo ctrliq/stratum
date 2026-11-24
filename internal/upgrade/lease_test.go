@@ -31,12 +31,7 @@ func fakeClock(t *testing.T, at time.Time) *time.Time {
 	return &now
 }
 
-// TestClusterUpgradeStillTakesTheReleasedLeaseName: the lease name is a
-// cluster-wide contract, not a constant of this build. An orchestrator on the
-// previous release takes kube-system/stratum-cluster-upgrade and reads it
-// before upgrading; renaming the lease here, or dropping it early, lets an old
-// and a new orchestrator upgrade the same cluster at once. The name is pinned
-// as a literal, not through upgradeLeaseName.
+// The released name is pinned as a literal, not upgradeLeaseName: a rename must fail this test.
 func TestClusterUpgradeStillTakesTheReleasedLeaseName(t *testing.T) {
 	fakeClock(t, time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC))
 	ctx := context.Background()
@@ -68,11 +63,7 @@ func TestClusterUpgradeStillTakesTheReleasedLeaseName(t *testing.T) {
 	}
 }
 
-// TestUpgradeLeaseRefusalNamesAMaintenanceRun: a CA rotation takes the released
-// upgrade lease as its compatibility fence, so the run holding it may be no
-// upgrade at all. The refusal names a maintenance run and its holder, never
-// "another `stratum upgrade --cluster`", which sent an operator looking for an
-// upgrade that was not running.
+// A CA rotation holds this lease too, so the refusal must not name an upgrade.
 func TestUpgradeLeaseRefusalNamesAMaintenanceRun(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	ctx := context.Background()
@@ -90,8 +81,6 @@ func TestUpgradeLeaseRefusalNamesAMaintenanceRun(t *testing.T) {
 	}
 }
 
-// TestUpgradeLeaseMakesClusterUpgradesExclusive: two runs each serialize only
-// their own nodes, so the lease is what makes the run itself exclusive.
 func TestUpgradeLeaseMakesClusterUpgradesExclusive(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC))
 	cs := fake.NewSimpleClientset()
@@ -106,7 +95,6 @@ func TestUpgradeLeaseMakesClusterUpgradesExclusive(t *testing.T) {
 		t.Fatalf("a second run while the first holds the lease = %v, want a refusal naming the holder", err)
 	}
 
-	// Renewal keeps it live past the original duration.
 	*now = now.Add(leaseDuration - time.Second)
 	if err := renewUpgradeLease(ctx, cs, "cp1/100/1"); err != nil {
 		t.Fatal(err)
@@ -127,13 +115,11 @@ func TestUpgradeLeaseMakesClusterUpgradesExclusive(t *testing.T) {
 	release2()
 }
 
-// TestUpgradeLeaseOfACrashedRunExpires: a process that dies holding the lease
-// blocks the next run for one lease duration, not forever.
 func TestUpgradeLeaseOfACrashedRunExpires(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC))
 	cs := fake.NewSimpleClientset()
 	ctx := context.Background()
-	if _, _, err := acquireUpgradeLease(ctx, cs, "cp1/100/1"); err != nil { // never released: the process died
+	if _, _, err := acquireUpgradeLease(ctx, cs, "cp1/100/1"); err != nil {
 		t.Fatal(err)
 	}
 	*now = now.Add(leaseDuration + time.Second)
@@ -144,8 +130,6 @@ func TestUpgradeLeaseOfACrashedRunExpires(t *testing.T) {
 	release()
 }
 
-// TestReleaseNeverDeletesASuccessorsLease: a run whose lease expired and was
-// taken over must not delete the new holder's lease on its way out.
 func TestReleaseNeverDeletesASuccessorsLease(t *testing.T) {
 	now := fakeClock(t, time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC))
 	cs := fake.NewSimpleClientset()
@@ -159,15 +143,13 @@ func TestReleaseNeverDeletesASuccessorsLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release2()
-	releaseUpgradeLease(ctx, cs, "cp1/100/1") // the stale run finally exits
+	releaseUpgradeLease(ctx, cs, "cp1/100/1")
 	l, err := cs.CoordinationV1().Leases(cuNamespace).Get(ctx, upgradeLeaseName, metav1.GetOptions{})
 	if err != nil || *l.Spec.HolderIdentity != "cp2/200/2" {
 		t.Fatalf("the successor's lease was removed or changed: %v, %v", l, err)
 	}
 }
 
-// TestLeaseGuardStopsTheRunBeforeTheLeaseCanBeTaken: the guard trips one
-// renewal interval before expiry, or at once if the lease has another holder.
 func TestLeaseGuardStopsTheRunBeforeTheLeaseCanBeTaken(t *testing.T) {
 	t0 := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
 	g := &leaseGuard{lastRenew: t0}
@@ -182,8 +164,7 @@ func TestLeaseGuardStopsTheRunBeforeTheLeaseCanBeTaken(t *testing.T) {
 	if err := g.Err(); err == nil || !strings.Contains(err.Error(), "may be taken by another run") {
 		t.Fatalf("no renewal for leaseDuration-leaseRenew: %v, want the guard tripped", err)
 	}
-	// The API server came back and the lease still named this run: that
-	// renewal is a compare-and-swap, so nobody held it meanwhile.
+	// A same-holder renewal is a compare-and-swap: nobody held the lease meanwhile.
 	g.observe(nil, t0.Add(10*leaseDuration))
 	if err := g.Err(); err != nil {
 		t.Fatalf("a renewal that succeeded after the outage left the guard tripped: %v", err)
@@ -204,8 +185,6 @@ func TestLeaseGuardStopsTheRunBeforeTheLeaseCanBeTaken(t *testing.T) {
 	}
 }
 
-// TestUpgradeOneNodeStopsOnALostLease: the first destructive step is refused,
-// and nothing is cordoned, when the lease is gone.
 func TestUpgradeOneNodeStopsOnALostLease(t *testing.T) {
 	g := &leaseGuard{lost: errors.New("lease lost")}
 	_, err := upgradeOneNode(io.Discard, context.Background(), nil, Node{Name: "w1"}, ClusterOptions{Target: "v1.37.1", lease: g})
@@ -214,9 +193,7 @@ func TestUpgradeOneNodeStopsOnALostLease(t *testing.T) {
 	}
 }
 
-// TestRefuseActiveUpgradeJobs: the lease fences this process,
-// not the per-node Jobs it started. A takeover must not replace an earlier
-// run's Job that is still upgrading its node; a finished one is fine.
+// The lease fences this process, not the Jobs it started.
 func TestSweepUpgradeJobsRefusesActiveOnes(t *testing.T) {
 	present := []string{"w1", "w2", "w3", "w4"}
 	job := func(name, node string, conds ...batchv1.JobConditionType) *batchv1.Job {
@@ -252,20 +229,14 @@ func TestSweepUpgradeJobsRefusesActiveOnes(t *testing.T) {
 	}
 }
 
-// TestLeaseCallsAreBounded: a blackholed apiserver must not hang renewal (so a
-// lost lease is observed) or release (so the run exits).
+// A blackholed apiserver must not hang renewal or release.
 func TestLeaseCallsAreBounded(t *testing.T) {
 	if leaseCallTimeout <= 0 || leaseCallTimeout >= leaseRenew {
 		t.Fatalf("leaseCallTimeout = %s; it must be positive and shorter than the renewal interval %s", leaseCallTimeout, leaseRenew)
 	}
 }
 
-// TestSweepUpgradeJobsRemovesFinishedOrphans: a finished upgrade Job
-// whose node has left the cluster is removed, including one that holds the
-// name a current node's Job needs, where nodejob.Run refuses to replace
-// another node's Job; one still running blocks, naming the departed node,
-// since its Pod may still run there; and a present node's Job is never
-// touched by the sweep.
+// A finished departed node's Job is removed even when it holds the name a current node needs.
 func TestSweepUpgradeJobsRemovesFinishedOrphans(t *testing.T) {
 	ctx := context.Background()
 	job := func(name, node string, finished bool) *batchv1.Job {
@@ -305,10 +276,7 @@ func TestSweepUpgradeJobsRemovesFinishedOrphans(t *testing.T) {
 	}
 }
 
-// TestSweepUpgradeJobsKeepsAJobWithNoNode: a Job whose node
-// cannot be resolved is not known to be an orphan, so it is never removed,
-// and while it runs it still blocks the run, since it may still be upgrading
-// a host.
+// A Job with no node to resolve is not known to be an orphan.
 func TestSweepUpgradeJobsKeepsAJobWithNoNode(t *testing.T) {
 	ctx := context.Background()
 	noNode := func(name string, finished bool) *batchv1.Job {

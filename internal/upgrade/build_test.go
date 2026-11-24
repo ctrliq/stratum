@@ -16,8 +16,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// installedBuild makes the installed stratum binary hold installed and the
-// executing one hold running, so a test decides whether they are one build.
 func installedBuild(t *testing.T, installed, running string) {
 	t.Helper()
 	writeFile(t, stratumInstallPath, installed, 0o755)
@@ -28,8 +26,6 @@ func installedBuild(t *testing.T, installed, running string) {
 	t.Cleanup(func() { selfExecutable = old })
 }
 
-// sameContent is exact: the same file, or equal bytes. Size alone is not
-// enough, and a different size needs no hashing.
 func TestSameContent(t *testing.T) {
 	dir := t.TempDir()
 	w := func(name, body string) string {
@@ -63,13 +59,9 @@ func TestSameContent(t *testing.T) {
 	}
 }
 
-// A new build of the same Kubernetes release leaves the kubelet at
-// target. That node is not "already at target"; this build is installed.
+// A new build of one release leaves the kubelet at target; this build must still be installed.
 func TestUpgradeAtTargetInstallsAnotherBuild(t *testing.T) {
-	// setRoots runs before resumeFixture: a SetRoots after it would recompute
-	// every derived path (BinDir, K8sConfDir, StageDir) from the new roots and
-	// step over the fixture's own per-var redirects, leaving the node state it
-	// staged where the test no longer reads it.
+	// setRoots must precede resumeFixture: a later SetRoots recomputes paths and orphans the fixture.
 	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -80,15 +72,12 @@ func TestUpgradeAtTargetInstallsAnotherBuild(t *testing.T) {
 	if strings.Contains(out, "nothing to do") || !strings.Contains(out, "on another stratum build; installing this one") {
 		t.Fatalf("a same-version build update was skipped:\n%s", out)
 	}
-	// On into the upgrade itself, which stops at the payload this test binary
-	// does not carry.
+	// The upgrade stops at the payload this test binary does not carry.
 	if err == nil || !strings.Contains(err.Error(), "payload") {
 		t.Errorf("UpgradeNode = %v, want it to reach the payload", err)
 	}
 }
 
-// --check answers the orchestrator's question and changes nothing: nil on this
-// version and build, ErrUpgradeNeeded otherwise.
 func TestUpgradeCheck(t *testing.T) {
 	for _, c := range []struct {
 		name        string
@@ -127,14 +116,9 @@ func TestUpgradeCheck(t *testing.T) {
 	}
 }
 
-// A node whose SELinux prerequisites fail refuses itself: --check answers
-// ErrPrereqMissing, which the orchestrator collects without draining the
-// node, when the node needs the upgrade. A node already on this build is
-// never asked, and an interrupted upgrade is warned about, not refused: the
-// node has already been changed.
+// An interrupted upgrade is warned about, not refused: the node has already been changed.
 func TestUpgradeCheckRefusesMissingSELinuxPrereq(t *testing.T) {
-	// The settings and the policy answer; checkNodePrereqs itself decides,
-	// so its refusal and its resume exception are what is tested.
+	// checkNodePrereqs itself decides; its refusal and its resume exception are what is tested.
 	oldOpts, oldPrereq := nodeSELinuxOptions, nodePrereq
 	nodeSELinuxOptions = func() (selinux.Options, error) { return selinux.Options{}, nil }
 	nodePrereq = func(selinux.Options) error {
@@ -178,9 +162,7 @@ func TestUpgradeCheckRefusesMissingSELinuxPrereq(t *testing.T) {
 	}
 }
 
-// A node whose kernel would stack every container's AppArmor profile, but
-// whose runc profile cannot be built, refuses itself like one missing its
-// SELinux policy: the new release's start would fail there.
+// The new release's start would fail where the runc profile cannot be built.
 func TestUpgradeCheckRefusesMissingAppArmorPrereq(t *testing.T) {
 	oldOpts, oldPrereq, oldAppArmor := nodeSELinuxOptions, nodePrereq, nodeAppArmorPrereq
 	nodeSELinuxOptions = func() (selinux.Options, error) { return selinux.Options{}, nil }
@@ -220,8 +202,6 @@ func TestUpgradeCheckRefusesMissingAppArmorPrereq(t *testing.T) {
 	}
 }
 
-// A real upgrade of a node whose prerequisites fail stops before anything on
-// the node is changed: nothing installed, nothing backed up, nothing marked.
 func TestUpgradeNodeRefusesMissingSELinuxPrereqBeforeChanging(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -247,9 +227,7 @@ func TestUpgradeNodeRefusesMissingSELinuxPrereqBeforeChanging(t *testing.T) {
 	}
 }
 
-// A dry-run previews the upgrade, but the prerequisite refusal comes first: a
-// node whose policy would leave it unconfined is refused before the plan is
-// printed or anything is previewed, dry-run or not.
+// The prerequisite refusal comes before the plan, dry-run or not.
 func TestUpgradeNodeDryRunRefusesMissingSELinuxPrereq(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -272,9 +250,6 @@ func TestUpgradeNodeDryRunRefusesMissingSELinuxPrereq(t *testing.T) {
 	}
 }
 
-// The node's own check cannot ask the question when the SELinux tools fail
-// rather than go missing: it warns, naming the failure, and lets the node
-// through, as it does for settings it cannot read.
 func TestCheckNodePrereqsWarnsWhenItCannotTell(t *testing.T) {
 	resumeFixture(t)
 	old := nodePrereq
@@ -294,8 +269,6 @@ func TestCheckNodePrereqsWarnsWhenItCannotTell(t *testing.T) {
 	}
 }
 
-// Settings it cannot read are a question the check cannot ask: it warns,
-// naming the failure, and lets the node through without asking the policy.
 func TestCheckNodePrereqsWarnsWhenItCannotReadTheSettings(t *testing.T) {
 	resumeFixture(t)
 	oldOpts, oldPrereq := nodeSELinuxOptions, nodePrereq
@@ -319,11 +292,7 @@ func TestCheckNodePrereqsWarnsWhenItCannotReadTheSettings(t *testing.T) {
 	}
 }
 
-// --check answers only while nothing else is changing the node. With the
-// node lock held by an upgrade, "already on this build" could be read mid-
-// upgrade and turn false on a rollback after the orchestrator had skipped the
-// node, so the check fails instead -- and that is neither a yes nor
-// ErrUpgradeNeeded.
+// A mid-upgrade "already on this build" could turn false on a rollback after the skip.
 func TestUpgradeCheckRefusesWhileTheNodeIsLocked(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -344,11 +313,7 @@ func TestUpgradeCheckRefusesWhileTheNodeIsLocked(t *testing.T) {
 	}
 }
 
-// A marker for this target whose run recorded nothing is discarded by a real
-// run, but it cannot vouch for "already on this build": installing stratum
-// over no binary backs nothing up, so a run killed right after that looks
-// exactly like this, with the host binaries never swapped.
-// --check answers "needs the upgrade", and leaves the marker where it is.
+// Installing stratum over no binary backs nothing up, so a run killed right after looks like this.
 func TestUpgradeCheckDoesNotTrustAnAbandonedSameTargetUpgrade(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -367,8 +332,6 @@ func TestUpgradeCheckDoesNotTrustAnAbandonedSameTargetUpgrade(t *testing.T) {
 	}
 }
 
-// An abandoned upgrade to ANOTHER version that changed nothing says nothing
-// about this build, so the build match still counts.
 func TestUpgradeCheckIgnoresAnAbandonedUpgradeToAnotherVersion(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -382,8 +345,7 @@ func TestUpgradeCheckIgnoresAnAbandonedUpgradeToAnotherVersion(t *testing.T) {
 	}
 }
 
-// No stratum installed is an answer: not this build. It needs the upgrade,
-// which installs it -- not a check that "cannot tell" and halts the rollout.
+// Nothing installed is an answer, not a failure to tell: the upgrade installs stratum.
 func TestUpgradeCheckWithNothingInstalledNeedsTheUpgrade(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -397,8 +359,7 @@ func TestUpgradeCheckWithNothingInstalledNeedsTheUpgrade(t *testing.T) {
 	}
 }
 
-// --check changes nothing, and its log says what it found, not what an
-// upgrade would do: the check Job's log is where an operator is sent.
+// The check Job's log is where an operator is sent; it says what it found, not a plan.
 func TestUpgradeCheckSaysItFoundAnotherBuild(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -410,9 +371,7 @@ func TestUpgradeCheckSaysItFoundAnotherBuild(t *testing.T) {
 	}
 }
 
-// The cluster upgrade pins each node to the build ID it read from its own
-// --from. A node whose copy at that path is another build refuses -- before
-// the lock, before anything -- rather than answer, or upgrade, as itself.
+// A node whose staged copy is another build refuses before the lock, before anything.
 func TestUpgradeRefusesAnotherBuildThanExpected(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -434,9 +393,7 @@ func TestUpgradeRefusesAnotherBuildThanExpected(t *testing.T) {
 	}
 }
 
-// An EMBEDDED_BINS=none build of the same commit has the same build ID, and a
-// node of another architecture has no sha256 pin. The check refuses it before
-// the drain instead of the upgrade finding no payload after it.
+// An EMBEDDED_BINS=none build of the same commit has the same build ID and no payload.
 func TestUpgradeRefusesAPayloadlessBinaryOfTheExpectedBuild(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -454,9 +411,7 @@ func TestUpgradeRefusesAPayloadlessBinaryOfTheExpectedBuild(t *testing.T) {
 	}
 }
 
-// One build ID, two binaries: the same source, a byte-different copy staged on
-// this node. The build ID cannot tell them apart; the sha256 pin, set for nodes
-// of the orchestrator's architecture, does.
+// The build ID cannot tell two binaries of one build apart; the sha256 pin can.
 func TestUpgradeRefusesAByteDifferentCopyOfTheSameBuild(t *testing.T) {
 	resumeFixture(t)
 	redirect(t, &version.K8sVersion, "v1.37.9")
@@ -484,9 +439,7 @@ func TestUpgradeRefusesAByteDifferentCopyOfTheSameBuild(t *testing.T) {
 	}
 }
 
-// A --check that cannot tell does not say "needs the upgrade": that answer is
-// what makes the orchestrator drain the node. It fails, which the orchestrator
-// refuses without draining.
+// "Needs the upgrade" is what makes the orchestrator drain; a check that cannot tell fails instead.
 func TestUpgradeCheckFailsWhenItCannotTell(t *testing.T) {
 	t.Run("no readable kubelet version", func(t *testing.T) {
 		resumeFixture(t)

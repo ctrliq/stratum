@@ -8,8 +8,6 @@ import (
 	"time"
 )
 
-// TestRunBoundedConcurrencyLimit: never more than `limit` fns run at once, and all
-// items run when none fail.
 func TestRunBoundedConcurrencyLimit(t *testing.T) {
 	const limit = 3
 	var inflight, maxSeen int32
@@ -39,11 +37,9 @@ func TestRunBoundedConcurrencyLimit(t *testing.T) {
 	}
 }
 
-// TestRunBoundedStopsLaunchingOnError preserves the serial failure behavior.
 func TestRunBoundedStopsLaunchingOnError(t *testing.T) {
 	boom := errors.New("boom")
 	var started int32
-	// item 0 fails fast; with limit 1 the failure must stop items 1..9 launching.
 	err := runBounded([]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 1, func(i int) error {
 		atomic.AddInt32(&started, 1)
 		if i == 0 {
@@ -59,8 +55,6 @@ func TestRunBoundedStopsLaunchingOnError(t *testing.T) {
 	}
 }
 
-// TestRunBoundedSerialDefault: limit<1 behaves as fully serial and runs everything
-// on the success path.
 func TestRunBoundedSerialDefault(t *testing.T) {
 	var n int32
 	if err := runBounded([]int{1, 2, 3}, 0, func(int) error { atomic.AddInt32(&n, 1); return nil }); err != nil {
@@ -94,8 +88,6 @@ func TestRunBoundedWaitsForInflightAfterFailure(t *testing.T) {
 				return nil
 			})
 		}()
-		// Worker 0 has failed while worker 1 remains blocked. The runner must
-		// wait for worker 1 without starting any later items.
 		synctest.Wait()
 		if got := started.Load(); got != 2 {
 			t.Errorf("started %d workers, want 2", got)

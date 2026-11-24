@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// certReloader serves the key pair at certFile/keyFile and picks up a new one
-// when either file changes, so a renewed Secret takes effect without a restart.
+// certReloader picks up a renewed Secret when the files change, without a restart.
 type certReloader struct {
 	certFile, keyFile string
 	recheck           time.Duration
@@ -58,10 +57,7 @@ func (r *certReloader) mtimes() (time.Time, time.Time, error) {
 	return c.ModTime(), k.ModTime(), nil
 }
 
-// get keeps serving the last good pair when a reload fails, since a half-written
-// update is expected while the kubelet swaps a Secret volume. A failure is
-// logged once per distinct error, so a pair that never loads is visible without
-// a line every recheck.
+// A half-written pair is expected while the kubelet swaps a Secret; serve the old one.
 func (r *certReloader) get(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

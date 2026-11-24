@@ -7,10 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// TestMergeOwnerRef pins the owner-merge fix: re-uploading stratum-certs under a
-// new token ADDS an owner rather than replacing the set, so a still-valid earlier
-// token keeps the Secret alive (GC only reaps it when every owner is gone); a
-// repeat of the same UID is idempotent.
+// a new token adds an owner; GC reaps the Secret only when every owner is gone
 func TestMergeOwnerRef(t *testing.T) {
 	ref := func(uid string) metav1.OwnerReference {
 		return metav1.OwnerReference{APIVersion: "v1", Kind: "Secret", Name: "bootstrap-token-" + uid, UID: types.UID(uid)}

@@ -1,7 +1,4 @@
-// Package pki generates the cluster PKI (root CA, front-proxy CA, leaf certs,
-// and the service-account keypair) entirely in Go (crypto/x509), with no openssl
-// dependency. Output is written to
-// version.PKIDir with 0600 keys; every step is idempotent (skip if present).
+// Package pki generates and rotates the cluster PKI under version.PKIDir.
 package pki
 
 import (
@@ -33,32 +30,24 @@ import (
 
 const (
 	rsaBits = 2048
-	// CAValidity is the lifetime of the root and front-proxy CAs, and the
-	// controller-manager's CSR signing duration, set explicitly so the certs it
-	// signs (workers' kubelet client certs) do not expire after the one-year
-	// default.
+	// CA lifetime; also the controller-manager's signing duration, set past its one-year default.
 	CAValidity = 10 * 365 * 24 * time.Hour
 )
 
-// LeafValidity is the lifetime of issued leaf certs. Short (~1yr) so
-// they rotate routinely via `stratum certs rotate` + the renew timer, rather than
-// the old write-once 10-year certs. A var (not const) so tests can shorten it
-// and a future --cert-validity flag can override it.
+// LeafValidity is a var so tests and a future --cert-validity flag can shorten it.
 var LeafValidity = 365 * 24 * time.Hour
 
-// CA holds a signing certificate + key.
 type CA struct {
 	Cert *x509.Certificate
 	Key  *rsa.PrivateKey
 }
 
-// CertSpec describes a leaf certificate to issue.
 type CertSpec struct {
-	Name       string   // file basename (e.g. "apiserver" -> apiserver.crt/.key)
-	CN         string   // Subject CommonName
-	O          []string // Subject Organization(s) (groups)
-	DNS        []string // DNS SANs
-	IPs        []string // IP SANs
+	Name       string
+	CN         string
+	O          []string
+	DNS        []string
+	IPs        []string
 	ServerAuth bool
 	ClientAuth bool
 }
@@ -68,9 +57,7 @@ func serial() *big.Int {
 	return n
 }
 
-// EnsureDir creates the PKI dir (0700). MkdirAll does not tighten a
-// pre-existing dir (host.Dirs may have run first), so the mode is enforced
-// with an explicit Chmod.
+// MkdirAll does not tighten a pre-existing dir, so the mode is enforced here.
 func EnsureDir() error {
 	if err := os.MkdirAll(version.PKIDir, 0o700); err != nil {
 		return err
@@ -86,20 +73,14 @@ func exists(name string) bool {
 	return e1 == nil && e2 == nil
 }
 
-// EtcdCAExists reports whether the etcd CA certificate and key are on disk,
-// the same state etcdLeafSigner branches on: once the CA exists a rotation
-// reads the live etcd leaves before it picks their signer.
+// EtcdCAExists reports whether the etcd CA certificate and key are on disk.
 func EtcdCAExists() bool { return exists(EtcdCAName) }
 
-// writeSeams is the seam set the pki writers hand the atomic single-file
-// writer. Production leaves it zero — every step is then the writer's own —
-// and a test fills it to inject a failure into the real writer: a directory
-// sync that never completes, the window a power loss leaves behind.
+// A test seam into the real atomic writer; production leaves it zero.
 var writeSeams atomicfile.Seams
 
 func writeCertPEM(name string, der []byte) error {
-	// Replaces, never truncates: a component holding the old certificate open
-	// must keep reading the old bytes while the reissued one lands.
+	// Replaces, never truncates: a reader holding the old certificate keeps its bytes.
 	return atomicfile.WriteFileWith(path(name, "crt"), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644, writeSeams)
 }
 
@@ -108,21 +89,10 @@ func writeKeyPEM(name string, key *rsa.PrivateKey) error {
 	return host.WriteFileAtomically(path(name, "key"), b, 0o600)
 }
 
-// writePair writes a credential pair — a certificate and its key, or a
-// signing key and its public half — as two atomic single-file writes. When
-// the first write reports ErrNotDurable the new file is already in place and
-// only its durability failed; stopping there strands a mismatched or
-// incomplete pair that the next start refuses to repair: EnsureCA refuses a
-// partial CA pair, Issue skips a leaf whose SANs already match, and
-// EnsureSAKeypair skips whenever the key exists. The second half is written
-// anyway, from the same in-memory material, so the pair on disk ends up
-// complete and matching, and the durability error still goes out — a power
-// loss can still bring the replaced half's old bytes back.
+// Writes the second half even when the first lands but reports ErrNotDurable.
 func writePair(first, second func() error) error {
 	firstErr := first()
 	if errors.Is(firstErr, atomicfile.ErrNotDurable) {
-		// The first half is in place; write the second anyway and report
-		// both, so the pair on disk is complete and matching.
 		return errors.Join(firstErr, second())
 	}
 	if firstErr != nil {
@@ -131,9 +101,7 @@ func writePair(first, second func() error) error {
 	return second()
 }
 
-// EnsureCA loads an existing CA or creates one only when neither file exists.
-// A partial pair may be the only recovery material for a cluster; never
-// overwrite its certificate or key while trying to repair it implicitly.
+// A partial pair may be the only recovery material; never overwrite it implicitly.
 func EnsureCA(name, cn string) (*CA, error) {
 	_, certErr := os.Stat(path(name, "crt"))
 	_, keyErr := os.Stat(path(name, "key"))
@@ -152,9 +120,7 @@ func EnsureCA(name, cn string) (*CA, error) {
 	return NewCA(name, cn)
 }
 
-// NewCA always generates a fresh self-signed CA and writes it to {name}.crt/.key,
-// overwriting any existing files. Used to stage a rotation CA (e.g. "ca-new")
-// without disturbing the live signer. EnsureCA wraps this with skip-if-exists.
+// Stages rotation material; EnsureCA is the skip-if-exists wrapper.
 func NewCA(name, cn string) (*CA, error) {
 	ca, err := GenerateCA(cn, nil)
 	if err != nil {
@@ -169,15 +135,13 @@ func NewCA(name, cn string) (*CA, error) {
 	return ca, nil
 }
 
-// Constraints limit the names a CA may sign for, as critical X.509 name
-// constraints, and stop it from signing other CAs.
+// Enforced as critical X.509 name constraints that also forbid sub-CAs.
 type Constraints struct {
 	DNS []string
 	IPs []*net.IPNet
 }
 
-// GenerateCA makes a fresh self-signed CA in memory, for a CA whose home is not
-// PKIDir. A nil c leaves it unconstrained.
+// A nil c leaves the CA unconstrained.
 func GenerateCA(cn string, c *Constraints) (*CA, error) {
 	key, err := rsa.GenerateKey(rand.Reader, rsaBits)
 	if err != nil {
@@ -210,13 +174,11 @@ func GenerateCA(cn string, c *Constraints) (*CA, error) {
 	return &CA{Cert: cert, Key: key}, nil
 }
 
-// PEM encodes the CA's certificate and key.
 func (ca *CA) PEM() (certPEM, keyPEM []byte) {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Cert.Raw}),
 		pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(ca.Key)})
 }
 
-// ParseCA reads a CA from the PEM that PEM writes.
 func ParseCA(certPEM, keyPEM []byte) (*CA, error) {
 	cb, _ := pem.Decode(certPEM)
 	kb, _ := pem.Decode(keyPEM)
@@ -262,12 +224,8 @@ func loadCA(name string) (*CA, error) {
 	return &CA{Cert: cert, Key: key}, nil
 }
 
-// Issue signs a leaf cert per spec with the given CA, skipping if it already
-// exists (idempotent — used during initial bring-up).
 func (ca *CA) Issue(s CertSpec) error { return ca.issue(s, false) }
 
-// Reissue signs a leaf cert per spec, overwriting any existing crt/key with a
-// fresh key + serial + validity window. This is the rotation path.
 func (ca *CA) Reissue(s CertSpec) error { return ca.issue(s, true) }
 
 func (ca *CA) issue(s CertSpec, force bool) error { return ca.issueWithWriter(os.Stdout, s, force) }
@@ -281,14 +239,7 @@ func (ca *CA) issueWithWriter(w io.Writer, s CertSpec, force bool) error {
 		if len(missing) == 0 {
 			return nil
 		}
-		// An existing leaf that no longer covers what its spec requires is
-		// reissued. Skip-if-exists alone meant a SAN added to
-		// the spec never reached a node that already had the cert: a cluster
-		// created with a custom service CIDR kept an apiserver.crt without its
-		// Service IP across the upgrade that fixed the spec, and TLS to
-		// kubernetes.default kept failing. The same applies to a joined control
-		// plane that predates the VIP SAN. A superset is left alone, so a SAN
-		// that drops out of the spec never churns certificates.
+		// A superset is left alone, so a SAN dropping out of the spec never churns certs.
 		fmt.Fprintf(w, "stratum: %s.crt does not cover %s; reissuing it\n", s.Name, strings.Join(missing, ", "))
 	}
 	der, key, err := ca.signLeaf(s)
@@ -301,9 +252,7 @@ func (ca *CA) issueWithWriter(w io.Writer, s CertSpec, force bool) error {
 	)
 }
 
-// missingSANs lists the IP and DNS SANs the spec requires that the existing
-// certificate lacks. An unreadable or unparsable certificate is an error, not a
-// reason to overwrite it silently.
+// An unparsable certificate is an error, never a silent overwrite.
 func missingSANs(s CertSpec) ([]string, error) {
 	b, err := os.ReadFile(path(s.Name, "crt"))
 	if err != nil {
@@ -321,7 +270,7 @@ func missingSANs(s CertSpec) ([]string, error) {
 	for _, want := range s.IPs {
 		ip := net.ParseIP(want)
 		if ip == nil {
-			continue // signLeaf skips it too
+			continue
 		}
 		if !slices.ContainsFunc(c.IPAddresses, ip.Equal) {
 			missing = append(missing, "IP:"+want)
@@ -335,8 +284,7 @@ func missingSANs(s CertSpec) ([]string, error) {
 	return missing, nil
 }
 
-// SubjectDrift lists, as "name (subject)", the leaves on disk whose subject's
-// CN or O differs from the one LeafSpecs issues. A missing leaf is not drift.
+// A missing leaf is not drift.
 func SubjectDrift(host, nodeIP string) ([]string, error) {
 	var drifted []string
 	for _, s := range append(LeafSpecs(host, nodeIP, nil), frontProxyClientSpec) {
@@ -351,10 +299,6 @@ func SubjectDrift(host, nodeIP string) ([]string, error) {
 	return drifted, nil
 }
 
-// signLeaf generates a fresh key and signs a leaf certificate per spec with this
-// CA, returning the DER cert + key. It is the single crypto path shared by the
-// on-disk issue/Reissue and the in-memory IssuePEM — one place decides key size,
-// validity window, key usages, and SAN handling.
 func (ca *CA) signLeaf(s CertSpec) ([]byte, *rsa.PrivateKey, error) {
 	key, err := rsa.GenerateKey(rand.Reader, rsaBits)
 	if err != nil {
@@ -388,17 +332,10 @@ func (ca *CA) signLeaf(s CertSpec) ([]byte, *rsa.PrivateKey, error) {
 	return der, key, nil
 }
 
-// LoadCA loads a CA keypair ({name}.crt/.key) from PKIDir. Exported so callers
-// outside this package can sign a short-lived leaf in memory — the operator's
-// admission-webhook serving cert (internal/operator), which is re-minted on
-// demand from the live cluster root rather than persisted alongside the
-// rotation-managed leaves.
+// Loads the live CA for a caller that mints short-lived leaves in memory.
 func LoadCA(name string) (*CA, error) { return loadCA(name) }
 
-// IssuePEM signs a leaf per spec and returns its cert + key as PEM, writing
-// nothing to disk. Unlike Issue/Reissue it is neither idempotent nor persisted:
-// it is for process-local, re-mintable certs (the webhook serving cert) where a
-// file under PKIDir — next to the rotation scratch — would be the wrong home.
+// For process-local, re-mintable certs; neither idempotent nor persisted.
 func (ca *CA) IssuePEM(s CertSpec) (certPEM, keyPEM []byte, err error) {
 	der, key, err := ca.signLeaf(s)
 	if err != nil {
@@ -409,16 +346,11 @@ func (ca *CA) IssuePEM(s CertSpec) (certPEM, keyPEM []byte, err error) {
 	return certPEM, keyPEM, nil
 }
 
-// ReadCABundle returns the {base}-bundle.crt trust bundle (new‖old during a CA
-// rotation). This is the correct caBundle for an admission webhook whose serving
-// cert is signed by this CA: it trusts both the old and new roots across a
-// rotation, so a serving cert signed by either validates.
+// Trusts both roots across a rotation; right caBundle for a webhook on this CA.
 func ReadCABundle(base string) ([]byte, error) {
 	return os.ReadFile(bundleCrtPath(base))
 }
 
-// EnsureSAKeypair writes the service-account signing keypair (sa.key/sa.pub),
-// skipping if already present.
 func EnsureSAKeypair() error {
 	if _, err := os.Stat(filepath.Join(version.PKIDir, "sa.key")); err == nil {
 		return nil
@@ -426,9 +358,7 @@ func EnsureSAKeypair() error {
 	return NewSAKeypair("sa")
 }
 
-// NewSAKeypair always generates a fresh SA signing keypair to {name}.key/{name}.pub,
-// overwriting. Used to stage a rotation key ("sa-new"). EnsureSAKeypair wraps this
-// with skip-if-exists for the live "sa" pair.
+// Stages rotation material; EnsureSAKeypair is the skip-if-exists wrapper.
 func NewSAKeypair(name string) error {
 	key, err := rsa.GenerateKey(rand.Reader, rsaBits)
 	if err != nil {
@@ -450,13 +380,10 @@ func NewSAKeypair(name string) error {
 	)
 }
 
-// frontProxyClientSpec is the one leaf signed by the front-proxy CA (a separate
-// trust domain), not the root CA.
+// Signed by the front-proxy CA, a separate trust domain, not the root.
 var frontProxyClientSpec = CertSpec{Name: "front-proxy-client", CN: "front-proxy-client", ClientAuth: true}
 
-// APISANs are the apiserver-certificate names that come from the cluster rather
-// than the node: the extra IPs and the cluster DNS domain. A nil *APISANs, or an
-// empty field, is the default for that part.
+// Apiserver-cert names from the cluster network; nil or empty is the default.
 type APISANs struct {
 	IPs    []string
 	Domain string
@@ -477,37 +404,20 @@ func (s *APISANs) domain() string {
 	return netcfg.DomainOr(domain)
 }
 
-// ClusterAdminsGroup is the admin leaf's group, bound to cluster-admin by a
-// ClusterRoleBinding of the same name rather than built into the apiserver.
+// Bound to cluster-admin by a ClusterRoleBinding of the same name.
 const ClusterAdminsGroup = "stratum:cluster-admins"
 
-// EtcdCN is the etcd leaf's Subject CommonName, the one identity etcd's peer
-// port accepts (--peer-cert-allowed-cn).
+// The one identity etcd's peer port accepts (--peer-cert-allowed-cn).
 const EtcdCN = "etcd"
 
-// LeafSpecs is the full set of root-CA-signed control-plane leaves for a node,
-// the single source of truth shared by GenerateAll (initial) and RotateLeaves.
-// The front-proxy-client leaf (front-proxy-CA-signed) is handled separately.
-// LeafSpecs builds the control-plane leaves for a node. nodeIP may be a single
-// IP or a comma-joined "<v4>,<v6>" under dual-stack (each family becomes a SAN on
-// the node-bound certs). sans are the apiserver-cert names that come from the
-// cluster network: the IPs are the `kubernetes` Service IP, plus the IPv6
-// service IP and "::1" under dual-stack (netcfg.Config.APIServerExtraIPs), and
-// the domain is the cluster domain.
-//
-// When sans carries no IPv4 service IP (nil, or IPv6-only extras), the
-// default 10.96.0.1 is used, so a caller that passes nothing still gets the SAN
-// every default cluster needs. A custom service CIDR reaches the cert only
-// through sans — the default is a fallback, never an override. The
-// same holds for the cluster domain.
+// nodeIP may be "<v4>,<v6>" under dual-stack; sans carries the cluster-network names.
 func LeafSpecs(host, nodeIP string, sans *APISANs) []CertSpec {
-	nodeIPs := strings.Split(nodeIP, ",") // "v4" or "v4,v6"
+	nodeIPs := strings.Split(nodeIP, ",")
 	etcdIPs := append([]string{"127.0.0.1"}, nodeIPs...)
 	svcIP, found := netcfg.Default().ServiceIPv4, false
 	var extra []string
 	for _, ip := range sans.ips() {
-		// The FIRST IPv4 extra is the kubernetes Service IP; any later IPv4 (a
-		// VIP, appended after it) is an ordinary extra SAN.
+		// The first IPv4 extra is the kubernetes Service IP; later IPv4 entries are plain SANs.
 		if parsed := net.ParseIP(ip); !found && parsed != nil && parsed.To4() != nil {
 			svcIP, found = ip, true
 			continue
@@ -528,25 +438,15 @@ func LeafSpecs(host, nodeIP string, sans *APISANs) []CertSpec {
 		{Name: "controller-manager", CN: "system:kube-controller-manager", DNS: []string{"localhost"}, ClientAuth: true},
 		{Name: "scheduler", CN: "system:kube-scheduler", DNS: []string{"localhost"}, ClientAuth: true},
 		{Name: "kubelet", CN: "system:node:" + host, O: []string{"system:nodes"}, DNS: []string{host}, IPs: nodeIPs, ServerAuth: true, ClientAuth: true},
-		// No kube-proxy identity: Cilium's kube-proxy replacement is the only
-		// service dataplane (kube-proxy is not built or shipped). kube-vip's election client
-		// takes the slot instead.
+		// No kube-proxy identity: Cilium's kube-proxy replacement is the only dataplane.
 		{Name: "kube-vip", CN: "system:kube-vip", DNS: []string{"localhost"}, ClientAuth: true},
 	}
 }
 
-// etcdLeafNames are the leaves that belong to etcd's trust domain rather than the
-// Kubernetes one. Both are issued by "etcd-ca" so that a kubelet client
-// certificate — signed by the cluster root — no longer authenticates to etcd.
-//
-// There is deliberately no separate "etcd-peer" leaf: the single "etcd" leaf is
-// both the server cert (--cert-file) and the peer cert (--peer-cert-file), see
-// internal/staticpod/args.go. One write moves both roles at once.
+// Issued by etcd-ca, so a root-signed kubelet cert no longer authenticates to etcd.
 var etcdLeafNames = map[string]bool{"etcd": true, "apiserver-etcd-client": true}
 
-// SplitLeafSpecs partitions LeafSpecs by signing CA: the cluster root signs the
-// Kubernetes leaves, "etcd-ca" signs etcd's. Callers that need every leaf
-// regardless of signer (LeafNames, `certs check`) keep using LeafSpecs.
+// Callers that need every leaf regardless of signer keep using LeafSpecs.
 func SplitLeafSpecs(host, nodeIP string, sans *APISANs) (root, etcd []CertSpec) {
 	for _, sp := range LeafSpecs(host, nodeIP, sans) {
 		if etcdLeafNames[sp.Name] {
@@ -558,24 +458,19 @@ func SplitLeafSpecs(host, nodeIP string, sans *APISANs) (root, etcd []CertSpec) 
 	return root, etcd
 }
 
-// LeafNames returns every rotatable leaf basename (root-CA leaves + front-proxy-client).
-// Deliberately excludes the CAs and the SA keypair — those are not leaf-rotatable.
+// Deliberately excludes the CAs and the SA keypair: they are not leaf-rotatable.
 func LeafNames(host, nodeIP string) []string {
 	names := make([]string, 0, 10)
-	for _, s := range LeafSpecs(host, nodeIP, nil) { // names don't depend on IP SANs
+	for _, s := range LeafSpecs(host, nodeIP, nil) {
 		names = append(names, s.Name)
 	}
 	return append(names, frontProxyClientSpec.Name)
 }
 
-// GenerateAll produces the full control-plane PKI for a node with the given
-// short hostname + node IP. Idempotent (skip-if-exists) — safe to
-// re-run.
 func GenerateAll(host, nodeIP string, sans *APISANs) error {
 	return GenerateAllWithWriter(os.Stdout, host, nodeIP, sans)
 }
 
-// GenerateAllWithWriter generates node PKI and reports reissue progress to w.
 func GenerateAllWithWriter(w io.Writer, host, nodeIP string, sans *APISANs) error {
 	if err := EnsureDir(); err != nil {
 		return err
@@ -614,19 +509,11 @@ func GenerateAllWithWriter(w io.Writer, host, nodeIP string, sans *APISANs) erro
 			return fmt.Errorf("issue %s: %w", l.Name, err)
 		}
 	}
-	// The etcd trust bundle must exist BEFORE the etcd leaves are minted, because
-	// it decides who signs them. On an HA join it arrived with the shared certs,
-	// so it carries the CLUSTER's trust state rather than this node's guess.
+	// The etcd bundle decides who signs the etcd leaves, so it must exist first.
 	if err := EnsureEtcdTrustBundle(); err != nil {
 		return fmt.Errorf("etcd-ca bundle: %w", err)
 	}
-	// Issue is skip-if-exists, so on an existing node the live (root-signed) etcd
-	// leaves are left alone — moving them is phase issue-new, safe only once every
-	// control plane trusts the etcd CA. On a JOINING node they do not exist yet,
-	// and minting them under the etcd CA while the rest of the cluster is still
-	// root-signed is exactly that unilateral issue-new: the peers reject the new
-	// member, it never enters raft, and it is left behind as a voting member.
-	// EtcdSignerName answers which CA the live members actually accept.
+	// A joiner minting etcd-ca leaves while the cluster is root-signed is a unilateral issue-new.
 	etcdSigner := ca
 	if ReadEtcdTrust().EtcdSignerName() == EtcdCAName {
 		etcdSigner = etcdCA
@@ -642,10 +529,7 @@ func GenerateAllWithWriter(w io.Writer, host, nodeIP string, sans *APISANs) erro
 	if err := EnsureSAKeypair(); err != nil {
 		return fmt.Errorf("sa keypair: %w", err)
 	}
-	// Trust-bundle files: what components actually trust (systemd points the
-	// --*-ca-file / --service-account-key-file flags here, not at the plain
-	// certs). On a fresh install these are single-cert copies of the live CA/SA;
-	// CA rotation later makes them old‖new. Skip-if-exists so re-runs don't churn.
+	// Bundles are what components trust (--*-ca-file flags); rotation makes them old‖new.
 	if !bundleExists("front-proxy-ca") {
 		if err := WriteCABundle("front-proxy-ca", "front-proxy-ca"); err != nil {
 			return fmt.Errorf("front-proxy-ca bundle: %w", err)
@@ -659,11 +543,7 @@ func GenerateAllWithWriter(w io.Writer, host, nodeIP string, sans *APISANs) erro
 	return nil
 }
 
-// RotateLeaves force-reissues every control-plane leaf from the EXISTING CAs,
-// with fresh keys + a new LeafValidity window. It loads (never regenerates) the
-// root + front-proxy CAs and never touches ca.*/front-proxy-ca.*/sa.* — those
-// are the heavier cluster-wide "CA rotation" flow. Kubeconfigs (which embed
-// client certs) must be regenerated by the caller afterward.
+// Reissues leaves from the existing CAs; the caller must regenerate kubeconfigs.
 func RotateLeaves(host, nodeIP string, sans *APISANs) error {
 	if !exists("ca") || !exists("front-proxy-ca") {
 		return fmt.Errorf("pki: cannot rotate — CA not present at %s (run `stratum up` first)", version.PKIDir)
@@ -676,8 +556,7 @@ func RotateLeaves(host, nodeIP string, sans *APISANs) error {
 	if err != nil {
 		return fmt.Errorf("load front-proxy CA: %w", err)
 	}
-	// The etcd leaves are reissued by whichever CA signs them TODAY — see
-	// etcdLeafSigner. A leaf rotation must never move a trust anchor.
+	// A leaf rotation must never move a trust anchor.
 	etcdSigner, err := etcdLeafSigner(ca)
 	if err != nil {
 		return err
@@ -707,34 +586,11 @@ func RotateLeaves(host, nodeIP string, sans *APISANs) error {
 	return nil
 }
 
-// etcdLeafSigner returns the CA that currently signs the etcd leaves, so that a
-// LEAF rotation preserves the trust anchor instead of silently moving it. This is
-// what keeps the RotateLeaves callers — the renew timer (certs.Rotate), a
-// `stratum up` re-run, `rotate-ca --phase=sign-new`, and the rotation
-// ROLLBACK path — from re-signing etcd's certs with the cluster root and locking
-// each apiserver out of its own etcd.
-//
-// Reading the live etcd.crt (rather than "etcd-ca exists ⇒ use it") is what makes
-// the mid-migration states safe: at phase trust-both etcd-ca is on disk but the
-// leaves are still root-signed cluster-wide, and reissuing them under etcd-ca
-// there would be a unilateral phase issue-new on one node — breaking peer TLS
-// against every control plane that has not migrated yet.
+// Reads the live leaves, not the bundle: mid-migration the bundle still carries a root.
 func etcdLeafSigner(root *CA) (*CA, error) {
-	// PROVENANCE RULE: a renewal must not change a leaf's trust domain.
-	// RotateLeaves exists to issue fresh keys and a new validity window; moving a
-	// leaf between CAs is a MIGRATION operation, and issue-new is its only writer.
-	// So this reads the artifact it is about to overwrite and nothing else.
-	//
-	// It deliberately does NOT consult ReadEtcdTrust(). Between issue-new and
-	// drop-root the bundle still carries a root while the leaves have already
-	// moved — that gap IS the migration's safety margin — so a bundle-derived
-	// signer would regress a migrated node's etcd leaf back to the root.
-	//
-	// Where no leaf exists yet — fresh install, HA join — there is nothing to
-	// preserve and bundle state is the right input; that decision lives in
-	// GenerateAll, not here.
+	// A renewal must not change a leaf's trust domain; only issue-new moves it.
 	if !exists(EtcdCAName) {
-		return root, nil // pre-migration node: etcd's leaves belong to the root
+		return root, nil
 	}
 	anyPresent, allUnderEtcdCA := false, true
 	for name := range etcdLeafNames {
@@ -743,8 +599,7 @@ func etcdLeafSigner(root *CA) (*CA, error) {
 			continue // nothing to preserve for this one
 		}
 		if err != nil {
-			// Fail closed. Treating a truncated or unreadable etcd.crt as "nothing
-			// to preserve" let the unattended renew timer promote both leaves.
+			// Reading a broken etcd.crt as "nothing to preserve" would let the renew timer promote it.
 			return nil, fmt.Errorf("pki: cannot determine the current signer of %s: %w", name, err)
 		}
 		anyPresent = true
@@ -753,8 +608,7 @@ func etcdLeafSigner(root *CA) (*CA, error) {
 		}
 	}
 	if !anyPresent || !allUnderEtcdCA {
-		// No provenance to preserve, or provenance says root. Either way a renewal
-		// keeps them on the root; only issue-new moves them.
+
 		return root, nil
 	}
 	etcdCA, err := loadCA(EtcdCAName)
@@ -764,20 +618,7 @@ func etcdLeafSigner(root *CA) (*CA, error) {
 	return etcdCA, nil
 }
 
-// ── CA rotation ──────────────────────────────────────────────────────────────
-//
-// CA rotation splits the "trust set" from the "active signer". Trust files
-// ({base}-bundle.crt, sa-bundle.pub) hold what components accept; the plain
-// files (ca.crt/ca.key, sa.key) are the active signer. A rotation runs in three
-// phases, each applied to every node before the next:
-//
-//	trust-new  RotateCAMaterial     stage {ca,front-proxy-ca,sa}-new + bundles=new‖old
-//	sign-new   PromoteCA/PromoteSA  swap the live signer to the new material; RotateLeaves
-//	finalize   FinalizeCA           collapse bundles to new-only; drop old trust
-//
-// Bundle-only crypto: the new CA is a fresh self-signed root and the old‖new
-// bundle is the trust bridge (no cross-signing — it is functionally invisible
-// here since we push the bundle to every node and embed it in every kubeconfig).
+// Phases: stage and widen the bundles to old‖new, promote, then collapse to new.
 
 func bundleCrtPath(base string) string { return filepath.Join(version.PKIDir, base+"-bundle.crt") }
 func saBundlePath() string             { return filepath.Join(version.PKIDir, "sa-bundle.pub") }
@@ -787,10 +628,7 @@ func bundleExists(base string) bool {
 	return err == nil
 }
 
-// concatFiles writes the concatenation of src (in order) to dst, separating
-// blocks with a newline so PEM blocks never run together. The write is atomic
-// through the shared writer: a trust bundle cut in half by a crash stops the
-// components that point their --*-ca-file at it.
+// Atomic: a trust bundle cut in half by a crash stops the components that read it.
 func concatFiles(dst string, mode os.FileMode, src ...string) error {
 	var buf []byte
 	for _, s := range src {
@@ -806,9 +644,7 @@ func concatFiles(dst string, mode os.FileMode, src ...string) error {
 	return atomicfile.WriteFile(dst, buf, mode)
 }
 
-// WriteCABundle writes {base}-bundle.crt = concatenation of the given cert
-// basenames (each {name}.crt), in order (new-first during rotation). Passing a
-// single name yields a one-cert bundle (the fresh-install / finalize case).
+// Concatenates the named certs in order; a single name yields a one-cert bundle.
 func WriteCABundle(base string, certNames ...string) error {
 	src := make([]string, len(certNames))
 	for i, n := range certNames {
@@ -817,9 +653,7 @@ func WriteCABundle(base string, certNames ...string) error {
 	return concatFiles(bundleCrtPath(base), 0o644, src...)
 }
 
-// WriteSABundle writes sa-bundle.pub = concatenation of the given pubkey
-// basenames (each {name}.pub). The apiserver accepts every key in the file, so
-// old‖new lets it verify tokens signed by either key during a rotation.
+// The apiserver verifies tokens against every key in the file, so old‖new works.
 func WriteSABundle(pubNames ...string) error {
 	src := make([]string, len(pubNames))
 	for i, n := range pubNames {
@@ -828,15 +662,10 @@ func WriteSABundle(pubNames ...string) error {
 	return concatFiles(saBundlePath(), 0o644, src...)
 }
 
-// RootCertPresent reports whether this node still holds the certificate of the
-// root CA the cluster trusts. A rotation carries that certificate into the new
-// trust bundle, which is what lets every node and client verify the new root
-// by the old one; the old key is not needed for that.
+// The old certificate in the bundle is what lets nodes verify the new root by it.
 func RootCertPresent() bool { return certTrusted("ca") }
 
-// certTrusted reports whether {name}.crt is a certificate in {name}-bundle.crt,
-// the bundle this node trusts now, or simply a certificate when there is no
-// bundle: a file copied in from elsewhere must not replace the trusted root.
+// No bundle means the plain cert counts as trusted; with one, a copied-in file is not the root.
 func certTrusted(name string) bool {
 	b, err := os.ReadFile(path(name, "crt"))
 	if err != nil {
@@ -865,13 +694,7 @@ func certTrusted(name string) bool {
 	return false
 }
 
-// Signer names the key pair that signs for base ("ca" or "sa"): base itself,
-// or, when base's key is gone and a rotation has staged base-new, the staged
-// pair. A forced rotation goes ahead without a lost key, and from trust-new to
-// sign-new the components that sign (the controller-manager, the apiserver's
-// service-account tokens, the operator's webhook) would otherwise have no key
-// at all; what the staged pair signs is trusted everywhere trust-new has run.
-// PromoteCA and PromoteSA make base the signer again.
+// Base itself, or the staged pair when base's key is gone; PromoteCA/PromoteSA restore base.
 func Signer(base string) string {
 	if _, err := os.Stat(path(base, "key")); err == nil {
 		return base
@@ -882,27 +705,21 @@ func Signer(base string) string {
 	return base
 }
 
-// ErrNoRootCert is RotateCAMaterial's refusal when ca.crt is gone.
 var ErrNoRootCert = errors.New("cannot rotate the CA without the certificate of the root the cluster trusts: " +
 	"nothing could verify the new root by it, so every component would fail TLS once trust-new restarts it. " +
 	"The certificate is public: copy ca.crt from another control plane, or, when this node's ca-bundle.crt " +
 	"holds a single certificate, copy that file to ca.crt, then run the rotation again")
 
-// ErrNoOldPublicHalf is RotateCAMaterial's refusal when front-proxy-ca.crt, or
-// sa.pub with no sa.key to derive it from, is gone.
 var ErrNoOldPublicHalf = errors.New("cannot rotate the CA without the old front-proxy CA certificate and service-account public key: " +
 	"the trust bundles must carry them, or what the old signers issued stops verifying at the trust-new restart, " +
 	"and the rotation shares them with the other control planes. Both are public: copy the file from another control plane, " +
 	"or, when this node's front-proxy-ca-bundle.crt or sa-bundle.pub holds a single entry, copy that file to front-proxy-ca.crt or sa.pub, " +
 	"then run the rotation again")
 
-// OldPublicHalvesPresent reports whether RotateCAMaterial would pass its
-// ErrNoOldPublicHalf checks, for a caller that must refuse before it starts.
 func OldPublicHalvesPresent() bool {
 	return certTrusted("front-proxy-ca") && (fileExists(filepath.Join(version.PKIDir, "sa.pub")) || fileExists(path("sa", "key")))
 }
 
-// restoreSAPub writes sa.pub from sa.key when only the public half is gone.
 func restoreSAPub() error {
 	pubFile := filepath.Join(version.PKIDir, "sa.pub")
 	if fileExists(pubFile) {
@@ -915,11 +732,7 @@ func restoreSAPub() error {
 	return writePublicKey(pubFile, key)
 }
 
-// stageSAKeypair stages sa-new.key and sa-new.pub. NewSAKeypair writes the key
-// before the public half, so a trust-new stopped between the two leaves the key
-// alone: the public half is derived from it rather than a new pair minted,
-// since on a follower the staged key came from the cluster and must stay the
-// one every control plane holds.
+// The staged key came from the cluster; derive its public half rather than mint a new pair.
 func stageSAKeypair() error {
 	keyFile := filepath.Join(version.PKIDir, "sa-new.key")
 	if !fileExists(keyFile) {
@@ -944,17 +757,7 @@ func writePublicKey(file string, key crypto.Signer) error {
 	return atomicfile.WriteFile(file, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644)
 }
 
-// RotateCAMaterial (phase trust-new) stages a fresh root CA, front-proxy CA, and
-// SA keypair (ca-new.*, front-proxy-ca-new.*, sa-new.*) and rewrites the trust
-// bundles as new‖old so every component trusts both once restarted. It does NOT
-// promote the signer — the live ca.*/sa.* keep signing until PromoteCA/PromoteSA.
-// Idempotent: re-running reuses already-staged *-new material. force allows
-// proceeding when an old private key (ca.key, front-proxy-ca.key or sa.key) is
-// gone, and only force does: a rotation that goes ahead without one is recorded
-// as forced, so no node of it is rolled back. The old public halves are carried
-// into the bundles and are required even with force: without the root's
-// certificate no component could verify the new root, and every one would fail
-// TLS from the restart that follows. A lost sa.pub is derived from sa.key.
+// Stages new material and rewrites the trust bundles as old‖new; does not promote.
 func RotateCAMaterial(force bool) error {
 	if err := EnsureDir(); err != nil {
 		return err
@@ -993,7 +796,6 @@ func RotateCAMaterial(force bool) error {
 	if err := restoreSAPub(); err != nil {
 		return err
 	}
-	// A new rotation starts: neither marker may carry over from the last one.
 	if err := removeCAMarkers(); err != nil {
 		return err
 	}
@@ -1030,18 +832,13 @@ func RotateCAMaterial(force bool) error {
 	if err := WriteCABundle("front-proxy-ca", fpSrc...); err != nil {
 		return fmt.Errorf("front-proxy-ca bundle: %w", err)
 	}
-	// etcd's bundle is a trust bundle too: widen it with the same roots.
 	if err := syncEtcdBundleToRoot(caSrc...); err != nil {
 		return fmt.Errorf("etcd-ca bundle: %w", err)
 	}
 	return WriteSABundle(saSrc...)
 }
 
-// liveSignersStaged names the live signer files that are byte-identical to
-// their staged replacement. Promotion renames the staged files away, so the
-// two never match on a node that staged its own rotation or fetched another
-// control plane's staged material; they match only on a node whose live files
-// were overwritten with signers another node had already promoted.
+// Equal live and staged files happen only when another node's promoted signers were copied in.
 func liveSignersStaged() []string {
 	var same []string
 	for _, name := range []string{RootCAName + ".crt", RootCAName + ".key", frontProxyCAName + ".crt", frontProxyCAName + ".key",
@@ -1061,30 +858,16 @@ func liveSignersStaged() []string {
 	return same
 }
 
-// PrepareStaging is what must happen before any CA material is staged on this
-// node, including the material a follower control plane fetches from the
-// initiator: it refuses a node that has promoted and not finalized, and removes
-// the obsolete backups of an idle one. It runs ahead of the fetch because the
-// fetch's own writes stage a root, which makes the node look mid-rotation and
-// keeps its backups. It changes nothing when it refuses. force is the
-// rotation's --force: a forced recovery may have lost an old key, which must not
-// block staging.
+// Refuses a node that has promoted and not finalized; removes obsolete backups when idle.
 func PrepareStaging(force bool) error {
 	if rotationPromoted() {
 		way := "Finish the rotation with `stratum certs rotate-ca --phase=finalize` once every node has completed sign-new, " +
 			"or abandon it with the rollback below"
 		switch {
 		case !CAPromoted():
-			// Promoted but unmarked: sign-new stopped before it recorded the
-			// promotion. It resumes, and what is staged is the rest of that
-			// promotion; finalize refuses until sign-new has recorded it.
 			way = "This node's sign-new stopped before it recorded the promotion: run `stratum certs rotate-ca --phase=sign-new --yes` on it again to finish, " +
 				"and finalize only after that. Or abandon the rotation with the rollback below"
 		case len(CAStagedFiles()) > 0:
-			// Staged files beside a recorded promotion are a repeated staging:
-			// finalize refuses them and sign-new skips as applied, so the only way
-			// out is the rollback, which restores from the backups this refusal
-			// protects.
 			way = "New CA material is staged on this node again, so finalize would refuse and sign-new would skip: do not finalize this node. Abandon the rotation with the rollback below"
 		}
 		return fmt.Errorf("pki: refusing to stage a CA rotation (nothing has been changed): this node has already promoted its new CA, and staging again would replace the staged "+
@@ -1094,51 +877,22 @@ func PrepareStaging(force bool) error {
 	return removeObsoleteBackups(force)
 }
 
-// rotationPromoted reports whether this node's rotation is past promotion and
-// not yet finalized: the root's backup is there, and sign-new recorded its
-// promotion or stopped before recording it (SignNewResumable). Its staged files
-// are gone and its backups are the only way back, so nothing may stage over it.
+// Past promotion and not finalized: its backups are the only way back, so nothing stages over it.
 func rotationPromoted() bool {
 	return fileExists(filepath.Join(version.PKIDir, "ca.pre-carotate.crt")) && ((CAPromoted() && !CAFinalized()) || SignNewResumable())
 }
 
-// removeObsoleteBackups deletes the .pre-carotate files that no rotation on
-// this node owns. Finalize and rollback remove them, but older releases ignored
-// an unlink failure, so the backups of a completed A→B rotation can survive. The
-// next rotation's rollback would restore A over B, the signer it started from.
-//
-// A backup is obsolete only when it differs from the live file it backs up and
-// the node is idle: nothing staged (a half pair counts), one anchor in the trust bundle, and no
-// promoted-not-finalized marker. A backup equal to its live file is a rollback
-// that restored but has not finished its cleanup, and a retry needs every
-// backup, the ones that still differ included, to repair and finish: one equal
-// file keeps them all. A live file that is missing under force is a forced
-// recovery whose backup may be the only copy of that key: it keeps them all and
-// does not fail. Everything is also left alone when the bundle is unreadable.
-//
-// shortcut: a node that an older release staged beside such backups is not
-// cleaned, because that state cannot be told from a promotion whose staging was
-// repeated. Do not roll it back before sign-new: that restores the stale
-// backups' CA. Nothing confirms that every node trusts this rotation's new CA:
-// neither the cluster-wide rollback check nor the trusts-new= field of the
-// per-node one identifies the intended signer. Never run trust-new on a control
-// plane to fix it (it mints its own CA). Resume the open run from the control
-// plane that holds the staged material; escalate when the run has ended or
-// trust cannot be confirmed. Once the resumed run's sign-new promotes, it
-// overwrites the backups with the live CA, and a rollback is safe after.
+// Older releases could leave backups behind; a later rollback would restore that stale CA.
 func removeObsoleteBackups(force bool) error {
 	rot := ReadCARotation()
 	if rot.Err != nil {
 		return nil
 	}
-	// Any staged file counts, not only a complete pair (rot.Staged): a crash
-	// mid-staging leaves half of one, and that node is not idle.
+	// A crash mid-staging leaves half a pair; any staged file means not idle.
 	if len(CAStagedFiles()) > 0 || rot.BundleCAs != 1 || (CAPromoted() && !CAFinalized()) {
 		return nil
 	}
-	// Decide first, delete after: a live file that cannot be read says nothing
-	// about whether its backup is obsolete, so one such file keeps every backup
-	// and refuses, instead of deleting the only copy of a key.
+	// An unreadable live file keeps every backup and refuses, never deletes a key's only copy.
 	var obsolete []string
 	var errs []error
 	keepAll := false
@@ -1183,8 +937,6 @@ func removeObsoleteBackups(force bool) error {
 	return nil
 }
 
-// promotePair backs up the live {name}.crt/.key to {name}.pre-carotate.* and
-// atomically renames {name}-new.* into place (same-fs rename is atomic).
 func promotePair(name string) error {
 	for _, ext := range []string{"crt", "key"} {
 		if b, err := os.ReadFile(path(name, ext)); err == nil {
@@ -1203,13 +955,9 @@ func promotePair(name string) error {
 	return nil
 }
 
-// PromoteCA (phase sign-new) swaps the live root + front-proxy CA to the staged
-// new material. The trust bundles still carry old‖new, so old-signed peers and
-// tokens keep validating. Callers must RotateLeaves afterward so all leaves are
-// reissued under the new signer.
+// Bundles still carry old‖new, so old-signed peers keep validating; RotateLeaves must follow.
 func PromoteCA() error {
-	// All of it or none of it: a missing staged file found after the first rename
-	// would leave the root consumed and the front-proxy half-done.
+	// A missing staged file after the first rename would leave the root consumed, half done.
 	if err := requireStaged("ca-new.crt", "ca-new.key", "front-proxy-ca-new.crt", "front-proxy-ca-new.key", "sa-new.key", "sa-new.pub"); err != nil {
 		return err
 	}
@@ -1246,7 +994,6 @@ func PromoteCA() error {
 	return nil
 }
 
-// requireStaged errors, naming every file that is missing, unless all exist.
 func requireStaged(files ...string) error {
 	var missing []string
 	for _, f := range files {
@@ -1260,9 +1007,7 @@ func requireStaged(files ...string) error {
 	return nil
 }
 
-// PromoteSA (phase sign-new) swaps the live SA signing keypair to sa-new.*.
-// sa-bundle.pub still contains both keys, so tokens signed by the old key remain
-// verifiable until finalize drops it.
+// sa-bundle.pub still holds both keys, so old-signed tokens verify until finalize.
 func PromoteSA() error {
 	if err := requireStaged("sa-new.key", "sa-new.pub"); err != nil {
 		return err
@@ -1285,7 +1030,7 @@ func PromoteSA() error {
 	return nil
 }
 
-// carotateScratch is every rotation-only file, removed on finalize/rollback.
+// Every rotation-only file, removed on finalize and rollback.
 var carotateScratch = []string{
 	"ca-new.crt", "ca-new.key", "front-proxy-ca-new.crt", "front-proxy-ca-new.key",
 	"sa-new.key", "sa-new.pub",
@@ -1298,16 +1043,10 @@ var carotateScratch = []string{
 	caForcedMarker,
 }
 
-// caPromotedMarker records that sign-new finished its file work: the new CA and SA
-// promoted and the leaves reissued under them. It is the only proof finalize
-// accepts that this node promoted — the .pre-carotate backups are not, because
-// a forced rotation backs up no lost key and a failed cleanup can leave one
-// behind after a rollback. Removed with the other rotation scratch on finalize and rollback,
-// and by trust-new.
+// The only proof finalize accepts that this node promoted; the backups are not.
 const caPromotedMarker = "carotate-promoted"
 
-// MarkCAPromoted writes the marker. Call it only after the promotion and the
-// leaf reissue under it have succeeded.
+// Call only after the promotion and the leaf reissue under it succeeded.
 func MarkCAPromoted() error {
 	if err := os.WriteFile(filepath.Join(version.PKIDir, caPromotedMarker), nil, 0o600); err != nil {
 		return fmt.Errorf("record promotion: %w", err)
@@ -1315,14 +1054,12 @@ func MarkCAPromoted() error {
 	return nil
 }
 
-// CAPromoted reports whether MarkCAPromoted ran in this node's current rotation.
 func CAPromoted() bool {
 	_, err := os.Stat(filepath.Join(version.PKIDir, caPromotedMarker))
 	return err == nil
 }
 
-// removeCAMarkers drops both rotation markers. A failed removal is an error, not
-// a skip: a stale carotate-finalized would let a later finalize pass unchecked.
+// A stale carotate-finalized left behind would let a later finalize pass unchecked.
 func removeCAMarkers() error {
 	for _, m := range []string{caFinalizedMarker, caPromotedMarker} {
 		if err := os.Remove(filepath.Join(version.PKIDir, m)); err != nil && !os.IsNotExist(err) {
@@ -1332,19 +1069,15 @@ func removeCAMarkers() error {
 	return nil
 }
 
-// caFinalizedMarker records that FinalizeCA collapsed trust to the promoted CA. It
-// is what tells a finalize retry (restart failed) from a node that never ran
-// sign-new: both look idle on disk. trust-new and rollback remove it.
+// Tells a finalize retry from a node that never ran sign-new: both look idle on disk.
 const caFinalizedMarker = "carotate-finalized"
 
-// CAFinalized reports whether this node's last rotation ended in FinalizeCA.
 func CAFinalized() bool {
 	_, err := os.Stat(filepath.Join(version.PKIDir, caFinalizedMarker))
 	return err == nil
 }
 
-// CAStagedFiles lists the staged *-new files on disk, complete pair or not: a
-// crash mid-staging leaves a crt without its key, which CARotationStaged misses.
+// A crash mid-staging leaves a crt without its key, which CARotationStaged misses.
 func CAStagedFiles() []string {
 	var out []string
 	for _, f := range carotateScratch {
@@ -1358,7 +1091,6 @@ func CAStagedFiles() []string {
 	return out
 }
 
-// StagedSignersMissing lists the staged signer files a control plane that fetched another's rotation lacks.
 func StagedSignersMissing() ([]string, error) {
 	split, err := KubeletClientSplit()
 	if err != nil {
@@ -1377,8 +1109,7 @@ func StagedSignersMissing() ([]string, error) {
 	return missing, nil
 }
 
-// removeScratch deletes every rotation-only file. A file that will not go is an
-// error, not a skip: a surviving backup or marker would outlive the rotation.
+// A surviving backup or marker would outlive the rotation.
 func removeScratch() error {
 	var errs []error
 	for _, f := range carotateScratch {
@@ -1389,9 +1120,7 @@ func removeScratch() error {
 	return errors.Join(errs...)
 }
 
-// FinalizeCA (phase finalize) collapses the trust bundles to the live (new) CA/SA
-// only and removes rotation scratch files. Only safe once every node trusts and
-// uses the new material (the certs layer gates this).
+// Safe only once every node trusts and uses the new material.
 func FinalizeCA() error {
 	split, err := KubeletClientSplit()
 	if err != nil {
@@ -1408,17 +1137,13 @@ func FinalizeCA() error {
 	if err := WriteCABundle("front-proxy-ca", "front-proxy-ca"); err != nil {
 		return err
 	}
-	// The old root leaves etcd's trust at the same instant it leaves Kubernetes
-	// trust — including under --force, where the root being dropped is the one
-	// suspected of compromise.
 	if err := syncEtcdBundleToRoot("ca"); err != nil {
 		return err
 	}
 	if err := WriteSABundle("sa"); err != nil {
 		return err
 	}
-	// Before the scratch goes: a failure in between leaves carotate-promoted, so a
-	// retry is accepted either way.
+	// A failure in between leaves carotate-promoted, so a retry is accepted either way.
 	if err := os.WriteFile(filepath.Join(version.PKIDir, caFinalizedMarker), nil, 0o600); err != nil {
 		return fmt.Errorf("record finalize: %w", err)
 	}
@@ -1428,16 +1153,11 @@ func FinalizeCA() error {
 	return nil
 }
 
-// restoreFile names one file of a credential pair the CA rollback reinstates.
 type restoreFile struct {
 	name, ext string
 }
 
-// RollbackCA reverts a partial rotation: restores the pre-rotation CA/SA from the
-// .pre-carotate backups (present only if sign-new was reached), rewrites the trust
-// bundles to the restored material only. It leaves the staged and backup files in
-// place. If sign-new was reached the caller must also RotateLeaves (under the
-// restored old CA), then RemoveRotationScratch, then restart.
+// Restores the old material; the caller reissues leaves once sign-new was reached, then cleans up.
 func RollbackCA() error {
 	if err := RollbackCheck(); err != nil {
 		return err
@@ -1446,22 +1166,11 @@ func RollbackCA() error {
 	if err != nil {
 		return fmt.Errorf("rollback: %w", err)
 	}
-	// First, so a marker that cannot be removed fails the rollback before it
-	// changes anything.
+	// Marker removal first, so an unremovable marker fails before anything changes.
 	if err := removeCAMarkers(); err != nil {
 		return fmt.Errorf("rollback: %w", err)
 	}
-	// restore reinstates {name}.{ext} from its .pre-carotate backup. A missing
-	// backup means sign-new was not reached for this file (nothing to undo) and is
-	// a benign skip; any other read error, or a write failure, is fatal — this is
-	// the disaster-recovery path, so a swallowed error must never report success.
-	// The write is atomic through the shared writer: this path exists to repair
-	// broken trust material, so it must not be able to leave more of it behind.
-	// Pairs are restored through writePair, so a first half that lands
-	// not-durably (the rename put the file in place, the directory sync
-	// failed) still writes the matching second half: a rollback that stopped
-	// between them would pair the restored old certificate with the new
-	// signer's key.
+	// A missing backup means sign-new was not reached for this file; other errors are fatal.
 	restore := func(name, ext string) error {
 		bak := filepath.Join(version.PKIDir, name+".pre-carotate."+ext)
 		b, err := os.ReadFile(bak)
@@ -1504,33 +1213,22 @@ func RollbackCA() error {
 	if err := WriteCABundle("front-proxy-ca", "front-proxy-ca"); err != nil {
 		return err
 	}
-	// The site that fails SILENTLY if it is missed: without this the etcd bundle
-	// keeps trusting the NEW root — the one the rollback existed to un-trust —
-	// and nothing breaks, because etcd's leaves went back to the old root which
-	// is still in the stale bundle.
+	// Without this the etcd bundle keeps trusting the dropped new root, and nothing breaks.
 	if err := syncEtcdBundleToRoot("ca"); err != nil {
 		return err
 	}
 	return WriteSABundle("sa")
 }
 
-// ErrRollbackUnsafe is RollbackCA's refusal when rolling back would not leave
-// the node an old certificate and key that belong together.
 var ErrRollbackUnsafe = errors.New("rolling back would not leave this node a working old signer. " +
 	"Do not roll back any node of this rotation; finish it forward")
 
-// signNewForward is the forward path every RollbackCA refusal gives. sign-new
-// is safe only once every node trusts the new CA, which this node cannot see,
-// so it sends the operator to the cluster-wide check first.
+// sign-new is safe only once every node trusts the new CA, which one node cannot see.
 const signNewForward = "first run `stratum certs rotate-ca --rollback --cluster --check` from a control plane: no node may sign with the new CA while another has not completed trust-new, and the check says what to do about one that has not. " +
 	"Then run `stratum certs rotate-ca --phase=sign-new --yes` on each control plane and then each worker where it has not completed, " +
 	"then finish with \"Finishing a rotation by hand\" in the certificate-rotation documentation"
 
-// caForcedMarker records that this rotation was staged with --force. A forced
-// rotation may have gone ahead without an old key on some control plane, and
-// rolling back any node of it, even one that kept its keys, splits the cluster:
-// that node returns to the old root while another can only go forward. Written
-// by RotateCAMaterial, removed with the rotation scratch on finalize.
+// Rolling back any node of a forced rotation, even one that kept its keys, splits the cluster.
 const caForcedMarker = "carotate-forced"
 
 func setForcedMarker(force bool) error {
@@ -1547,16 +1245,9 @@ func setForcedMarker(force bool) error {
 	return nil
 }
 
-// ForcedRotation reports whether the rotation in progress was staged with --force.
 func ForcedRotation() bool { return fileExists(filepath.Join(version.PKIDir, caForcedMarker)) }
 
-// RollbackCheck reports why RollbackCA would refuse on this node, and changes
-// nothing: a rotation started with --force, or a pair the rollback would
-// restore whose certificate and key no longer match (an old key lost mid-
-// rotation). Every refusal wraps ErrRollbackUnsafe. It is the whole of
-// RollbackCA's refusal logic, so `rotate-ca --rollback --check` on a node
-// answers exactly what `--rollback --yes` there would do, and the cluster-wide
-// check can ask every node before any node rolls back.
+// All of RollbackCA's refusal logic, read-only; --check answers exactly what --yes there would do.
 func RollbackCheck() error {
 	if ForcedRotation() {
 		return fmt.Errorf("pki: refusing to roll back (nothing has been changed): this rotation was started with --force: %w. "+
@@ -1567,9 +1258,7 @@ func RollbackCheck() error {
 		return fmt.Errorf("pki: refusing to roll back (nothing has been changed): the restored %s would not be a matching certificate and key: %w. To finish it, %s",
 			strings.Join(bad, ", "), ErrRollbackUnsafe, signNewForward)
 	}
-	// The same read RollbackCA makes before it changes anything: a kubelet
-	// client-CA bundle it cannot read stops the rollback there, so the check
-	// must report it too, or a cluster-wide check would clear this node.
+	// The check must report this read too, or a cluster-wide check would clear this node.
 	if _, err := KubeletClientSplit(); err != nil {
 		return fmt.Errorf("pki: refusing to roll back (nothing has been changed): the kubelet client-CA trust cannot be read, so the rollback could not tell which bundle to restore: %w: %w. "+
 			"Repair or remove %s, then run the check again", err, ErrRollbackUnsafe, KubeletClientBundlePath())
@@ -1581,17 +1270,12 @@ func RollbackCheck() error {
 	return nil
 }
 
-// RollbackUnsafePairs names the pairs a rollback on this node would leave
-// without a matching certificate and key, for `stratum certs check`.
 func RollbackUnsafePairs() []string { return rollbackMismatchedPairs() }
 
-// rollbackPairs are the pairs RollbackCA restores, each with its public half.
 var rollbackPairs = []struct{ name, public string }{
 	{"ca", "crt"}, {"front-proxy-ca", "crt"}, {"sa", "pub"}, {KubeletClientCAName, "crt"},
 }
 
-// rollbackFile is the file {name}.{ext} that would be live after RollbackCA:
-// the .pre-carotate backup when there is one, the live file otherwise.
 func rollbackFile(name, ext string) string {
 	if bak := filepath.Join(version.PKIDir, name+".pre-carotate."+ext); fileExists(bak) {
 		return bak
@@ -1599,10 +1283,6 @@ func rollbackFile(name, ext string) string {
 	return path(name, ext)
 }
 
-// rollbackMismatchedPairs names the pairs RollbackCA would leave unusable: for
-// each of the root CA, the front-proxy CA and the SA keypair, the certificate
-// or public key and the private key that would be live afterwards must both
-// exist and match.
 func rollbackMismatchedPairs() []string {
 	var bad []string
 	for _, p := range rollbackPairs {
@@ -1616,11 +1296,7 @@ func rollbackMismatchedPairs() []string {
 	return bad
 }
 
-// RollbackTarget names the signers a rollback on this node would leave live,
-// as name=fingerprint of each pair's public key, so the cluster-wide check can
-// tell that every control plane would return to the same ones. A control
-// plane that finalized holds no backups, so its target is the new signers,
-// and differs from that of one that has not finalized.
+// Lets the cluster-wide check confirm every control plane returns to the same signers.
 func RollbackTarget() string {
 	var parts []string
 	for _, p := range rollbackPairs {
@@ -1639,8 +1315,6 @@ func RollbackTarget() string {
 	return strings.Join(parts, ",")
 }
 
-// keyMatches reports whether the private key in keyFile belongs to the public
-// key in pubFile, a PEM certificate or PKIX public key.
 func keyMatches(pubFile, keyFile string) bool {
 	pub, err := readPublicKey(pubFile)
 	if err != nil {
@@ -1702,11 +1376,6 @@ func readPrivateKey(file string) (crypto.Signer, error) {
 	return nil, fmt.Errorf("%s: unexpected PEM block %q", file, blk.Type)
 }
 
-// SignNewResumable reports whether this node's sign-new promoted the new root
-// but stopped before recording it: nothing is staged any more, the root's
-// backup is there, the trust bundle still carries old‖new, and no promotion
-// marker. Such a node cannot run sign-new from staged material and must not be
-// rolled back once a key was lost, so sign-new finishes it instead.
 func SignNewResumable() bool {
 	if CAPromoted() || fileExists(path("ca-new", "crt")) || fileExists(path("ca-new", "key")) {
 		return false
@@ -1718,8 +1387,6 @@ func SignNewResumable() bool {
 	return err == nil && n > 1
 }
 
-// FinishPromotion completes a sign-new that promoted the root and stopped: it
-// promotes the front-proxy CA and the SA keypair if they are still staged.
 func FinishPromotion() error {
 	if exists("front-proxy-ca-new") {
 		if err := promotePair("front-proxy-ca"); err != nil {
@@ -1737,10 +1404,7 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// RemoveRotationScratch deletes the staged and backup files once a rollback is
-// complete. It is separate from RollbackCA because the caller still needs the
-// backups to tell it whether the leaves must be reissued, and a retry after a
-// failed cleanup must find them.
+// Separate from RollbackCA: the caller needs the backups to tell whether to reissue leaves.
 func RemoveRotationScratch() error {
 	if err := removeScratch(); err != nil {
 		return fmt.Errorf("rollback: remove rotation scratch: %w", err)
@@ -1748,67 +1412,21 @@ func RemoveRotationScratch() error {
 	return nil
 }
 
-// CARotationStaged reports whether a CA rotation is mid-flight (new CA staged
-// but not yet finalized).
 func CARotationStaged() bool { return exists("ca-new") }
 
-// The on-disk states of a node's root-CA rotation. Every reader and every guard
-// (ReadCARotation, RotateCAMaterial, SignNewResumable, certs.caPhaseApplied,
-// checkCPFinalize, RollbackCA) reads these files, and a state not in this table
-// is damage, not a rotation. "backup" is ca.pre-carotate.*, "staged" is the
-// ca-new pair, "bundle" the number of anchors in ca-bundle.crt, and "promoted"
-// and "finalized" the carotate-promoted and carotate-finalized markers.
-//
-//	state            staged  backup           bundle  promoted  finalized
-//	idle             no      no               1       no        no, or the last rotation's
-//	trust-new        yes     no               2       no        no
-//	promoted, cut    no      yes, != live     2       no        no   sign-new stopped before its marker: sign-new resumes it, or rollback undoes it
-//	promoted         no      yes, != live     2       yes       no   finalize, or rollback
-//	finalizing       no      maybe, != live   1       maybe     yes  finalize collapsed trust; the scratch removal may have stopped, and a retry finishes it
-//	rollback, cut    maybe   yes, == live     1       no        no   RollbackCA restored; the repair of the leaves or the cleanup stopped, and a retry finishes it
-//	residue          no      yes, != live     1       no        any  not a rotation: backups an older finalize failed to unlink; the next trust-new removes them
-//
-// A promoted rotation's backups are its only way back, so nothing stages a new
-// rotation over one (rotationPromoted). A backup that differs from its live file
-// where no promotion can be under way is residue (removeObsoleteBackups).
-//
-// CARotation is the one answer to "what root-CA rotation state is this node
-// in", read from the PKI directory pki owns.
-//
-// Four readers need that state — certs' RotationPhase, signerPromoted and
-// checkCARotationState, and token.CACertHash — and each spelling pki's staged
-// and backup file names for itself would leave those names in three packages
-// and the phase answers free to drift apart. Every rotation-state consumer
-// reads this struct instead; only pki spells the rotation file names.
+// Only pki spells the rotation file names; every rotation-state consumer reads this struct.
 type CARotation struct {
-	// Staged reports whether a fresh root CA is staged but not yet promoted
-	// (ca-new.crt and ca-new.key both on disk): the trust-new phase.
-	Staged bool
-	// Promoted reports whether the live root has a .pre-carotate backup:
-	// sign-new promoted the staged root, and finalize or a completed
-	// rollback has not yet removed the backup.
+	Staged   bool
 	Promoted bool
-	// BundleCAs is the number of CA anchors in the live root trust bundle:
-	// two while a rotation has widened trust to old‖new, one at rest.
+	// Two while a rotation has widened trust to old‖new, one at rest.
 	BundleCAs int
-	// Anchor is the basename of the root CA certificate a new pin must be
-	// computed from: the staged root while its certificate is on disk —
-	// finalize renames it over the live ca.crt — and the live root
-	// otherwise.
+	// The staged root while its certificate is on disk, else the live root.
 	Anchor string
-	// Err is set when the trust bundle could not be read or parsed. Only
-	// os.ErrNotExist is a benign read (no bundle written yet); every other
-	// error is malformed or corrupt material a guard must refuse rather
-	// than read as idle. Staged, Promoted and Anchor stay meaningful: they
-	// come from the CA files, not the bundle.
+	// Only os.ErrNotExist is a benign read; Staged, Promoted and Anchor stay meaningful.
 	Err error
 }
 
-// ReadCARotation inspects this node's PKI directory and returns the rotation
-// state every consumer shares: whether a new root is staged, whether the
-// promotion backup is present, how many anchors the live trust bundle carries,
-// and which root file a new pin must name. A bundle read or parse failure sets
-// Err rather than degrading to a plausible-looking state.
+// A bundle read or parse failure sets Err, never a plausible-looking idle state.
 func ReadCARotation() CARotation {
 	rot := CARotation{
 		Staged:   CARotationStaged(),
@@ -1822,127 +1440,61 @@ func ReadCARotation() CARotation {
 	return rot
 }
 
-// ── One PEM bundle decoder, declared per consumer ────────────────────────────
-//
-// Three readers consume PEM trust bundles — CABundleCertCount (the rotation
-// counter), bundleCerts (the etcd trust reader) and certs.parseTrustBundle
-// (the worker refresh, which writes its bytes verbatim into the kubelet's
-// clientCAFile) — and they do not agree on what a bundle may carry, because
-// each one's file is loaded by a different PEM parser. DecodePEMBundle is the
-// one decoder they all share; each consumer passes the BundlePolicy its file's
-// loader dictates, so the differences are declared here and tested in one
-// place (TestOneBundleParser) instead of re-spelled as three ad-hoc loops.
+// Three readers consume trust bundles; their loaders differ, so the policies here declare it.
 
-// BundleLeading declares what bytes before a PEM block may be.
 type BundleLeading int
 
 const (
-	// LeadingTrim allows any run of space, tab, CR or LF before a block and
-	// reads the block from offset 0 after trimming it.
 	LeadingTrim BundleLeading = iota
-	// LeadingNewlineEnded allows the same run only when it ends in a newline:
-	// pem.Decode honours a BEGIN line only at offset 0 or immediately after a
-	// '\n', and client-go's cert.ParseCertsPEM — the parser the kubelet loads
-	// clientCAFile with — behaves the same way, so a run ending in a space, a
-	// tab or a lone CR would anchor a block the kubelet then skips.
+	// pem.Decode honours a BEGIN line only at offset 0 or after a newline, as the kubelet does.
 	LeadingNewlineEnded
-	// LeadingPemSkip leaves the bytes to pem.Decode, which skips anything
-	// before a BEGIN line: the same skip x509.CertPool.AppendCertsFromPEM —
-	// what etcd loads --trusted-ca-file with — performs.
+	// Matches x509.CertPool.AppendCertsFromPEM, which etcd loads --trusted-ca-file through.
 	LeadingPemSkip
 )
 
-// BundlePolicy is one consumer's declared validation policy for a PEM trust
-// bundle. The trust contexts differ in what their loaders actually accept, so
-// the shared decoder keeps the differences explicit instead of demanding
-// identical acceptance everywhere: the kubelet's parser drops blocks the count
-// and etcd readers accept, and the etcd pool accepts blocks the kubelet's
-// parser drops.
+// Loaders differ: the kubelet's parser drops blocks the count and etcd readers accept.
 type BundlePolicy struct {
-	// Leading is the declared treatment of bytes before each PEM block.
 	Leading BundleLeading
-	// RefusePEMHeaders refuses a CERTIFICATE block that carries PEM headers.
-	// The kubelet's parser drops such blocks outright, so a bundle written
-	// verbatim into its clientCAFile may not carry one; the count and etcd
-	// readers read files nothing loads with that parser, so they keep them.
+	// The kubelet's parser drops headered blocks outright.
 	RefusePEMHeaders bool
-	// SkipNonCertificateBlocks passes PEM blocks of any other type over. The
-	// etcd pool skips them; the count and the kubelet refuse, because a block
-	// the loader would not load must not sit in trust material this code has
-	// already accepted.
+	// The etcd pool skips them; the count and the kubelet refuse.
 	SkipNonCertificateBlocks bool
-	// AcceptNonCA keeps parseable leaf certificates in the answer. The etcd
-	// pool never checks IsCA — a leaf in the pool still anchors a chain — so
-	// the etcd reader must see it; the count and the kubelet refuse a non-CA,
-	// because every entry becomes a trust anchor.
+	// The etcd pool never checks IsCA; the count and the kubelet refuse a non-CA.
 	AcceptNonCA bool
-	// RefuseEmpty refuses a bundle that decodes to zero certificates instead
-	// of returning an empty answer. The count refuses, because a zero count
-	// must not authorize a rotation decision, and the kubelet refuses, because
-	// an empty clientCAFile trusts nothing; the etcd reader answers the empty
-	// set and lets its state mapping decide what an empty bundle means.
+	// A zero count must not authorize a rotation, and an empty clientCAFile trusts nothing.
 	RefuseEmpty bool
 }
 
-// CountPolicy is CABundleCertCount's declared policy. The counter feeds the
-// rotation-phase decision (one anchor at rest, two mid-rotation), so it counts
-// every parseable CA certificate and refuses anything it cannot count
-// completely: a non-certificate block, a non-CA certificate, a corrupt block
-// or an empty bundle must never widen or advance a rotation. PEM headers are
-// kept: pki never writes them, a headered block still carries its DER, and
-// this file is never loaded by the kubelet's parser.
+// Refuses anything it cannot count completely; PEM headers are kept.
 var CountPolicy = BundlePolicy{Leading: LeadingTrim, RefuseEmpty: true}
 
-// EtcdPolicy is bundleCerts's declared policy — deliberately the broadest, so
-// the reader answers the trust etcd actually holds. etcd loads
-// --trusted-ca-file through x509.CertPool.AppendCertsFromPEM, which skips
-// non-certificate blocks and never checks IsCA, so refusing such material here
-// would report narrower trust than etcd has — the exact failure direction the
-// etcd trust-hole defect ran on. Only an unparseable CERTIFICATE block is
-// refused, stricter than the pool's silent skip: a corrupt block read as
-// absent makes the bundle look narrower than it is.
+// The broadest: refusing material the etcd pool accepts would underreport etcd's trust.
 var EtcdPolicy = BundlePolicy{
 	Leading:                  LeadingPemSkip,
 	SkipNonCertificateBlocks: true,
 	AcceptNonCA:              true,
 }
 
-// KubeletPolicy is the kubelet-verbatim policy the worker trust refresh keeps.
-// The fetched bytes are written verbatim into the kubelet's clientCAFile,
-// which client-go's cert.ParseCertsPEM loads: it honours a BEGIN line only at
-// offset 0 or after a newline, drops headered blocks, and skips blocks of any
-// other type — so exactly those inputs are refused here rather than validated
-// by this code and then skipped by the kubelet.
+// The bytes go verbatim into the kubelet's clientCAFile; refuse what it would skip.
 var KubeletPolicy = BundlePolicy{
 	Leading:          LeadingNewlineEnded,
 	RefusePEMHeaders: true,
 	RefuseEmpty:      true,
 }
 
-// DecodePEMBundle decodes every certificate in a PEM trust bundle under one
-// declared policy. It is the one PEM decoder for trust bundles: the count, etcd
-// and kubelet-verbatim readers call it under their own BundlePolicy, so they
-// differ only by declared policy and a policy change is a review here, not a
-// divergent rewrite in three packages.
+// The one PEM decoder for trust bundles; readers differ only by declared policy.
 func DecodePEMBundle(b []byte, pol BundlePolicy) ([]*x509.Certificate, error) {
 	var out []*x509.Certificate
 	for i := 0; ; i++ {
 		if pol.Leading != LeadingPemSkip {
-			// The whole input must be PEM: pem.Decode silently skips anything
-			// it cannot decode, so each block is anchored at offset 0 and the
-			// bytes before it are validated rather than skipped over.
+			// pem.Decode silently skips anything undecodable, so leading bytes are validated.
 			trimmed := bytes.TrimLeft(b, " \t\r\n")
-			// Whitespace that ends the input precedes no block, so it is not
-			// the case the check below refuses: the kubelet's parser stops
-			// cleanly at it.
+			// Whitespace ending the input precedes no block, so the check below does not refuse it.
 			if len(trimmed) == 0 {
 				break
 			}
 			if pol.Leading == LeadingNewlineEnded {
-				// pem.Decode honours a BEGIN line only at offset 0 or
-				// immediately after a '\n'. Space, tab and a lone CR are
-				// whitespace but not '\n', so trimming a run that ends in one
-				// of them would validate a block the kubelet's parser skips.
+				// Trimming a run ending in space, tab or a lone CR would validate a block the kubelet skips.
 				if skipped := b[:len(b)-len(trimmed)]; len(skipped) > 0 && skipped[len(skipped)-1] != '\n' {
 					return nil, fmt.Errorf("%q immediately before a PEM block, which the kubelet's PEM parser skips over; the bundle is written out verbatim, so it must be PEM end to end", skipped[len(skipped)-1:])
 				}
@@ -1957,19 +1509,14 @@ func DecodePEMBundle(b []byte, pol BundlePolicy) ([]*x509.Certificate, error) {
 			if pol.Leading != LeadingPemSkip {
 				return nil, fmt.Errorf("a PEM block that does not decode")
 			}
-			// LeadingPemSkip: pem.Decode ran out of blocks it can skip to.
-			// Anything non-whitespace left behind is trailing garbage, not an
-			// empty answer.
+			// Non-whitespace left behind is trailing garbage, not an empty answer.
 			if len(bytes.TrimSpace(b)) > 0 {
 				return nil, fmt.Errorf("trailing garbage after block %d", i)
 			}
 			break
 		}
 		if pol.Leading != LeadingPemSkip {
-			// pem.Decode scans forward internally: a "-----BEGIN " line it
-			// cannot complete makes it skip everything up to the next one. The
-			// prefix check above does not catch that, so require that it
-			// consumed exactly the block starting at offset 0.
+			// pem.Decode skips forward to the next BEGIN line when one does not decode.
 			if n := bytes.Count(b[:len(b)-len(rest)], []byte("-----BEGIN ")); n != 1 {
 				return nil, fmt.Errorf("%d BEGIN lines in one block: bytes between PEM blocks that pem.Decode skips over; the bundle is written out verbatim, so it must be PEM end to end", n)
 			}
@@ -2000,10 +1547,7 @@ func DecodePEMBundle(b []byte, pol BundlePolicy) ([]*x509.Certificate, error) {
 	return out, nil
 }
 
-// CABundleCertCount validates and counts CA certificates in {base}-bundle.crt
-// (2 during a rotation, 1 at rest) under CountPolicy. Empty or partially
-// malformed bundles are errors: an incomplete count must not authorize a new
-// rotation.
+// An incomplete count must not authorize a rotation decision.
 func CABundleCertCount(base string) (int, error) {
 	b, err := os.ReadFile(bundleCrtPath(base))
 	if err != nil {
@@ -2016,7 +1560,6 @@ func CABundleCertCount(base string) (int, error) {
 	return len(certs), nil
 }
 
-// CertNotAfter parses the NotAfter of a cert basename in version.PKIDir.
 func CertNotAfter(name string) (time.Time, error) {
 	pemBytes, err := os.ReadFile(path(name, "crt"))
 	if err != nil {
@@ -2033,70 +1576,30 @@ func CertNotAfter(name string) (time.Time, error) {
 	return cert.NotAfter, nil
 }
 
-// ── Trust layout ─────────────────────────────────────────────────────────────
-//
-// The manifest below is pki's one classification of the trust files it writes
-// under version.PKIDir. Before it, the entry lists a joining control plane
-// accepts were spelled by hand in internal/ha, and the "trust the bundle, else
-// ca.crt" preference was spelled three times — kubeconfig.Write,
-// token.ensureClusterInfo and certs.readTrustAnchor — so a new anchor, bundle
-// form or fallback meant imitation edits across packages that no check tied
-// together.
-
-// TrustFileClass says who holds a trust file.
 type TrustFileClass int
 
 const (
-	// TrustShared marks material every control plane must hold byte-identically:
-	// it travels in the stratum-certs join bundle on every upload.
+	// Held byte-identically by every control plane; travels in the join bundle.
 	TrustShared TrustFileClass = iota
-	// TrustRotation marks material a joining control plane receives whenever it
-	// is present — the trust bundles and any staged rotation material. It is
-	// absent at rest, so an upload skips it instead of failing, and a node
-	// joining mid-rotation lands on the same in-flight trust state as the rest
-	// of the cluster.
+	// Absent at rest, so an upload skips it instead of failing.
 	TrustRotation
-	// TrustNodeLocal marks material that never leaves the node: files every
-	// node derives from the shared ones, and the rotation's own residue.
+	// Never leaves the node.
 	TrustNodeLocal
 )
 
-// TrustFile classifies one file pki writes under version.PKIDir.
 type TrustFile struct {
-	// Name is the basename under version.PKIDir.
-	Name string
-	// CommonName is the Subject CN of the anchor the file belongs to — the
-	// certificate it carries or, for a bundle, the anchor it is named after —
-	// and empty for files that carry no certificate: private keys, the SA
-	// public half and its bundle, the rotation markers.
+	Name       string
 	CommonName string
-	// Class places the file in the trust layout: held byte-identically by
-	// every control plane (TrustShared), received by a joiner whenever present
-	// (TrustRotation), or never leaving the node (TrustNodeLocal).
-	Class TrustFileClass
-	// Rotatable reports whether a rotation rewrites the file: a CA rotation
-	// for the signers and the trust bundles (StagedAs naming the staged
-	// replacement where one exists), a leaf rotation for the front-proxy
-	// client, a re-sync from the root bundle for the kubelet's clientCAFile.
-	Rotatable bool
-	// StagedAs is the basename a CA rotation stages as this file's replacement
-	// ("ca-new.key" for "ca.key"), or "" when nothing is staged for it. A
-	// staged file's own StagedAs is empty: it IS the rotation's material, not
-	// something a later rotation replaces.
+	Class      TrustFileClass
+	Rotatable  bool
+	// A staged file's own StagedAs is empty: it IS the rotation's material.
 	StagedAs string
 }
 
-// RootCAName is the live root CA's basename: RootCAName+".crt" is the
-// certificate the cluster pins, RootCAName+".key" its signing key.
 const RootCAName = "ca"
 
-// RootTrustBundleName is the root CA's trust bundle: the live root alone at
-// rest, old‖new while a rotation is mid-flight. Every trust consumer embeds it
-// through ReadRootTrust.
 const RootTrustBundleName = RootCAName + "-bundle.crt"
 
-// RootTrustBundlePath is the path of RootTrustBundleName, the file a rotation
-// rewrites and the static-pod components point at.
 func RootTrustBundlePath() string { return bundleCrtPath(RootCAName) }
 
 const (
@@ -2105,23 +1608,9 @@ const (
 	frontProxyClientName = "front-proxy-client"
 )
 
-// trustLayout is the manifest itself. Order is part of the contract: ha
-// derives the join bundle's shared and rotation entry lists from it in
-// manifest order, and those lists are pinned in order by
-// TestSharedCertSetsAreTheJoinContract — an older joiner refuses an entry it
-// does not know, so the names are a contract across versions, not an
-// implementation detail.
-//
-// Leaves are deliberately absent: they are minted per node, never travel in
-// the join bundle, and LeafSpecs/LeafNames already classify them. A new leaf
-// must be adopted deliberately — the node-local list in ha's
-// TestEveryPKIFileIsSharedOrNodeLocal is kept literal for exactly that — not
-// inherited silently from a shared classification.
+// Manifest order is a cross-version contract pinned by ha's join-bundle tests.
 var trustLayout = []TrustFile{
-	// Shared signers and the one shared leaf: byte-identical on every control
-	// plane, in the join bundle on every upload. The etcd CA is REQUIRED, not
-	// optional: a joining control plane that does not receive it mints a
-	// divergent anchor whose etcd the cluster rejects.
+	// A joining control plane without the etcd CA mints a divergent anchor the cluster rejects.
 	{Name: RootCAName + ".crt", CommonName: "stratum-ca", Class: TrustShared, Rotatable: true, StagedAs: StagedRootCAName + ".crt"},
 	{Name: RootCAName + ".key", CommonName: "stratum-ca", Class: TrustShared, Rotatable: true, StagedAs: StagedRootCAName + ".key"},
 	{Name: saPairName + ".key", Class: TrustShared, Rotatable: true, StagedAs: saPairName + "-new.key"},
@@ -2132,15 +1621,11 @@ var trustLayout = []TrustFile{
 	{Name: frontProxyClientName + ".key", CommonName: frontProxyClientName, Class: TrustShared, Rotatable: true},
 	{Name: EtcdCAName + ".crt", CommonName: etcdCACommonName, Class: TrustShared},
 	{Name: EtcdCAName + ".key", CommonName: etcdCACommonName, Class: TrustShared},
-	// Trust bundles and staged rotation material: received by a joiner
-	// whenever present, so a node joining mid-rotation holds the same
-	// in-flight trust state as the rest of the cluster.
+	// Received by a joiner whenever present, so a mid-rotation joiner holds the same state.
 	{Name: RootTrustBundleName, CommonName: "stratum-ca", Class: TrustRotation, Rotatable: true},
 	{Name: frontProxyCAName + "-bundle.crt", CommonName: frontProxyCAName, Class: TrustRotation, Rotatable: true},
 	{Name: saPairName + "-bundle.pub", Class: TrustRotation, Rotatable: true},
-	// The etcd trust bundle carries the cluster's CURRENT etcd migration state
-	// (etcd-ca alone, or etcd-ca‖root mid-migration) to a joining CP, so it
-	// lands on the same anchor set as everyone else instead of guessing.
+	// Carries the cluster's current etcd migration state, not this node's guess.
 	{Name: EtcdBundleBase + "-bundle.crt", CommonName: etcdCACommonName, Class: TrustRotation, Rotatable: true},
 	{Name: KubeletClientBundleBase + "-bundle.crt", Class: TrustRotation, Rotatable: true},
 	{Name: KubeletClientCAName + ".crt", Class: TrustRotation, Rotatable: true, StagedAs: KubeletClientCAName + "-new.crt"},
@@ -2153,8 +1638,6 @@ var trustLayout = []TrustFile{
 	{Name: frontProxyCAName + "-new.key", Class: TrustRotation},
 	{Name: saPairName + "-new.key", Class: TrustRotation},
 	{Name: saPairName + "-new.pub", Class: TrustRotation},
-	// Node-local: derived from the shared material on each node, or the
-	// rotation's residue until finalize or a rollback removes it.
 	{Name: RootCAName + ".pre-carotate.crt", CommonName: "stratum-ca", Class: TrustNodeLocal},
 	{Name: RootCAName + ".pre-carotate.key", Class: TrustNodeLocal},
 	{Name: frontProxyCAName + ".pre-carotate.crt", CommonName: frontProxyCAName, Class: TrustNodeLocal},
@@ -2166,17 +1649,9 @@ var trustLayout = []TrustFile{
 	{Name: caForcedMarker, Class: TrustNodeLocal},
 }
 
-// TrustLayout returns the trust manifest: every non-leaf trust file pki
-// writes, classified by name, common name, who holds it, and whether a
-// rotation rewrites it. The caller owns the returned slice. Adding a file to
-// pki's writers without an entry here leaves it invisible to every consumer
-// that derives from the manifest — ha's TestEveryPKIFileIsSharedOrNodeLocal
-// fails until it is classified on purpose.
+// An unclassified file is invisible to every consumer that derives from the manifest.
 func TrustLayout() []TrustFile { return slices.Clone(trustLayout) }
 
-// StagedTrustName returns the basename a CA rotation stages as the replacement
-// of the manifest entry named name — "ca-new.crt" for "ca.crt" — or "" when
-// nothing stages a replacement for it.
 func StagedTrustName(name string) string {
 	for _, f := range trustLayout {
 		if f.Name == name {
@@ -2186,32 +1661,16 @@ func StagedTrustName(name string) string {
 	return ""
 }
 
-// StagedRootCAName is the basename, without extension, of the root CA pair a
-// CA rotation stages in trust-new: StagedTrustName of the root's certificate
-// and key, for a reader that loads the pair by its base name.
 const StagedRootCAName = RootCAName + "-new"
 
-// PreRotationBackupName returns the basename sign-new backs the live file
-// name up to before it promotes the staged replacement over it —
-// "ca.pre-carotate.crt" for "ca.crt" — and that rollback restores from.
 func PreRotationBackupName(name string) string {
 	ext := filepath.Ext(name)
 	return strings.TrimSuffix(name, ext) + ".pre-carotate" + ext
 }
 
-// ReadRootTrust returns the cluster's root trust material and the path it read
-// it from: the root trust bundle (RootTrustBundleName — old‖new mid-rotation)
-// when the node has one, else the plain root certificate (RootCAName+".crt")
-// on nodes that predate the bundle files. kubeconfig.Write,
-// token.ensureClusterInfo and the worker trust refresh embed this material;
-// before this reader each spelled the preference for itself.
 func ReadRootTrust() ([]byte, string, error) { return ReadRootTrustFrom(version.PKIDir) }
 
-// ReadRootTrustFrom is ReadRootTrust for a PKI directory other than
-// version.PKIDir, which the trust-refresh tests lay out in a temporary
-// directory. Only an unreadable bundle falls back: a bundle that reads but
-// does not parse is returned as it is, because every consumer parses and
-// refuses malformed material itself, under its own trust policy.
+// Only an unreadable bundle falls back; consumers refuse malformed material themselves.
 func ReadRootTrustFrom(dir string) ([]byte, string, error) {
 	bundle := filepath.Join(dir, RootTrustBundleName)
 	if b, err := os.ReadFile(bundle); err == nil {

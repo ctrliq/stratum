@@ -172,8 +172,7 @@ func TestDeferredFetchKeyCleanupPreservesSuccessor(t *testing.T) {
 				if operation == "migration" {
 					runID = ""
 				}
-				// stage puts a key the way its operation's staging does: a
-				// rotation under its run id, a migration under its key.
+				// stage puts a key the way its operation's staging does.
 				stage := func(ctx context.Context, keyHex, run string) error {
 					owner := rotationStagedKeyOwner(run)
 					if run == "" {
@@ -192,8 +191,7 @@ func TestDeferredFetchKeyCleanupPreservesSuccessor(t *testing.T) {
 					if successor == "other migration" {
 						id = ""
 					}
-					// A successor stages only once our key is gone: a put
-					// refuses another operation's key rather than replace it.
+					// A put refuses another operation's key rather than replace it.
 					if err := cs.CoreV1().Secrets(caNamespace).Delete(ctx, caRotateKeySecret, metav1.DeleteOptions{}); err != nil {
 						return err
 					}

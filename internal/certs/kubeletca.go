@@ -14,14 +14,10 @@ import (
 	"github.com/ctrliq/stratum/internal/token"
 )
 
-// KubeletCAPhases are the forward phases of `certs migrate-kubelet-client-ca`,
-// in order.
 var KubeletCAPhases = []string{pki.KubeletPhaseTrustBoth, pki.KubeletPhaseIssueNew, pki.KubeletPhaseDropRoot}
 
-// KubeletCARollbackPhases undo them, in order.
 var KubeletCARollbackPhases = []string{pki.KubeletPhaseReAddRoot, pki.KubeletPhaseReissueRoot, pki.KubeletPhaseRemoveCA}
 
-// KubeletCAOptions configures one invocation.
 type KubeletCAOptions struct {
 	Phase       string
 	Rollback    bool
@@ -30,7 +26,6 @@ type KubeletCAOptions struct {
 	Quiet       bool
 }
 
-// KubeletCAFlags is the flag set `certs migrate-kubelet-client-ca` was given.
 type KubeletCAFlags struct {
 	Cluster     bool
 	Phase       string
@@ -60,12 +55,10 @@ func (f KubeletCAFlags) Validate() error {
 	return nil
 }
 
-// Options turns validated flags into options.
 func (f KubeletCAFlags) Options() KubeletCAOptions {
 	return KubeletCAOptions{Phase: f.Phase, Rollback: f.Rollback, Force: f.Force, FetchShared: f.FetchShared}
 }
 
-// kubeletNodeOps are the effects one phase has on a node.
 type kubeletNodeOps struct {
 	controlPlane     func() bool
 	ident            func() (nodeIdent, error)
@@ -76,9 +69,6 @@ type kubeletNodeOps struct {
 	republish        func() error
 }
 
-// MigrateKubeletClientCA runs one phase on this node. Its progress goes
-// through the writer the caller hands it — os.Stdout for the CLI, the MCP
-// handler's result buffer for the tool.
 func MigrateKubeletClientCA(w io.Writer, o KubeletCAOptions) error {
 	release, err := acquireNodeLock("certs migrate-kubelet-client-ca", false)
 	if err != nil {
@@ -203,8 +193,6 @@ func migrateKubeletClientCAWith(w io.Writer, o KubeletCAOptions, ops kubeletNode
 	return fmt.Errorf("certs: unknown kubelet client-CA migration phase %q", o.Phase)
 }
 
-// restartAfter restarts what a phase changed and, on a control plane whose
-// kubelet trust moved, republishes the kubelet client-CA bundle.
 func restartAfter(w io.Writer, o KubeletCAOptions, republish bool, ops kubeletNodeOps, restart func() error, name string) error {
 	kubeletstep(w, o, fmt.Sprintf("Restart %s (phase %s)", name, o.Phase))
 	if err := restart(); err != nil {
@@ -220,9 +208,7 @@ func restartAfter(w io.Writer, o KubeletCAOptions, republish bool, ops kubeletNo
 	return nil
 }
 
-// fetchPublishedKubeletClientCA returns the one kubelet-client CA the cluster
-// publishes beside the root this worker trusts, fetched over TLS verified by
-// that root.
+// The fetch is over TLS verified by the root this worker already trusts.
 func fetchPublishedKubeletClientCA() (*x509.Certificate, error) {
 	p := workerTrustPaths()
 	server, err := kubeconfig.CurrentServer(p.kubeletKubeconfig)

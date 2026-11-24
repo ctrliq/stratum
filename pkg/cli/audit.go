@@ -49,17 +49,20 @@ func auditVerdict(v trustaudit.Verdict) AuditVerdict {
 	return AuditVerdict{Result: r, Detail: v.Detail}
 }
 
-// AuditEtcdTrust reports whether this node's running etcd refuses a client certificate the cluster root signs.
+// AuditEtcdTrust reports whether this node's running etcd refuses a client
+// certificate the cluster root signs.
 func AuditEtcdTrust(ctx context.Context) AuditVerdict {
 	return auditVerdict(trustaudit.EtcdTrust(ctx))
 }
 
-// AuditKubeletClientTrust reports whether this node's kubelet trusts a client CA distinct from the cluster root.
+// AuditKubeletClientTrust reports whether this node's kubelet trusts a client
+// CA distinct from the cluster root.
 func AuditKubeletClientTrust() AuditVerdict {
 	return auditVerdict(trustaudit.KubeletClientTrust())
 }
 
-// AuditKubeletsRefuseRoot reports whether every kubelet cs lists refuses a root-signed client certificate and accepts apiserver-kubelet-client.
+// AuditKubeletsRefuseRoot reports whether every kubelet cs lists refuses a
+// root-signed client certificate and accepts apiserver-kubelet-client.
 func AuditKubeletsRefuseRoot(ctx context.Context, cs kubernetes.Interface) AuditVerdict {
 	return auditVerdict(trustaudit.KubeletsRefuseRoot(ctx, cs))
 }

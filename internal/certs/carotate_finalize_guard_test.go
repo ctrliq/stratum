@@ -140,8 +140,6 @@ func TestCheckCPFinalize(t *testing.T) {
 	}
 }
 
-// A marker that cannot be removed must fail the phase, not leave finalize
-// believing a stale record.
 func TestMarkerRemovalFailureIsReported(t *testing.T) {
 	for _, marker := range []string{"carotate-finalized", "carotate-promoted"} {
 		for name, run := range map[string]func() error{
@@ -198,12 +196,8 @@ func TestPromotedMarkerClearedWhenRotationEnds(t *testing.T) {
 	}
 }
 
-// A promote that stops partway must neither consume anything nor
-// leave a state finalize accepts.
 func TestPartialPromotionIsRefused(t *testing.T) {
 	prep(t)
-	// trust-new stopped after the front-proxy certificate, before its key and
-	// before any SA staging.
 	if _, err := pki.NewCA("ca-new", "stratum-ca"); err != nil {
 		t.Fatal(err)
 	}
@@ -237,8 +231,6 @@ func TestPartialPromotionIsRefused(t *testing.T) {
 	}
 }
 
-// The backup is not proof of promotion. A failed cleanup can leave one behind
-// after a rollback; the old signer is live again and finalize must still refuse.
 func TestStaleBackupAfterRollbackIsRefused(t *testing.T) {
 	prep(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -265,7 +257,6 @@ func TestStaleBackupAfterRollbackIsRefused(t *testing.T) {
 	}
 }
 
-// A rollback that fails after restoring the root must not read as promoted.
 func TestRollbackFailureAfterRootRestoreIsRefused(t *testing.T) {
 	prep(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -294,8 +285,6 @@ func TestRollbackFailureAfterRootRestoreIsRefused(t *testing.T) {
 	}
 }
 
-// Finalize and rollback must report a rotation file they cannot delete. A
-// non-empty directory makes os.Remove fail on every platform and as root.
 func TestScratchRemovalFailureIsReported(t *testing.T) {
 	for _, tc := range []struct{ phase, file string }{
 		{"finalize", "ca.pre-carotate.crt"},
@@ -337,8 +326,7 @@ func TestScratchRemovalFailureIsReported(t *testing.T) {
 
 func TestCheckWorkerTrustWidened(t *testing.T) {
 	oldCA, newCA := newTestCA(t, "old"), newTestCA(t, "new")
-	// narrow rewrites one file's CA to the old CA only, as a trust-new that stopped
-	// partway leaves it.
+	// narrow rewrites one file's CA to the old CA only, as a trust-new that stopped partway leaves it.
 	narrow := func(files func(trustPaths) []string) func(*testing.T, trustPaths) {
 		return func(t *testing.T, p trustPaths) {
 			t.Helper()
@@ -371,8 +359,8 @@ func TestCheckWorkerTrustWidened(t *testing.T) {
 		name    string
 		onDisk  []byte
 		mutate  func(*testing.T, trustPaths)
-		wantErr string // substring; "" means accepted
-		noHints bool   // a refusal that is not about trust-new stopping partway
+		wantErr string
+		noHints bool
 	}{
 		{name: "trust-new never ran", onDisk: bundle(oldCA), wantErr: "trust-new has not finished"},
 		{name: "same CA twice", onDisk: bundle(oldCA, oldCA), wantErr: "trust-new has not finished"},
@@ -481,8 +469,6 @@ func TestCheckClientCertSurvives(t *testing.T) {
 	}
 }
 
-// workerRefreshTrust is the finalize call site: a kubelet cert still signed by the
-// dropped CA must abort before any of the four trust files is touched.
 func TestWorkerFinalizeRefusesOldSignedClientCert(t *testing.T) {
 	oldCA, newCA := newTestCA(t, "ca"), newTestCA(t, "ca")
 	url := clusterInfo(t, newCA.serving(t, []net.IP{net.ParseIP("127.0.0.1")}), bundle(newCA))
@@ -506,9 +492,6 @@ func TestWorkerFinalizeRefusesOldSignedClientCert(t *testing.T) {
 	assertCleanAbort(t, p, before)
 }
 
-// rollbackCPMaterial must keep the backups until the leaves and
-// kubeconfigs are repaired, so a rollback whose cleanup fails, then retried,
-// still ends with leaves signed by the restored root.
 func promoteAndReissue(t *testing.T) {
 	t.Helper()
 	for _, step := range []func() error{pki.PromoteCA, pki.PromoteSA} {
@@ -599,8 +582,6 @@ func TestRollbackRetryAfterCleanupFailureRepairsLeaves(t *testing.T) {
 	assertLeafSignedByLiveRoot(t)
 }
 
-// If the repair itself fails, nothing is deleted, so the retry still knows the
-// leaves need reissuing.
 func TestRollbackKeepsBackupsWhenRepairFails(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -632,8 +613,6 @@ func TestRollbackKeepsBackupsWhenRepairFails(t *testing.T) {
 	assertLeafSignedByLiveRoot(t)
 }
 
-// Promotion counts only once the control plane restarted. After
-// a failed restart finalize is refused and --rollback is a way out.
 func TestSignNewRestartFailureIsNotPromotion(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -660,10 +639,6 @@ func TestSignNewRestartFailureIsNotPromotion(t *testing.T) {
 	}
 }
 
-// After a failed sign-new restart, running sign-new again finishes it: the
-// staging is consumed, so it skips the promotion, reissues, restarts and
-// records it, and finalize then accepts the node. This is the way out of a
-// forced rotation, which cannot be rolled back.
 func TestSignNewRestartFailureResumes(t *testing.T) {
 	kubeVIPNode(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -699,8 +674,6 @@ func TestSignNewRestartSuccessRecordsPromotion(t *testing.T) {
 	}
 }
 
-// Every cluster entry of both kubeconfigs is a
-// trust input the refresh rewrites, so each must hold two CAs.
 func TestCheckWorkerTrustWidenedMultipleClusters(t *testing.T) {
 	oldCA, newCA := newTestCA(t, "old"), newTestCA(t, "new")
 	widened := bundle(oldCA, newCA)
@@ -737,8 +710,6 @@ func TestCheckWorkerTrustWidenedMultipleClusters(t *testing.T) {
 	}
 }
 
-// A finalized worker on a pre-upgrade launch holds one CA and has no rotating
-// client cert. Finalize drops nothing there, so it passes and can be re-run.
 func TestFinalizedLegacyWorkerPassesFinalizeWithoutClientCert(t *testing.T) {
 	newCA := newTestCA(t, "new")
 	url := clusterInfo(t, newCA.serving(t, []net.IP{net.ParseIP("127.0.0.1")}), bundle(newCA))
@@ -761,8 +732,6 @@ func TestFinalizedLegacyWorkerPassesFinalizeWithoutClientCert(t *testing.T) {
 	}
 }
 
-// unreadableNodeState redirects node state to a malformed node.yaml, so any
-// read of it fails.
 func unreadableNodeState(t *testing.T) {
 	t.Helper()
 	oldConf, oldNet := version.K8sConfDir, version.NetConfigPath
@@ -774,10 +743,6 @@ func unreadableNodeState(t *testing.T) {
 	}
 }
 
-// sign-new reads the node state before it promotes anything: on a node whose
-// node.yaml cannot be read it refuses with the live CA still the signer and
-// the staged one still staged, rather than leaving a promoted node whose
-// leaves were never reissued.
 func TestSignNewRefusesBeforePromotingOnUnreadableNodeState(t *testing.T) {
 	prep(t)
 	if err := pki.RotateCAMaterial(false); err != nil {
@@ -803,9 +768,6 @@ func TestSignNewRefusesBeforePromotingOnUnreadableNodeState(t *testing.T) {
 	}
 }
 
-// trust-new reads the node state before it fetches or stages anything, on the
-// follower path too: on a node whose node.yaml cannot be read nothing is
-// staged.
 func TestTrustNewRefusesBeforeStagingOnUnreadableNodeState(t *testing.T) {
 	for _, fetch := range []bool{false, true} {
 		prep(t)
@@ -820,8 +782,6 @@ func TestTrustNewRefusesBeforeStagingOnUnreadableNodeState(t *testing.T) {
 	}
 }
 
-// On a split cluster the worker's clientCAFile holds the kubelet-client CA,
-// which a rotation of the root never widens: sign-new must not refuse over it.
 func TestCheckWorkerTrustWidenedSkipsASplitKubeletBundle(t *testing.T) {
 	oldCA, newCA, kubeletCA := newTestCA(t, "old"), newTestCA(t, "new"), newTestCA(t, "kubelet-client-ca")
 	p := node(t, bundle(newCA, oldCA), "https://127.0.0.1:6443")
@@ -833,9 +793,6 @@ func TestCheckWorkerTrustWidenedSkipsASplitKubeletBundle(t *testing.T) {
 	}
 }
 
-// A rollback that lands between finalize's first guard and FinalizeCA must stop
-// the finalize: collapsing trust then would pair the restored old root with new
-// leaves and write a finalized marker.
 func TestCPFinalizeRechecksGuardBeforeFinalizeCA(t *testing.T) {
 	prep(t)
 	if err := pki.RotateCAMaterial(false); err != nil {

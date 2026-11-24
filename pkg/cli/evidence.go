@@ -1,14 +1,3 @@
-// The supported read-only backup-evidence interface on pkg/cli's exported
-// surface: what an external pinned binary — a node-owned publisher, an
-// operator's collector — calls to read the engine's own view of what it
-// does for backups, without importing engine internals or re-deriving the
-// engine's config resolution. BackupEvidence delegates the whole read to the
-// engine's assembled reader in internal/backupevidence, which owns the
-// policy resolution, the catalogs and the bounds; what this file adds is the
-// exported shape: wrapper value types restating the safe evidence fields, so
-// no internal type ever crosses the sanctioned surface. Every field here
-// mirrors its engine counterpart exactly — same names, same safe values —
-// and adds nothing of its own.
 package cli
 
 import (
@@ -291,9 +280,7 @@ type BackupEvidenceResult struct {
 	Warnings []string
 }
 
-// backupEvidenceOptions carries what the exported options set on one read.
-// Zero caps mean the engine read's built-in defaults, never unbounded reads;
-// the wrapper never invents bounds of its own.
+// Zero caps mean the engine read's built-in defaults, never unbounded reads.
 type backupEvidenceOptions struct {
 	node       string
 	maxEntries int
@@ -332,11 +319,7 @@ func WithBackupEvidenceMaxTime(maxTime time.Duration) BackupEvidenceOption {
 	return func(o *backupEvidenceOptions) { o.maxTime = maxTime }
 }
 
-// backupEvidenceRead is the engine's assembled evidence read behind a seam,
-// mirroring the snapshotDir and loadSnapshotConfig seams the snapshot
-// commands read through: the exported call reaches the engine reader
-// through here, and tests stand in for the read instead of touching the
-// host's node state, cluster config, snapshot directory or S3 target.
+// Seam so tests stand in for the read without touching node state or the cluster.
 var backupEvidenceRead = backupevidence.Evidence
 
 // BackupEvidence returns the engine's read-only view of what it does for
@@ -371,9 +354,6 @@ func BackupEvidence(ctx context.Context, opts ...BackupEvidenceOption) BackupEvi
 	}))
 }
 
-// backupPolicyFrom restates the engine's effective policy field for field,
-// with the wrapper's provenance, state and copy types carrying the same
-// stable string values.
 func backupPolicyFrom(p backupevidence.EffectivePolicy) BackupPolicy {
 	return BackupPolicy{
 		State:        BackupPolicyState(p.State),
@@ -389,7 +369,6 @@ func backupPolicyFrom(p backupevidence.EffectivePolicy) BackupPolicy {
 	}
 }
 
-// backupArtifactFrom restates one enumerated artifact.
 func backupArtifactFrom(a backupevidence.Artifact) BackupArtifact {
 	return BackupArtifact{
 		ID:         a.ID,
@@ -402,7 +381,6 @@ func backupArtifactFrom(a backupevidence.Artifact) BackupArtifact {
 	}
 }
 
-// backupArtifactsFrom restates a whole catalog half's artifacts.
 func backupArtifactsFrom(as []backupevidence.Artifact) []BackupArtifact {
 	if as == nil {
 		return nil
@@ -414,7 +392,6 @@ func backupArtifactsFrom(as []backupevidence.Artifact) []BackupArtifact {
 	return out
 }
 
-// backupLocalFrom restates the bounded local catalog.
 func backupLocalFrom(l backupevidence.LocalResult) BackupLocalCatalog {
 	return BackupLocalCatalog{
 		Node:      l.Node,
@@ -424,7 +401,6 @@ func backupLocalFrom(l backupevidence.LocalResult) BackupLocalCatalog {
 	}
 }
 
-// backupRemoteFrom restates the bounded remote catalog.
 func backupRemoteFrom(r backupevidence.RemoteResult) BackupRemoteCatalog {
 	return BackupRemoteCatalog{
 		Copies:   backupArtifactsFrom(r.Copies),
@@ -434,8 +410,7 @@ func backupRemoteFrom(r backupevidence.RemoteResult) BackupRemoteCatalog {
 	}
 }
 
-// backupCensusFrom restates the deduplicated census, giving each entry its
-// own artifact values so no pointer reaches back into the engine's result.
+// Each entry gets its own artifact values so no pointer aliases the engine's result.
 func backupCensusFrom(c backupevidence.Census) BackupCensus {
 	out := BackupCensus{
 		Node:      c.Node,
@@ -462,8 +437,6 @@ func backupCensusFrom(c backupevidence.Census) BackupCensus {
 	return out
 }
 
-// backupMaintenanceFrom restates the loop's durable maintenance state, with
-// each attempt's typed outcome.
 func backupMaintenanceFrom(m backupevidence.Maintenance) BackupMaintenance {
 	return BackupMaintenance{
 		Save:              backupAttemptFrom(m.Save),
@@ -476,7 +449,6 @@ func backupMaintenanceFrom(m backupevidence.Maintenance) BackupMaintenance {
 	}
 }
 
-// backupAttemptFrom restates one recorded attempt with its typed outcome.
 func backupAttemptFrom(a backupevidence.AttemptEvidence) BackupAttempt {
 	return BackupAttempt{
 		AttemptedAt: a.AttemptedAt,
@@ -484,8 +456,6 @@ func backupAttemptFrom(a backupevidence.AttemptEvidence) BackupAttempt {
 	}
 }
 
-// backupEvidenceResultFrom restates the engine's assembled evidence result
-// through the exported value types; nothing internal crosses.
 func backupEvidenceResultFrom(r backupevidence.EvidenceResult) BackupEvidenceResult {
 	return BackupEvidenceResult{
 		Policy:      backupPolicyFrom(r.Policy),

@@ -467,6 +467,8 @@ lint: lint-shell
 	# and both layers; a deliberate one is a reviewed exception with its reason
 	# in tools/importlayers/exceptions.txt, and a stale exception fails too.
 	go run ./tools/importlayers .
+	# Go comments follow the rules in AGENTS.md ("Comments").
+	go run ./tools/commentcheck .
 	# The committed Cilium manifest still matches a fresh render at the pinned
 	# cilium version: a pin bump that forgets the regeneration, or a hand edit
 	# of the generated file, fails here rather than shipping a manifest that

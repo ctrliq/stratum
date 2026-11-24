@@ -21,9 +21,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// datapathHost points every datapath path at a temp dir, so nothing here reads
-// or changes the machine the tests run on, and records each command and unmount
-// into calls.
+// every path is in a temp dir, so nothing touches the machine the tests run on.
 type datapathHost struct {
 	root  string
 	calls []string
@@ -57,13 +55,8 @@ func (h *datapathHost) exists(p string) bool {
 
 func newDatapathHost(t *testing.T, fx *hostEffects) *datapathHost {
 	t.Helper()
-	// Sequential by swap's stated exception: it shortens the shared
-	// cgroupRemoveWait and cgroupProgramWait.
+	// sequential by swap's exception: it shortens the shared cgroupRemoveWait and cgroupProgramWait.
 	h := &datapathHost{root: t.TempDir()}
-	// The filesystem layout and the discovery state are the run's own values:
-	// each test points its run's fields at this temp tree, so nothing here
-	// reads or changes the machine the tests run on, and two runs share
-	// nothing.
 	fx.netnsDir = h.path("run/netns")
 	fx.ciliumRunDir = h.path("run/cilium")
 	fx.bpfRoot = h.path("sys/fs/bpf")
@@ -73,8 +66,7 @@ func newDatapathHost(t *testing.T, fx *hostEffects) *datapathHost {
 	swap(t, &cgroupRemoveWait, 0)
 	swap(t, &cgroupProgramWait, 0) // a failed detach is listed again once
 	fx.mountInfoPath = h.path("mountinfo")
-	// This node's containers' netns files; any other cni-* is a host
-	// containerd's, and must be left alone.
+	// any other cni-* is a host containerd's, and must be left alone.
 	fx.stratumNetns = map[string]bool{h.path("run/netns/cni-aaa"): true, h.path("run/netns/cni-bbb"): true}
 	fx.stratumNetnsErr = nil
 	fx.netnsRecordPath = h.path("netns-record.json")
@@ -82,8 +74,7 @@ func newDatapathHost(t *testing.T, fx *hostEffects) *datapathHost {
 	fx.containerdStateDir = h.path("var/lib/stratum/containerd") // absent unless a test makes it
 	h.mkdirs(t, "proc")
 	fx.procRoot = h.path("proc") // no other kubelet or runtime unless a test adds one
-	// The real runtime check, reading this run's /proc: tests that need a
-	// different answer between two looks re-set fx.foreignRuntimesFn.
+	// tests that need a different answer between two looks re-set fx.foreignRuntimesFn.
 	fx.foreignRuntimesFn = func() ([]string, []string, error) { return foreignRuntimes(fx) }
 	h.setMounts(t)
 	fx.unmountFn = func(mp string) error { h.calls = append(h.calls, "umount "+mp); return nil }
@@ -94,7 +85,6 @@ func newDatapathHost(t *testing.T, fx *hostEffects) *datapathHost {
 	return h
 }
 
-// setMounts writes mountinfo with one mount point per path.
 func (h *datapathHost) setMounts(t *testing.T, mounts ...string) {
 	t.Helper()
 	var b strings.Builder
@@ -139,12 +129,9 @@ func TestCiliumChainCleanup(t *testing.T) {
 		"",
 	}, "\n")
 	want := [][]string{
-		// The jumps first, each as the rule is printed, so only it matches.
 		{"-w", "5", "-t", "nat", "-D", "PREROUTING", "-m", "comment", "--comment", "cilium-feeder: CILIUM_PRE_nat", "-j", "CILIUM_PRE_nat"},
 		{"-w", "5", "-t", "nat", "-D", "POSTROUTING", "-m", "comment", "--comment", "cilium-feeder: CILIUM_POST_nat", "-j", "CILIUM_POST_nat"},
 		{"-w", "5", "-t", "filter", "-D", "INPUT", "-m", "comment", "--comment", "cilium-feeder: CILIUM_INPUT", "-j", "CILIUM_INPUT"},
-		// Then every Cilium chain flushed, then deleted: one cannot be deleted
-		// while another still jumps to it.
 		{"-w", "5", "-t", "nat", "-F", "CILIUM_PRE_nat"},
 		{"-w", "5", "-t", "nat", "-F", "CILIUM_POST_nat"},
 		{"-w", "5", "-t", "filter", "-F", "CILIUM_INPUT"},
@@ -217,8 +204,7 @@ func TestMissingCiliumRunDirectoryUnmountsNothing(t *testing.T) {
 	if len(h.calls) != 0 {
 		t.Fatalf("empty Cilium layout selected unrelated mounts: %v", h.calls)
 	}
-	// Refuse before even reading mountinfo; an absent layout must not depend
-	// on whether the host's mount table is accessible.
+	// an absent layout must be refused before the mount table is even read.
 	fx.mountInfoPath = h.path("absent-mountinfo")
 	if _, err := networkMounts(fx, nil, true); !errors.Is(err, errUnsetEffect) {
 		t.Fatalf("mount selection with empty Cilium layout = %v", err)
@@ -236,8 +222,7 @@ func TestDetachNetworkMountsUnmountsBeforeRemovingTheFiles(t *testing.T) {
 	h := newDatapathHost(t, fx)
 	h.touch(t, "run/netns/cni-aaa", "run/netns/cni-bbb", "run/netns/keep-me")
 	h.setMounts(t, h.path("run/netns/cni-aaa"), h.path("run/netns/cni-bbb"), h.path("run/cilium/cgroupv2"))
-	// An unmount takes its mount out of mountinfo, as the kernel does; the file
-	// must still be there when it happens.
+	// an unmount takes its mount out of mountinfo, as the kernel does.
 	mounted := []string{h.path("run/netns/cni-aaa"), h.path("run/netns/cni-bbb"), h.path("run/cilium/cgroupv2")}
 	fx.unmountFn = func(mp string) error {
 		if strings.Contains(mp, "/cni-") {
@@ -297,7 +282,7 @@ func TestRemoveCiliumLinks(t *testing.T) {
 	for _, l := range links {
 		h.touch(t, "sys/class/net/"+l)
 	}
-	// Deleting one end of a pair takes the other; the link itself goes.
+	// deleting one end of a pair takes the other; the link itself goes.
 	fx.runCmd = func(_, name string, args ...string) ([]byte, error) {
 		h.calls = append(h.calls, name+" "+strings.Join(args, " "))
 		peer := map[string]string{"cilium_host": "cilium_net", "cilium_net": "cilium_host"}[args[2]]
@@ -360,8 +345,6 @@ func TestRemoveCiliumChains(t *testing.T) {
 	if err := removeCiliumChains(fx); err != nil {
 		t.Fatal(err)
 	}
-	// Only Cilium's rule and chain are touched, one at a time, and the ruleset
-	// is never replayed, so a rule another program adds meanwhile is not lost.
 	want := []string{
 		"iptables -w 5 -t filter -D INPUT -j CILIUM_INPUT",
 		"iptables -w 5 -t filter -F CILIUM_INPUT",
@@ -371,7 +354,6 @@ func TestRemoveCiliumChains(t *testing.T) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
 
-	// After it, the dump has none of Cilium's, and a second run runs nothing.
 	dumps["iptables-save"] = "*filter\n:INPUT ACCEPT [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\nCOMMIT\n"
 	calls = nil
 	if err := removeCiliumChains(fx); err != nil || len(calls) != 0 {
@@ -379,8 +361,6 @@ func TestRemoveCiliumChains(t *testing.T) {
 	}
 }
 
-// A host without iptables-save can still have Cilium's rules, which the agent
-// adds with the tools in its own container: not knowing is an error.
 func TestRemoveCiliumChainsWithoutIptables(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -412,11 +392,6 @@ func TestRemoveCiliumChainsReportsAFailedDelete(t *testing.T) {
 	}
 }
 
-// The agent renames its chains to OLD_CILIUM_* while it reinstalls them at
-// every start; an agent that stops between the rename and the cleanup leaves
-// them behind, and they can keep their rules. They are removed exactly like
-// the CILIUM_ ones, the jumps to them first, and an OLD_CILIUM_ name inside
-// a comment selects nothing.
 func TestRemoveCiliumChainsRemovesOldCiliumChains(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -464,7 +439,7 @@ func TestRemoveCiliumChainsRemovesOldCiliumChains(t *testing.T) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
 
-	// An empty dump, or one with none of Cilium's, runs nothing.
+	// an empty dump, or one with none of Cilium's, runs nothing.
 	dumps["iptables-save"] = ""
 	dumps["ip6tables-save"] = "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n"
 	calls = nil
@@ -495,8 +470,6 @@ func TestRemoveCiliumState(t *testing.T) {
 	}
 }
 
-// Another program's pins in the trees Cilium shares are not Cilium's, however
-// they are named, and neither are the directories that hold them.
 func TestRemoveCiliumStateKeepsForeignPinsInTheSharedTrees(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -519,14 +492,11 @@ func TestRemoveCiliumStateKeepsForeignPinsInTheSharedTrees(t *testing.T) {
 	}
 }
 
-// RemoveAll does not stop at a mount boundary: /run/cilium holds Cilium's
-// cgroup2 mount, so a mount that is still there, or a mount table that cannot
-// be read, leaves the directory and what is mounted in it alone.
 func TestRemoveCiliumStateDoesNotRemoveThroughAMount(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		setup          func(h *datapathHost, t *testing.T)
-		bpfSubtreeGone bool // a mount elsewhere does not stop the unmounted subtree's removal; an unreadable table stops both
+		bpfSubtreeGone bool // a mount elsewhere does not stop the subtree's removal; an unreadable table stops both
 	}{
 		{"a mount that stayed", func(h *datapathHost, t *testing.T) { h.setMounts(t, h.path("run/cilium/cgroupv2")) }, true},
 		{"an unreadable table", func(h *datapathHost, t *testing.T) {
@@ -563,7 +533,7 @@ func TestCiliumTCFilters(t *testing.T) {
 		"filter protocol ip pref 2 bpf chain 0 handle 0x2 cilium-old-style direct-action not_in_hw id 8 tag def",
 		"filter protocol all pref 3 bpf chain 0 handle 0x1 other_prog direct-action not_in_hw id 9 tag 123",
 		"filter parent ffff: protocol all pref 4 bpf chain 0 handle 0x3 cil_to_host direct-action",
-		// A name that only contains cil_ or cilium is some other program's.
+		// a name that only contains cil_ or cilium is some other program's.
 		"filter protocol all pref 5 bpf chain 0 handle 0x1 vendor_cil_probe direct-action",
 		"filter protocol all pref 6 bpf chain 0 handle 0x1 acme-cilium-shim direct-action",
 		"filter protocol all pref 8 bpf chain 7 handle 0x1 cil_from_netdev-eth0 direct-action",
@@ -620,8 +590,6 @@ func TestRemoveCiliumTCFilters(t *testing.T) {
 	}
 }
 
-// A Cilium filter in chain 7 and a foreign filter in chain 0 can share
-// protocol, pref and handle; a delete without the chain hits chain 0.
 func TestRemoveCiliumTCFiltersTargetsChain(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -649,7 +617,7 @@ func TestRemoveCiliumTCFiltersTargetsChain(t *testing.T) {
 	}
 	want := []string{
 		"tc filter del dev eth0 ingress protocol all chain 7 pref 1 handle 0x1 bpf",
-		// No chain in the line means chain 0.
+		// no chain in the line means chain 0.
 		"tc filter del dev eth0 ingress protocol ip chain 0 pref 2 handle 0x2 bpf",
 	}
 	if !slices.Equal(dels, want) {
@@ -719,9 +687,7 @@ func TestRemoveLegacyKubeletDir(t *testing.T) {
 	}
 }
 
-// shortKubeletDir points the run's legacyKubeletDir at a directory whose
-// sockets fit sun_path (about 104 bytes), which a t.TempDir() path with a
-// socket below it does not.
+// t.TempDir() is too long: a socket below the dir must fit sun_path (about 104 bytes).
 func shortKubeletDir(t *testing.T, fx *hostEffects) string {
 	t.Helper()
 	d, err := os.MkdirTemp("", "kb")
@@ -733,8 +699,7 @@ func shortKubeletDir(t *testing.T, fx *hostEffects) string {
 	return d
 }
 
-// staleSocket creates a unix socket file nothing listens on, as a killed
-// kubelet leaves.
+// a socket file nothing listens on, as a killed kubelet leaves.
 func staleSocket(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -748,9 +713,6 @@ func staleSocket(t *testing.T, path string) {
 	_ = l.Close()
 }
 
-// Stratum's kubelet leaves its device-plugin socket at a path fixed in kubelet,
-// outside --root-dir: found by the integration check. It is stale once
-// the kubelet is gone, so it, and the directories it empties, are removed.
 func TestRemoveLegacyKubeletDirRemovesStaleKubeletSockets(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -767,11 +729,6 @@ func TestRemoveLegacyKubeletDirRemovesStaleKubeletSockets(t *testing.T) {
 	}
 }
 
-// Stratum's kubelet serves pod-resources under --root-dir, so a pod-resources
-// socket under /var/lib/kubelet is another kubelet's, stale or not, and an
-// empty pod-resources directory there was made by something else, such as a
-// pod's hostPath on the upstream default path. Both are kept, with
-// /var/lib/kubelet; the device-plugin socket beside them still goes.
 func TestRemoveLegacyKubeletDirKeepsPodResources(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -803,8 +760,7 @@ func TestRemoveLegacyKubeletDirKeepsPodResources(t *testing.T) {
 			if _, err := os.Lstat(filepath.Join(dir, "device-plugins")); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("device-plugins still exists (%v), want it gone with the stale kubelet.sock", err)
 			}
-			// And says the directory is the kubelet's default, not Stratum's
-			// kubelet root, which an operator reads it as otherwise.
+			// and says the directory is the kubelet's default, not Stratum's kubelet root.
 			if !strings.Contains(out.String(), "left "+dir+" in place") || !strings.Contains(out.String(), "the kubelet's default directory") {
 				t.Errorf("output = %q, want it to say %s, the kubelet's default directory, was left in place", out.String(), dir)
 			}
@@ -812,9 +768,6 @@ func TestRemoveLegacyKubeletDirKeepsPodResources(t *testing.T) {
 	}
 }
 
-// Anything that is not Stratum's kubelet's stale socket is kept, and so is the
-// directory it is in: a live listener, another plugin's socket, a regular file
-// with the kubelet's name.
 func TestRemoveLegacyKubeletDirKeepsWhatIsNotStale(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -828,7 +781,7 @@ func TestRemoveLegacyKubeletDirKeepsWhatIsNotStale(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "device-plugins"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A live socket at the kubelet's path: someone answers, so it is not left behind.
+	// a live socket at the kubelet's path: someone answers, so it is not stale.
 	liveAtPath, err := net.Listen("unix", filepath.Join(dir, "device-plugins/kubelet.sock"))
 	if err != nil {
 		t.Fatal(err)
@@ -860,7 +813,6 @@ func TestRemoveLegacyKubeletDirKeepsWhatIsNotStale(t *testing.T) {
 	}
 }
 
-// Only the stale socket goes when another plugin's is beside it.
 func TestRemoveLegacyKubeletDirKeepsAnotherPluginsSocket(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -878,7 +830,6 @@ func TestRemoveLegacyKubeletDirKeepsAnotherPluginsSocket(t *testing.T) {
 	}
 }
 
-// fakeSystemd stands for the node's systemd as far as the kubepods slice goes.
 type fakeSystemd struct {
 	active    bool
 	stopErr   error
@@ -889,14 +840,12 @@ type fakeSystemd struct {
 	dirAtStop *bool // set by stop: whether the slice's directory was still there
 }
 
-// fakeExit is a command's exit status, as exec.ExitError reports it.
 type fakeExit int
 
 func (e fakeExit) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 func (e fakeExit) ExitCode() int { return int(e) }
 
-// systemd swaps runCmd for one that answers systemctl from f and records it in
-// h.calls, passing everything else to the runCmd it replaces.
+// answers systemctl from f and records it, passing everything else through.
 func (h *datapathHost) systemd(t *testing.T, fx *hostEffects, f *fakeSystemd) {
 	t.Helper()
 	prev := fx.runCmd
@@ -953,8 +902,7 @@ func TestRemoveKubepodsCgroups(t *testing.T) {
 	if !h.exists("sys/fs/cgroup/system.slice/kubepods-impostor") {
 		t.Error("a cgroup outside kubepods was removed")
 	}
-	// The slice is stopped, once the tree is gone and so known to be empty:
-	// systemd owns these cgroups, and left active it makes the top one again.
+	// the slice is stopped once the tree is gone and so known to be empty.
 	if sd.stops != 1 || sd.dirAtStop == nil || *sd.dirAtStop {
 		t.Errorf("stops = %d, directory present at stop = %v; want one stop of a tree already removed", sd.stops, sd.dirAtStop)
 	}
@@ -968,8 +916,6 @@ func TestRemoveKubepodsCgroups(t *testing.T) {
 	}
 }
 
-// systemd's unit outlives the directory: after an earlier run removed it, or
-// systemd made it again empty, an active unit with no directory is still stopped.
 func TestRemoveKubepodsCgroupsStopsAnActiveSliceWhoseDirectoryIsGone(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -983,8 +929,7 @@ func TestRemoveKubepodsCgroupsStopsAnActiveSliceWhoseDirectoryIsGone(t *testing.
 	}
 }
 
-// systemd makes the directory again while the unit is stopped (it did, on a
-// real node, at the daemon-reload): the empty directory is removed again.
+// systemd made the directory again at the daemon-reload on a real node.
 func TestRemoveKubepodsCgroupsRemovesADirectorySystemdMakesAgain(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -999,8 +944,6 @@ func TestRemoveKubepodsCgroupsRemovesADirectorySystemdMakesAgain(t *testing.T) {
 	}
 }
 
-// With another kubelet or runtime running, the shared slice is neither removed
-// nor stopped: stopping it would stop their pods.
 func TestRemoveKubepodsCgroupsDoesNotStopASliceAnotherRuntimeMayShare(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1025,7 +968,6 @@ func TestRemoveKubepodsCgroupsDoesNotStopASliceAnotherRuntimeMayShare(t *testing
 	}
 }
 
-// A cgroup that is still in use is not emptied by stopping its slice.
 func TestRemoveKubepodsCgroupsDoesNotStopASliceThatIsStillInUse(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1045,7 +987,6 @@ func TestStopSliceErrors(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
 	h.mkdirs(t, "sys/fs/cgroup/kubepods.slice")
-	// Not loaded, or no systemctl: nothing to stop, not a failure.
 	for _, e := range []error{errors.New("systemctl stop kubepods.slice: exit status 5: Unit kubepods.slice not loaded."), fmt.Errorf("systemctl: %w", exec.ErrNotFound)} {
 		h.mkdirs(t, "sys/fs/cgroup/kubepods.slice")
 		h.systemd(t, fx, &fakeSystemd{active: true, stopErr: e})
@@ -1053,7 +994,6 @@ func TestStopSliceErrors(t *testing.T) {
 			t.Errorf("err = %v for %v, want none", err, e)
 		}
 	}
-	// Anything else is reported.
 	h.mkdirs(t, "sys/fs/cgroup/kubepods.slice")
 	h.systemd(t, fx, &fakeSystemd{active: true, stopErr: errors.New("systemctl stop kubepods.slice: exit status 1: Failed to stop")})
 	if err := removeKubepodsCgroups(fx); err == nil || !strings.Contains(err.Error(), "still owns the cgroups") {
@@ -1061,7 +1001,6 @@ func TestStopSliceErrors(t *testing.T) {
 	}
 }
 
-// Under the cgroupfs driver there is no unit: systemctl is not run at all.
 func TestRemoveKubepodsCgroupsRunsNoSystemctlForCgroupfs(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1080,13 +1019,11 @@ func TestRemoveKubepodsCgroupsRunsNoSystemctlForCgroupfs(t *testing.T) {
 	}
 }
 
-// A cgroup that still has a process in it cannot be removed; the leftover must
-// be reported, not mistaken for gone.
 func TestRemoveKubepodsCgroupsReportsACgroupThatStays(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
 	h.mkdirs(t, "sys/fs/cgroup/kubepods/pod1")
-	// A regular file stands in for a busy cgroup: rmdir of its parent fails.
+	// a regular file stands in for a busy cgroup: rmdir of its parent fails.
 	h.touch(t, "sys/fs/cgroup/kubepods/pod1/busy")
 	err := removeKubepodsCgroups(fx)
 	if err == nil {
@@ -1097,7 +1034,6 @@ func TestRemoveKubepodsCgroupsReportsACgroupThatStays(t *testing.T) {
 	}
 }
 
-// An error other than "does not exist" is not absence.
 func TestRemoveKubepodsCgroupsReportsAnUninspectableRoot(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1110,7 +1046,6 @@ func TestRemoveKubepodsCgroupsReportsAnUninspectableRoot(t *testing.T) {
 	}
 }
 
-// A directory that cannot be read is not known to be empty.
 func TestRemoveKubepodsCgroupsReportsAnUnreadableDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads every directory")
@@ -1128,9 +1063,6 @@ func TestRemoveKubepodsCgroupsReportsAnUnreadableDirectory(t *testing.T) {
 	}
 }
 
-// TestTeardownDatapathOrder pins the order the node needs: netns
-// mounts detached, then Cilium's links, chains and pins, then the cgroups. And
-// a second run, with everything gone, issues no command at all.
 func TestTeardownDatapathOrder(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1179,7 +1111,6 @@ func TestTeardownDatapathOrder(t *testing.T) {
 				tcFilter = ""
 			}
 		}
-		// The slice is stopped but the cgroup directory stays until removed.
 		return nil, nil
 	}
 
@@ -1212,7 +1143,7 @@ func TestTeardownDatapathOrder(t *testing.T) {
 	if err := teardownDatapath(io.Discard, fx); err != nil {
 		t.Fatal(err)
 	}
-	// The only commands a clean node sees are the read-only dumps.
+	// the only commands a clean node sees are the read-only dumps.
 	for _, c := range h.calls {
 		if !strings.HasSuffix(strings.Fields(c)[0], "-save") && !strings.HasPrefix(c, "tc filter show") && !strings.HasPrefix(c, "bpftool cgroup show") && !strings.HasPrefix(c, "systemctl is-active") {
 			t.Errorf("second run ran %q; want a no-op", c)
@@ -1241,8 +1172,6 @@ func TestTeardownDatapathRunsEveryStepAndJoinsTheErrors(t *testing.T) {
 	}
 }
 
-// A datapath failure is reported at the end, and the rest of the teardown, the
-// delete loop included, still runs.
 func TestRunReportsADatapathFailureAndStillRemovesState(t *testing.T) {
 	_, fx := runNode(t, "controller")
 	var removed []string
@@ -1260,8 +1189,6 @@ func TestRunReportsADatapathFailureAndStillRemovesState(t *testing.T) {
 	}
 }
 
-// A missing tc fails the uninstall, after everything that does not need it has
-// run: the other datapath steps and the delete loop.
 func TestRunFailsOnAMissingTCAfterTheRestOfTheCleanup(t *testing.T) {
 	_, fx := runNode(t, "controller")
 	h := newDatapathHost(t, fx) // after runNode, so its mount table and paths win
@@ -1294,9 +1221,6 @@ func TestRunFailsOnAMissingTCAfterTheRestOfTheCleanup(t *testing.T) {
 	}
 }
 
-// The shared tc/globals tree gets the same mount check as the directories
-// Cilium owns: an unreadable table, or a mount at or below tc/, leaves the
-// cilium_* pins alone and is reported, while the independent cleanup goes on.
 func TestRemoveCiliumStateDoesNotDeleteSharedPinsThroughAMount(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -1330,7 +1254,7 @@ func TestRemoveCiliumStateDoesNotDeleteSharedPinsThroughAMount(t *testing.T) {
 	}
 }
 
-// The host's own bpffs mount, at the root of the tree, is not in the way.
+// the host's own bpffs mount, at the root of the tree, is not in the way.
 func TestRemoveCiliumStateAllowsTheBPFFSRootMount(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1344,8 +1268,7 @@ func TestRemoveCiliumStateAllowsTheBPFFSRootMount(t *testing.T) {
 	}
 }
 
-// On a worker the datapath failure must not cost it the Node mark: the loop
-// removes the credential the mark needs, and a retry could not mark.
+// a datapath failure must not cost the worker its mark: a retry could not make one.
 func TestRunMarksAWorkerWhoseDatapathTeardownFailed(t *testing.T) {
 	events, fx := runNode(t, "worker")
 	var removed []string
@@ -1372,9 +1295,6 @@ func TestRunMarksAWorkerWhoseDatapathTeardownFailed(t *testing.T) {
 	}
 }
 
-// A failure removing state still skips the mark, as before: the state, and so
-// the credential, may still be there for a retry to mark with. And a datapath
-// failure no longer hides it.
 func TestRunReportsBothAStateAndADatapathFailureWithoutMarking(t *testing.T) {
 	events, fx := runNode(t, "worker")
 	fx.removeAll = func(string) error { return errors.New("device busy") }
@@ -1389,10 +1309,6 @@ func TestRunReportsBothAStateAndADatapathFailureWithoutMarking(t *testing.T) {
 	}
 }
 
-// What a rule jumps to is read from its parsed -j/-g option, never from text
-// anywhere in the line: a --comment that says "-j CILIUM_INPUT" does not make
-// its rule a Cilium feeder, and deleting it (-D with the exact rule) would
-// delete a foreign rule. Real feeders, jump and goto, are still found.
 func TestCiliumChainCleanupLeavesRulesThatOnlyMentionACiliumJump(t *testing.T) {
 	t.Parallel() // host-free: touches only its own values
 	dump := strings.Join([]string{
@@ -1456,8 +1372,7 @@ func TestJumpsToCiliumChain(t *testing.T) {
 	}
 }
 
-// workerRun is runNode for a worker with the datapath teardown stubbed, and
-// removeAll failing only for the paths in failing, recording the rest.
+// runNode for a worker, with removeAll failing only for the paths in failing.
 func workerRun(t *testing.T, failing ...string) (*[]string, *hostEffects, *[]string) {
 	t.Helper()
 	events, fx := runNode(t, "worker")
@@ -1472,9 +1387,7 @@ func workerRun(t *testing.T, failing ...string) (*[]string, *hostEffects, *[]str
 	return events, fx, removed
 }
 
-// Marking follows whether the node's state (DataDir, which holds the credential
-// the mark uses) was deleted, apart from the rest of the cleanup: once it is
-// gone a retry cannot mark, so any other failure must not skip it.
+// once DataDir is gone a retry cannot mark, so any other failure must not skip it.
 func TestRunMarksAWorkerWhoseStateWasRemovedWhateverElseFailed(t *testing.T) {
 	var events *[]string
 	var fx *hostEffects
@@ -1517,8 +1430,7 @@ func TestRunMarksAWorkerWhoseStateWasRemovedWhateverElseFailed(t *testing.T) {
 	}
 }
 
-// removeAllFailing makes removeAll fail for the given paths and succeed (and
-// record "remove state") for the rest, as runNode's stub does.
+// fails only for the given paths, delegating the rest to runNode's stub.
 func removeAllFailing(t *testing.T, fx *hostEffects, failing ...string) {
 	t.Helper()
 	ok := fx.removeAll
@@ -1530,9 +1442,7 @@ func removeAllFailing(t *testing.T, fx *hostEffects, failing ...string) {
 	}
 }
 
-// With the state kept, or its removal failing, there is no mark: a retry still
-// has the credential, and a mark now could have the Node deleted under a node
-// that is still there.
+// a mark with the state kept could delete the Node under a node that is still there.
 func TestRunDoesNotMarkAWorkerWhoseStateWasKept(t *testing.T) {
 	var events *[]string
 	var fx *hostEffects
@@ -1601,9 +1511,7 @@ func TestCiliumCgroupPrograms(t *testing.T) {
 	}
 }
 
-// Agents on kernels below 5.7 attach their socket-LB programs without a bpf
-// link, so deleting the pins detaches nothing; they are detached by id, and a
-// second run finds none.
+// agents on kernels below 5.7 attach without a bpf link, so the pins detach nothing.
 func TestRemoveCiliumCgroupPrograms(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1656,7 +1564,6 @@ func TestRemoveCiliumCgroupProgramsReportsAFailedDetach(t *testing.T) {
 	}
 }
 
-// cgroupShow is a `bpftool cgroup show` listing of the given Cilium programs.
 func cgroupShow(progs ...string) string {
 	var b strings.Builder
 	b.WriteString("ID       AttachType      AttachFlags     Name\n")
@@ -1667,12 +1574,7 @@ func cgroupShow(progs ...string) string {
 	return b.String()
 }
 
-// A program whose bpf link was pinned leaves once removeCiliumState drops the
-// pin, but the kernel releases the link from a work queue, so the listing can
-// still show it and its detach by id fails: "failed to detach program" while
-// the link holds it, "get by id" once it is freed. Seen on every worker
-// uninstall on kernel 6.12. A fresh listing that no longer shows it means it is
-// detached, not a failure.
+// seen on every worker uninstall on kernel 6.12: links are released from a work queue.
 func TestRemoveCiliumCgroupProgramsAcceptsProgramsThatLeaveOnTheirOwn(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1703,8 +1605,6 @@ func TestRemoveCiliumCgroupProgramsAcceptsProgramsThatLeaveOnTheirOwn(t *testing
 	}
 }
 
-// A link the kernel has not released yet is listed again until it is gone,
-// within cgroupProgramWait.
 func TestRemoveCiliumCgroupProgramsListsAgainUntilTheProgramIsGone(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -1726,7 +1626,6 @@ func TestRemoveCiliumCgroupProgramsListsAgainUntilTheProgramIsGone(t *testing.T)
 	}
 }
 
-// What is still attached once the wait is over is reported, and only that.
 func TestRemoveCiliumCgroupProgramsReportsOnlyWhatStaysAttached(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -1747,8 +1646,6 @@ func TestRemoveCiliumCgroupProgramsReportsOnlyWhatStaysAttached(t *testing.T) {
 	}
 }
 
-// A listing that fails after a failed detach leaves nothing shown detached:
-// both errors are reported.
 func TestRemoveCiliumCgroupProgramsReportsAFailedRelisting(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -1768,8 +1665,7 @@ func TestRemoveCiliumCgroupProgramsReportsAFailedRelisting(t *testing.T) {
 	}
 }
 
-// A detach that times out ends the step at once, with no listing after it: the
-// listing would wait out the same timeout.
+// the listing after a timed-out detach would wait out the same timeout.
 func TestRemoveCiliumCgroupProgramsStopsOnATimeout(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1785,9 +1681,7 @@ func TestRemoveCiliumCgroupProgramsStopsOnATimeout(t *testing.T) {
 	}
 }
 
-// Only the namespaces this node's containers run in are ever unmounted or
-// removed: the cni- prefix is containerd's, so a separate host containerd's live
-// namespaces carry it too.
+// the cni- prefix is containerd's, so a host containerd's namespaces carry it too.
 func TestDetachNetworkMountsLeavesAHostContainerdsNamespaces(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1800,8 +1694,7 @@ func TestDetachNetworkMountsLeavesAHostContainerdsNamespaces(t *testing.T) {
 		h.setMounts(t, mounted...)
 		return nil
 	}
-	// The remaining mounts are the host's, so detachMounts' second look must
-	// not count them as left over.
+	// the remaining mounts are the host's: the second look must not count them.
 	if err := detachNetns(fx, true); err != nil {
 		t.Fatal(err)
 	}
@@ -1813,8 +1706,6 @@ func TestDetachNetworkMountsLeavesAHostContainerdsNamespaces(t *testing.T) {
 	}
 }
 
-// When the node's namespaces could not be read at all, none is guessed at; the
-// Cilium mounts are still detached, and the gap is an error.
 func TestDetachNetworkMountsWithoutTheRecordedNamespaces(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -1832,8 +1723,7 @@ func TestDetachNetworkMountsWithoutTheRecordedNamespaces(t *testing.T) {
 	}
 }
 
-// unmounts makes unmountFn drop each mount from mountinfo, as the kernel does,
-// starting from mounted.
+// unmountFn drops each mount from mountinfo, as the kernel does.
 func unmounts(t *testing.T, fx *hostEffects, h *datapathHost, mounted ...string) {
 	t.Helper()
 	fx.unmountFn = func(mp string) error {
@@ -1887,8 +1777,7 @@ func TestRecordStratumNetns(t *testing.T) {
 		t.Errorf("saved record = %+v, %v; want the three paths, complete, saved before any container is stopped", rec, err)
 	}
 
-	// A container that cannot be read leaves a gap: kept as an error, and the
-	// record saved incomplete (with what was read, and what the earlier one named).
+	// a container that cannot be read leaves a gap: the record is saved incomplete.
 	fx.ctrRun = func(args ...string) (string, error) {
 		if args[2] == "containers" && args[3] == "ls" {
 			return "c1\n", nil
@@ -1907,10 +1796,6 @@ func TestRecordStratumNetns(t *testing.T) {
 	}
 }
 
-// A pod sandbox that cannot be read leaves a gap exactly as a container does:
-// the record is incomplete, and what was read is still kept. A timeout ends the
-// enumeration, since every further call would wait as long. A sandbox path
-// outside the netns directory is never taken.
 func TestRecordStratumNetnsSandboxFailures(t *testing.T) {
 	failFirst := func(first func() (string, error)) func(string) (string, error) {
 		return func(id string) (string, error) {
@@ -2038,13 +1923,7 @@ func TestRecordStratumNetnsSandboxFailures(t *testing.T) {
 	}
 }
 
-// A container or pod sandbox removed between the listing and the info read is
-// not an unread one: when a second listing answers and no longer names it, it
-// is gone, with no namespace to detach, so the record stays complete. The
-// error text decides nothing: `ctr sandboxes info` answers a removed sandbox
-// with only "failed to load sandbox", and a container still listed stays
-// unread even when its error says not found. A second listing that fails
-// proves nothing, and a timeout asks no second listing.
+// ctr answers a removed sandbox with only "failed to load sandbox", a container with not found.
 func TestRecordStratumNetnsContainerRemovedMidRun(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -2054,8 +1933,7 @@ func TestRecordStratumNetnsContainerRemovedMidRun(t *testing.T) {
 		relistErr   error  // the second listing's error
 		wantRelists int    // second listings asked
 		wantUnread  []string
-		// wantStop: a timeout ends the enumeration, so the moby namespace is
-		// never asked; before the sandboxes too when a container read ends it.
+		// a timeout ends the enumeration, so the moby namespace is never asked.
 		wantStop        bool
 		noSandboxesRead bool
 	}{
@@ -2182,8 +2060,7 @@ func TestRecordStratumNetnsContainerRemovedMidRun(t *testing.T) {
 			if mobyAsked == tc.wantStop {
 				t.Errorf("moby namespace asked = %v, want %v: a timeout ends the enumeration", mobyAsked, !tc.wantStop)
 			}
-			// Every namespace a read named; stopping before the sandboxes
-			// loses cni-bbb, which only the sandbox and the gone container name.
+			// stopping before the sandboxes loses cni-bbb, named only there.
 			wantPaths := []string{h.path("run/netns/cni-aaa"), h.path("run/netns/cni-bbb")}
 			if tc.noSandboxesRead {
 				wantPaths = wantPaths[:1]
@@ -2216,9 +2093,7 @@ func TestRecordStratumNetnsContainerRemovedMidRun(t *testing.T) {
 	}
 }
 
-// criSandboxInfo is `ctr sandboxes info` for a CRI pod sandbox, in the shape
-// containerd 2.3 prints: the CRI's metadata, versioned, as the JSON value of a
-// protobuf Any, which encoding/json renders in base64.
+// the shape containerd 2.3 prints: CRI metadata as a protobuf Any's base64 JSON value.
 func criSandboxInfo(netns string) string {
 	md := `{"Version":"v1","Metadata":{"ID":"x","Name":"pod","NetNSPath":"` + netns + `","IP":""}}`
 	return `{"ID":"x","Sandboxer":"podsandbox","Extensions":{"metadata":{"type_url":"github.com/containerd/cri/pkg/store/sandbox/Metadata","value":"` +
@@ -2249,8 +2124,6 @@ func TestSandboxNetnsPath(t *testing.T) {
 	}
 }
 
-// runCmd is bounded: a command that does not finish returns a timeout error
-// instead of hanging the teardown.
 func TestExecCmdTimesOut(t *testing.T) {
 	swap(t, &cmdTimeout, 100*time.Millisecond)
 	start := time.Now()
@@ -2266,7 +2139,6 @@ func TestExecCmdTimesOut(t *testing.T) {
 	}
 }
 
-// After one command times out, the loops over many stop waiting out each.
 func TestTimeoutStopsTheLoops(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2302,17 +2174,12 @@ func TestTimeoutStopsTheLoops(t *testing.T) {
 	if err := removeCiliumChains(fx); !errors.Is(err, errCommandTimeout) {
 		t.Errorf("iptables: err = %v, want the timeout", err)
 	}
-	// iptables-save, then the first command that timed out: not every -F and -X,
-	// and not ip6tables either, which shares the lock.
+	// not every -F and -X, and not ip6tables either, which shares the lock.
 	if want := []string{"iptables-save", "iptables"}; !slices.Equal(ipt, want) {
 		t.Errorf("iptables commands = %q, want %q: the first timeout ends the step", ipt, want)
 	}
 }
 
-// --- additional cases ---------------------------------------
-
-// A mount below the directory means what is under it is not Stratum's kubelet's
-// to delete: the socket is kept, and an unreadable mount table is an error.
 func TestRemoveLegacyKubeletDirKeepsSocketsBelowAMount(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2338,8 +2205,6 @@ func TestRemoveLegacyKubeletDirKeepsSocketsBelowAMount(t *testing.T) {
 	}
 }
 
-// Nothing is removed through a symlink: the socket's directory, or
-// /var/lib/kubelet itself, being one points somewhere that is not kubelet's.
 func TestRemoveLegacyKubeletDirDoesNotFollowSymlinks(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -2374,8 +2239,7 @@ func TestRemoveLegacyKubeletDirDoesNotFollowSymlinks(t *testing.T) {
 	}
 }
 
-// Only a refused connection shows a socket stale. A datagram socket answers a
-// stream connect with a wrong-type error, which proves nothing, so it is kept.
+// a datagram socket answers a stream connect with a wrong-type error, which proves nothing.
 func TestRemoveLegacyKubeletDirKeepsASocketItCannotShowStale(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -2397,8 +2261,7 @@ func TestRemoveLegacyKubeletDirKeepsASocketItCannotShowStale(t *testing.T) {
 	}
 }
 
-// A namespace is Stratum's only at a path in the netns directory that a Stratum
-// container's spec names; the same name elsewhere is not.
+// a namespace is Stratum's only at a path in the netns directory a spec names.
 func TestCanonNetns(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2446,9 +2309,6 @@ func TestRecordStratumNetnsIgnoresTheSameNameElsewhere(t *testing.T) {
 	}
 }
 
-// A spec that does not decode is an error naming the container, never a
-// container with nothing to detach. Whatever was identified is detached, but the
-// record is incomplete, so the result is an error, whatever was detached.
 func TestRecordStratumNetnsReportsWhatItCannotRead(t *testing.T) {
 	good := func(h *datapathHost) string {
 		return `{"Spec":{"linux":{"namespaces":[{"type":"network","path":"` + h.path("run/netns/cni-aaa") + `"}]}}}`
@@ -2494,7 +2354,6 @@ func TestRecordStratumNetnsReportsWhatItCannotRead(t *testing.T) {
 	}
 }
 
-// After a timeout every further call would wait as long, so the enumeration ends.
 func TestRecordStratumNetnsStopsAfterATimeout(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -2512,16 +2371,12 @@ func TestRecordStratumNetnsStopsAfterATimeout(t *testing.T) {
 	if calls != 2 || fx.stratumNetnsErr == nil {
 		t.Errorf("%d ctr calls, err %v; want the list and one read, then the timeout reported", calls, fx.stratumNetnsErr)
 	}
-	// No path was discovered, and the record is still saved, as incomplete: a
-	// failure before any path is found must not read as an empty, complete one.
+	// a failure before any path is found must not read as an empty, complete one.
 	if rec, err := loadNetnsRecord(fx); err != nil || rec == nil || rec.Complete || len(rec.Paths) != 0 {
 		t.Errorf("saved record = %+v, %v; want it incomplete, with no paths", rec, err)
 	}
 }
 
-// The record is saved before any container is stopped and outlives a failed
-// detach: a later run, with the containers and the state gone, finishes it, and
-// does not report success while an owned mount is still there.
 func TestNetnsDetachCanBeFinishedByALaterRun(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2540,8 +2395,6 @@ func TestNetnsDetachCanBeFinishedByALaterRun(t *testing.T) {
 	if err := recordStratumNetns(fx, []string{"k8s.io"}); err != nil {
 		t.Fatal(err)
 	}
-	// Saved already, before anything is torn down: a process that dies here
-	// loses nothing.
 	if rec, err := loadNetnsRecord(fx); err != nil || rec == nil || !rec.Complete || len(rec.Paths) != 2 {
 		t.Fatalf("saved record = %+v, %v; want both paths, complete", rec, err)
 	}
@@ -2583,8 +2436,6 @@ func TestNetnsDetachCanBeFinishedByALaterRun(t *testing.T) {
 	}
 }
 
-// A saved record that cannot be read may name mounts that are still there, so
-// nothing is guessed at, and Run is told to keep DataDir.
 func TestNetnsDetachWithAnUnreadableSavedRecord(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2606,9 +2457,7 @@ func TestNetnsDetachWithAnUnreadableSavedRecord(t *testing.T) {
 	}
 }
 
-// iptables reports an exhausted -w wait as an ordinary failure (exit status 4),
-// not as the deadline execCmd enforces. That error shape, produced by a real
-// process through execCmd, ends the step too.
+// iptables reports an exhausted -w wait as an ordinary failure (exit status 4).
 func TestRemoveCiliumChainsStopsWhenTheXtablesLockWaitRunsOut(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -2643,11 +2492,6 @@ func TestWaitExhausted(t *testing.T) {
 	}
 }
 
-// --- the saved netns record's lifecycle -------------------------------------
-
-// A record that was partial stays incomplete across a fresh process: it must
-// never authorize a clean result, however many of its namespaces are detached,
-// since a namespace of the unread container may still be mounted.
 func TestPartialRecordNeverCleanOnAFreshRetry(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2672,8 +2516,7 @@ func TestPartialRecordNeverCleanOnAFreshRetry(t *testing.T) {
 		t.Fatal("the first attempt should report the incomplete record")
 	}
 
-	// Run goes on to delete the state. The next process has no specs and no
-	// in-memory error: only the saved record, which says it is incomplete.
+	// the next process has no specs and no in-memory error, only the saved record.
 	fx.stratumNetns, fx.stratumNetnsErr = map[string]bool{}, nil
 	err := detachNetns(fx, true)
 	if err == nil || !strings.Contains(err.Error(), "k8s.io/unreadable") {
@@ -2687,8 +2530,7 @@ func TestPartialRecordNeverCleanOnAFreshRetry(t *testing.T) {
 	}
 }
 
-// An incomplete record is sticky: a later enumeration that reads everything does
-// not make it complete, since a container that was unread then may be gone now.
+// sticky: a container unread then may be gone now, so a clean read does not complete it.
 func TestIncompleteRecordStaysIncomplete(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2706,10 +2548,6 @@ func TestIncompleteRecordStaysIncomplete(t *testing.T) {
 	}
 }
 
-// A saved record that cannot be read is treated like a save that fails: the
-// enumeration returns it, with the file left exactly as it was. It may hold
-// ownership an earlier run saved that the containers' metadata cannot give back,
-// so a record that reads is never written over it.
 func TestRecordStratumNetnsLeavesAnUnreadableSavedRecordAlone(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2737,10 +2575,6 @@ func TestRecordStratumNetnsLeavesAnUnreadableSavedRecordAlone(t *testing.T) {
 	}
 }
 
-// Through Run: an unreadable saved record found while the containers are read
-// aborts the uninstall before any workload container is touched, with the
-// existing rollback, so nothing is deleted, DataDir stays, and the worker is not
-// marked.
 func TestRunAbortsWhenTheSavedNetnsRecordCannotBeRead(t *testing.T) {
 	events, fx := runNode(t, "worker")
 	h := newDatapathHost(t, fx) // after runNode, so its mount table and paths win
@@ -2786,7 +2620,6 @@ func TestRunAbortsWhenTheSavedNetnsRecordCannotBeRead(t *testing.T) {
 	}
 }
 
-// Nothing to remember, nothing saved.
 func TestNoRecordIsSavedWhenThereIsNothingToRemember(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -2800,15 +2633,12 @@ func TestNoRecordIsSavedWhenThereIsNothingToRemember(t *testing.T) {
 	}
 }
 
-// Ownership has to be durable before it can be lost: a record that cannot be
-// saved stops stopContainers before a task is signalled, so the uninstall aborts
-// with nothing torn down and nothing to lose.
+// ownership must be durable before it can be lost: save before anything is torn down.
 func TestStopContainersStopsBeforeTeardownWhenTheRecordCannotBeSaved(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
 	fx.stratumNetns = map[string]bool{}
-	// A record path whose directory does not exist makes the atomic write
-	// fail, without touching any path of the machine the tests run on.
+	// a record path in a missing directory makes the atomic write fail safely.
 	fx.netnsRecordPath = filepath.Join(filepath.Dir(fx.netnsRecordPath), "missing", "netns-record.json")
 	var torn []string
 	fx.ctrRun = func(args ...string) (string, error) {
@@ -2834,8 +2664,6 @@ func TestStopContainersStopsBeforeTeardownWhenTheRecordCannotBeSaved(t *testing.
 	}
 }
 
-// With the saved record unreadable, DataDir is kept and the rest of the cleanup
-// goes on; and the worker is not marked, since a retry still can.
 func TestRunKeepsDataDirWhenTheNetnsRecordCannotBeRead(t *testing.T) {
 	events, fx := runNode(t, "worker")
 	var removed []string
@@ -2859,8 +2687,6 @@ func TestRunKeepsDataDirWhenTheNetnsRecordCannotBeRead(t *testing.T) {
 	}
 }
 
-// A timeout reading the rules, not only changing them, ends the step: the other
-// tool shares the lock, and the wait.
 func TestRemoveCiliumChainsStopsWhenReadingTheRulesTimesOut(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -2878,24 +2704,19 @@ func TestRemoveCiliumChainsStopsWhenReadingTheRulesTimesOut(t *testing.T) {
 	}
 }
 
-// --- Runtime detection --------------------------------------------------------
-
-// addProc makes a process in the fake /proc with the given command name.
 func addProc(t *testing.T, h *datapathHost, pid, comm string) {
 	t.Helper()
 	h.touch(t, "proc/"+pid+"/comm")
 	if err := os.WriteFile(h.path("proc/"+pid+"/comm"), []byte(comm+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A live process has a stat, whose state says it is not a zombie, and a
-	// cgroup, outside kubepods.
+	// a live process: a stat saying not a zombie, and a cgroup outside kubepods.
 	if err := os.WriteFile(h.path("proc/"+pid+"/stat"), []byte(pid+" ("+comm+") S 1 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	setProcCgroup(t, h, pid, "0::/system.slice/"+comm+".service")
 }
 
-// setProcCgroup writes a process's /proc/<pid>/cgroup.
 func setProcCgroup(t *testing.T, h *datapathHost, pid string, lines ...string) {
 	t.Helper()
 	if err := os.WriteFile(h.path("proc/"+pid+"/cgroup"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
@@ -2913,8 +2734,7 @@ func TestForeignRuntimes(t *testing.T) {
 		addProc(t, h, pid, comm)
 	}
 	h.mkdirs(t, "proc/self", "proc/sys") // not pids
-	// A zombie keeps its name in /proc but runs nothing (a killed shim under a
-	// parent that does not reap); a process in any other state does.
+	// a zombie keeps its /proc name but runs nothing; other states do not.
 	for pid, state := range map[string]string{"11": "S", "12": "R", "13": "Z", "14": "S"} {
 		if err := os.WriteFile(h.path("proc/"+pid+"/stat"), []byte(pid+" (a) weird) "+state+" 1 1\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -2934,9 +2754,6 @@ func TestForeignRuntimes(t *testing.T) {
 	}
 }
 
-// The pod cgroup names are not Stratum's alone: with another kubelet or runtime
-// running, the tree is kept whole and reported, even where it looks empty, and
-// nothing is ever stopped.
 func TestRemoveKubepodsCgroupsKeepsATreeAnotherRuntimeMayShare(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2954,7 +2771,6 @@ func TestRemoveKubepodsCgroupsKeepsATreeAnotherRuntimeMayShare(t *testing.T) {
 	}
 }
 
-// Without being able to look for another runtime, nothing is removed.
 func TestRemoveKubepodsCgroupsKeepsTheTreeWhenProcCannotBeRead(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -2969,14 +2785,12 @@ func TestRemoveKubepodsCgroupsKeepsTheTreeWhenProcCannotBeRead(t *testing.T) {
 	}
 }
 
-// A cgroup that still has a process in it is refused by the kernel, which is
-// what makes rmdir safe where stopping a slice is not: it is kept and reported,
-// and its empty siblings go.
+// the kernel's refusal is what makes rmdir safe where stopping a slice is not.
 func TestRemoveKubepodsCgroupsKeepsWhatIsStillInUse(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
 	h.mkdirs(t, "sys/fs/cgroup/kubepods/empty", "sys/fs/cgroup/kubepods/busy")
-	// A regular file stands in for what makes a populated cgroup's rmdir fail.
+	// a regular file stands in for what makes a populated cgroup's rmdir fail.
 	h.touch(t, "sys/fs/cgroup/kubepods/busy/cgroup.procs-stand-in")
 	err := removeKubepodsCgroups(fx)
 	if err == nil || !strings.Contains(err.Error(), "still in use") {
@@ -2987,9 +2801,6 @@ func TestRemoveKubepodsCgroupsKeepsWhatIsStillInUse(t *testing.T) {
 	}
 }
 
-// A socket that is already gone, as after an earlier run, leaves its directory
-// behind empty; the directory, validated like the socket's, is removed too, and
-// then /var/lib/kubelet. One that holds anything else stays.
 func TestRemoveLegacyKubeletDirRemovesTheDirectoryOfASocketAlreadyGone(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -3007,7 +2818,6 @@ func TestRemoveLegacyKubeletDirRemovesTheDirectoryOfASocketAlreadyGone(t *testin
 		t.Errorf("second run = %v, want a no-op", err)
 	}
 
-	// Another plugin's socket beside the gone one keeps the directory.
 	dir = shortKubeletDir(t, fx)
 	staleSocket(t, filepath.Join(dir, "device-plugins/vendor.sock"))
 	if err := removeLegacyKubeletDir(io.Discard, fx); err != nil {
@@ -3018,7 +2828,6 @@ func TestRemoveLegacyKubeletDirRemovesTheDirectoryOfASocketAlreadyGone(t *testin
 	}
 }
 
-// A symlinked socket directory is not removed through, with the socket gone.
 func TestRemoveLegacyKubeletDirDoesNotRemoveASymlinkedSocketDirectory(t *testing.T) {
 	fx := &hostEffects{}
 	newDatapathHost(t, fx)
@@ -3039,10 +2848,6 @@ func TestRemoveLegacyKubeletDirDoesNotRemoveASymlinkedSocketDirectory(t *testing
 	}
 }
 
-// With containerd stopped and no shim left the containers are never read, so
-// whose a mounted cni- namespace is has no answer when there is no saved record
-// and Stratum's containerd kept the metadata of containers: left, reported
-// incomplete, DataDir kept. Where there is nothing to attribute, it is clean.
 func TestUnattributedNetns(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -3094,8 +2899,6 @@ func TestUnattributedNetns(t *testing.T) {
 	}
 }
 
-// Through Run: the unattributed namespaces keep DataDir, the rest of the cleanup
-// carries on, and the worker is not marked, since a retry still can.
 func TestRunKeepsDataDirWhenNetnsOwnershipCannotBeEstablished(t *testing.T) {
 	events, fx := runNode(t, "worker")
 	h := newDatapathHost(t, fx) // after runNode, so its mount table and paths win
@@ -3122,13 +2925,7 @@ func TestRunKeepsDataDirWhenNetnsOwnershipCannotBeEstablished(t *testing.T) {
 	}
 }
 
-// --- repeated runs and netns enumeration ------------------------------------
-
-// Run can be called again in a persistent process (the MCP server), so what one
-// call learned about the namespaces must not stand in for what the next has not
-// read: an earlier call that read an empty set of containers, and saved no
-// record, must not make a later one, with containerd and its shims stopped,
-// retained metadata and a mounted cni- namespace, believe it enumerated.
+// run can be called again in a persistent process (the MCP server).
 func TestRepeatedRunDoesNotReuseNetnsEnumeration(t *testing.T) {
 	events, fx := runNode(t, "worker")
 	h := newDatapathHost(t, fx)
@@ -3159,8 +2956,7 @@ func TestRepeatedRunDoesNotReuseNetnsEnumeration(t *testing.T) {
 		t.Fatalf("expected no record: %v", err)
 	}
 
-	// Later, in the same process: retained metadata, a mounted namespace, and
-	// containerd and its shims stopped.
+	// later, in the same process: retained metadata and a mounted namespace.
 	h.mkdirs(t, "var/lib/stratum/containerd")
 	h.touch(t, "run/netns/cni-later")
 	h.setMounts(t, h.path("run/netns/cni-later"))
@@ -3185,14 +2981,9 @@ func TestRepeatedRunDoesNotReuseNetnsEnumeration(t *testing.T) {
 	}
 }
 
-// What an invocation learned is seeded fresh at the runner's entry; the saved
-// record on disk is not cleared with it.
 func TestRunSeedsFreshDiscoveryAndKeepsTheSavedRecord(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
-	// What a previous call left on this run's value — an ownership record, a
-	// read error, the enumerated flag — must not stand in for what this run has
-	// not read.
 	fx.stratumNetns = map[string]bool{h.path("run/netns/cni-aaa"): true}
 	fx.stratumNetnsErr = errors.New("an earlier call's read error")
 	fx.netnsEnumerated = true
@@ -3214,15 +3005,12 @@ func TestRunSeedsFreshDiscoveryAndKeepsTheSavedRecord(t *testing.T) {
 	}
 }
 
-// Only a process that has gone is skipped. A /proc entry that cannot be read for
-// any other reason may be another kubelet or runtime, so the shared tree is kept
-// and the failure reported.
 func TestForeignRuntimesDistinguishesAVanishedProcessFromAnUnreadableOne(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
 	h.mkdirs(t, "sys/fs/cgroup/kubepods/pod1")
 
-	// Vanished: the entry has no comm (ENOENT), as after the process exited.
+	// vanished: the entry has no comm (ENOENT), as after the process exited.
 	h.mkdirs(t, "proc/4001")
 	if err := removeKubepodsCgroups(fx); err != nil {
 		t.Fatalf("a vanished process stopped the removal: %v", err)
@@ -3231,8 +3019,7 @@ func TestForeignRuntimesDistinguishesAVanishedProcessFromAnUnreadableOne(t *test
 		t.Error("the empty tree was kept because of a vanished process")
 	}
 
-	// Unreadable: comm cannot be read as a file (EISDIR), while /proc itself is
-	// readable.
+	// unreadable: comm cannot be read as a file (EISDIR), while /proc is readable.
 	h.mkdirs(t, "sys/fs/cgroup/kubepods/pod1", "proc/4242/comm")
 	err := removeKubepodsCgroups(fx)
 	if err == nil || !strings.Contains(err.Error(), "could not check for another kubelet") || !strings.Contains(err.Error(), "4242") {
@@ -3259,11 +3046,6 @@ func TestVanished(t *testing.T) {
 	}
 }
 
-// --- cgroup activity checked again before a stop ----------------------------
-
-// The query takes time, in which systemd or a runtime can make the cgroup again,
-// populated: the tree is looked at again after it, and a cgroup in use is never
-// stopped over.
 func TestStaleActiveSliceIsLookedAtAgainBeforeAnyStop(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3280,7 +3062,6 @@ func TestStaleActiveSliceIsLookedAtAgainBeforeAnyStop(t *testing.T) {
 		t.Error("the slice was stopped after its cgroup had become populated")
 	}
 
-	// And one made again empty is removed, then stopped.
 	h = newDatapathHost(t, fx)
 	sd = &fakeSystemd{active: true, onQuery: func() { h.mkdirs(t, "sys/fs/cgroup/kubepods.slice/kubepods-burstable.slice") }}
 	h.systemd(t, fx, sd)
@@ -3289,8 +3070,6 @@ func TestStaleActiveSliceIsLookedAtAgainBeforeAnyStop(t *testing.T) {
 	}
 }
 
-// The other-runtime check is made again right before a stop: the removal retries
-// for seconds in between, and a runtime can start in them.
 func TestARuntimeThatStartsDuringTheRemovalStopsTheStop(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3313,7 +3092,6 @@ func TestARuntimeThatStartsDuringTheRemovalStopsTheStop(t *testing.T) {
 		t.Errorf("stops = %d after %d looks; want no stop, and the check made again before it", sd.stops, looks)
 	}
 
-	// A check that cannot be made refuses it too.
 	h = newDatapathHost(t, fx)
 	h.mkdirs(t, "sys/fs/cgroup/kubepods.slice")
 	sd = &fakeSystemd{active: true}
@@ -3331,9 +3109,6 @@ func TestARuntimeThatStartsDuringTheRemovalStopsTheStop(t *testing.T) {
 	}
 }
 
-// Only a known inactive or missing unit is inactive. A timeout or a failed query
-// says nothing about the unit, and is reported: an active one makes the directory
-// again at the daemon-reload.
 func TestSliceActivityIsNotAssumedInactive(t *testing.T) {
 	for name, tc := range map[string]struct {
 		err    error
@@ -3361,8 +3136,6 @@ func TestSliceActivityIsNotAssumedInactive(t *testing.T) {
 	}
 }
 
-// With the directory gone, a query that fails is an error, not a clean node: the
-// unit may be active, and make the directory again.
 func TestRemoveKubepodsCgroupsReportsAFailedActivityQuery(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3377,7 +3150,6 @@ func TestRemoveKubepodsCgroupsReportsAFailedActivityQuery(t *testing.T) {
 	}
 }
 
-// An error inspecting the cgroup after the stop is reported, as before it.
 func TestRemoveKubepodsCgroupsReportsAnErrorInspectingAfterTheStop(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3393,12 +3165,6 @@ func TestRemoveKubepodsCgroupsReportsAnErrorInspectingAfterTheStop(t *testing.T)
 	}
 }
 
-// --- Cilium teardown while another runtime runs -----------------------------
-
-// Cilium's datapath is found by name, which does not say whose it is: with
-// another kubelet or container runtime running (RKE2 or k3s with Cilium of its
-// own), every Cilium step is skipped, none of its commands runs, and the cleanup
-// is reported as not clean. What is proved to be Stratum's still goes.
 func TestTeardownDatapathSkipsCiliumWhileAnotherRuntimeRuns(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3425,8 +3191,7 @@ func TestTeardownDatapathSkipsCiliumWhileAnotherRuntimeRuns(t *testing.T) {
 			t.Errorf("%s was removed", kept)
 		}
 	}
-	// Stratum's own namespace, proved by the record, is still detached; Cilium's
-	// mount is not; and the kubepods tree, with its own guard, is kept.
+	// what is proved to be Stratum's still goes: its netns; Cilium's mount stays.
 	if want := []string{"umount " + h.path("run/netns/cni-aaa")}; !slices.Equal(h.calls, want) {
 		t.Errorf("unmounts = %q, want only the proved namespace: %q", h.calls, want)
 	}
@@ -3438,7 +3203,6 @@ func TestTeardownDatapathSkipsCiliumWhileAnotherRuntimeRuns(t *testing.T) {
 	}
 }
 
-// With no way to tell whether another runtime is running, Cilium is left too.
 func TestTeardownDatapathSkipsCiliumWhenTheRuntimeCheckFails(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3458,9 +3222,6 @@ func TestTeardownDatapathSkipsCiliumWhenTheRuntimeCheckFails(t *testing.T) {
 	}
 }
 
-// Embedded kubelets and other runtimes are found too: k3s runs its kubelet
-// inside k3s-server, MicroK8s inside kubelite, and with no pod there is no shim
-// to give them away.
 func TestForeignRuntimesFindsEmbeddedKubeletsAndOtherRuntimes(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3493,9 +3254,7 @@ func TestForeignRuntimesFindsEmbeddedKubeletsAndOtherRuntimes(t *testing.T) {
 	}
 }
 
-// dockerHost adds Docker as it runs on a developer's machine: dockerd, the
-// distribution's containerd and a shim, all under system.slice, and a shim
-// that has exited but not been reaped.
+// Docker as on a developer's machine: components under system.slice, plus a zombie shim.
 func dockerHost(t *testing.T, h *datapathHost) {
 	t.Helper()
 	addProc(t, h, "2484", "containerd")
@@ -3510,9 +3269,6 @@ func dockerHost(t *testing.T, h *datapathHost) {
 	}
 }
 
-// A container runtime shares Cilium's datapath and the kubepods cgroups only by
-// serving a kubelet: with none running and nothing under kubepods, Docker is a
-// bystander, and is named as one.
 func TestForeignRuntimesTakesARuntimeWithoutPodsForABystander(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3540,9 +3296,7 @@ func TestForeignRuntimesTakesARuntimeWithoutPodsForABystander(t *testing.T) {
 	}
 }
 
-// Any sign of a kubelet or a Cilium agent makes every runtime foreign: one
-// running, under any of its names, or a pod, which is a process in a kubepods
-// cgroup however the kubelet that made it is named or hidden.
+// a running kubelet or Cilium agent under any name, or any pod, makes every runtime foreign.
 func TestForeignRuntimesTakesARuntimeForForeignWithAKubeletOrAPod(t *testing.T) {
 	cases := map[string]func(t *testing.T, h *datapathHost){
 		"cri-dockerd": func(t *testing.T, h *datapathHost) {
@@ -3568,8 +3322,7 @@ func TestForeignRuntimesTakesARuntimeForForeignWithAKubeletOrAPod(t *testing.T) 
 			}
 		},
 	}
-	// Each name alone, under system.slice and with no pod: Cilium's agent run
-	// by Docker, or a kubelet that has none yet.
+	// each name alone, under system.slice with no pod: Docker's agent, or a kubelet with no pods yet.
 	for _, comm := range []string{"kubelet", "k3s", "k3s-server", "rke2-agent", "kubelite", "k0s", "cilium-agent", "cilium-envoy"} {
 		cases[comm] = func(t *testing.T, h *datapathHost) { addProc(t, h, "900", comm) }
 	}
@@ -3586,8 +3339,7 @@ func TestForeignRuntimesTakesARuntimeForForeignWithAKubeletOrAPod(t *testing.T) 
 			if len(bystanders) != 0 || !slices.Contains(foreign, "dockerd (pid 3241)") || !slices.Contains(foreign, "containerd (pid 2484)") {
 				t.Errorf("foreign = %q, bystanders = %q; want Docker foreign", foreign, bystanders)
 			}
-			// The pod's process is named, so one of Stratum's own left behind is
-			// not read as Docker.
+			// the pod's process is named, so an orphan of Stratum's own is not Docker's.
 			if name == "systemd pod" && !slices.Contains(foreign, "pause under kubepods (pid 900)") {
 				t.Errorf("foreign = %q, want the pod's process named", foreign)
 			}
@@ -3595,9 +3347,6 @@ func TestForeignRuntimesTakesARuntimeForForeignWithAKubeletOrAPod(t *testing.T) 
 	}
 }
 
-// A runtime is only a bystander when every process could be looked at: a
-// cgroup that cannot be read may be a pod's, and is an error. With no runtime
-// running, nothing more is read than before.
 func TestForeignRuntimesFailsWhenAProcessCgroupCannotBeRead(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3612,7 +3361,6 @@ func TestForeignRuntimesFailsWhenAProcessCgroupCannotBeRead(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "process 900") || len(bystanders) != 0 {
 		t.Fatalf("bystanders = %q, err = %v; want the unreadable cgroup reported", bystanders, err)
 	}
-	// And the datapath and kubepods are kept for it.
 	h.touch(t, "sys/class/net/cilium_host")
 	h.mkdirs(t, "sys/fs/cgroup/kubepods/pod1")
 	if err := teardownDatapath(io.Discard, fx); err == nil || !h.exists("sys/class/net/cilium_host") || !h.exists("sys/fs/cgroup/kubepods/pod1") {
@@ -3620,13 +3368,12 @@ func TestForeignRuntimesFailsWhenAProcessCgroupCannotBeRead(t *testing.T) {
 	}
 }
 
-// The kubepods tree is read for the pods /proc does not show: a part of it that
-// cannot be read is not shown to be empty, and is an error too.
+// the kubepods tree is read for the pods /proc does not show under cgroup v2.
 func TestForeignRuntimesFailsWhenTheKubepodsTreeCannotBeRead(t *testing.T) {
 	for name, mk := range map[string]func(t *testing.T, h *datapathHost){
 		"unreadable cgroup.procs": func(t *testing.T, h *datapathHost) {
 			h.mkdirs(t, "sys/fs/cgroup/kubepods.slice/pod1", "elsewhere")
-			// A symlink to a directory: not a directory entry, and EISDIR to read.
+			// a symlink to a directory: not a directory entry, and EISDIR to read.
 			if err := os.Symlink(h.path("elsewhere"), h.path("sys/fs/cgroup/kubepods.slice/pod1/cgroup.procs")); err != nil {
 				t.Fatal(err)
 			}
@@ -3655,8 +3402,6 @@ func TestForeignRuntimesFailsWhenTheKubepodsTreeCannotBeRead(t *testing.T) {
 	}
 }
 
-// On a machine that also runs Docker, the uninstall removes Cilium's datapath
-// and the kubepods cgroups, says Docker was left alone, and reports no failure.
 func TestTeardownDatapathRemovesCiliumBesideDocker(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3700,8 +3445,7 @@ func TestTeardownDatapathRemovesCiliumBesideDocker(t *testing.T) {
 	}
 }
 
-// ciliumCommands is the commands among cmds that are Cilium's teardown: the
-// network tools and bpftool. (The kubepods step runs systemctl, with its own guard.)
+// the Cilium teardown commands among cmds (the kubepods step runs systemctl).
 func ciliumCommands(cmds []string) []string {
 	var out []string
 	for _, c := range cmds {
@@ -3713,10 +3457,6 @@ func ciliumCommands(cmds []string) []string {
 	return out
 }
 
-// --- teardown error reporting and fixed tool paths --------------------------
-
-// Only a directory that is not empty (it holds another program's pins) or is
-// already gone is expected to survive the rmdir; any other failure is reported.
 func TestRemoveCiliumStateReportsARmdirThatFailsForAnotherReason(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root removes from a read-only directory")
@@ -3733,7 +3473,7 @@ func TestRemoveCiliumStateReportsARmdirThatFailsForAnotherReason(t *testing.T) {
 		t.Errorf("err = %v, want the failed rmdir of globals reported", err)
 	}
 
-	// A foreign pin keeping the directory is still not an error.
+	// a foreign pin keeping the directory is still not an error.
 	h = newDatapathHost(t, fx)
 	h.touch(t, "sys/fs/bpf/tc/globals/cilium_ct4_global", "sys/fs/bpf/tc/globals/foreign_map")
 	if err := removeCiliumState(fx); err != nil {
@@ -3758,7 +3498,6 @@ func TestExecCmdErrorsCarryOutputOnlyWhenThereIsSome(t *testing.T) {
 	}
 }
 
-// writeTool puts an executable shell script named name in dir.
 func writeTool(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -3769,8 +3508,6 @@ func writeTool(t *testing.T, dir, name, body string) {
 	}
 }
 
-// The tools uninstall runs are found on a fixed PATH, not the caller's, and see
-// that PATH: a caller's PATH may put a shim of `ip` or `iptables` first.
 func TestExecCmdUsesTheFixedToolPath(t *testing.T) {
 	callers, fixed := filepath.Join(t.TempDir(), "callers"), filepath.Join(t.TempDir(), "fixed")
 	writeTool(t, callers, "shadowed", "echo caller")
@@ -3804,9 +3541,6 @@ func TestUnmountUsesTheFixedToolPath(t *testing.T) {
 	}
 }
 
-// With the activity query making the tree again, and another runtime running,
-// the tree is kept and that is reported: it is there now, whatever it was when
-// the loop began.
 func TestRemoveKubepodsCgroupsReportsARuntimeWhenTheQueryMadeTheTree(t *testing.T) {
 	fx := &hostEffects{}
 	h := newDatapathHost(t, fx)
@@ -3820,7 +3554,6 @@ func TestRemoveKubepodsCgroupsReportsARuntimeWhenTheQueryMadeTheTree(t *testing.
 		t.Error("the tree was removed with another runtime running")
 	}
 
-	// No tree, even after the query: a runtime's own unit is not an error.
 	h = newDatapathHost(t, fx)
 	addProc(t, h, "4242", "kubelet")
 	h.systemd(t, fx, &fakeSystemd{active: true})
@@ -3829,10 +3562,7 @@ func TestRemoveKubepodsCgroupsReportsARuntimeWhenTheQueryMadeTheTree(t *testing.
 	}
 }
 
-// exec.Command looks a bare name up on the caller's PATH when it is called,
-// before anything can be overridden, and a slow entry there stalls it outside
-// cmdTimeout. So the command must be built from the path toolPath resolved,
-// and a bare name must never reach exec.
+// a slow entry on the caller's PATH stalls the bare-name lookup outside cmdTimeout.
 func TestToolCmdIsBuiltFromTheResolvedPath(t *testing.T) {
 	fixed := t.TempDir()
 	writeTool(t, fixed, "tool", "true")
@@ -3848,8 +3578,7 @@ func TestToolCmdIsBuiltFromTheResolvedPath(t *testing.T) {
 	}
 }
 
-// The tools run as root, so a variable that loads code (XTABLES_LIBDIR,
-// TC_LIB_DIR) in the caller's environment must not reach them.
+// the tools run as root: a variable that loads code must not reach them.
 func TestToolCmdEnvIsExplicit(t *testing.T) {
 	t.Setenv("XTABLES_LIBDIR", "/evil")
 	t.Setenv("TC_LIB_DIR", "/evil")
@@ -3861,7 +3590,6 @@ func TestToolCmdEnvIsExplicit(t *testing.T) {
 	}
 }
 
-// umount's own message is the whole error when it printed nothing.
 func TestUmountMountErrorHasNoTrailingSeparator(t *testing.T) {
 	dir := t.TempDir()
 	writeTool(t, dir, "umount", "exit 1")
@@ -3873,10 +3601,8 @@ func TestUmountMountErrorHasNoTrailingSeparator(t *testing.T) {
 	}
 }
 
-// The weekly run's failure: bpftool cannot list the root cgroup.
 const cgroupShowENODEV = "bpftool cgroup show /sys/fs/cgroup: exit status 255: Error: can't query bpf programs attached to /sys/fs/cgroup: No such device"
 
-// progShow is a `bpftool -j prog show` listing: id, type and name per program.
 func progShow(progs ...[3]string) []byte {
 	var parts []string
 	for _, p := range progs {

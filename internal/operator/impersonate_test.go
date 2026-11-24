@@ -14,12 +14,6 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// TestNewActionConfigImpersonates proves the requester-impersonation wiring end-to-end at the
-// client level: when newActionConfig is given an impersonation config, EVERY
-// Kubernetes call it makes — including the release-storage Secret writes — carries
-// the Impersonate-User / Impersonate-Group headers, so the apiserver authorizes
-// as the requester, not as the operator's system:masters. With no impersonation
-// config, no such headers are sent (privileged-namespace / operator installs).
 func TestNewActionConfigImpersonates(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -47,7 +41,6 @@ func TestNewActionConfigImpersonates(t *testing.T) {
 					_, _ = io.WriteString(w, `{"gitVersion":"v1.35.0"}`)
 					return
 				}
-				// Capture impersonation headers off the release-storage write.
 				gotUser = r.Header.Get("Impersonate-User")
 				gotUID = r.Header.Get("Impersonate-Uid")
 				gotGroups = r.Header.Values("Impersonate-Group")

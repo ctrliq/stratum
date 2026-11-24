@@ -31,10 +31,7 @@ import (
 
 var errAPIDown = errors.New("dial tcp 127.0.0.1:6443: connect: connection refused")
 
-// singleNode is a one-node cluster's only node, Ready, mid-way through the
-// upgrade, with the real nodejob.Run polling a Job whose reads fail for
-// jobDown polls (the API server restarting under the orchestrator)
-// and whose Node writes fail for patchDown calls once the Job is done.
+// Job reads fail for jobDown polls; Node writes fail for patchDown calls once the Job is done.
 func singleNode(t *testing.T, jobDown, patchDown int, jobStatus batchv1.JobStatus) (*fake.Clientset, *int) {
 	t.Helper()
 	cs := fake.NewSimpleClientset(&corev1.Node{
@@ -67,8 +64,7 @@ func singleNode(t *testing.T, jobDown, patchDown int, jobStatus batchv1.JobStatu
 
 var nodesGVR = corev1.SchemeGroupVersion.WithResource("nodes")
 
-// rvGuard makes the fake clientset refuse an Update that carries a stale
-// resourceVersion, as the API server does, and number each accepted one.
+// Refuses a stale resourceVersion as the API server does, and numbers each accepted one.
 func rvGuard(cs *fake.Clientset) {
 	cs.PrependReactor("update", "nodes", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		in := a.(clienttesting.UpdateAction).GetObject().(*corev1.Node)
@@ -86,8 +82,7 @@ func rvGuard(cs *fake.Clientset) {
 	})
 }
 
-// changeNode is another actor's write to the node: it goes straight to the
-// tracker, and numbers itself as the API server would.
+// Another actor's write: straight to the tracker, numbered as the API server would.
 func changeNode(t *testing.T, cs *fake.Clientset, f func(*corev1.Node)) {
 	t.Helper()
 	cur, err := cs.Tracker().Get(nodesGVR, "", "cp1")
@@ -103,7 +98,6 @@ func changeNode(t *testing.T, cs *fake.Clientset, f func(*corev1.Node)) {
 	}
 }
 
-// fakeNode is a fake clientset holding n, with resourceVersion conflicts.
 func fakeNode(n *corev1.Node) *fake.Clientset {
 	cs := fake.NewSimpleClientset(n)
 	rvGuard(cs)
@@ -126,9 +120,6 @@ func runSingleNode(cs kubernetes.Interface) error {
 	return err
 }
 
-// TestSingleNodeRidesOutItsOwnAPIServerRestart: the Job watch and the
-// writes that follow the gate are retried through the restart, so the node is
-// stamped and uncordoned instead of left cordoned with the workloads Pending.
 func TestSingleNodeRidesOutItsOwnAPIServerRestart(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cs, reads := singleNode(t, 20, 3, batchv1.JobStatus{Succeeded: 1}) // ~100s of refused reads
@@ -151,7 +142,6 @@ func TestSingleNodeRidesOutItsOwnAPIServerRestart(t *testing.T) {
 	})
 }
 
-// If a halt can still happen, the error says what to do about it.
 func TestSingleNodeHaltNamesTheRecoverySteps(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cs, _ := singleNode(t, 1<<30, 0, batchv1.JobStatus{})
@@ -177,8 +167,7 @@ func TestRetryAPIGivesUpAfterItsWindow(t *testing.T) {
 	})
 }
 
-// A request the API server accepts and never answers is bounded too: the
-// window is enforced through the attempt's context, not only between attempts.
+// The window is enforced through the attempt's context, not only between attempts.
 func TestRetryAPIBoundsAStalledRequest(t *testing.T) {
 	oldWindow, oldCall, oldInterval := apiRetryWindow, apiCallTimeout, apiRetryInterval
 	apiRetryWindow, apiCallTimeout, apiRetryInterval = 200*time.Millisecond, 20*time.Millisecond, 5*time.Millisecond
@@ -211,8 +200,6 @@ func TestRetryAPIBoundsAStalledRequest(t *testing.T) {
 	}
 }
 
-// An answer retrying cannot change ends the retries at once; conflicts, throttling
-// and server errors are retried.
 func TestRetryAPIStopsOnATerminalError(t *testing.T) {
 	oldInterval := apiRetryInterval
 	apiRetryInterval = time.Millisecond
@@ -247,8 +234,6 @@ func TestRetryAPIStopsOnATerminalError(t *testing.T) {
 	}
 }
 
-// ownership is who may undo a node's cordon: what the orchestrator and the
-// per-node Job's backstop both ask. Only the upgrade's own cordon is undone.
 func TestOnlyTheUpgradesOwnCordonIsUndone(t *testing.T) {
 	const target = "v1.37.1"
 	for _, c := range []struct {
@@ -262,8 +247,7 @@ func TestOnlyTheUpgradesOwnCordonIsUndone(t *testing.T) {
 		{"cordoned by an admin before the upgrade", true, map[string]string{k8sutil.UpgradeCordonAnnotation: cordonPreexisting, k8sutil.UpgradeInProgressAnnotation: target}, false},
 		{"cordoned by an admin after the Job released its own", true, map[string]string{k8sutil.UpgradeCordonAnnotation: cordonReleased, k8sutil.UpgradeInProgressAnnotation: target}, false},
 		{"cordoned by an admin, no upgrade", true, nil, false},
-		// An earlier target's claim: the Job (no lease, its own target) leaves it,
-		// the run that holds the lease takes it over and undoes it.
+		// An earlier target's claim: the Job leaves it; the lease-holding run takes it over.
 		{"cordon left by an earlier target", true, map[string]string{k8sutil.UpgradeCordonAnnotation: "v1.36.4", k8sutil.UpgradeInProgressAnnotation: target}, false},
 		{"already schedulable", false, map[string]string{k8sutil.UpgradeCordonAnnotation: target, k8sutil.UpgradeInProgressAnnotation: target}, false},
 	} {
@@ -271,7 +255,6 @@ func TestOnlyTheUpgradesOwnCordonIsUndone(t *testing.T) {
 			node := func() *corev1.Node {
 				return &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "cp1", ResourceVersion: "1", Annotations: c.annotations}, Spec: corev1.NodeSpec{Unschedulable: c.unschedulable}}
 			}
-			// The Job's backstop.
 			cs := fake.NewSimpleClientset(node())
 			rvGuard(cs)
 			done, err := releaseUpgradeCordon(context.Background(), cs, "cp1", target)
@@ -282,7 +265,6 @@ func TestOnlyTheUpgradesOwnCordonIsUndone(t *testing.T) {
 			if got.Annotations[k8sutil.UpgradeInProgressAnnotation] != c.annotations[k8sutil.UpgradeInProgressAnnotation] {
 				t.Error("the backstop changed the in-progress record; only the orchestrator's finish may")
 			}
-			// The orchestrator's finish.
 			cs = fake.NewSimpleClientset(node())
 			rvGuard(cs)
 			if err := finishNode(context.Background(), cs, "cp1", target, "", ""); err != nil {
@@ -301,9 +283,6 @@ func TestOnlyTheUpgradesOwnCordonIsUndone(t *testing.T) {
 	}
 }
 
-// The backstop writes only to the node as it read it: an actor who removes the
-// upgrade's claim between the read and the write wins, and the node stays
-// cordoned.
 func TestBackstopYieldsToAConcurrentChange(t *testing.T) {
 	cs := fake.NewSimpleClientset(&corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp1", ResourceVersion: "1", Annotations: map[string]string{
@@ -325,7 +304,6 @@ func TestBackstopYieldsToAConcurrentChange(t *testing.T) {
 	if done, err := releaseUpgradeCordon(context.Background(), cs, "cp1", "v1.37.1"); !apierrors.IsConflict(err) || done {
 		t.Fatalf("backstop on a changed node: done=%v err=%v, want a conflict", done, err)
 	}
-	// The retry reads the changed node, which the upgrade no longer claims.
 	if err := retryAPI(context.Background(), func(ctx context.Context) error {
 		_, err := releaseUpgradeCordon(ctx, cs, "cp1", "v1.37.1")
 		return err
@@ -334,8 +312,6 @@ func TestBackstopYieldsToAConcurrentChange(t *testing.T) {
 	}
 }
 
-// Lifecycle through upgradeOneNode, with the Job running the backstop as it
-// does on the node.
 func TestCordonOwnershipThroughAnUpgrade(t *testing.T) {
 	for _, c := range []struct {
 		name             string
@@ -381,11 +357,6 @@ func TestCordonOwnershipThroughAnUpgrade(t *testing.T) {
 	}
 }
 
-// TestFailedNodeJobLeavesTheNodeCordonedAndUnstamped: a node whose upgrade
-// failed exits, so its Job fails. The orchestrator must fail with the recovery
-// steps, leave the cordon it owns in place for inspection, and leave the
-// version stamp unchanged — not count the node upgraded or uncordon one that
-// is not at the target.
 func TestFailedNodeJobLeavesTheNodeCordonedAndUnstamped(t *testing.T) {
 	const target = "v1.37.1"
 	cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
@@ -415,10 +386,6 @@ func TestFailedNodeJobLeavesTheNodeCordonedAndUnstamped(t *testing.T) {
 	}
 }
 
-// A failed per-node Job is reported as failed, with its log, and nothing more:
-// the orchestrator sees only the Job's status, and the node's run can end
-// without a rollback, as when its post-reload gate fails with the new version
-// installed.
 func TestFailedNodeJobClaimsNoRollback(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{Failed: 1})
@@ -433,9 +400,6 @@ func TestFailedNodeJobClaimsNoRollback(t *testing.T) {
 	})
 }
 
-// A controller's upgrade Job uncordons the node once its upgrade passes,
-// before the orchestrator's own gates run. When one of those then fails, the
-// recovery steps must not say the node is left cordoned.
 func TestRecoveryStepsDoNotClaimTheCordonOfAControllerItsJobReleased(t *testing.T) {
 	cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
 	swap(t, &runNodeJob, func(_ context.Context, cs kubernetes.Interface, _ nodejob.Spec) error {
@@ -455,10 +419,6 @@ func TestRecoveryStepsDoNotClaimTheCordonOfAControllerItsJobReleased(t *testing.
 	}
 }
 
-// The lease is confirmed by a renewal before the node is stamped and
-// uncordoned. After the Job, the Ready wait and the gate (which can span an API
-// outage) a successor may hold the lease, and its cordon and records for this
-// target must not be taken for this run's own.
 func TestFinishNeedsAConfirmedLease(t *testing.T) {
 	holdLease := func(t *testing.T, cs kubernetes.Interface, holder string) {
 		t.Helper()

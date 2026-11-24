@@ -156,9 +156,7 @@ func TestStagedKeyReplacementConflictsAfterOwnershipSnapshotChanges(t *testing.T
 			cs := fake.NewSimpleClientset(original)
 			resource := schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 			cs.PrependReactor("update", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
-				// A successor replaced the Secret after our ownership GET. Model the
-				// apiserver's Secret update semantics: missing resourceVersion permits
-				// an unconditional overwrite; a stale nonempty version conflicts.
+				// apiserver semantics: no resourceVersion overwrites; a stale nonempty one conflicts
 				if err := cs.Tracker().Update(resource, replacement, caNamespace); err != nil {
 					t.Fatal(err)
 				}
@@ -207,8 +205,7 @@ func TestMigrationPreservesLegacyRotationKeyBeforePublishing(t *testing.T) {
 	if err == nil {
 		t.Error("migration accepted the legacy rotation's retained key")
 	}
-	// Do not run returned cleanup until after inspecting the erroneous success:
-	// the existing legacy key must survive both publication and cleanup.
+	// the legacy key must survive both the refusal and the returned cleanup
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -231,12 +228,7 @@ func TestMigrationPreservesLegacyRotationKeyBeforePublishing(t *testing.T) {
 	}
 }
 
-// TestStagedKeyMetadataNeverCarriesTheKey: the staged key Secret holds the
-// certificate-key that decrypts every CA private key in stratum-certs, so the
-// key may live only in its data. `kubectl describe secret` hides data values
-// but prints annotations and labels in full, and metadata-only readers
-// (PartialObjectMetadata, inventory exporters) see them too. Each staging
-// path is driven the way production calls it.
+// kubectl describe prints metadata in full, so the key may live only in the Secret's data
 func TestStagedKeyMetadataNeverCarriesTheKey(t *testing.T) {
 	oldUpload := uploadStagedMaterial
 	t.Cleanup(func() { uploadStagedMaterial = oldUpload })

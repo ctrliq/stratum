@@ -14,10 +14,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// TestJoinMaintenanceHolderNamesTheToken: a join's holder is its bootstrap
-// token's username and a slash, the prefix the join fence policy requires,
-// followed by MaintenanceHolder's host/pid/nanoseconds, so two takes on one
-// host are still distinct holders.
 func TestJoinMaintenanceHolderNamesTheToken(t *testing.T) {
 	a, b := JoinMaintenanceHolder("abc123"), JoinMaintenanceHolder("abc123")
 	for _, h := range []string{a, b} {
@@ -31,9 +27,6 @@ func TestJoinMaintenanceHolderNamesTheToken(t *testing.T) {
 	}
 }
 
-// TestMaintenanceFenceHolders: the admin fence keeps MaintenanceHolder's
-// host/pid/nanoseconds, with no token prefix, and MaintenanceFenceAs writes
-// the holder given on both leases.
 func TestMaintenanceFenceHolders(t *testing.T) {
 	holderOn := func(t *testing.T, cs *fake.Clientset, name string) string {
 		t.Helper()
@@ -68,9 +61,6 @@ func TestMaintenanceFenceHolders(t *testing.T) {
 	}
 }
 
-// TestJoinFenceDenied: only the join fence policy's own denial, as the
-// admission dispatcher spells it, counts — wrapped or not; RBAC's Forbidden,
-// another policy's denial and a plain error do not.
 func TestJoinFenceDenied(t *testing.T) {
 	denial := func(policy string) error {
 		m := fmt.Sprintf("ValidatingAdmissionPolicy '%s' with binding '%s' denied request: no", policy, policy)

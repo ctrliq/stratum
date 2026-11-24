@@ -9,37 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/host"
 )
 
-// NodeIP returns the primary IP this node was brought up with — the address in
-// its apiserver certificate and its etcd peer URL — or, when there is no saved
-// state, the primary of host.NodeIP's answer ($NODE_IP, then detection),
-// validated as an IP literal.
-//
-// The fallback takes the primary because $NODE_IP may be in the kubelet's
-// "v4,v6" form, and every caller uses the answer as one host: the whole pair
-// would seed an etcd restore or rejoin with the peer URL
-// https://[10.0.0.7,fd00::7]:2380, which no member can dial. A pair with no
-// first address is refused rather than answered as an empty host.
-//
-// The primary must also be an IP literal without a zone. $NODE_IP is taken
-// verbatim, so a padded " 10.0.0.7", a host name or a zoned "fe80::1%eth0"
-// would otherwise reach a URL as it stands, such as the peer URL
-// https:// 10.0.0.7:2380. Either family may come first: an IPv6 primary is
-// still answered.
-//
-// Everything that acts on a node that already runs (cert renewal, `token
-// create`, etcd rejoin and snapshot restore, the upgrade roster) must use this,
-// not host.NodeIP: re-detecting on a multi-NIC host picks whichever NIC holds the
-// default route, which is how a rejoin could add an etcd member at the wrong
-// address.
-//
-// Only a missing state file falls back. An unreadable or malformed one is an
-// error: falling back there would re-detect, which is exactly the wrong-NIC
-// drift this exists to prevent.
-//
-// A state that parses but records no address is refused as well. Every writer
-// (bring-up, join, worker join) records one, so an empty field is a damaged
-// file, and LoadState alone cannot tell: any valid YAML loads, with missing
-// fields left empty.
+// NodeIP is the recorded primary for a running node; re-detecting can pick the default-route NIC.
 func NodeIP() (string, error) {
 	st, err := LoadState()
 	if errors.Is(err, fs.ErrNotExist) {
@@ -72,19 +42,13 @@ func NodeIP() (string, error) {
 	return st.NodeIP, nil
 }
 
-// RecordedNodeIPs is the recorded-address rule for a node that has state, in
-// kubelet's "v4[,v6]" form: the recorded KubeletNodeIP, or the recorded
-// primary standing in for it on a single-stack node. A dual-stack node without
-// the pair, or a state with neither, is refused rather than re-detected. Pure:
-// the state is the argument, so a caller answers for in-memory state the same
-// way it answers for a state read from disk.
+// RecordedNodeIPs answers the recorded kubelet "v4[,v6]" address, or the primary alone.
 func RecordedNodeIPs(st *NodeState, dualStack bool) (string, error) {
 	switch {
 	case st.KubeletNodeIP != "":
 		return st.KubeletNodeIP, nil
 	case st.NodeIP != "" && !dualStack:
-		// The primary and the kubelet address are the same on a single-stack
-		// node, so older state that records only the primary is complete there.
+		// On a single-stack node the primary is the kubelet address.
 		return st.NodeIP, nil
 	}
 	need := ""

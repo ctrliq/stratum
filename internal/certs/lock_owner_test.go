@@ -18,13 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// These regression tests drive the migration lock through the real client-go HTTP
-// transport, because the failures they pin live there: client-go retries a DELETE
-// answered with 503 + Retry-After, and a context can expire between the API
-// server's response and the caller reading it. Both are modeled below as
-// reproductions against a real transport.
-
-// lockServer is an API server holding one lock Secret, with UID preconditions.
+// An API server for one lock Secret; the tests drive it over client-go's retrying transport.
 type lockServer struct {
 	mu      sync.Mutex
 	present bool
@@ -33,9 +27,7 @@ type lockServer struct {
 	seq     int
 	deletes int
 
-	postCommitsThen int // if set, POST stores the lock and then answers with this status
-	// successorAfterFirstDelete: the first DELETE commits, another migration takes
-	// the freed name, and a proxy answers 503 + Retry-After for that DELETE.
+	postCommitsThen           int // if set, POST stores the lock and then answers with this status
 	successorAfterFirstDelete bool
 }
 
@@ -132,9 +124,6 @@ func (l *lockServer) state() (present bool, token string, deletes int) {
 	return l.present, l.token, l.deletes
 }
 
-// A DELETE that committed, got a retryable 503, and is retried must not remove
-// the lock a successor took in between: the release and the orphan removal both
-// delete by UID.
 func TestLockDeleteNeverRemovesASuccessorAfterARetriedDelete(t *testing.T) {
 	for _, mode := range []string{"release", "orphan"} {
 		t.Run(mode, func(t *testing.T) {
@@ -180,9 +169,6 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// A Create that committed and answered AlreadyExists, with the caller's context
-// expiring before the owner lookup, must not leave our lock behind and must
-// report the cancellation rather than proceed as the holder.
 func TestAcquireMigrationLockReconcilesAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -208,7 +194,6 @@ func TestAcquireMigrationLockReconcilesAfterCancellation(t *testing.T) {
 	}
 }
 
-// The same lookup failure against someone else's lock must leave it alone.
 func TestAcquireMigrationLockKeepsAForeignLockWhenTheLookupFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

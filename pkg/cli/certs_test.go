@@ -33,11 +33,7 @@ import (
 
 const testCertKey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-// freshPKI redirects every path `certs rotate` reads onto a temp tree and
-// generates the PKI `stratum up` leaves — the setup of internal/certs' prep
-// helper, inlined because it lives in another package, with the config paths
-// (node state, netconfig, the supervisor socket) redirected too so the command
-// cannot touch the host's own /var/lib/stratum. Returns the PKI dir.
+// Redirects every path `certs rotate` reads onto a temp tree, host state included.
 func freshPKI(t *testing.T) string {
 	t.Helper()
 	base := t.TempDir()
@@ -56,8 +52,7 @@ func freshPKI(t *testing.T) string {
 	return base
 }
 
-// pkiContents records every file under the PKI dir by content, so a test can
-// prove a command left the certificates untouched.
+// Records every PKI file by content, so a test can prove certificates untouched.
 func pkiContents(t *testing.T) map[string]string {
 	t.Helper()
 	got := map[string]string{}
@@ -80,9 +75,7 @@ func pkiContents(t *testing.T) map[string]string {
 	return got
 }
 
-// TestRunRekeySharedHandsOverByFileNeverStdout pins the property:
-// a successful re-key writes the new key to a file and prints only the PATH — the
-// raw certificate-key must never reach stdout.
+// A successful re-key prints only the key-file path; the raw key never reaches stdout.
 func TestRunRekeySharedHandsOverByFileNeverStdout(t *testing.T) {
 	var out bytes.Buffer
 	var uploaded string
@@ -103,9 +96,7 @@ func TestRunRekeySharedHandsOverByFileNeverStdout(t *testing.T) {
 	}
 }
 
-// TestRunRekeySharedFailsClosedBeforeHandover: if the re-encrypt fails, the key
-// file is never written and nothing is printed — no dangling key, no half-done
-// message an operator might act on.
+// A failed re-encrypt writes no key file and prints nothing.
 func TestRunRekeySharedFailsClosedBeforeHandover(t *testing.T) {
 	var out bytes.Buffer
 	boom := errors.New("apiserver down")
@@ -127,9 +118,7 @@ func TestRunRekeySharedFailsClosedBeforeHandover(t *testing.T) {
 	}
 }
 
-// TestCertsRotateRekeySharedGating pins the two guard branches that return before
-// any cluster call: --rekey-shared needs --yes, and rejects --if-expiring (a
-// leaf-rotation-only flag).
+// --rekey-shared needs --yes and rejects --if-expiring before any cluster call.
 func TestCertsRotateRekeySharedGating(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -154,14 +143,7 @@ func TestCertsRotateRekeySharedGating(t *testing.T) {
 	}
 }
 
-// TestCertsRotateRekeySharedSurfacesTheRekeyGuardRefusal pins the delegation:
-// --rekey-shared reads no rotation state itself, it returns the one re-key
-// entry point's refusal — behind the rekeyGuard seam, certs.GuardRekey in
-// production — prefixed so the operator can tell which command asked. The
-// guard's two legs (node-local mid-rotation phase, cluster-wide
-// stratum-carotate Secret) are pinned in internal/certs/rekey_test.go, and
-// TestRekeySharedRefusesWithARotationStagedOnDisk keeps the production
-// node-local leg end-to-end through the real command.
+// The command surfaces the rekeyGuard seam's refusal, named for the command that asked.
 func TestCertsRotateRekeySharedSurfacesTheRekeyGuardRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -193,11 +175,7 @@ func TestCertsRotateRekeySharedSurfacesTheRekeyGuardRefusal(t *testing.T) {
 	}
 }
 
-// TestCertsRotateRekeySharedRefusesAnUnregisteredProfile: a re-key republishes
-// the shared bundle with the registered profiles' secrets, so on a cis
-// control plane run by an engine binary it would publish a bundle without the
-// at-rest encryption key. The command resolves the node's profile before the
-// fence, the guard and the mint, and refuses with the cis note.
+// A re-key on cis run by a binary that does not register it drops the at-rest encryption key.
 func TestCertsRotateRekeySharedRefusesAnUnregisteredProfile(t *testing.T) {
 	registerProfilesForTest(t)
 	oldConf := version.K8sConfDir
@@ -236,17 +214,7 @@ func TestCertsRotateRekeySharedRefusesAnUnregisteredProfile(t *testing.T) {
 	}
 }
 
-// TestTokenCreateControlPlaneRefusesMidRotation pins the mid-rotation re-key
-// refusal: `token create --control-plane` mints a new certificate-key and
-// re-encrypts stratum-certs, so it consults the same re-key entry point `certs
-// rotate --rekey-shared` does and refuses while a CA rotation is staged or
-// mid-phase — a token minted then locks the rotation's follower control planes
-// out of the bundle. The refusal precedes the mint, which also republishes
-// cluster-info, so no credential or trust publication is changed. A worker
-// token re-keys nothing, but its mint still republishes cluster-info and the
-// kubelet client CA from local PKI, so it consults the guard too: a worker mint
-// from a controller the rotation has not reached would replace the published
-// old‖new trust with old-only and strand every joiner pinned to the staged CA.
+// A token mint refuses while a CA rotation is staged or mid-phase, before any publication.
 func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 	refusal := errors.New("a cluster-wide CA rotation or etcd-CA migration is staging shared material (the stratum-carotate Secret exists)")
 
@@ -280,12 +248,7 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 		}
 	})
 
-	// A worker mint DOES publish trust: token.Create republishes
-	// cluster-info and the kubelet client CA from
-	// local PKI for a worker token too, so a worker mint on a controller the
-	// rotation has not reached would roll the published old‖new trust back to
-	// old-only. The guard refuses before the mint, and a refusal revokes
-	// nothing — no token exists.
+	// A worker mint republishes trust too, so it consults the guard; a refusal revokes nothing.
 	t.Run("a worker token consults the guard too", func(t *testing.T) {
 		var out bytes.Buffer
 		var revoked []string
@@ -316,8 +279,7 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 		}
 	})
 
-	// The guard is a refusal gate, not a worker prohibition: with the cluster
-	// idle, a worker mint proceeds and prints the join line.
+	// The guard is a refusal gate, not a worker prohibition.
 	t.Run("a worker token mints when the guard passes", func(t *testing.T) {
 		var out bytes.Buffer
 		var revoked []string
@@ -336,12 +298,7 @@ func TestTokenCreateControlPlaneRefusesMidRotation(t *testing.T) {
 	})
 }
 
-// TestCertsRotate_SaysWhenNothingIsCloseToExpiry pins the conditional no-op
-// path: with fresh PKI, `--if-expiring=30` prints the "nothing to rotate"
-// line and returns nil. certs.Rotate returns the verdict as data beside the
-// error, and the CLI prints the line from it — the printed line and the
-// untouched PKI tree stay the operator-facing half of the contract
-// (TestCertsRotate_NoOpVerdictTravelsAsData pins the data half).
+// With fresh PKI, --if-expiring=30 prints the nothing-to-rotate line and returns nil.
 func TestCertsRotate_SaysWhenNothingIsCloseToExpiry(t *testing.T) {
 	freshPKI(t)
 	before := pkiContents(t)
@@ -364,14 +321,7 @@ func TestCertsRotate_SaysWhenNothingIsCloseToExpiry(t *testing.T) {
 	}
 }
 
-// TestCertsRotate_NoOpVerdictTravelsAsData pins the caller side of the rotate
-// outcome contract on this package: the verdict `stratum certs rotate
-// --if-expiring` reports (the pin above holds the printed "nothing to rotate"
-// line) must also exist as data on the operation itself, so a caller — the MCP
-// tool especially — can tell nothing-to-rotate from a rotation without reading
-// the progress text. Same fixture as the printed-line pin, so the two halves
-// of the contract stay one behavior. The no-op path returns before the
-// kubeconfig rewrite, so version.AdminConf is never read.
+// The verdict also travels as data for the MCP tool; the no-op returns before the AdminConf read.
 func TestCertsRotate_NoOpVerdictTravelsAsData(t *testing.T) {
 	freshPKI(t)
 	before := pkiContents(t)
@@ -388,14 +338,7 @@ func TestCertsRotate_NoOpVerdictTravelsAsData(t *testing.T) {
 	}
 }
 
-// TestRekeySharedRefusesWithARotationStagedOnDisk pins the node-local leg of
-// the --rekey-shared guard through the production phase read: rotationPhase
-// and carotateKeyStaged keep their production values, and a rotation staged on
-// disk (pki.RotateCAMaterial, phase trust-new) is what makes the command
-// refuse. Re-keying then would strand the staged key the rotation's follower
-// jobs decrypt stratum-certs with. The node-local phase read runs before the
-// cluster-wide stratum-carotate check in newCertsRotateCommand, so the
-// refusal also proves no apiserver was reached.
+// The production phase read precedes the cluster-wide check, so the refusal reaches no apiserver.
 func TestRekeySharedRefusesWithARotationStagedOnDisk(t *testing.T) {
 	oldFence := rekeyMaintenanceFence
 	rekeyMaintenanceFence = func() (*k8sutil.MaintenanceLease, error) { return &k8sutil.MaintenanceLease{Release: func() {}}, nil }
@@ -446,9 +389,7 @@ func TestRunRekeySharedReportsCompletedRekeyOnOutputFailure(t *testing.T) {
 	}
 }
 
-// TestLeftoverCarotateWarning pins the `certs check` leftover-rotation flag:
-// it fires only when this node is idle and the Secret exists, and a failed
-// lookup is reported.
+// Fires only when this node is idle and the Secret exists; a failed lookup is reported.
 func TestLeftoverCarotateWarning(t *testing.T) {
 	staged := func(present bool, err error) func() (bool, error) {
 		return func() (bool, error) { return present, err }
@@ -473,12 +414,7 @@ func TestLeftoverCarotateWarning(t *testing.T) {
 	}
 }
 
-// TestRotateCAWarnsAboutWorkloadRestart: the --cluster and --phase paths each
-// print their own restart warning, and the two refusals the CLI makes itself
-// (missing --yes, --cluster with --phase) print neither. Refusals from
-// internal/certs (an unknown phase, a worker or mid-rotation node) happen after
-// the warning has printed, and are not covered here. The --rollback path calls
-// certs.RollbackCA directly and is not covered either.
+// The --cluster and --phase paths print their own warnings; CLI refusals print neither.
 func TestRotateCAWarnsAboutWorkloadRestart(t *testing.T) {
 	origCluster, origPhase := rotateCACluster, rotateCA
 	t.Cleanup(func() { rotateCACluster, rotateCA = origCluster, origPhase })
@@ -517,8 +453,7 @@ func TestRotateCAWarnsAboutWorkloadRestart(t *testing.T) {
 			if tc.want != "" && !strings.HasPrefix(got, tc.want) {
 				t.Fatalf("output:\n%s\nwant prefix:\n%s", got, tc.want)
 			}
-			// The new rotation order: restart before sign-new, nothing after for a
-			// client that re-reads its token; the residual is cached tokens and legacy Secrets.
+			// Restart happens before sign-new, nothing after; the residual is caches and legacy Secrets.
 			flat := strings.Join(strings.Fields(tc.want), " ") // the wrapping is not under test
 			for _, w := range tc.mention {
 				if !strings.Contains(flat, w) {
@@ -542,10 +477,7 @@ func TestRotateCAWarnsAboutWorkloadRestart(t *testing.T) {
 	}
 }
 
-// TestRotateCAWarningsAreTheOperations pins provenance of the restart
-// warnings: the CLI prints the warnings internal/certs owns, not its own copy,
-// so the MCP tool returns the same text and the two front ends cannot drift.
-// The operations are stubbed, so the printed warning is the whole output.
+// The CLI prints the warnings internal/certs owns, so both front ends stay identical.
 func TestRotateCAWarningsAreTheOperations(t *testing.T) {
 	origCluster, origPhase := rotateCACluster, rotateCA
 	t.Cleanup(func() { rotateCACluster, rotateCA = origCluster, origPhase })
@@ -576,8 +508,7 @@ func TestRotateCAWarningsAreTheOperations(t *testing.T) {
 	}
 }
 
-// TestRotateCAWorkloadFlags: --restart-workloads and --skip-workload-check reach
-// the options, and the combinations that make no sense are refused before anything runs.
+// The flags reach the options; nonsensical combinations are refused before anything runs.
 func TestRotateCAWorkloadFlags(t *testing.T) {
 	origCluster, origPhase := rotateCACluster, rotateCA
 	t.Cleanup(func() { rotateCACluster, rotateCA = origCluster, origPhase })
@@ -600,8 +531,7 @@ func TestRotateCAWorkloadFlags(t *testing.T) {
 		{"skip tokens without --force, phase", []string{"--phase=finalize", "--yes", "--skip-token-check"}, certs.CARotateOptions{}, "goes with --force"},
 		// What --cluster's node Jobs pass: no --force, and not the operator's flag.
 		{"tokens checked", []string{"--phase=finalize", "--yes", "--tokens-checked"}, certs.CARotateOptions{Phase: "finalize", SkipTokenCheck: true}, ""},
-		// Not an operator's flag: alone or with --cluster it would skip the token
-		// gate without --force.
+		// Not an operator's flag: alone or with --cluster it would skip the token gate without --force.
 		{"tokens checked with --cluster", []string{"--cluster", "--yes", "--tokens-checked"}, certs.CARotateOptions{}, "goes with --phase"},
 		{"tokens checked with no phase", []string{"--yes", "--tokens-checked"}, certs.CARotateOptions{}, "goes with --phase"},
 		{"tokens checked with --cluster and --force", []string{"--cluster", "--yes", "--force", "--tokens-checked"}, certs.CARotateOptions{}, "goes with --phase"},
@@ -632,8 +562,7 @@ func TestRotateCAWorkloadFlags(t *testing.T) {
 	}
 }
 
-// --scan-tokens is the node scan Job: its answer is its exit status, 10 for a
-// node with a token signed by the old key, as `upgrade --check`'s is.
+// The scan's answer is its exit status, as `upgrade --check`'s is.
 func TestRotateCAScanTokens(t *testing.T) {
 	orig := scanNodeTokens
 	t.Cleanup(func() { scanNodeTokens = orig })
@@ -679,12 +608,7 @@ func TestRotateCAScanTokens(t *testing.T) {
 	}
 }
 
-// stageCertsCheckHost points the paths `stratum certs check` reads at a temp
-// host view — a generated PKI, the node state that pins the node IP, and no
-// admin.conf — so the command runs offline: the cluster-facing reads (the
-// shared-cert key's age, the leftover stratum-carotate flag) fail fast on
-// the missing kubeconfig and are reported, not fatal. Same shape as
-// rotationEnv in internal/cluster/run_test.go.
+// Points the paths `certs check` reads at a temp host view, so the command runs offline.
 func stageCertsCheckHost(t *testing.T) {
 	t.Helper()
 	origPKI, origKC, origConf, origAdmin, origNet, origSock :=
@@ -716,14 +640,7 @@ func stageCertsCheckHost(t *testing.T) {
 	}
 }
 
-// TestCertCheckReportsTheLastRenewalAttemptAndItsResult checks renewal
-// visibility on the reading side: the renewal loop records each
-// attempt under the node's state area, and `stratum certs check` is where an
-// operator looks — so it must print the LAST attempt's time and its result.
-// A loop whose last attempt failed is a node drifting toward expired
-// certificates, and one with no attempt recorded is a dead loop that looks
-// fine today. The record is planted through its own save path (the same one
-// the loop writes), and read through the real command.
+// `certs check` must print the last renewal attempt's time and its result.
 func TestCertCheckReportsTheLastRenewalAttemptAndItsResult(t *testing.T) {
 	at := time.Date(2026, 3, 4, 5, 6, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -744,9 +661,7 @@ func TestCertCheckReportsTheLastRenewalAttemptAndItsResult(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// The one cluster-facing seam the command already has, stubbed
-			// off; the shared-cert read that stays real fails fast on the
-			// missing admin.conf and is reported, not fatal.
+			// The one cluster-facing seam stubbed off; the shared-cert read reports, not fatal.
 			oldStaged := carotateKeyStaged
 			t.Cleanup(func() { carotateKeyStaged = oldStaged })
 			carotateKeyStaged = func() (bool, error) { return false, nil }
@@ -822,8 +737,7 @@ func TestClusterCertCommandsSignalExitPreservesFailuresAndGuidance(t *testing.T)
 		joined := os.Getenv("STRATUM_CERT_CLI_FAILURE") == "1"
 		const guidance = "halted in trust-new; run stratum certs check; --rollback --yes"
 		run := func(ctx context.Context) error {
-			// API and maintenance calls derive child contexts. They return the
-			// plain cancellation while the operation retains its signal cause.
+			// Child contexts return plain cancellation while the operation keeps its signal cause.
 			child, cancel := context.WithTimeout(ctx, time.Hour)
 			defer cancel()
 			if err := syscall.Kill(syscall.Getpid(), syscall.Signal(n)); err != nil {

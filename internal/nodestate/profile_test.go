@@ -8,9 +8,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A state written by a binary that predates Profile carries only cis: true;
-// it reads as profile cis, and a save writes both spellings so a binary of
-// either generation reads the profile back.
+// A pre-Profile state carries only cis: true; a save writes both spellings.
 func TestProfileNameReadsTheLegacyCISField(t *testing.T) {
 	old := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()

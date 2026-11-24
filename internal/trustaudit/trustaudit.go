@@ -1,4 +1,4 @@
-// Package trustaudit evaluates this node's etcd and kubelet client trust against the live components.
+// Package trustaudit evaluates etcd and kubelet client trust against the live components.
 package trustaudit
 
 import (
@@ -28,15 +28,13 @@ import (
 type Result int
 
 const (
-	// Pass means the audit verified the property.
 	Pass Result = iota + 1
-	// Fail means the audit found the property violated, or could not read what it must.
+	// Fail covers reads that went wrong, not just a violated property; Exception is unverified.
 	Fail
 	// Exception means the audit could not verify the property and reports it unverified.
 	Exception
 )
 
-// Verdict is an audit's result and the detail an operator reads.
 type Verdict struct {
 	Result Result
 	Detail string
@@ -58,7 +56,7 @@ func fileMissing(path string) bool {
 
 var etcdProbe = pki.EtcdRejectsRootSignedClient
 
-// EtcdTrust reports whether this node's running etcd refuses a client certificate the cluster root signs.
+// EtcdTrust reports whether the running etcd refuses a root-signed client certificate.
 func EtcdTrust(ctx context.Context) Verdict {
 	if v, ok := cancelled(ctx); ok {
 		return v
@@ -126,7 +124,7 @@ type kubeletConf struct {
 	} `json:"authentication"`
 }
 
-// KubeletClientTrust reports whether this node's kubelet trusts a client CA distinct from the cluster root.
+// KubeletClientTrust reports whether the kubelet trusts a client CA other than the cluster root.
 func KubeletClientTrust() Verdict {
 	confPath := runtime.KubeletConfigPath()
 	if fileMissing(confPath) {
@@ -181,7 +179,7 @@ func subjects(cs []*x509.Certificate) string {
 
 var kubeletProbe = pki.ProbeKubeletClientAuth
 
-// KubeletsRefuseRoot reports whether every node's running kubelet refuses a root-signed client certificate and accepts apiserver-kubelet-client.
+// Every kubelet must refuse a root-signed client cert and accept apiserver-kubelet-client.
 func KubeletsRefuseRoot(ctx context.Context, cs kubernetes.Interface) Verdict {
 	root, err := pki.RootSignedClientCert()
 	if err != nil {

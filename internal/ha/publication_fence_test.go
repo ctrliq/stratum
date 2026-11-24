@@ -17,7 +17,6 @@ import (
 )
 
 func TestUploadRefusesLeaseLostDuringPublicationReads(t *testing.T) {
-	// Generate PKI once; each scenario replaces only the Secret and API reactors.
 	cs := uploadFixture(t)
 	secrets := cs.CoreV1().Secrets("kube-system")
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
@@ -43,8 +42,7 @@ func TestUploadRefusesLeaseLostDuringPublicationReads(t *testing.T) {
 					a := action.(k8stesting.GetAction)
 					if a.GetName() == certsSecret {
 						reads++
-						// First GET chooses create/update; the second reads the object to
-						// update. A conflict forces a third GET before another write.
+						// the first GET chooses create or update; a conflict forces another GET
 						if scenario == "create" || scenario == "update" && reads == 2 || scenario == "conflict retry" && reads == 3 {
 							lost = true
 						}

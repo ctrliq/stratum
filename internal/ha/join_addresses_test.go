@@ -41,8 +41,7 @@ func joinAddressServer(t *testing.T, handler http.HandlerFunc) *httptest.Server 
 	version.KubeconfigDir = t.TempDir()
 	version.AdminConf = filepath.Join(version.KubeconfigDir, "admin.conf")
 	t.Cleanup(func() { version.KubeconfigDir, version.AdminConf = oldKube, oldAdmin })
-	// The normal kubeconfigs already point at the proposed VIP. It is not
-	// serving here, so only a read through the original join server works.
+	// the normal kubeconfigs point at the proposed VIP, which does not serve here
 	conf := clientcmdapi.Config{
 		CurrentContext: "join",
 		Clusters: map[string]*clientcmdapi.Cluster{"cluster": {
@@ -63,7 +62,7 @@ func TestJoinControllerAddressesIncludeBothFamilies(t *testing.T) {
 			{Type: corev1.NodeInternalIP, Address: "10.0.0.11"}, {Type: corev1.NodeInternalIP, Address: "fd00::11"},
 			{Type: corev1.NodeExternalIP, Address: "198.51.100.11"}, {Type: corev1.NodeHostName, Address: "cp1"},
 		}}},
-		// The label may not have landed yet; the etcd primary identifies cp2.
+		// the etcd primary identifies cp2; its control-plane label may not have landed yet
 		{ObjectMeta: metav1.ObjectMeta{Name: "cp2"}, Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
 			{Type: corev1.NodeInternalIP, Address: "10.0.0.12"}, {Type: corev1.NodeInternalIP, Address: "fd00::12"},
 		}}},
@@ -94,8 +93,6 @@ func TestJoinControllerAddressesIncludeBothFamilies(t *testing.T) {
 }
 
 func TestJoinControllerAddressesRefuseIncompleteInventory(t *testing.T) {
-	// The budget is the wait, not the answer: a list that stays incomplete to
-	// the end still refuses, with the message that names the re-run.
 	old := controllerAddressPollBudget
 	controllerAddressPollBudget = 2 * time.Second
 	t.Cleanup(func() { controllerAddressPollBudget = old })
@@ -111,13 +108,6 @@ func TestJoinControllerAddressesRefuseIncompleteInventory(t *testing.T) {
 	}
 }
 
-// TestJoinControllerAddressesWaitsForALaggingRegistration is the regression
-// for the CI inttest failures: a joining third controller starts the moment
-// the second's etcd membership lands, and its kubelet registers the node
-// object seconds later, so the first successful list is regularly incomplete.
-// The read must keep polling until the inventory is complete — one successful
-// list before the registration must not refuse a join the cluster is ready
-// for.
 func TestJoinControllerAddressesWaitsForALaggingRegistration(t *testing.T) {
 	old := controllerAddressPollBudget
 	controllerAddressPollBudget = 30 * time.Second
@@ -130,8 +120,6 @@ func TestJoinControllerAddressesWaitsForALaggingRegistration(t *testing.T) {
 	}}
 	srv := joinAddressServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		if calls.Add(1) == 1 {
-			// The inventory the join sees first: cp2's node object has not
-			// been registered yet.
 			_ = json.NewEncoder(w).Encode(nodes)
 			return
 		}
@@ -163,11 +151,6 @@ func TestJoinControllerAddressesPreserveAPIErrors(t *testing.T) {
 	}
 }
 
-// TestJoinControllerAddressesPreservesAFatalAPIErrorAfterAList pins the
-// classification: a successful-but-incomplete list followed by a fatal API
-// error reports the API error, not the registration refusal — the poll ended
-// on the error, so "wait for the node registration" would be advice the
-// error refutes.
 func TestJoinControllerAddressesPreservesAFatalAPIErrorAfterAList(t *testing.T) {
 	var calls atomic.Int32
 	srv := joinAddressServer(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -231,8 +214,7 @@ func TestJoinControllerAddressesWaitForVIPFailover(t *testing.T) {
 	}
 }
 
-// A context deadline can pass before the runtime schedules its cancellation
-// timer. The real client limiter then refuses a reservation while Err is nil.
+// the client limiter can refuse a reservation before the context timer delivers expiry
 type deferredAddressDeadline struct {
 	context.Context
 	deadline time.Time

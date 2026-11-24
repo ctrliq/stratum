@@ -6,14 +6,7 @@ import (
 	"testing"
 )
 
-// TestNodeFileOwnersCoverTheWriterPackages pins the record's coverage: the
-// packages that write node files each own at least one. The write guard
-// (tools/nodefilewrites) derives its package set from these values, so a
-// package missing here writes outside the rule — and its raw writes pass
-// make lint unseen. internal/host and internal/cluster are in the set for
-// the same reason the rest are: the host's sysctl and modules-load files,
-// the Cilium settings record and the component .args files are node files,
-// so their raw writes must fail make lint like every other owner's.
+// Pins that every node-file writer package owns at least one entry.
 func TestNodeFileOwnersCoverTheWriterPackages(t *testing.T) {
 	writerPkgs := []string{
 		"internal/pki",
@@ -41,12 +34,7 @@ func TestNodeFileOwnersCoverTheWriterPackages(t *testing.T) {
 	}
 }
 
-// TestNodeFileOwnersNameTheRuntimeConfigs pins the runtime half of the
-// record: kubelet.conf and containerd.toml are start-critical — a torn one
-// stops the kubelet or every pod sandbox — and the confinement record and
-// the CoreDNS upstream file sit beside them under the roots, so all four
-// belong to the one package that writes them, internal/runtime, and that
-// package sits in the write guard's scanned set.
+// Pins internal/runtime's start-critical node files in the record.
 func TestNodeFileOwnersNameTheRuntimeConfigs(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(K8sConfDir, "kubelet.conf"),
@@ -61,13 +49,7 @@ func TestNodeFileOwnersNameTheRuntimeConfigs(t *testing.T) {
 	}
 }
 
-// TestNodeFileOwnersNameTheClusterNodeFiles pins internal/cluster's node
-// files in the record. The Cilium settings record rides the stratum-certs
-// channel to a joining control plane, which refuses to join against settings
-// it never ran — a torn one is a refused join, not a recovered one — and the
-// component .args files under the config directory are the on-disk truth
-// of each component's rendered argv. Both are written by internal/cluster, so
-// the entries name it, and the write guard scans the package through them.
+// Pins internal/cluster's node files in the record.
 func TestNodeFileOwnersNameTheClusterNodeFiles(t *testing.T) {
 	for _, path := range []string{
 		CiliumSettingsPath,
@@ -79,13 +61,7 @@ func TestNodeFileOwnersNameTheClusterNodeFiles(t *testing.T) {
 	}
 }
 
-// TestTheSysctlAndModulesLoadPathsLiveBesideSystemdUnitPath pins the one home
-// of the three host-side paths bring-up writes outside the roots:
-// version declares them beside SystemdUnitPath (a host path outside the three
-// roots never moves with them), and the owning-package record is keyed
-// through these variables — a second spelling of the paths, in host or in the
-// record, would let the writer, the sysctl loader and uninstall's delete list
-// drift apart.
+// Pins the host sysctl and modules-load paths as static /etc paths.
 func TestTheSysctlAndModulesLoadPathsLiveBesideSystemdUnitPath(t *testing.T) {
 	for _, tt := range []struct {
 		name, got, want string
@@ -118,10 +94,7 @@ func TestTheSysctlAndModulesLoadPathsLiveBesideSystemdUnitPath(t *testing.T) {
 	}
 }
 
-// TestNodeFileOwnersValuesArePackagePaths keeps the record honest: an owning
-// package is a package directory under internal/, the form the write guard
-// matches a file's directory against, so a value in any other spelling owns
-// nothing.
+// Owning packages must be internal/ directory paths the write guard can match.
 func TestNodeFileOwnersValuesArePackagePaths(t *testing.T) {
 	for path, pkg := range NodeFileOwners {
 		if !strings.HasPrefix(pkg, "internal/") || strings.HasSuffix(pkg, "/") || strings.Contains(pkg, "//") {
@@ -133,11 +106,7 @@ func TestNodeFileOwnersValuesArePackagePaths(t *testing.T) {
 	}
 }
 
-// setRoots redirects the three roots through SetRoots for the test and
-// restores the previous roots — and with them every derived path — with
-// t.Cleanup. This is the one redirection helper new tests should reach for: a
-// direct assignment of a root var leaves the derived paths (the lock paths,
-// ControllerManagerManifest, ...) pointing at the old root.
+// Redirects the three roots for the test and restores them and every derived path on cleanup.
 func setRoots(t *testing.T, dataDir, confDir, runDir string) {
 	t.Helper()
 	data, conf, run := DataDir, ConfDir, RunDir
@@ -145,13 +114,7 @@ func setRoots(t *testing.T, dataDir, confDir, runDir string) {
 	t.Cleanup(func() { SetRoots(data, conf, run) })
 }
 
-// TestSetRootsRecomputesEveryDerivedPath: one SetRoots(DataDir, ConfDir,
-// RunDir) call reassigns the three roots and recomputes every path derived
-// from them. The table names each derived var and restates its derivation, so
-// a var that stops following its root — above all the ones the var block
-// derives once at init (StartLockPath, NodeUpgradeLockPath,
-// ControllerManagerManifest), which a direct root reassignment leaves stale —
-// fails here. The wants are the shipped layout under the new roots.
+// Pins every derived path's recomputation across a SetRoots redirect.
 func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 	data, conf, run := t.TempDir(), t.TempDir(), t.TempDir()
 	setRoots(t, data, conf, run)
@@ -164,13 +127,10 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 		{"DataDir", DataDir, data},
 		{"ConfDir", ConfDir, conf},
 		{"RunDir", RunDir, run},
-		// The init-time derivations the brief names: derived from RunDir and
-		// K8sConfDir once at package init before this task.
 		{"StartLockPath", StartLockPath, run + "-start.lock"},
 		{"NodeUpgradeLockPath", NodeUpgradeLockPath, run + "-upgrade.lock"},
 		{"ControllerManagerManifest", ControllerManagerManifest,
 			filepath.Join(data, "config", "manifests", "kube-controller-manager.yaml")},
-		// Everything else derived from the three roots.
 		{"PKIDir", PKIDir, filepath.Join(data, "pki")},
 		{"KubeconfigDir", KubeconfigDir, filepath.Join(data, "kubeconfig")},
 		{"UpgradeStageDir", UpgradeStageDir, filepath.Join(data, "upgrade")},
@@ -194,12 +154,8 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 		{"ImagesDropInDir", ImagesDropInDir, filepath.Join(conf, "images.d")},
 		{"NetConfigPath", NetConfigPath, filepath.Join(data, "pki", "netconfig")},
 		{"CiliumSettingsPath", CiliumSettingsPath, filepath.Join(data, "pki", "cilium.json")},
-		// Moved here from internal/assets and internal/upgrade; the payload
-		// stage root IS the data root, and the upgrade payload stages under it.
 		{"DefaultRoot", DefaultRoot, data},
 		{"StageDir", StageDir, filepath.Join(data, "upgrade", "staged")},
-		// The call-time resolvers follow the config directory on every call;
-		// they must answer the redirected one too.
 		{"AdmissionWebhookConfig()", AdmissionWebhookConfig(), filepath.Join(data, "config", "admission-webhook.yaml")},
 		{"WebhookClientKubeconfig()", WebhookClientKubeconfig(), filepath.Join(data, "config", "webhook-client.kubeconfig")},
 	} {
@@ -208,9 +164,6 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 		}
 	}
 
-	// The host-side paths outside the three roots must NOT move with them:
-	// they are not stratum's data, and uninstall removes them as its own
-	// special targets rather than with the data dir.
 	for _, tt := range []struct {
 		name, got, want string
 	}{
@@ -227,11 +180,7 @@ func TestSetRootsRecomputesEveryDerivedPath(t *testing.T) {
 	}
 }
 
-// TestSetRootsRedirectRestoresThePreviousRoots: the helper's t.Cleanup puts
-// the three roots back AND, with them, every derived path — the init-time
-// derivations included. A restore that moved only the roots would leave the
-// derived paths pointing into the temp dir for every test that runs after this
-// one in the same binary.
+// The setRoots helper must restore the derived paths along with the roots.
 func TestSetRootsRedirectRestoresThePreviousRoots(t *testing.T) {
 	data, conf, run := DataDir, ConfDir, RunDir
 

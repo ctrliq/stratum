@@ -11,13 +11,7 @@ import (
 	"time"
 )
 
-// TestBackupStagingENOENTStopsTheInstall: only a missing live file at open may
-// skip the backup. An ENOENT while staging the backup (its temp file gone
-// before the chmod) is a failed backup, and installing over the live binary
-// then would leave nothing to roll back to.
-//
-// The live path is a FIFO so the backup copy blocks reading it, which leaves
-// the test time to remove the copy's temp file mid-flight.
+// Only a missing live file at open may skip the backup; the copy's temp file is removed mid-flight.
 func TestBackupStagingENOENTStopsTheInstall(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "stratum"), filepath.Join(dir, "next")

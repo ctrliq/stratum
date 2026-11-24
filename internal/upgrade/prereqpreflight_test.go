@@ -1,11 +1,5 @@
 package upgrade
 
-// The cluster-wide prerequisite pass: before the rollout cordons or drains
-// anything, every Ready node runs the staged binary's --check, and the run
-// refuses, naming every failing node at once, when any would take the upgrade
-// without container-selinux. The tests drive UpgradeCluster through the
-// package's seams (see duallease_test.go for the fixture); no Job ever runs.
-
 import (
 	"context"
 	"fmt"
@@ -21,8 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// fiveNodesFixture is two Ready control planes and three Ready workers, all
-// behind the target, the smallest HA cluster that passes preflight.
 func fiveNodesFixture() []runtime.Object {
 	return []runtime.Object{
 		upgradeNodeFixture("cp1", true, "10.0.0.9"),
@@ -33,9 +25,6 @@ func fiveNodesFixture() []runtime.Object {
 	}
 }
 
-// answerLogsWithExitCode answers the prerequisite pass's log-reading Job with
-// whatever runExitCode answers at the time, and an empty log, so a test that
-// answers through runExitCode answers the pass too.
 func answerLogsWithExitCode(t *testing.T) {
 	t.Helper()
 	old := runExitCodeLogs
@@ -46,8 +35,6 @@ func answerLogsWithExitCode(t *testing.T) {
 	t.Cleanup(func() { runExitCodeLogs = old })
 }
 
-// answerPerNode answers the prerequisite check per node: ExitPrereqMissing
-// for each node in refusing, 10 for every other node, recording what it ran.
 func answerPerNode(t *testing.T, refusing ...string) *[]nodejob.Spec {
 	t.Helper()
 	answerLogsWithExitCode(t)
@@ -64,12 +51,6 @@ func answerPerNode(t *testing.T, refusing ...string) *[]nodejob.Spec {
 	return &ran
 }
 
-// The pass runs before any node is touched: a node whose own upgrade would
-// refuse a missing container-selinux stops the rollout with every refusing
-// node named, the cluster without a cordon patch or an upgrade Job. The
-// refusing nodes span the whole ordered list, first control plane and last
-// worker, so a pass that stopped at the first refusal is caught naming only
-// one of them.
 func TestUpgradeClusterRefusesBeforeAnyNodeOnMissingSELinuxPrereq(t *testing.T) {
 	cs := fake.NewSimpleClientset(fiveNodesFixture()...)
 	fastOrchestrator(t, nil)
@@ -118,9 +99,6 @@ func TestUpgradeClusterRefusesBeforeAnyNodeOnMissingSELinuxPrereq(t *testing.T) 
 	}
 }
 
-// Nodes that pass (current or needing the upgrade) let the run through; a
-// NotReady node cannot run the check, so it is warned about and left to its
-// own upgrade's refusal; a check that answers nothing at all stops the run.
 func TestPreflightNodePrereqsSkipsNotReadyAndPassesCurrent(t *testing.T) {
 	answerLogsWithExitCode(t)
 	nodes := []Node{
@@ -164,9 +142,7 @@ func TestPreflightNodePrereqsSkipsNotReadyAndPassesCurrent(t *testing.T) {
 		}
 		t.Cleanup(func() { runExitCode = old })
 
-		// Exit 1 is the build check's refusal (a staged binary that is not
-		// the pinned one, another upgrade on the node), not a missing
-		// package, so it is worded as the build check words it.
+		// Exit 1 is the build check's refusal, not a missing package.
 		err := preflightNodePrereqs(context.Background(), io.Discard, nil, nodes[:1], ClusterOptions{})
 		want := "check w1's stratum build: the check exited 1 (logs: kubectl -n kube-system logs job/stratum-upgrade-w1); nothing was cordoned or drained"
 		if err == nil || err.Error() != want {
@@ -175,9 +151,6 @@ func TestPreflightNodePrereqsSkipsNotReadyAndPassesCurrent(t *testing.T) {
 	})
 }
 
-// A check that could not ask its question lets the node through with only a
-// WARN line in its Job's log. The pass relays that line, naming the node,
-// before the rollout drains anything, and leaves out the log's other lines.
 func TestPreflightNodePrereqsRelaysTheCheckWarnings(t *testing.T) {
 	old := runExitCodeLogs
 	runExitCodeLogs = func(_ context.Context, _ kubernetes.Interface, s nodejob.Spec) (int, string, error) {
@@ -202,11 +175,6 @@ func TestPreflightNodePrereqsRelaysTheCheckWarnings(t *testing.T) {
 	}
 }
 
-// A check whose exit status is known but whose log cannot be read, as on a
-// node whose kubelet serving certificate the apiserver does not trust yet,
-// still decides by its exit status: a passing node goes through with a WARN
-// naming it, and a refusing one is still refused. Only the relayed warnings
-// are lost.
 func TestPreflightNodePrereqsDecidesWithoutTheLog(t *testing.T) {
 	unread := fmt.Errorf("prerequisite check Job x exited 10, and %w: kubelet: x509: certificate signed by unknown authority", nodejob.ErrLogUnread)
 	old := runExitCodeLogs

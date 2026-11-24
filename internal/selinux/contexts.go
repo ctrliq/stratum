@@ -12,27 +12,16 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// LocalPathDir is where the local-path provisioner keeps volumes. container-
-// selinux labels it container_file_t, which a directory created before that
-// rule, or by a process that does not get the label, does not have, and a
-// container_t helper pod may then not create volumes in it. Volumes created in
-// it inherit the label, so only the directory itself is relabelled. A var so a
-// test can redirect it.
+// container_file_t from container-selinux; volumes inherit it, so only the directory is relabelled.
 var LocalPathDir = "/opt/local-path-provisioner"
 
-// rule is a file context: files of kind ftype (as semanage names them, "all
-// files" for every kind) matching spec get type typ.
+// files of kind ftype (as semanage names it) matching spec get type typ.
 type rule struct{ spec, ftype, typ string }
 
 // equivalence labels target and everything beneath it as source is labelled.
 type equivalence struct{ target, source string }
 
-// rules are the file contexts that give Stratum's paths container-selinux's
-// types, written against the paths Stratum uses. ensureContexts registers
-// each through canonical, because semanage refuses a rule beneath a
-// distribution equivalence's target: Rocky 9 makes /run equivalent to
-// /var/run, and every release makes /etc/systemd/system equivalent to
-// /usr/lib/systemd/system.
+// paths go through canonical: semanage refuses a rule under a distribution equivalence.
 func rules() []rule {
 	return []rule{
 		{version.StratumInstallPath, "all files", "container_runtime_exec_t"},
@@ -45,9 +34,7 @@ func rules() []rule {
 	}
 }
 
-// equivalences make the containerd and kubelet state under Stratum's paths
-// labelled as container-selinux labels the standard ones, which give image
-// snapshots and pod volumes the types containers may use.
+// label Stratum's containerd and kubelet state like the standard paths.
 func equivalences() []equivalence {
 	return []equivalence{
 		{version.ContainerdRootDir, "/var/lib/containerd"},
@@ -70,41 +57,22 @@ var fileTypes = map[string]string{
 
 // Options says how Ensure treats a host whose SELinux is enabled.
 type Options struct {
-	// RequiresSELinux is a node profile that requires SELinux (the CIS
-	// profile does): a new node whose policy cannot confine containers is
-	// refused, enforcing or permissive, with no opt-out.
+	// RequiresSELinux is a profile that refuses a new node without a confining policy.
 	RequiresSELinux bool
-	// Profile is the name of the node's profile, which the refusals name.
-	Profile string
-	// OptOut is spec.selinux: false. Stratum then registers no contexts,
-	// relabels nothing and labels no file it writes. It does not remove
-	// contexts an earlier start registered.
+	Profile         string
+	// OptOut is spec.selinux: false; contexts an earlier start registered stay.
 	OptOut bool
-	// Existing is a node that was brought up before. Such a node was running
-	// without the contexts, or with them, and keeps running: a missing policy,
-	// or contexts that cannot be registered or files relabelled, is a warning
-	// there, not a refusal that would keep it down.
+	// Existing is a node already running: a labelling failure warns, not refuses.
 	Existing bool
 }
 
-// ErrCannotTell is what Prerequisite returns when the host's SELinux tools
-// failed in a way that says nothing about the packages: whether the policy
-// confines containers could not be asked, so the caller cannot answer the
-// question either way and warns instead of passing or refusing. The error it
-// wraps names the failure.
+// returned by Prerequisite when the host's SELinux tools failed without an answer.
 var ErrCannotTell = errors.New("could not tell whether the SELinux policy confines containers")
 
-// optOutRefusal is the refusal for a node that sets spec.selinux: false under
-// a profile that requires SELinux, which has no opt-out.
 func optOutRefusal(profile string) error {
 	return fmt.Errorf("the %s profile cannot be combined with spec.selinux: false: on an SELinux host the profile requires the container runtime and its containers to be confined. Remove spec.selinux: false, or drop the profile", profile)
 }
 
-// missingRefusal is the refusal for a new node whose policy cannot confine
-// containers, the one Ensure and Prerequisite share: under a profile that
-// requires SELinux, with no opt-out, and on an enforcing host, where the
-// remedy is installing container-selinux or opting out. A permissive node
-// whose profile does not require SELinux is not refused.
 func missingRefusal(mode Mode, o Options, err error) error {
 	if o.RequiresSELinux {
 		return fmt.Errorf("SELinux is %s and %w; the %s profile requires it, with no opt-out", mode, err, o.Profile)
@@ -115,18 +83,7 @@ func missingRefusal(mode Mode, o Options, err error) error {
 	return nil
 }
 
-// Prerequisite reports whether this node passes the check an upgrade makes
-// before it touches the host, with the rules Ensure applies to a new node: an
-// enforcing node, or one whose profile requires SELinux, without
-// container-selinux is refused; an opted-out, disabled or other permissive
-// node passes. Existing does not matter: the caller decides whether an
-// already-running node may resume. It changes nothing, so a node that fails
-// can still label itself on a later start. Besides the policy, it asks
-// semanage, read-only, for the local file contexts, since Ensure registers
-// Stratum's with it: a node without semanage would take the upgrade and stay
-// unlabelled. A tool failure that is not a missing package is returned
-// wrapped in ErrCannotTell: the question could not be asked, so the caller
-// warns and lets the node through rather than answer either way.
+// Prerequisite reports whether the node passes the upgrade's SELinux check.
 func Prerequisite(o Options) error {
 	if o.OptOut && o.RequiresSELinux {
 		return optOutRefusal(o.Profile)
@@ -143,30 +100,13 @@ func Prerequisite(o Options) error {
 	case err == nil:
 		return nil
 	case !errors.Is(err, errNotInstalled):
-		// The tools are there but failed, so a missing package can be neither
-		// ruled in nor ruled out: the check does not answer.
+		// the tools are there but failed: a missing package can be neither ruled in nor out.
 		return fmt.Errorf("%w: %w", ErrCannotTell, err)
 	}
 	return missingRefusal(mode, o, err)
 }
 
-// Ensure registers Stratum's file contexts with the host policy and relabels
-// Stratum's files to match. It needs container-selinux, which defines the types
-// the contexts use, and semanage.
-//
-// Without them a new node is refused when SELinux is enforcing or the CIS
-// profile is on, because it would run its runtime and every container
-// unconfined; a non-CIS node may opt out with spec.selinux: false instead. A
-// permissive non-CIS host, and a node that was already running, gets a
-// warning, and the labels are applied on the first start after the packages
-// are installed. The contexts are applied in permissive mode too, so switching
-// to enforcing later needs no reinstall.
-//
-// The full relabel walks the data and run directories, so it runs only when a
-// context was added or changed, or when the stamp of the last full relabel is
-// missing: an interrupted or failed relabel, or a reinstall, runs it again.
-// Every other start relabels the binaries, the unit and the local-path
-// directory, which an upgrade or an operator may have replaced.
+// registers Stratum's file contexts and relabels its files; failures may warn rather than refuse.
 func Ensure(o Options) error {
 	if o.OptOut && o.RequiresSELinux {
 		return optOutRefusal(o.Profile)
@@ -215,19 +155,7 @@ func Ensure(o Options) error {
 	return fmt.Errorf("label Stratum's files for SELinux: %w", err)
 }
 
-// label registers the contexts and relabels Stratum's files. CoreDNS's
-// upstream directory is created here, before any relabel, so it carries its
-// read-only type from the node's first start rather than the data
-// directory's, which containers may not read. The binaries, the unit, that
-// directory and the local-path directory are relabelled first, before anything that
-// can fail, so a start always corrects what an upgrade wrote before the
-// runtime execs it, whatever the policy's own state.
-//
-// The full relabel runs when a context changed, when the stamp is missing or
-// records other contexts, or when a previous full relabel did not finish,
-// which pendingPath records. A failure leaves an existing stamp in place: the
-// node's files keep the labels its last full relabel gave them, so it stays
-// labelled, and the next start runs the relabel again.
+// the binaries, unit and CoreDNS directory relabel first, before the full relabel that can fail.
 func label(mode Mode) error {
 	for _, d := range []string{LocalPathDir, version.CoreDNSUpstreamDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -270,10 +198,7 @@ func label(mode Mode) error {
 // pendingPath marks a full relabel that has started and not finished.
 func pendingPath() string { return filepath.Join(version.DataDir, "selinux-relabel-pending") }
 
-// removeStamp forgets that the node is labelled, so LabelLike stops, the
-// runtime stops confining containers, and the next Ensure that labels
-// relabels everything. It is for a node whose labels can no longer be relied
-// on: one that opted out or lost the policy.
+// the node's labels can no longer be relied on, so the next labelling Ensure relabels all.
 func removeStamp() error {
 	if err := os.Remove(stampPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", stampPath(), err)
@@ -281,10 +206,7 @@ func removeStamp() error {
 	return nil
 }
 
-// requirePolicy reports whether the container-selinux policy module, which
-// defines the types Stratum's contexts use, is loaded, and whether
-// matchpathcon, which labels the files Stratum writes once the node is
-// labelled, works. A missing module or tool matches errNotInstalled.
+// a missing container module or matchpathcon tool matches errNotInstalled.
 func requirePolicy() error {
 	out, err := tool("policycoreutils", "semodule", "-l")
 	if err != nil {
@@ -299,8 +221,7 @@ func requirePolicy() error {
 	return nil
 }
 
-// hasModule reports whether semodule -l lists name. Older semodule prints a
-// version after the name.
+// older semodule prints a version after the name, so only the first field counts.
 func hasModule(list, name string) bool {
 	for _, line := range strings.Split(list, "\n") {
 		if f := strings.Fields(line); len(f) > 0 && f[0] == name {
@@ -310,20 +231,7 @@ func hasModule(list, name string) bool {
 	return false
 }
 
-// ensureContexts adds each of Stratum's file contexts the policy lacks and
-// corrects any that differ, reporting the contexts it wants, one per line, and
-// whether it changed anything. Equivalences come first: an ineffective one is
-// removed before the rules that replace it are added. Contexts the operator
-// added for other paths are left alone.
-//
-// libselinux matches local regular expressions newest first, not most specific
-// first, and semanage lists them oldest first. So contexts are registered
-// broadest first, and a narrower context listed before a broader one is
-// registered again after it, or the broader one would shadow it: a data
-// directory context re-added after the binaries' would label them
-// container_var_lib_t. Reading the order from the store, rather than from what
-// this start added, also repairs an update an earlier start left half done. A
-// changed context keeps its place.
+// libselinux matches local contexts newest first, so shadowed ones are registered again.
 func ensureContexts() (string, bool, error) {
 	all, err := tool("policycoreutils-python-utils", "semanage", "fcontext", "-l")
 	if err != nil {
@@ -444,10 +352,7 @@ func ensureContexts() (string, bool, error) {
 	return contexts, changed, nil
 }
 
-// managedPath records the file contexts Stratum registered last, one per line
-// as ensureContexts reports them, so a context it no longer wants, such as a
-// copy of a policy rule a container-selinux update removed, is deleted rather
-// than left in force.
+// records the contexts Stratum registered, so stale ones get deleted.
 func managedPath() string { return filepath.Join(version.DataDir, "selinux-contexts") }
 
 // managedRules reads the rules managedPath records; equivalences are skipped.
@@ -467,15 +372,7 @@ func managedRules() []rule {
 	return out
 }
 
-// mirrored returns, for an equivalence the distribution's policy makes
-// ineffective, copies of the policy's own rules for its source registered
-// under its target, which ensureContexts registers in place of the
-// equivalence (semanage refuses a rule beneath a local equivalence's target).
-// libselinux applies the local equivalences to a path before the
-// distribution's, so on Rocky 9, which labels /run as /var/run, a real
-// /run/stratum/containerd path never matches the canonical local equivalence
-// /var/run/stratum/containerd, and without the copies a sandbox's shm would be
-// labelled container_var_run_t instead of container_runtime_tmpfs_t.
+// the distro's rewrite makes the equivalence never match the path; the source rules are copied.
 func mirrored(e equivalence, policy listing) []rule {
 	target := canonical(e.target, policy.distro)
 	if target == e.target {
@@ -493,10 +390,7 @@ func mirrored(e equivalence, policy listing) []rule {
 	return slices.CompactFunc(out, func(a, b rule) bool { return a == b })
 }
 
-// policyRulesUnder lists the policy's rules for source and beneath it, one
-// "policy SPEC FTYPE TYPE" line each, sorted. They are part of what the stamp
-// records, so a container-selinux update that changes how an equivalence's
-// source is labelled relabels the tree labelled through it.
+// recorded in the stamp, so a policy update relabels trees labelled through it.
 func policyRulesUnder(source string, policy listing) []string {
 	var out []string
 	for _, r := range policy.rules {
@@ -508,11 +402,7 @@ func policyRulesUnder(source string, policy listing) []string {
 	return slices.Compact(out)
 }
 
-// shadowedBy reports whether r, a registered regular expression, comes before
-// a broader one of rules in the local store, pos giving each registered
-// context's place: libselinux then takes the broader one for paths under
-// both. An exact path takes precedence over every regular expression,
-// wherever it is.
+// a broader context registered after r wins: libselinux matches newest first.
 func shadowedBy(r rule, rules []rule, pos map[string]int) bool {
 	if stem(r.spec) == r.spec {
 		return false
@@ -531,9 +421,7 @@ func shadowedBy(r rule, rules []rule, pos map[string]int) bool {
 	return false
 }
 
-// stem is the literal start of a file context's path expression, before its
-// first regular-expression character. A context nested under another has a
-// longer stem.
+// the literal start of a context's path expression, before its first regex character.
 func stem(spec string) string {
 	if i := strings.IndexAny(spec, `.*+?[(|^$\{`); i >= 0 {
 		return spec[:i]
@@ -546,9 +434,7 @@ func under(path, prefix string) bool {
 	return path == prefix || strings.HasPrefix(path, prefix+"/") || strings.HasPrefix(path, prefix+"(")
 }
 
-// canonical rewrites path through the distribution's equivalences, the
-// longest matching target first, so a rule is registered on the path the
-// policy labels it by.
+// rewritten through the distribution's equivalences, longest target first.
 func canonical(path string, distro map[string]string) string {
 	best := ""
 	for target := range distro {
@@ -562,27 +448,12 @@ func canonical(path string, distro map[string]string) string {
 	return distro[best] + strings.TrimPrefix(path, best)
 }
 
-// listing is a parsed `semanage fcontext -l` or `-l -C`: its file contexts,
-// the distribution's equivalences and the local ones, each keyed by target
-// with their source.
+// a parsed semanage fcontext listing.
 type listing struct {
 	rules          []rule
 	distro, equivs map[string]string
 }
 
-// parseListing reads `semanage fcontext -l` or `-l -C`:
-//
-//	SELinux fcontext                                   type               Context
-//
-//	/usr/local/bin/stratum                             all files          system_u:object_r:container_runtime_exec_t:s0
-//
-//	SELinux Distribution fcontext Equivalence
-//
-//	/run = /var/run
-//
-//	SELinux Local fcontext Equivalence
-//
-//	/var/lib/stratum/containerd = /var/lib/containerd
 func parseListing(out string) listing {
 	l := listing{distro: map[string]string{}, equivs: map[string]string{}}
 	section := ""

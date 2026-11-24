@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// prepPinned is prep plus the version.PKIDir restore prep never schedules: every
-// reader pinned here resolves through version.PKIDir, so without the restore the
-// next test in the package would silently read this one's temp dir.
 func prepPinned(t *testing.T) {
 	t.Helper()
 	old := version.PKIDir
@@ -24,9 +21,6 @@ func prepPinned(t *testing.T) {
 	prep(t)
 }
 
-// hashFor produces the reference pin through token.CACertHashFor, the same
-// producer the joining node's verifier consumes, so the rows compare WHICH root
-// is pinned, not a hash spelling.
 func hashFor(t *testing.T, name string) string {
 	t.Helper()
 	h, err := token.CACertHashFor(name)
@@ -36,18 +30,7 @@ func hashFor(t *testing.T, name string) string {
 	return h
 }
 
-// TestRotationReadersAgreeAtEachPhaseBoundary pins the answer four independent
-// rotation-state readers give at every boundary of a CA rotation: RotationPhase
-// (certs check), signerPromoted (the rollback and reaper logic), the
-// checkCARotationState guard, and the root token.CACertHash pins (join tokens).
-// Different rules keep these readers, so a refactor can move one without the
-// others — a promoted signer reported at trust-new, a join token pinned to the
-// old root during a rotation, or a rollback that leaves the staged CA behind
-// each leave nodes and joiners disagreeing about the same cluster. Every row
-// states the one answer all four must give together.
 func TestRotationReadersAgreeAtEachPhaseBoundary(t *testing.T) {
-	// staged reaches trust-new on a fresh PKI and records both roots' pins while
-	// each still has its own file: the old root in ca.crt, the new in ca-new.crt.
 	staged := func(t *testing.T) map[string]string {
 		prepPinned(t)
 		refs := map[string]string{"old": hashFor(t, "ca")}
@@ -110,11 +93,7 @@ func TestRotationReadersAgreeAtEachPhaseBoundary(t *testing.T) {
 			wantPhase: "idle", wantRoot: "new",
 		},
 		{
-			// A rollback is two steps: pki.RollbackCA only
-			// restores, and RemoveRotationScratch deletes the staged material
-			// and the .pre-carotate backups once the leaves are repaired. The
-			// callers that matter finish the second step, so every reader must
-			// be back at idle only after both.
+			// Idle only after both steps: RollbackCA restores, RemoveRotationScratch removes the rest.
 			name: "rolled back from trust-new",
 			reach: func(t *testing.T) map[string]string {
 				refs := staged(t)
@@ -167,21 +146,7 @@ func TestRotationReadersAgreeAtEachPhaseBoundary(t *testing.T) {
 	}
 }
 
-// TestRotationReadersBetweenRollbackAndScratchRemoval pins the answers in the
-// intermediate state a retried rollback observes: pki.RollbackCA only restores,
-// and the .pre-carotate backups and any staged material stay until
-// pki.RemoveRotationScratch runs once the leaves are repaired — the finished
-// state after both steps is what TestRotationReadersAgreeAtEachPhaseBoundary
-// pins. Until that second step the readers still see the rotation: from
-// trust-new the staged CA keeps the phase at trust-new, the guard refusing and
-// the join pin on the new root, and from sign-new the leftover backup keeps
-// signerPromoted true on a node whose phase already reads idle — the one
-// combination that makes the promoted signer its own anchor rather than a
-// property of the phase.
 func TestRotationReadersBetweenRollbackAndScratchRemoval(t *testing.T) {
-	// staged is TestRotationReadersAgreeAtEachPhaseBoundary's staged: both roots'
-	// pins are recorded while each still has its own file, so the rows compare
-	// WHICH root is pinned after the promotion consumed ca-new.crt.
 	staged := func(t *testing.T) map[string]string {
 		prepPinned(t)
 		refs := map[string]string{"old": hashFor(t, "ca")}
@@ -248,17 +213,7 @@ func TestRotationReadersBetweenRollbackAndScratchRemoval(t *testing.T) {
 	}
 }
 
-// TestReadCARotationAtEachPhaseBoundary pins pki.ReadCARotation, the one
-// rotation-state read that RotationPhase, signerPromoted, checkCARotationState
-// and token.CACertHash all consume, at the same phase boundaries the
-// reader-agreement pin above walks. Each row states what the struct must
-// report — whether a new root is staged, whether the promotion backup is
-// present, how many anchors the live trust bundle carries, which root a new
-// pin must name — and resolves that anchor through the pin producer the join
-// verifier consumes, so the reader cannot name a root the pin would not accept.
 func TestReadCARotationAtEachPhaseBoundary(t *testing.T) {
-	// staged reaches trust-new on a fresh PKI and records both roots' pins while
-	// each still has its own file: the old root in ca.crt, the new in ca-new.crt.
 	staged := func(t *testing.T) map[string]string {
 		prepPinned(t)
 		refs := map[string]string{"old": hashFor(t, "ca")}
@@ -350,11 +305,7 @@ func TestReadCARotationAtEachPhaseBoundary(t *testing.T) {
 			wantStaged: false, wantProm: false, wantBundle: 1, wantRoot: "old",
 		},
 		{
-			// The intermediate state a retried rollback observes: pki.RollbackCA
-			// restores but leaves the staged material and the promotion backup
-			// until RemoveRotationScratch, and the struct must still see them —
-			// this is what keeps the readers' answers in the intermediate rows
-			// of the pin above true once they read the struct.
+			// The retried-rollback state: RollbackCA ran, RemoveRotationScratch has not.
 			name: "rollback from trust-new, before the scratch is removed",
 			reach: func(t *testing.T) map[string]string {
 				refs := staged(t)
@@ -378,9 +329,7 @@ func TestReadCARotationAtEachPhaseBoundary(t *testing.T) {
 			wantStaged: false, wantProm: true, wantBundle: 1, wantRoot: "old",
 		},
 		{
-			// An uninitialized node: the absent bundle must read as a not-exist
-			// error — the one read error checkCARotationState may permit under
-			// --force — never as an idle trust bundle of zero anchors.
+			// An uninitialized node reads as not-exist, never as a zero-anchor bundle.
 			name: "no PKI written yet",
 			reach: func(t *testing.T) map[string]string {
 				old := version.PKIDir
@@ -412,8 +361,7 @@ func TestReadCARotationAtEachPhaseBoundary(t *testing.T) {
 			if rot.Err != nil {
 				t.Fatalf("ReadCARotation(): %v", rot.Err)
 			}
-			// The named anchor must resolve to the root this phase's join pin
-			// records, through the same producer token.CACertHash consumes.
+			// The anchor must resolve to the root this phase's join pin records.
 			pin, err := token.CACertHashFor(rot.Anchor)
 			if err != nil {
 				t.Fatalf("token.CACertHashFor(%q): %v", rot.Anchor, err)
@@ -425,8 +373,6 @@ func TestReadCARotationAtEachPhaseBoundary(t *testing.T) {
 	}
 }
 
-// liveCACrt reads this node's live root certificate, for the byte-identical
-// assertion that a skipped or resumed phase never touched it.
 func liveCACrt(t *testing.T) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(version.PKIDir, "ca.crt"))
@@ -443,15 +389,6 @@ func assertCACrtUnchanged(t *testing.T, before []byte) {
 	}
 }
 
-// TestTrustNewAppliedOnlyPastTheRotation pins caPhaseApplied(trust-new) at the
-// states where one of its inputs can mislead it. The .pre-carotate backup is
-// not proof of promotion on its own — a rollback whose leaf repair or scratch
-// removal failed leaves it behind on a node that holds one root again — and
-// the trust bundle may be absent or unreadable on a node that never promoted,
-// which checkCARotationState, not the applied check, has to judge (it lets
-// --force through a missing bundle and a follower through anything). A wrong
-// "applied" skips trust-new on a node that then never trusts the new root; a
-// wrong "not applied" on a promoted node mints a second, divergent root.
 func TestTrustNewAppliedOnlyPastTheRotation(t *testing.T) {
 	steps := func(t *testing.T, fs ...func() error) {
 		t.Helper()
@@ -467,8 +404,7 @@ func TestTrustNewAppliedOnlyPastTheRotation(t *testing.T) {
 	}
 	removeBundle := func() error { return os.Remove(filepath.Join(version.PKIDir, "ca-bundle.crt")) }
 	collapseBundle := func() error {
-		// FinalizeCA's first write: the bundle holds only the live (new)
-		// root, before the finalized marker and the scratch removal.
+		// FinalizeCA's first write: the bundle holds only the live new root.
 		b, err := os.ReadFile(filepath.Join(version.PKIDir, "ca.crt"))
 		if err != nil {
 			return err
@@ -531,11 +467,7 @@ func TestTrustNewAppliedOnlyPastTheRotation(t *testing.T) {
 	}
 
 	t.Run("a follower whose trust bundle is corrupt reaches the fetch that rewrites it", func(t *testing.T) {
-		// checkCARotationState lets every --fetch-shared follower through:
-		// the initiator's material it fetches rewrites the bundle. The
-		// applied check must not refuse ahead of it on the bundle it is about
-		// to replace. The fake cluster publishes no staged key, so the run
-		// stops at the fetch — which is the point: it got there.
+		// The fetch rewrites the bundle, so the applied check must not refuse first.
 		kubeVIPNode(t)
 		steps(t, writeBundle([]byte("not pem")))
 		err := cpTrustNew(io.Discard, CARotateOptions{Phase: PhaseTrustNew, FetchShared: true, RunID: "run-1", Quiet: true, SkipWorkloadCheck: true})
@@ -544,9 +476,7 @@ func TestTrustNewAppliedOnlyPastTheRotation(t *testing.T) {
 		}
 	})
 	t.Run("a forced recovery on a node predating the bundle files stages the new root", func(t *testing.T) {
-		// checkCARotationState permits --force through a missing root
-		// bundle for compromise recovery; the applied check must leave
-		// that decision to it.
+		// The guard decides whether --force passes a missing bundle, not this check.
 		kubeVIPNode(t)
 		steps(t, removeBundle, func() error {
 			if err := os.Remove(pki.KubeletClientBundlePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -575,10 +505,7 @@ func TestTrustNewAppliedOnlyPastTheRotation(t *testing.T) {
 		if !pki.CARotationStaged() {
 			t.Error("trust-new staged nothing: this node would never trust the rotation's new root")
 		}
-		// The resume of that trust-new — its restart failed, say — must
-		// re-run it too: the node is AT trust-new, and the stale backup beside
-		// its widened bundle is not a promotion. A bundle the first run left
-		// narrow is what the skip would strand for the rest of the rotation.
+		// A node AT trust-new with a stale backup and narrow bundle must re-run trust-new.
 		fp, err := os.ReadFile(filepath.Join(version.PKIDir, "front-proxy-ca.crt"))
 		if err != nil {
 			t.Fatal(err)
@@ -599,43 +526,7 @@ func TestTrustNewAppliedOnlyPastTheRotation(t *testing.T) {
 	})
 }
 
-// TestSignNewIsSkippedWhenAlreadyApplied pins caPhaseApplied, the per-phase
-// "applied" test, modelled on pki.EtcdPhaseApplied: it reports whether a
-// phase's material work is already present on this node, so a resumed
-// rotation and a re-run `rotate-ca --cluster` SKIP finished work instead of
-// tripping a guard written for a deliberate re-invocation.
-//
-// The contract caPhaseApplied (carotate.go) keeps, stated so the check and
-// the pins cannot drift:
-//
-//   - trust-new is applied once the node is PAST it: the staged root was
-//     promoted (the promotion backup pki.ReadCARotation reports) or the
-//     rotation ended in finalize. A node that is merely AT trust-new —
-//     material staged, bundles written — is not applied: re-running
-//     RotateCAMaterial reuses the staged material and rewrites the same
-//     bundles, which is the idempotent re-run the etcd reader also re-runs
-//     rather than skips.
-//   - sign-new is applied once its material work is recorded: the
-//     carotate-promoted marker (pki.CAPromoted) or the carotate-finalized
-//     marker (pki.CAFinalized). A node whose promotion stopped before the
-//     marker — RotateCAMaterial+PromoteCA with the leaves never reissued, or
-//     a sign-new whose restart failed — is NOT applied: its sign-new must
-//     resume (pki.SignNewResumable, pki.FinishPromotion), and skipping it
-//     would strand leaves the old CA signed and leave finalize refusing.
-//     RotateCAMaterial+PromoteCA in particular reads as not applied: that
-//     state has a forward resume path, which TestSignNewRestartFailureResumes
-//     depends on.
-//   - finalize is never applied, like pki.EtcdPhaseApplied's drop-root: a
-//     re-run re-verifies and re-carries the restart a node whose finalize
-//     restart failed still owes.
-//
-// The phase steps below run the REAL control-plane paths (cpSignNew,
-// cpTrustNew) on the kubeVIPNode fixture: the consult must sit at the entry
-// of each phase, BEFORE the guards and refusals it supersedes, the way
-// migrateEtcdCAWith decides applied before it fetches (etcdca.go:205-235).
 func TestSignNewIsSkippedWhenAlreadyApplied(t *testing.T) {
-	// completed reaches sign-new's recorded end: promotion, SA promotion and
-	// the marker signNewRestartThen writes once the restart succeeded.
 	completed := func(t *testing.T) {
 		t.Helper()
 		prepPinned(t)
@@ -723,10 +614,7 @@ func TestSignNewIsSkippedWhenAlreadyApplied(t *testing.T) {
 		}
 	})
 
-	// The steps below drive the real phase paths. A node that promoted and
-	// stopped resumes its sign-new; a retried phase on a node that already
-	// applied it skips rather than refuses, because a refusal there leaves a
-	// halted `rotate-ca --cluster` with no forward path.
+	// A refusal where a skip applies leaves a halted rotate-ca --cluster no forward path.
 	t.Run("a retried sign-new finishes a node that promoted and stopped", func(t *testing.T) {
 		kubeVIPNode(t)
 		if err := pki.RotateCAMaterial(false); err != nil {
@@ -754,9 +642,7 @@ func TestSignNewIsSkippedWhenAlreadyApplied(t *testing.T) {
 		assertCACrtUnchanged(t, live)
 	})
 	t.Run("a re-run of trust-new past a promoted signer is skipped", func(t *testing.T) {
-		// The trust-new re-run on a node that already promoted is the one
-		// that would mint a DIVERGENT root (nothing is staged any more), so
-		// the applied check must skip it before the mid-rotation guard fires.
+		// Nothing is staged after a promotion; a re-run here would mint a divergent root.
 		completed(t)
 		live := liveCACrt(t)
 		if err := cpTrustNew(io.Discard, CARotateOptions{Phase: PhaseTrustNew, Quiet: true}); err != nil {
@@ -768,12 +654,7 @@ func TestSignNewIsSkippedWhenAlreadyApplied(t *testing.T) {
 		}
 	})
 	t.Run("a re-run of trust-new on a staged node reuses the staged material", func(t *testing.T) {
-		// A trust-new halt leaves the initiator staged; its re-run must be
-		// the idempotent one — RotateCAMaterial re-uses the staged root and
-		// rewrites the same bundles — not a refusal and not a second root.
-		// This is the arm of the resume the promoted-state skip above cannot
-		// cover: a staged node is AT trust-new, not past it, so no skip
-		// applies and the guard must let the same rotation's re-run through.
+		// A staged node is AT trust-new, not past it: the re-run reuses the staged root.
 		kubeVIPNode(t)
 		if err := pki.RotateCAMaterial(false); err != nil {
 			t.Fatal(err)

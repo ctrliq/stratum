@@ -1,15 +1,5 @@
 package cli
 
-// The fixtures shipped under docs/docs/appendices/backup-evidence-fixtures/
-// are complete documents in the shape `snapshot list -o json` prints, and a
-// consumer or PRO implementer keys off them directly. These tests pin every
-// shipped fixture to the same wire contract the CLI output tests pin
-// (snapshotListJSON): each fixture decodes into that contract, keeps the
-// orders the engine's output keeps, and holds the structural invariants the
-// consumer page documents (docs/docs/cluster-admin/backup-evidence.md) — so a
-// fixture that drifts from the binary fails the suite here instead of a
-// consumer.
-
 import (
 	"encoding/json"
 	"github.com/ctrliq/stratum/internal/version"
@@ -20,17 +10,11 @@ import (
 	"testing"
 )
 
-// shippedFixture is one decoded fixture, named by its file so a failure says
-// which document drifted.
 type shippedFixture struct {
 	name string
 	doc  snapshotListJSON
 }
 
-// shippedFixtures reads every *.json document in the fixtures appendix,
-// sorted by file name, and decodes each into the pinned wire contract. A
-// fixture added under the directory is validated the moment it lands; a
-// fixture the contract cannot parse fails every test below at its name.
 func shippedFixtures(t *testing.T) []shippedFixture {
 	t.Helper()
 	const dir = "../../docs/docs/appendices/backup-evidence-fixtures"
@@ -57,9 +41,7 @@ func shippedFixtures(t *testing.T) []shippedFixture {
 	return fixtures
 }
 
-// byID indexes one artifact list by stable ID. A census counts every stable
-// ID once, so a list that repeats an ID collides here for the caller to
-// reject.
+// A census counts every stable ID once, so a repeating ID collides here.
 func byID(arts []snapshotListJSONArt) map[string]snapshotListJSONArt {
 	m := make(map[string]snapshotListJSONArt, len(arts))
 	for _, a := range arts {
@@ -68,10 +50,6 @@ func byID(arts []snapshotListJSONArt) map[string]snapshotListJSONArt {
 	return m
 }
 
-// TestShippedFixturesReportADocumentedSituation: every fixture documents one
-// of the five situations the consumer page names, from a node the document
-// identifies, so a reworded state or a faceless document fails here instead
-// of shipping a shape the page no longer describes.
 func TestShippedFixturesReportADocumentedSituation(t *testing.T) {
 	states := map[string]bool{
 		"configured":   true,
@@ -91,11 +69,7 @@ func TestShippedFixturesReportADocumentedSituation(t *testing.T) {
 	}
 }
 
-// TestShippedFixturesKeepTheEngineSortedOrders: the engine's local walk,
-// remote listing and census all sort their rows by ID
-// (internal/backupevidence/local.go:303, remote.go:94, remote.go:204), and
-// the page promises those orders — so a fixture that shows any other order
-// documents output the binary can never print.
+// The engine sorts these rows by ID, and the fixtures document its output.
 func TestShippedFixturesKeepTheEngineSortedOrders(t *testing.T) {
 	sorted := func(what, file string, ids []string) {
 		less := slices.IsSortedFunc(ids, strings.Compare)
@@ -124,12 +98,6 @@ func TestShippedFixturesKeepTheEngineSortedOrders(t *testing.T) {
 	}
 }
 
-// TestShippedFixturesHoldTheCensusInvariants: the census counts every stable
-// ID once, carries each half only where that location holds the backup, and
-// the halves are the artifacts the catalogs hold — the same snapshot saved
-// locally and uploaded off-box is one entry, two locations. A remote listing
-// exposes no digest, and every old copy is one of the copies, named with its
-// creation time in the retention diagnostics.
 func TestShippedFixturesHoldTheCensusInvariants(t *testing.T) {
 	for _, f := range shippedFixtures(t) {
 		locals, remotes := byID(f.doc.Local.Artifacts), byID(f.doc.Remote.Copies)
@@ -200,11 +168,6 @@ func TestShippedFixturesHoldTheCensusInvariants(t *testing.T) {
 	}
 }
 
-// TestShippedFixturesComposeTheirCompletenessVerdicts: a partial catalog on
-// either side never yields an exact total, and the document's top-level
-// verdict is true only when the census was exact and the maintenance record
-// was read — the same rules the engine applies when it composes the document
-// (internal/backupevidence/remote.go:210, reader.go:504).
 func TestShippedFixturesComposeTheirCompletenessVerdicts(t *testing.T) {
 	for _, f := range shippedFixtures(t) {
 		if f.doc.Backups.Complete && !(f.doc.Local.Complete && f.doc.Remote.Complete) {
@@ -218,11 +181,6 @@ func TestShippedFixturesComposeTheirCompletenessVerdicts(t *testing.T) {
 	}
 }
 
-// TestShippedFixturesComposeTheirWarnings: the document's top-level
-// warnings are what the engine composes — the policy's, the census's and
-// the maintenance record's, in that order — so a consumer alerting on the
-// top level alone sees every stage's safe diagnostics. A fixture that
-// drops a stage's warning from the top level teaches the opposite.
 func TestShippedFixturesComposeTheirWarnings(t *testing.T) {
 	for _, f := range shippedFixtures(t) {
 		want := slices.Concat(f.doc.Policy.Warnings, f.doc.Backups.Warnings, f.doc.Maintenance.Warnings)
@@ -233,12 +191,7 @@ func TestShippedFixturesComposeTheirWarnings(t *testing.T) {
 	}
 }
 
-// TestShippedFixturesHoldThePolicyProvenanceContract: retention and the
-// copy requirement resolve together — both from snapshot.conf when it
-// supplies the policy, both from the cluster config or the defaults
-// otherwise, both unknown when neither could be read — so a fixture that
-// pairs the provenances across that line documents a field combination the
-// binary cannot print.
+// Retention and the copy requirement resolve together, or neither from snapshot.conf.
 func TestShippedFixturesHoldThePolicyProvenanceContract(t *testing.T) {
 	for _, f := range shippedFixtures(t) {
 		p := f.doc.Policy
@@ -252,11 +205,7 @@ func TestShippedFixturesHoldThePolicyProvenanceContract(t *testing.T) {
 	}
 }
 
-// TestShippedFixturesHoldTheUnreadableConfContract: an unreadable
-// snapshot.conf leaves the remote target undetermined — the store may hold
-// the copies it already uploaded, so the remote catalog is unknown, never a
-// complete exact zero — and a fixture that marks it complete teaches the
-// one reader mistake the totals rule exists to prevent.
+// An unreadable snapshot.conf leaves the remote catalog unknown, never a complete exact zero.
 func TestShippedFixturesHoldTheUnreadableConfContract(t *testing.T) {
 	for _, f := range shippedFixtures(t) {
 		if f.doc.Policy.State == "unreadable" && f.doc.Remote.Complete {

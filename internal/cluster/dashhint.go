@@ -7,10 +7,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// dashboardHint is what a controller prints, once its node has registered,
-// about reaching the in-cluster dashboard: its address and how to sign in.
-// It names this node's own address rather than the VIP, since every node
-// answers the NodePort. Nothing is printed while the dashboard is off.
+// Names this node's address, not the VIP: every node answers the NodePort.
 func dashboardHint(cfg *ClusterConfig, nodeIP string) []string {
 	if !cfg.DashboardEnabled() {
 		return nil

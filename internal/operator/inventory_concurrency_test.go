@@ -21,8 +21,6 @@ func TestPrunePreservesConcurrentMigrationContribution(t *testing.T) {
 	legacy := kubeCM("only-legacy-remembers")
 	seedRecord(t, r.dir, map[string][]objRef{"legacy": {legacy}})
 	snapshot := clusterInventory(t, r.fakeCs)
-	// The background publisher finishes after the manifest pass's snapshot.
-	// Retiring the local file makes the fresh cluster entry the only evidence.
 	if err := syncInventory(ctx, r.fakeCs, r.dir, "cp1"); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +33,6 @@ func TestPrunePreservesConcurrentMigrationContribution(t *testing.T) {
 	if !slices.Contains(inv.union(), legacy) {
 		t.Fatalf("concurrent contribution lost: inventory %+v, deletes %v", inv, r.deleteNames())
 	}
-	// A later pass can now discover and delete the no-longer-desired object.
 	r.d.pruneClusterInventory(ctx, inv, current, nil)
 	if got := r.deleteNames(); len(got) != 1 || got[0] != legacy.Name {
 		t.Fatalf("deletes %v, want exactly %s", got, legacy.Name)
@@ -106,7 +103,6 @@ func TestLooseOwnershipSurvivesLateMigrationAndLeaderChange(t *testing.T) {
 	if err := os.Remove(loose); err != nil {
 		t.Fatal(err)
 	}
-	// A late controller contributes its historical ownership after the handoff.
 	if err := publishInventory(ctx, r.fakeCs, "cp3", map[string][]objRef{"old-stack": {moved}}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +111,6 @@ func TestLooseOwnershipSurvivesLateMigrationAndLeaderChange(t *testing.T) {
 	if got := r.deleteNames(); len(got) != 0 {
 		t.Fatalf("late contribution revived loose ownership: deleted %v", got)
 	}
-	// A later stack explicitly claiming the object restores ordinary pruning.
 	stackFile := filepath.Join(r.dir, "current", "moved.yaml")
 	writeManifest(t, stackFile, configMap(moved.Name, "kube-system"))
 	r.reconcile(ctx, "10.0.0.1", "10.0.0.11")
@@ -143,8 +138,6 @@ func TestLooseOwnershipSurvivesRemovalOfItsOriginalAPIVersion(t *testing.T) {
 	}})
 	r.d.pruneClusterInventory(ctx, clusterInventory(t, r.fakeCs), nil, []objRef{old})
 
-	// The original API version disappears before another controller migrates
-	// its record of the same resource, now using v2 and an explicit namespace.
 	mapper = meta.NewDefaultRESTMapper([]schema.GroupVersion{v2})
 	mapper.Add(v2.WithKind("Widget"), meta.RESTScopeNamespace)
 	r.setMapper(mapper)
@@ -161,8 +154,6 @@ func TestLooseOwnershipSurvivesRemovalOfItsOriginalAPIVersion(t *testing.T) {
 func TestManifestInventoryUsesRegisteredNodeIdentity(t *testing.T) {
 	saved := inventoryHostname
 	t.Cleanup(func() { inventoryHostname = saved })
-	// host.Hostname supplies this short form even if the kernel hostname is
-	// fully qualified; the Node registers under the same short form.
 	inventoryHostname = func() (string, error) { return "registered-cp", nil }
 	d, err := newManifestDeployer(&rest.Config{Host: "https://127.0.0.1"}, t.TempDir())
 	if err != nil {

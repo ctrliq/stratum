@@ -29,19 +29,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// cisStart is what a stubbed control-plane start saw: whether it reached the
-// preparation that holds the CIS key gate, and the fence it was handed there.
 type cisStart struct {
 	configPath string
 	prepared   bool
 	lease      *k8sutil.MaintenanceLease
 }
 
-// cisColdStart lays out a control plane about to mint the CIS at-rest key on
-// a restart: CIS selected, no key at version.EncryptionConfigPath, and an
-// admin.conf naming server, every path under a fresh temporary tree. The
-// host-mutating preparation and the supervisor are stubbed, the preparation
-// recording what it was handed.
 func cisColdStart(t *testing.T, server string) *cisStart {
 	t.Helper()
 	registerCISForTest(t)
@@ -105,9 +98,7 @@ users:
 	return s
 }
 
-// captureStderr runs fn with the process's stderr swapped for a pipe and
-// returns what fn printed there; runUp prints its notices to os.Stderr
-// itself, not to a writer a test could pass in.
+// runUp prints its notices to os.Stderr itself; a test cannot pass a writer.
 func captureStderr(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -128,14 +119,6 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestRunUpCISStartWithNoAnsweringAPIServerReachesTheKeyGate: turning CIS on
-// for a cluster's only control plane is a restart of a node whose apiserver
-// only this start brings up, after a reboot or after a first --cis start that
-// wrote admin.conf and failed before the key. Nothing answers through
-// admin.conf then, so the fence cannot be taken, and nothing can mint a key,
-// publish a bundle or admit a member through that apiserver either. The start
-// goes on unfenced to the key gate, whose etcd read refuses a control plane
-// with other members, and says on stderr that it skipped the fence and why.
 func TestRunUpCISStartWithNoAnsweringAPIServerReachesTheKeyGate(t *testing.T) {
 	s := cisColdStart(t, "https://127.0.0.1:1")
 	var err error
@@ -156,10 +139,6 @@ func TestRunUpCISStartWithNoAnsweringAPIServerReachesTheKeyGate(t *testing.T) {
 	}
 }
 
-// TestRunUpCISStartRefusesAFenceItCannotTake: an apiserver that answers
-// decides the take. A lease another run holds live, or an answer refusing the
-// lease call, stops the start before the key gate, with the take's own error,
-// and nothing is skipped.
 func TestRunUpCISStartRefusesAFenceItCannotTake(t *testing.T) {
 	leases := coordinationv1.SchemeGroupVersion.WithResource("leases").GroupResource()
 	for _, tc := range []struct {
@@ -203,11 +182,6 @@ func TestRunUpCISStartRefusesAFenceItCannotTake(t *testing.T) {
 	}
 }
 
-// TestRunUpCISStartSkipsTheFenceOnlyWhenNothingAnswers: the skip is for an
-// apiserver that is not there, which is a failure to connect. Credentials that
-// cannot be loaded, or an apiserver whose certificate admin.conf does not
-// trust, are not that: something may be serving, so the start refuses with
-// the take's own error rather than mint a key unfenced.
 func TestRunUpCISStartSkipsTheFenceOnlyWhenNothingAnswers(t *testing.T) {
 	const leaseURL = "https://10.0.0.10:6443/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/stratum-cluster-upgrade"
 	for _, tc := range []struct {
@@ -256,9 +230,6 @@ func TestRunUpCISStartSkipsTheFenceOnlyWhenNothingAnswers(t *testing.T) {
 	}
 }
 
-// The fence covers every profile's shared secrets, not only the CIS key: a
-// start whose profile declares a secret missing on disk is about to mint it,
-// and one whose secrets are all there mints nothing and takes no fence.
 func TestSharedSecretMintFenceFollowsTheSelectedProfile(t *testing.T) {
 	cisColdStart(t, "https://127.0.0.1:1")
 	registerProfilesForTest(t, profile.Profile{Name: "other",

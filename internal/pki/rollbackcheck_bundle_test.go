@@ -8,11 +8,6 @@ import (
 	"testing"
 )
 
-// RollbackCA reads the kubelet client-CA bundle before it restores anything,
-// and a bundle it cannot read refuses the rollback there. The check must give
-// the same answer: with every pair matching, a corrupt bundle would otherwise
-// pass the check and fail the rollback, and the cluster-wide check would clear
-// a node that cannot roll back.
 func TestRollbackCheckRefusesWhatRollbackCAReadsFirst(t *testing.T) {
 	genInto(t)
 	if err := RotateCAMaterial(false); err != nil {
@@ -43,9 +38,6 @@ func TestRollbackCheckRefusesWhatRollbackCAReadsFirst(t *testing.T) {
 	}
 }
 
-// RollbackCA re-derives etcd's bundle after restoring the CA files and refuses
-// an etcd bundle it cannot read there, past the point of no return. The check
-// makes the same read first, so both refuse with nothing changed.
 func TestRollbackCheckRefusesAnEtcdBundleRollbackCACannotRead(t *testing.T) {
 	genInto(t)
 	if err := RotateCAMaterial(false); err != nil {
@@ -69,9 +61,7 @@ func TestRollbackCheckRefusesAnEtcdBundleRollbackCACannotRead(t *testing.T) {
 	}
 }
 
-// The etcd bundle is read against the root the rollback restores, not the
-// live one: a corrupt live ca.crt with intact backups still rolls back, as it
-// did before the etcd check, and the restore repairs it.
+// The bundle is read against the restored root: a corrupt live ca.crt still rolls back.
 func TestRollbackRestoresADamagedLiveRootPastTheEtcdCheck(t *testing.T) {
 	genInto(t)
 	if err := RotateCAMaterial(false); err != nil {

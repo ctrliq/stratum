@@ -11,9 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Uninstall removes every context and equivalence Stratum registered, rules
-// before equivalences, leaves an operator's context for the same path, and
-// returns the stratum binary to its default label.
 func TestRemoveContexts(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -54,8 +51,6 @@ func TestRemoveContexts(t *testing.T) {
 	}
 }
 
-// A context already gone is skipped, and one the operator changed to another
-// type is left alone.
 func TestRemoveContextsSkipsWhatIsNotStratums(t *testing.T) {
 	fakeHost(t, Enforcing)
 	p := newFakePolicy(t, el9)
@@ -78,8 +73,6 @@ func TestRemoveContextsSkipsWhatIsNotStratums(t *testing.T) {
 	}
 }
 
-// Without the record, as on a node labelled by an older build, uninstall
-// removes the set Stratum would register.
 func TestRemoveContextsWithoutTheRecord(t *testing.T) {
 	fakeHost(t, Enforcing)
 	realRunPaths(t)
@@ -98,8 +91,6 @@ func TestRemoveContextsWithoutTheRecord(t *testing.T) {
 	}
 }
 
-// A host without semanage has nothing to remove; a failing removal is
-// reported.
 func TestRemoveContextsErrors(t *testing.T) {
 	fakeHost(t, Disabled)
 	p := newFakePolicy(t, el9)
@@ -123,9 +114,6 @@ func TestRemoveContextsErrors(t *testing.T) {
 	}
 }
 
-// The uninstall preview says contexts will go exactly when RemoveContexts
-// would delete some: with a record, and without one on a node labelled before
-// the record existed, but not when nothing of Stratum's is registered.
 func TestRegisteredMatchesWhatRemoveContextsDeletes(t *testing.T) {
 	fakeHost(t, Enforcing)
 	realRunPaths(t)

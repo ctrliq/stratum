@@ -17,22 +17,7 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// A worker picks its address by the rule every controller start uses:
-// --node-ip, then the address saved in node.yaml, then spec.network.nodeIP,
-// then $NODE_IP, then detection. A join resolves it with host.ResolveNodeIP
-// and has no saved address to offer. A restart never reads
-// spec.network.nodeIP, so it skips that step by resolving with
-// host.ResolveNodeIPWithoutConfig, and it offers the address it saved: the
-// bare `stratum up --worker` the reboot unit runs keeps that address, while a
-// restart the operator runs with --node-ip moves the worker and saves the new
-// address for every start after it.
-
-// stubNodeIPDetection answers address detection with addrs and records the
-// dual-stack argument of every call. hostDetectNodeIPs only detects: the
-// resolver (host.ResolveNodeIP on a join, host.ResolveNodeIPWithoutConfig on a
-// restart) weighs $NODE_IP before detection is reached, so a test fails on
-// where the worker's address came from, and never looks at this host's
-// interfaces.
+// The stub only detects; the resolver weighs $NODE_IP before detection is reached.
 func stubNodeIPDetection(t *testing.T, addrs string) *[]bool {
 	t.Helper()
 	var calls []bool
@@ -45,9 +30,7 @@ func stubNodeIPDetection(t *testing.T, addrs string) *[]bool {
 	return &calls
 }
 
-// captureWorkerOutput runs fn and returns what it printed. Standard output
-// and standard error go to one pipe, so a test pins what the operator is told
-// rather than which stream tells them.
+// One pipe for stdout and stderr pins what the operator is told, not which stream.
 func captureWorkerOutput(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -72,11 +55,7 @@ func captureWorkerOutput(t *testing.T, fn func()) string {
 	return <-read
 }
 
-// A restart the operator runs with --node-ip is the one time a worker's new
-// address is named: the reboot unit and a re-exec both run a bare `stratum up
-// --worker`. That restart must start the worker on the new address and save
-// it, or the next start quietly puts the kubelet back on the old one. Saving
-// the address must leave every other field of node.yaml as the join wrote it.
+// A bare restart must keep the moved address, or the next start reverts the kubelet.
 func TestWorkerRestartMovesToTheNodeIPFlagAndKeepsIt(t *testing.T) {
 	registerCISForTest(t)
 	redirectJoinDirs(t)
@@ -131,11 +110,7 @@ func TestWorkerRestartMovesToTheNodeIPFlagAndKeepsIt(t *testing.T) {
 	}
 }
 
-// The reboot unit's bare restart must keep the address the worker registered
-// with. $NODE_IP is whatever the environment of the shell or unit running the
-// restart says now, so the saved address outranks it, as it does on a
-// controller, and detection never runs. Older state records only the primary
-// address, which is then the saved one. Keeping the address writes nothing.
+// The saved address outranks $NODE_IP, which says only what the environment says now.
 func TestWorkerRestartKeepsTheSavedAddressOverTheNodeIPEnvironment(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -196,9 +171,7 @@ func TestWorkerRestartPinsTheNodeIPFlagMatchingLegacyState(t *testing.T) {
 	want := saved
 	want.KubeletNodeIP = saved.NodeIP
 
-	// Older state records only the primary address. Even when the flag
-	// matches it, the kubelet must receive the explicit address on this
-	// start and on the reboot unit's following bare restart.
+	// Older state records only the primary address; the kubelet still needs it pinned.
 	for _, opts := range []WorkerOptions{{NodeIP: saved.NodeIP}, {}} {
 		st, err := PrepareWorker(context.Background(), opts)
 		if err != nil {
@@ -243,10 +216,7 @@ func TestWorkerRestartRepeatsTheSingleIPFromADualStackJoin(t *testing.T) {
 	}
 }
 
-// A worker whose state records no address has none for its restart to keep,
-// so the restart resolves one by the same rule -- $NODE_IP, then detection --
-// and saves it. The reboot unit's next bare restart then keeps that address
-// instead of detecting again, perhaps a different one on a multi-NIC host.
+// A restart with no saved address resolves and saves one, so later restarts keep it.
 func TestWorkerRestartWithoutASavedAddressDetectsAndSavesOne(t *testing.T) {
 	redirectJoinDirs(t)
 	stubJoinHost(t, "w-8", "", nil)
@@ -282,11 +252,7 @@ func TestWorkerRestartWithoutASavedAddressDetectsAndSavesOne(t *testing.T) {
 	}
 }
 
-// A restart reads its config file only for spec.selinux, never for
-// spec.network.nodeIP, so when its state records no address and detection
-// fails, the error must send the operator to a source the restart reads --
-// --node-ip or $NODE_IP -- and not to spec.network.nodeIP, which it would
-// never see. The refused restart leaves node.yaml as it was.
+// A restart reads no spec.network.nodeIP, so the refusal must not name it.
 func TestWorkerRestartDetectionFailureNamesOnlySourcesARestartReads(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -338,13 +304,7 @@ func TestWorkerRestartDetectionFailureNamesOnlySourcesARestartReads(t *testing.T
 	}
 }
 
-// A dual-stack worker moved with --node-ip v4,v6 registers both addresses: its
-// primary address is the IPv4, and the kubelet is started with the pair. The
-// kubelet's --node-ip is rendered from the node state, so the roster built from
-// the state the restart returns, and from the one it saved for the next
-// start, must carry the new pair. A worker that joined with a pair but without
-// --dual-stack registered both families too, so it is moved by its pair as
-// well: the restart judges the stack by the addresses the worker registered.
+// The restart judges the stack by the addresses the worker registered.
 func TestWorkerRestartTakesADualStackNodeIPFlag(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -388,31 +348,22 @@ func TestWorkerRestartTakesADualStackNodeIPFlag(t *testing.T) {
 	}
 }
 
-// A restart saves the address it moves to, and the reboot unit's bare restarts
-// reuse it, so an address the kubelet cannot register must be refused before
-// it is saved: a --node-ip that is not an IP address, or one that drops or
-// adds an address family the worker registered with, would otherwise break a working worker
-// on this start and on every reboot after it. The refusal names what was
-// given, where it came from and the address the worker keeps, and node.yaml
-// keeps the address it had.
+// An unregistrable --node-ip must be refused before it is saved and reused at every boot.
 func TestWorkerRestartRefusesANodeIPItCannotRegister(t *testing.T) {
 	single := nodestate.NodeState{Role: "worker", Hostname: "w-8", NodeIP: "10.80.0.4", KubeletNodeIP: "10.80.0.4",
 		Server: "https://10.80.0.1:6443", PodCIDR: "10.82.0.0/16"}
 	dual := nodestate.NodeState{Role: "worker", Hostname: "w-8", NodeIP: "10.80.0.4", KubeletNodeIP: "10.80.0.4,fd80::4",
 		DualStack: true, Server: "https://10.80.0.1:6443", PodCIDR: "10.82.0.0/16"}
-	// A worker joined with a pair but without --dual-stack registered both
-	// families, and records only the pair.
+	// A worker joined with a pair but without --dual-stack registered both families.
 	pair := dual
 	pair.DualStack = false
-	// A worker whose state records no address resolves one at its restart and
-	// saves it, so a detected address is checked like a given one.
 	unaddressed := nodestate.NodeState{Role: "worker", Hostname: "w-8", Server: "https://10.80.0.1:6443", PodCIDR: "10.82.0.0/16"}
 	for _, tc := range []struct {
 		name   string
 		saved  nodestate.NodeState
 		nodeIP string
-		detect string   // what detection answers; "" answers 10.89.0.1
-		want   []string // each in the refusal
+		detect string
+		want   []string
 	}{
 		{
 			name: "an address that does not parse", saved: single, nodeIP: "10.80.0.300",
@@ -482,13 +433,7 @@ func TestWorkerRestartRefusesANodeIPItCannotRegister(t *testing.T) {
 	}
 }
 
-// Every refusal a restart can give comes before the restart changes anything.
-// A start that refuses, and says the worker keeps its saved node IP or pod
-// CIDR, must not have saved another setting it was given, or prepared the host
-// with that setting. Each case also carries a spec.selinux change, and the
-// legacy worker a pod CIDR to record, which a restart that went ahead would
-// save: after the refusal node.yaml is byte for byte what it was, and neither
-// the host preparation nor the firewall step has run.
+// A refused restart must not save one setting and then refuse another.
 func TestWorkerRestartRefusesBeforeItChangesAnything(t *testing.T) {
 	optOut := true
 	legacy := nodestate.NodeState{Role: "worker", Hostname: "w-8", NodeIP: "10.80.0.4", KubeletNodeIP: "10.80.0.4",
@@ -504,8 +449,8 @@ func TestWorkerRestartRefusesBeforeItChangesAnything(t *testing.T) {
 		name  string
 		saved nodestate.NodeState
 		opts  WorkerOptions
-		env   string // $NODE_IP
-		want  string // in the refusal
+		env   string
+		want  string
 	}{
 		{
 			name: "a --node-ip that does not parse", saved: legacy,
@@ -579,16 +524,13 @@ func TestWorkerRestartRefusesBeforeItChangesAnything(t *testing.T) {
 	}
 }
 
-// Every worker start says which node IP it runs on and where the address came
-// from, as every controller start does, so a worker that registered the wrong
-// NIC's address, or picked up a stale $NODE_IP, can be told from its own log.
-// A restart that keeps its saved address says so too.
+// The log line tells a worker on the wrong NIC's address or a stale $NODE_IP.
 func TestWorkerReportsItsNodeIPAndWhereItCameFrom(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		saved *nodestate.NodeState // nil: a join on a fresh host
+		saved *nodestate.NodeState
 		opts  WorkerOptions
-		env   string // $NODE_IP
+		env   string
 		want  string
 	}{
 		{
@@ -631,11 +573,7 @@ func TestWorkerReportsItsNodeIPAndWhereItCameFrom(t *testing.T) {
 	}
 }
 
-// A bare `stratum up --worker`, which the reboot unit runs, resumes from
-// node.yaml. When that file is there but cannot be read, the restart says so
-// and names it, rather than asking for the join credentials a first join
-// needs: joining again is a new registration, and what needs repairing is
-// the file.
+// An unreadable node.yaml needs repairing, not a new registration.
 func TestWorkerRestartReportsAStateItCannotRead(t *testing.T) {
 	redirectJoinDirs(t)
 	rec := stubJoinHost(t, "w-8", "10.89.0.1", nil)
@@ -659,23 +597,16 @@ func TestWorkerRestartReportsAStateItCannotRead(t *testing.T) {
 	}
 }
 
-// A join saves the address it resolved, and every later start reuses it, so a
-// join refuses an address the kubelet could not register before it touches
-// the host or the cluster: no directories, no host preparation, no CA
-// discovery, no trust files and no node.yaml. The refusal names the value and
-// where it came from. The stack is read from the value: a v4,v6 pair is
-// checked as a pair, and one address must be an IPv4 one. A join that main
-// accepted with a well-formed value still joins: a pair without --dual-stack,
-// and one IPv4 address with it.
+// A join checks the address before it touches the host or the cluster.
 func TestWorkerJoinRefusesANodeIPItCannotRegister(t *testing.T) {
 	join := WorkerOptions{Server: "https://10.80.0.1:6443", Token: "join-token-8", CAHash: "sha256:88"}
 	for _, tc := range []struct {
 		name   string
-		nodeIP string // --node-ip
-		config string // spec.network.nodeIP
-		env    string // $NODE_IP
-		detect string // what detection answers; "" answers 10.89.0.1
-		dual   bool   // --dual-stack
+		nodeIP string
+		config string
+		env    string
+		detect string
+		dual   bool
 		want   []string
 	}{
 		{name: "a --node-ip that is not an IP address", nodeIP: "not-an-ip",
@@ -742,12 +673,7 @@ func TestWorkerJoinRefusesANodeIPItCannotRegister(t *testing.T) {
 	}
 }
 
-// A join takes the address the operator gave it -- --node-ip, or the
-// spec.network.nodeIP that runUp passes in its place -- then $NODE_IP, then
-// detection, which asks for both address families only on a dual-stack join.
-// $NODE_IP is decided by the shared rule before detection is reached, as on a
-// controller. A join is a new registration, so an address an earlier join
-// saved on this host is not a source.
+// The shared precedence rule applies; a saved address is not a source on a join.
 func TestWorkerJoinNodeIPPrecedence(t *testing.T) {
 	const server = "https://10.80.0.1:6443"
 	join := WorkerOptions{Server: server, Token: "join-token-8", CAHash: "sha256:88"}
@@ -763,12 +689,12 @@ func TestWorkerJoinNodeIPPrecedence(t *testing.T) {
 
 	for _, tc := range []struct {
 		name       string
-		saved      *nodestate.NodeState // nil: no node.yaml on this host
+		saved      *nodestate.NodeState
 		opts       WorkerOptions
-		env        string // $NODE_IP
-		detect     string // what detection answers
+		env        string
+		detect     string
 		want       string
-		wantDetect []bool // the dual-stack argument of each detection call
+		wantDetect []bool
 	}{
 		{
 			name: "--node-ip outranks $NODE_IP and detection",

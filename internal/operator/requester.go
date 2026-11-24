@@ -1,26 +1,6 @@
 package operator
 
-// requester.go — requester-scoped HelmChart installs (the second tier of HelmChart
-// containment).
-//
-// The first tier confined a HelmChart's release NAMESPACE to the CR's own
-// namespace unless the CR lives in a privileged namespace. That bounds the blast
-// radius but cannot stop a chart's own templates from rendering a cluster-scoped
-// object (a ClusterRoleBinding) or an in-namespace RBAC object that escalates the
-// creator's own access — because the operator applies every rendered object with
-// its cluster-admin / system:masters identity, so the apiserver authorizer never
-// sees the actual requester.
-//
-// This closes that: a mutating admission webhook (webhook.go) stamps the creating
-// user onto the CR at admission, and the reconciler installs through an
-// IMPERSONATING client (impersonationConfig, wired into newActionConfig) so the
-// apiserver evaluates every applied object's RBAC as the requester. Impersonation
-// REPLACES the effective identity for authorization, so the operator's
-// system:masters no longer short-circuits the check.
-//
-// Reconciliation also fails closed on an absent or invalid stamp. Privileged
-// namespaces retain operator authority; all other installs and cleanup require
-// an authenticated requester. Admission itself uses failurePolicy: Fail.
+// Non-privileged installs run impersonated, so RBAC sees the requester, not system:masters.
 
 import (
 	"encoding/json"
@@ -32,36 +12,24 @@ import (
 )
 
 const (
-	// Admission records the writer of the desired spec; metadata-only writes
-	// preserve the previous stamp rather than adopting the controller identity.
-	annRequester       = group + "/requester"        // username
-	annRequesterUID    = group + "/requester-uid"    // uid (may be empty for some authenticators)
-	annRequesterGroups = group + "/requester-groups" // JSON array of group names
+	// metadata-only writes preserve the previous stamp rather than adopting the controller identity.
+	annRequester       = group + "/requester"
+	annRequesterUID    = group + "/requester-uid"
+	annRequesterGroups = group + "/requester-groups"
 )
 
-// requesterInfo is the identity captured at admission, decoded from the CR's
-// stamped annotations.
 type requesterInfo struct {
 	Username string
 	UID      string
 	Groups   []string
 }
 
-// impersonationRequired reports whether a HelmChart in crNS must install with the
-// requester's authority (true) or may install as the operator (false, for CRs in
-// an operator-configured privileged namespace — the bundled add-ons). It is the
-// exact complement of the cross-namespace privilege: a namespace trusted
-// to target other namespaces is trusted to install as the operator.
+// the complement of cross-namespace privilege: trusted to target others means trusted as operator.
 func impersonationRequired(crNS string, privileged []string) bool {
 	return !slices.Contains(privileged, crNS)
 }
 
-// requesterFromCR decodes the stamped requester identity + signature from a CR's
-// annotations (a pure decode; authenticity is checked by verifiedRequester). ok is
-// false when no requester username is recorded. A malformed groups annotation is
-// an error rather than a silent empty group set, because dropping the requester's
-// groups would evaluate RBAC against fewer grants than the requester actually
-// holds — a subtle, wrong, and hard-to-notice authorization result.
+// a malformed groups annotation errors: dropping groups would evaluate RBAC against fewer grants.
 func requesterFromCR(hc *unstructured.Unstructured) (info requesterInfo, sig string, ok bool, err error) {
 	ann := hc.GetAnnotations()
 	user := ann[annRequester]
@@ -77,13 +45,7 @@ func requesterFromCR(hc *unstructured.Unstructured) (info requesterInfo, sig str
 	return info, ann[annRequesterSig], true, nil
 }
 
-// verifiedRequester decodes the requester stamp AND verifies its webhook-authored
-// HMAC signature, bound to resource identity and desired spec. authentic is true only for a present,
-// well-formed, correctly-signed stamp — so an unstamped, malformed, forged, or
-// tampered stamp all come back authentic=false with a reason. A nil signer (the
-// key could not be loaded) verifies nothing and so fails closed. This is what
-// makes the stamp's PRESENCE meaningless on its own: only a signature the webhook
-// could have produced (with the cluster HMAC key tenants cannot read) is trusted.
+// only a signature the webhook could have produced is trusted; a nil signer fails closed.
 func verifiedRequester(obj *unstructured.Unstructured, signer *requesterSigner) (info requesterInfo, authentic bool, reason string) {
 	decoded, sig, ok, err := requesterFromCR(obj)
 	if err != nil {
@@ -97,24 +59,13 @@ func verifiedRequester(obj *unstructured.Unstructured, signer *requesterSigner) 
 		return requesterInfo{}, false, "requester-signing key unavailable, cannot verify the stamp"
 	}
 	ann := obj.GetAnnotations()
-	// A migrated stamp names the key that produced its v2 signature. When the
-	// v2 signature verifies it authenticates the admitted field policy and every
-	// admitted desired-state value under a named retained key. Only later fields
-	// equal to their schema defaults are outside that bound state.
 	if sigV2 := ann[annRequesterSigV2]; sigV2 != "" && ann[annRequesterKeyID] != "" {
 		keyID := ann[annRequesterKeyID]
 		key, known := signer.keyByID(keyID)
 		if known && signer.verifyV2(bindingV2(obj), decoded, sigV2, key) {
 			return decoded, true, ""
 		}
-		// Fallback for the mixed-version window: each control-plane node serves
-		// admission from its own webhook endpoint, and a pre-migration node's
-		// re-stamp refreshes only the legacy annotations, leaving the v2
-		// signature over an older binding beside it. The legacy MAC over the
-		// CURRENT binding is unforgeable under a retained key and proves the
-		// same identity and desired state the v2 stamp would have, so it
-		// authenticates the object; a genuinely tampered stamp fails both
-		// signatures and is refused below.
+		// a pre-migration node's re-stamp refreshes only the legacy signature; it proves the same state.
 		if signer.verifyCompatibleLegacy(obj, decoded, sig) {
 			return decoded, true, ""
 		}
@@ -124,20 +75,14 @@ func verifiedRequester(obj *unstructured.Unstructured, signer *requesterSigner) 
 		}
 		return requesterInfo{}, false, "requester stamp failed signature verification: neither the v2 signature under its named key nor the legacy signature matches the object's identity and desired state (forged or tampered)"
 	}
-	// Legacy (pre-migration) stamp: it names no key id, so try the whole
-	// retained key ring.
+	// a pre-migration stamp names no key id: try the whole retained key ring.
 	if !signer.verifyCompatibleLegacy(obj, decoded, sig) {
 		return requesterInfo{}, false, "requester stamp failed signature verification (forged or tampered)"
 	}
 	return decoded, true, ""
 }
 
-// impersonationConfig builds the rest.Config impersonation settings for a
-// requester. The group set MUST carry the requester's real groups: RBAC grants
-// bound to a group (a RoleBinding to system:authenticated, or a team group) only
-// apply when the impersonated identity claims that group, so replaying the
-// stamped groups is what makes group-scoped authorization behave as it would for
-// the requester making the request directly.
+// the real groups must be replayed, or group-scoped RBAC grants would not apply.
 func (r requesterInfo) impersonationConfig() rest.ImpersonationConfig {
 	return rest.ImpersonationConfig{
 		UserName: r.Username,
@@ -146,13 +91,6 @@ func (r requesterInfo) impersonationConfig() rest.ImpersonationConfig {
 	}
 }
 
-// installIdentity decides the identity a HelmChart's install/upgrade must run as.
-// A privileged-namespace CR installs as the operator (imp == nil), exactly as
-// before requester-scoped installs — that is how the bundled add-ons keep working. Every other CR
-// must carry an AUTHENTIC (webhook-signed) requester stamp and installs
-// impersonated; a missing, malformed, or forged stamp is a FAIL-CLOSED refusal
-// (refuse == true). Existing unsigned resources must acquire a new stamp through
-// a spec-changing admission before they can be installed.
 func installIdentity(hc *unstructured.Unstructured, privileged []string, signer *requesterSigner) (imp *rest.ImpersonationConfig, refuse bool, msg string) {
 	imp, authentic, reason := requesterIdentity(hc, privileged, signer)
 	if !authentic {
@@ -161,11 +99,7 @@ func installIdentity(hc *unstructured.Unstructured, privileged []string, signer 
 	return imp, false, ""
 }
 
-// uninstallIdentity never elevates an unverified tenant to operator authority.
-// It decides exactly as installIdentity does, but its refusal is worded for a
-// deleted CR: the caller keeps the finalizer, so besides a spec change (which
-// re-stamps the requester; the uninstall still targets the release recorded in
-// status) the way out is removing the finalizer, which skips the uninstall.
+// same decision as installIdentity; the wording offers the finalizer as the way out.
 func uninstallIdentity(hc *unstructured.Unstructured, privileged []string, signer *requesterSigner) (*rest.ImpersonationConfig, bool, string) {
 	imp, authentic, reason := requesterIdentity(hc, privileged, signer)
 	if !authentic {
@@ -174,10 +108,6 @@ func uninstallIdentity(hc *unstructured.Unstructured, privileged []string, signe
 	return imp, false, ""
 }
 
-// requesterIdentity is the decision installIdentity and uninstallIdentity share:
-// nil for a privileged namespace, the verified requester otherwise, or
-// authentic == false with verifiedRequester's reason when the stamp does not
-// verify.
 func requesterIdentity(hc *unstructured.Unstructured, privileged []string, signer *requesterSigner) (imp *rest.ImpersonationConfig, authentic bool, reason string) {
 	if !impersonationRequired(hc.GetNamespace(), privileged) {
 		return nil, true, ""
@@ -190,15 +120,7 @@ func requesterIdentity(hc *unstructured.Unstructured, privileged []string, signe
 	return &cfg, true, ""
 }
 
-// hccInstallAllowed guards the HelmChartConfig overlay path. A same-name HCC's
-// valuesContent is merged into the release, which installs under the HelmChart's
-// requester identity — so an HCC authored by a DIFFERENT principal would let that
-// principal apply values under the chart owner's authority, defeating
-// requester-scoped authorization. When an HCC contributes values to a
-// non-privileged chart, its stamp must therefore be authentic AND name the SAME
-// requester as the HelmChart. An HCC that contributes nothing (empty
-// valuesContent) is not checked. Privileged namespaces are exempt (operator
-// identity applies the whole merge anyway).
+// an overlay by another principal would apply values under the chart owner's authority.
 func hccInstallAllowed(hc *unstructured.Unstructured, hccValues string, hcc *unstructured.Unstructured, hcRequester requesterInfo, privileged []string, signer *requesterSigner) (refuse bool, msg string) {
 	if hccValues == "" || hcc == nil {
 		return false, ""

@@ -13,10 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/addons"
 )
 
-// The lifecycle integration check must retire a bundle through recorded intent,
-// not a hand deletion that the desired-generation gate deliberately refuses.
-// Exercise both cases against real storage and server-side apply with the actual
-// local-path bundle, without waiting for a kubelet, CNI, or Helm installation.
 func TestLocalPathPrunesOnlyAfterRecordedRemoval(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS is unset; run `make test-envtest`")
@@ -64,8 +60,6 @@ func TestLocalPathPrunesOnlyAfterRecordedRemoval(t *testing.T) {
 		t.Fatalf("initial bundle must create the StorageClass: %v", err)
 	}
 
-	// Reproduce the failed CI scenario: a local deletion leaves desired intent
-	// unchanged. It cannot authorize cluster-wide removal.
 	if err := os.RemoveAll(filepath.Join(dir, "local-path")); err != nil {
 		t.Fatal(err)
 	}
@@ -81,8 +75,6 @@ func TestLocalPathPrunesOnlyAfterRecordedRemoval(t *testing.T) {
 		t.Fatal("a refused pass changed the desired publication")
 	}
 
-	// A config-driven stratum up stages this reduced set and records storage
-	// disabled. A fresh operator must prune from the retained cluster inventory.
 	delete(bundles, "local-path/local-path.yaml")
 	staged.PublicationID = "storage-disabled"
 	staged.Digest = DigestBundles(bundles)

@@ -27,9 +27,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestCACertHash checks that CACertHash computes sha256(SubjectPublicKeyInfo) in
-// the "sha256:<hex>" form — the exact value clusterinfo.PinFor recomputes
-// on the joining node, so the two ends of the discovery handshake agree.
+// Checks the value clusterinfo.PinFor recomputes on the joining node agrees.
 func TestCACertHash(t *testing.T) {
 	version.PKIDir = t.TempDir()
 	if err := pki.GenerateAll("cp1", "10.0.0.5", nil); err != nil {
@@ -68,14 +66,7 @@ func TestRandStr(t *testing.T) {
 	}
 }
 
-// TestCreate_UsesTheClientItIsGiven pins that token.Create mints its
-// bootstrap-token Secret through the client it is given — the CLI hands it the
-// admin client, the MCP token_create handler the node connector's client — and
-// this test fails if Create builds its own client from admin.conf.
-// version.AdminConf points at a missing file, so a client built from it fails
-// before the first API call; the fake clientset is the only API the mint can
-// reach, and the fake's recorded actions are the proof the mint went through
-// it.
+// The fake clientset is the only API the mint can reach, so its recorded actions prove the client.
 func TestCreate_UsesTheClientItIsGiven(t *testing.T) {
 	version.PKIDir = t.TempDir()
 	if err := pki.GenerateAll("cp1", "10.0.0.5", nil); err != nil {
@@ -85,10 +76,7 @@ func TestCreate_UsesTheClientItIsGiven(t *testing.T) {
 	version.AdminConf = filepath.Join(t.TempDir(), "absent-admin.conf")
 	t.Cleanup(func() { version.AdminConf = oldConf })
 
-	// Nothing signs cluster-info on a fake cluster, so Create's signing
-	// post-condition cannot pass. Shorten the wait the vars exist to shorten,
-	// and expect that failure: the mint and every step before the wait still
-	// run, and the mint is what this pin asserts on.
+	// No fake signer exists, so expect the signing post-condition failure.
 	oldTimeout, oldInterval := waitForSigningTimeout, waitForSigningInterval
 	waitForSigningTimeout = 30 * time.Millisecond
 	waitForSigningInterval = time.Millisecond
@@ -125,14 +113,9 @@ func TestCreate_UsesTheClientItIsGiven(t *testing.T) {
 	}
 }
 
-// ── the stdout-guard retirement pins ─────────────────────────────────────────
-//
-// The mint's one print — the cluster-info signing wait on the control-plane
-// path — goes to the writer the front ends hand down, never to os.Stdout,
-// which on the MCP stdio transport is the JSON-RPC stream.
+// The mint's one print goes to the writer handed in, never to os.Stdout (the MCP stdio stream).
 
-// captureRealStdout captures the process's ACTUAL stdout while fn runs, so a
-// test can prove an operation left it alone.
+// captureRealStdout captures the process's actual stdout while fn runs.
 func captureRealStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -155,21 +138,12 @@ func captureRealStdout(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestCreate_TakesTheWriterTheFrontEndsHandIt pins the mint's signature at the
-// seam both front ends' deps.Create wrap: the writer comes first, so the CLI
-// can pass os.Stdout byte-identically and the MCP handler its capture buffer,
-// and the signing wait inside reaches one or the other. Compile-level: a
-// behavioural run needs a live signer budget this package deliberately has no
-// fake for.
+// Compile-level: a behavioural run needs a live signer this package has no fake for.
 func TestCreate_TakesTheWriterTheFrontEndsHandIt(t *testing.T) {
 	var _ func(io.Writer, kubernetes.Interface, string, time.Duration, bool, func(context.Context) error) (string, string, *metav1.OwnerReference, error) = Create
 }
 
-// TestWaitForClusterInfoSignature_WritesItsWaitingProgressToTheWriter pins the
-// wait's half of the convention: the writer comes right after the context, and
-// each "waiting for the control plane to sign cluster-info" report is written
-// there while os.Stdout stays clean. The fake signer publishes on its third
-// read, so the loop reports twice before the signature lands.
+// The writer comes right after the context; os.Stdout stays clean.
 func TestWaitForClusterInfoSignature_WritesItsWaitingProgressToTheWriter(t *testing.T) {
 	restoreInterval, restoreTimeout := waitForSigningInterval, waitForSigningTimeout
 	waitForSigningInterval, waitForSigningTimeout = 5*time.Millisecond, 40*time.Millisecond
@@ -194,9 +168,7 @@ func TestWaitForClusterInfoSignature_WritesItsWaitingProgressToTheWriter(t *test
 	}
 }
 
-// hashFor produces the reference pin through CACertHashFor, the same producer
-// CACertHash consumes, so the rows compare WHICH root is pinned, not a hash
-// spelling.
+// Rows compare which root is pinned, not a hash spelling.
 func hashFor(t *testing.T, name string) string {
 	t.Helper()
 	h, err := CACertHashFor(name)
@@ -206,14 +178,7 @@ func hashFor(t *testing.T, name string) string {
 	return h
 }
 
-// TestCACertHashPinsTheStagedRootThroughEveryRotationPhase pins which root a
-// minted token is pinned against at each phase of a CA rotation. The pin must
-// name the root the cluster still trusts after finalize: from trust-new on,
-// that is the staged root (ca-new), which finalize renames to the live ca.crt,
-// while idle and a completed rollback pin the live old root. A token pinned to
-// the old root during the rotation would fail its join after finalize; the
-// boundary states are built with real pki calls so the pins break if pki's
-// staged names or phase functions move.
+// The pin must name the root still trusted after finalize; states use real pki calls.
 func TestCACertHashPinsTheStagedRootThroughEveryRotationPhase(t *testing.T) {
 	fresh := func(t *testing.T) map[string]string {
 		t.Helper()
@@ -225,8 +190,7 @@ func TestCACertHashPinsTheStagedRootThroughEveryRotationPhase(t *testing.T) {
 		}
 		return map[string]string{"old": hashFor(t, "ca")}
 	}
-	// staged reaches trust-new and records both roots' pins while each still has
-	// its own file: the old root in ca.crt, the new in ca-new.crt.
+	// Records both roots' pins while each still has its own file.
 	staged := func(t *testing.T) map[string]string {
 		refs := fresh(t)
 		if err := pki.RotateCAMaterial(false); err != nil {
@@ -307,13 +271,7 @@ func TestCACertHashPinsTheStagedRootThroughEveryRotationPhase(t *testing.T) {
 
 var errMaintenanceLost = errors.New("maintenance lease lost")
 
-// TestCreateRefusesPublicationAfterLosingTheLease is the mid-helper regression
-// for the mint path: the fence's recheck rides inside the publication helpers,
-// so a lease lost while an intermediate call stalled refuses the next
-// ConfigMap write instead of publishing this node's trust snapshot over the
-// successor's. The recheck passes for the mint, then refuses; the
-// cluster-info kubeconfig write must never start, and the token Secret the
-// mint did create is revoked with the failure.
+// The recheck rides inside the publication helpers, so a stalled call cannot publish stale trust.
 func TestCreateRefusesPublicationAfterLosingTheLease(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	var checks atomic.Int32
@@ -327,8 +285,7 @@ func TestCreateRefusesPublicationAfterLosingTheLease(t *testing.T) {
 	if !errors.Is(err, errMaintenanceLost) {
 		t.Fatalf("Create = %v, want the lost-lease refusal from the publication step", err)
 	}
-	// The token the mint created is gone: the run reports failure, so the
-	// credential-lifecycle guarantee revokes it.
+	// A failed run leaves no credential behind.
 	secrets, serr := cs.CoreV1().Secrets("kube-system").List(context.Background(), metav1.ListOptions{})
 	if serr != nil || len(secrets.Items) != 0 {
 		t.Fatalf("bootstrap secrets after the refusal = %d (err %v); a failed run leaves no credential behind", len(secrets.Items), serr)

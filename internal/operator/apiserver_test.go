@@ -6,8 +6,6 @@ import (
 	"testing"
 )
 
-// TestNodeInternalIP: the address a control plane's Node reports is the one its
-// apiserver certificate carries, so that is what Cilium is pointed at.
 func TestNodeInternalIP(t *testing.T) {
 	node := func(addrs ...map[string]any) map[string]any {
 		list := make([]any, len(addrs))
@@ -37,14 +35,6 @@ func TestNodeInternalIP(t *testing.T) {
 	}
 }
 
-// TestResolveAPIServerSkipsWhenAControlPlaneHasNoAddress: a
-// labelled control plane whose InternalIP is momentarily missing must not be
-// dropped from the URL list, nor, as the only one, replaced by this leader's
-// own IP. Either re-renders Cilium and rolls every agent over a transient Node status.
-//
-// resolveAPIServer reads the deployer's dynamic client, so the tests reach it
-// through the shared deployFixture's reactor, so how the deployer holds that
-// client is a change to the fixture alone.
 func TestResolveAPIServerSkipsWhenAControlPlaneHasNoAddress(t *testing.T) {
 	t.Run("all addressed: every control plane, sorted", func(t *testing.T) {
 		r := deployFixture(t, cp("cp2", "10.0.0.12"), cp("cp1", "10.0.0.11"))

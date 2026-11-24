@@ -9,9 +9,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestSupervisorComparesItsBinaryWithTheInstalledOne: a supervisor is current
-// only while it runs the very file installed at StratumInstallPath. An upgrade
-// replaces that file, and the old supervisor keeps running the old inode.
 func TestSupervisorComparesItsBinaryWithTheInstalledOne(t *testing.T) {
 	dir := t.TempDir()
 	installed := filepath.Join(dir, "stratum")

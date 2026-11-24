@@ -30,9 +30,6 @@ import (
 
 const sessionKeyBytes = 32
 
-// dashboardSecrets keeps the Secrets the dashboard stack mounts: a serving
-// certificate from the dashboard CA, renewed before it ages out, when its names
-// change, or when that CA is replaced; and a session key, created once.
 type dashboardSecrets struct {
 	cs     kubernetes.Interface
 	signer func(ctx context.Context, dns, ips []string) (*pki.CA, error)
@@ -57,9 +54,7 @@ func newDashboardSecrets(cs kubernetes.Interface, vip, domain string) *dashboard
 	}
 }
 
-// reconcileDashboard runs only while the dashboard stack is staged and its
-// namespace exists; the deployer creates the namespace and prunes it with the
-// stack.
+// The deployer creates the dashboard namespace and prunes it with the stack.
 func reconcileDashboard(ctx context.Context, d *dashboardSecrets, manifestsDir string) {
 	if manifestsDir == "" {
 		return
@@ -86,9 +81,7 @@ func reconcileDashboard(ctx context.Context, d *dashboardSecrets, manifestsDir s
 	}
 }
 
-// checkToken replaces a sign-in token Secret whose token the apiserver no
-// longer accepts, as after a service-account key rotation; the token controller
-// fills the new one. A Secret the stack does not carry is left alone.
+// checkToken replaces a Secret whose token the apiserver rejects, as after a key rotation.
 func (d *dashboardSecrets) checkToken(ctx context.Context, name string) error {
 	if last, ok := d.tokenChecked[name]; ok && d.now().Sub(last) < tokenCheckInterval {
 		return nil
@@ -160,8 +153,7 @@ func (d *dashboardSecrets) ensureSessionKey(ctx context.Context) error {
 	return err
 }
 
-// withoutLegacyTokenMarks drops the legacy-token cleaner's labels, so a
-// replacement token is not born invalid.
+// A replacement token must not be born with the legacy-token cleaner's invalid mark.
 func withoutLegacyTokenMarks(labels map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range labels {
@@ -172,11 +164,7 @@ func withoutLegacyTokenMarks(labels map[string]string) map[string]string {
 	return out
 }
 
-// dashboardCA is the CA the dashboard's serving certificate chains to: its own,
-// kept in kube-system so the dashboard pod never holds it. Users install it as a
-// trust root, so it is name-constrained to the dashboard's names and the
-// subnets its addresses are in, and may sign no other CA: its key cannot vouch
-// for any other site. A CA that does not cover dns and ips is replaced.
+// Users install the dashboard CA as a trust root: it may sign no other CA; the pod never holds it.
 func dashboardCA(ctx context.Context, cs kubernetes.Interface, dns, ips []string) (*pki.CA, error) {
 	secrets := cs.CoreV1().Secrets(dashboardCANamespace)
 	where := dashboardCANamespace + "/" + addons.DashboardCASecret
@@ -225,9 +213,7 @@ func dashboardCA(ctx context.Context, cs kubernetes.Interface, dns, ips []string
 	return ca, nil
 }
 
-// caConstraints permits exactly the dashboard's names, and for its addresses the
-// subnet each sits in (a /24 or /64; loopback alone), so a node that joins the
-// same subnet does not need a new CA.
+// Ranges are /24 or /64, loopback host-only, so a node joining a covered subnet needs no new CA.
 func caConstraints(dns, ips []string) *pki.Constraints {
 	c := &pki.Constraints{DNS: slices.Clone(dns)}
 	seen := map[string]bool{}
@@ -252,7 +238,6 @@ func caConstraints(dns, ips []string) *pki.Constraints {
 	return c
 }
 
-// caShortfall says why ca cannot sign for dns and ips, or "" when it can.
 func caShortfall(ca *x509.Certificate, dns, ips []string) string {
 	if !ca.PermittedDNSDomainsCritical || !ca.MaxPathLenZero {
 		return "it is not name-constrained"
@@ -273,9 +258,6 @@ func caShortfall(ca *x509.Certificate, dns, ips []string) string {
 
 const dashboardCANamespace = "kube-system"
 
-// servingNames are the names and addresses users reach the dashboard on: its
-// Service, every node (it is a NodePort), the VIP, the publicURL host, and
-// localhost for a port-forward.
 func (d *dashboardSecrets) servingNames(ctx context.Context) (dns, ips []string, err error) {
 	svc := addons.DashboardName + "." + addons.DashboardNamespace
 	dns = []string{"localhost", addons.DashboardName, svc, svc + ".svc", svc + ".svc." + d.domain}
@@ -363,8 +345,6 @@ func (d *dashboardSecrets) ensureServingCert(ctx context.Context) error {
 	return err
 }
 
-// renewReason says why the certificate in certPEM has to be replaced, or ""
-// when it is current.
 func (d *dashboardSecrets) renewReason(certPEM []byte, ca *pki.CA, dns, ips []string) string {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
@@ -394,23 +374,9 @@ func (d *dashboardSecrets) renewReason(certPEM []byte, ca *pki.CA, dns, ips []st
 	return ""
 }
 
-// dashboardNodePortHeldKey annotates the dashboard Service when its NodePort is
-// held by another Service, naming the port and the holder.
 const dashboardNodePortHeldKey = "stratum.ciq.com/nodeport-held-by"
 
-// yieldDashboardNodePort serves the dashboard on a ClusterIP when another
-// Service already holds a NodePort its Service asks for. obj is one object the
-// deployer is about to apply; anything but the dashboard Service is left
-// alone. The apiserver refuses a Service whose NodePort is allocated, and a
-// refused object stops the apply of everything after it in the stack and
-// suspends pruning cluster-wide for the pass, so applying it as rendered would
-// leave the cluster with no dashboard Deployment and no pruning for as long as
-// the port is held. Instead obj becomes a ClusterIP Service, annotated with the
-// holder, and the message for the operator log is returned. The rendered
-// Service, NodePort included, applies again on the first pass after the port
-// is freed. A Service holds a NodePort through spec.ports, or through
-// spec.healthCheckNodePort, which a LoadBalancer Service with
-// externalTrafficPolicy Local takes from the same allocator.
+// A held NodePort stops the stack's apply; Services hold one via spec.ports or healthCheckNodePort.
 func yieldDashboardNodePort(ctx context.Context, cs kubernetes.Interface, obj *unstructured.Unstructured) (string, error) {
 	if !isDashboardService(obj) {
 		return "", nil
@@ -477,7 +443,6 @@ func yieldDashboardNodePort(ctx context.Context, cs kubernetes.Interface, obj *u
 		strings.Join(held, ", ")), nil
 }
 
-// isDashboardService reports whether obj is the dashboard stack's Service.
 func isDashboardService(obj *unstructured.Unstructured) bool {
 	return obj.GetKind() == "Service" && obj.GetNamespace() == addons.DashboardNamespace && obj.GetName() == addons.DashboardName
 }

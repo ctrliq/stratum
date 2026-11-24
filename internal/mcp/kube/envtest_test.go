@@ -16,20 +16,15 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube/kubetest"
 )
 
-// The envtest suite runs against a real kube-apiserver and etcd.
-
 func TestMain(m *testing.M) { os.Exit(kubetest.Main(m)) }
 
-// startEnv is a thin alias so the cases below read plainly.
 func startEnv(t *testing.T) *rest.Config { return kubetest.Start(t) }
 
-// writeEnvKubeconfig writes a kubeconfig for the running control plane.
 func writeEnvKubeconfig(t *testing.T, cfg *rest.Config, contexts ...string) string {
 	return kubetest.Kubeconfig(t, cfg, contexts...)
 }
 
-// connectEnv returns a Cluster built the way production builds one: from a
-// kubeconfig on disk.
+// Built the way production builds one: from a kubeconfig on disk.
 func connectEnv(t *testing.T, o Options) *Cluster {
 	t.Helper()
 	cfg := startEnv(t)
@@ -86,8 +81,6 @@ func TestEnvDiscovery(t *testing.T) {
 		}
 	}
 
-	// Subresources are filtered: "pods/log" is not independently listable and
-	// only confuses a model choosing a resource to query.
 	for _, r := range got {
 		if strings.Contains(r.Resource, "/") {
 			t.Errorf("subresource %q leaked into the resource list", r.Resource)
@@ -150,8 +143,7 @@ func TestEnvResolveResource(t *testing.T) {
 	})
 }
 
-// The round trip the generic toolset is built on: create through the typed
-// client, read it back through the dynamic one.
+// Create through the typed client, read back through the dynamic one.
 func TestEnvDynamicRoundTrip(t *testing.T) {
 	cl := connectEnv(t, Options{})
 	ctx := t.Context()
@@ -204,14 +196,11 @@ func TestEnvDynamicRoundTrip(t *testing.T) {
 	})
 }
 
-// The cap has to hold against a real apiserver, not just an httptest server:
-// the apiserver streams list responses with no Content-Length, which is the
-// path the unit test can only simulate.
+// The apiserver streams lists with no Content-Length, which a unit test only simulates.
 func TestEnvResponseLimitAgainstRealAPIServer(t *testing.T) {
 	cl := connectEnv(t, Options{MaxResponseBytes: 512})
 	ctx := t.Context()
 
-	// Namespaces alone exceed 512 bytes of JSON on any cluster.
 	_, err := cl.Typed.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if !IsResponseTooLarge(err) {
 		t.Fatalf("err = %v, want ErrResponseTooLarge", err)
@@ -232,8 +221,6 @@ func TestEnvContextSelection(t *testing.T) {
 		t.Fatalf("got %d contexts, want 2", len(contexts))
 	}
 
-	// Both contexts address the same envtest server, so the assertion is
-	// that naming either one connects — not that they differ.
 	for _, name := range []string{"first", "second"} {
 		cl, err := c.Cluster(name)
 		if err != nil {
@@ -247,7 +234,6 @@ func TestEnvContextSelection(t *testing.T) {
 		}
 	}
 
-	// Caching is per context, and must not hand back the wrong one.
 	a, _ := c.Cluster("first")
 	b, _ := c.Cluster("first")
 	if a != b {

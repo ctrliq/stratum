@@ -19,31 +19,10 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// What makes a node fresh, pending, established or unknown,
-// and what a corrected spec.network may do about it.
-//
-// A node's establishment is read from node state, CA and network files and
-// retained etcd data together: absence of node.yaml alone is not a first
-// boot. A first start that fails after the network resolution persisted
-// netconfig but before anything depends on it — no CA issued, no etcd member
-// data, no node.yaml — is PENDING, not established, so a retry with a
-// corrected spec.network converges onto the correction. Today it does not:
-// the saved netconfig wins once it exists, corrected CIDRs are ignored with a
-// warning, and a corrected domain is refused. A node with anything that
-// depends on the recorded network — the cluster CA, retained etcd data, or
-// node.yaml — is ESTABLISHED, and its recorded network wins as before. A node
-// state that exists but cannot be read is UNKNOWN, and refused as before.
-
-// errPartialStart is the part-way failure of the first start: after the
-// network resolution saved netconfig (and whatever records the preparation as
-// partial), at the certificate step, before SaveState ran.
+// The part-way failure: after netconfig persisted, at the certificate step.
 var errPartialStart = errors.New("first start failed at the certificate step")
 
-// prepareFixture points every path the establishment decision reads at empty
-// temporary ones — the node state dir, the PKI dir with the netconfig and
-// encryption config inside it, and the etcd data dir — and stands in for the
-// hostname. Nothing on them is established: each test creates exactly the
-// evidence it names.
+// Points every establishment decision's paths at empty temp dirs.
 func prepareFixture(t *testing.T) {
 	t.Helper()
 	origConf, origPKI := version.K8sConfDir, version.PKIDir
@@ -59,20 +38,14 @@ func prepareFixture(t *testing.T) {
 	version.EncryptionConfigPath = filepath.Join(version.PKIDir, "encryption-config.yaml")
 	version.NetConfigPath = filepath.Join(version.PKIDir, "netconfig")
 	version.EtcdDataDir = filepath.Join(t.TempDir(), "etcd")
-	// The etcd data lock lives beside the data dir (etcddata.lockPath), so a
-	// test taking the real lock needs it out of the host's paths too.
+	// The etcd data lock lives beside the data dir; redirect it off the host too.
 	version.DataDir = filepath.Join(t.TempDir(), "data")
 	oldHostname := hostHostname
 	t.Cleanup(func() { hostHostname = oldHostname })
 	hostHostname = func() (string, error) { return "cp1", nil }
 }
 
-// holdDataLock takes the real etcd data lock for the redirected data dir and
-// returns the release a caller holds across preparation — the capability
-// `stratum up` holds and PrepareController's save writes under. The lock is
-// per-test: a test that prepares twice (a start, then a retry) holds it across
-// both, the way one `stratum up` does. Cleanup releases it, so a test that
-// deadlocks the owner's writers fails loudly.
+// Takes the real etcd data lock and holds it across the test's prepares.
 var heldDataLocks sync.Map // *testing.T -> func()
 
 func holdDataLock(t *testing.T) func() {
@@ -92,9 +65,7 @@ func holdDataLock(t *testing.T) func() {
 	return release
 }
 
-// establishCA stands in for an issued cluster CA: certificates name the
-// recorded network, so a node holding one is established whatever its
-// node.yaml says.
+// An issued CA is establishment: certificates name the recorded network.
 func establishCA(t *testing.T) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(version.PKIDir, "ca.crt"), []byte("test cluster CA"), 0o600); err != nil {
@@ -102,9 +73,6 @@ func establishCA(t *testing.T) {
 	}
 }
 
-// establishEtcdData stands in for etcd member data etcd itself wrote. Only
-// its presence is establishment: the database's layout belongs to etcd, and
-// no network value is read from it.
 func establishEtcdData(t *testing.T) {
 	t.Helper()
 	path := filepath.Join(version.EtcdDataDir, "member", "snap", "db")
@@ -116,9 +84,6 @@ func establishEtcdData(t *testing.T) {
 	}
 }
 
-// startController runs PrepareController against a stand-in assembly that
-// runs the real ResolveNet and BeforeCerts hooks PrepareController wires and
-// then reports startErr (nil for a start that reaches SaveState).
 func startController(t *testing.T, cfg *ClusterConfig, choice host.NodeIPChoice, startErr error) error {
 	t.Helper()
 	saved := assembleNode
@@ -139,9 +104,6 @@ func startController(t *testing.T, cfg *ClusterConfig, choice host.NodeIPChoice,
 	return err
 }
 
-// runFailedFirstStart runs the failed first start and checks the world it leaves:
-// netconfig persisted with the first spec, and no node.yaml, which is written
-// only after the whole assembly succeeds.
 func runFailedFirstStart(t *testing.T, cfg *ClusterConfig, choice host.NodeIPChoice) {
 	t.Helper()
 	if err := startController(t, cfg, choice, errPartialStart); err == nil || !strings.Contains(err.Error(), errPartialStart.Error()) {
@@ -152,12 +114,6 @@ func runFailedFirstStart(t *testing.T, cfg *ClusterConfig, choice host.NodeIPCho
 	}
 }
 
-// TestRetryWithACorrectedNetworkConvergesOnAPartialFirstStart is the recovery
-// acceptance: a retry with a corrected spec.network after a failed first
-// start converges onto the correction, because no live or retained cluster
-// state depends on the first start's recorded values. node.yaml records the
-// corrected CIDRs and domain with a fresh single-member membership, netconfig
-// is rewritten to them, and the node is established from then on.
 func TestRetryWithACorrectedNetworkConvergesOnAPartialFirstStart(t *testing.T) {
 	const podA, svcA, domainA = "10.42.0.0/16", "10.43.0.0/16", "first.internal"
 	const podB, svcB, domainB = "10.99.0.0/16", "10.98.0.0/16", "second.internal"
@@ -181,8 +137,6 @@ func TestRetryWithACorrectedNetworkConvergesOnAPartialFirstStart(t *testing.T) {
 		t.Errorf("node.yaml after the retry records pod %q, service %q, domain %q; want the corrected %q, %q, %q",
 			saved.PodCIDR, saved.ServiceCIDR, saved.ClusterDomain, podB, svcB, domainB)
 	}
-	// The missing node.yaml was still the ordinary first boot for the address
-	// and the membership: the corrected network changes neither.
 	if saved.NodeIP != choice.IP || saved.KubeletNodeIP != choice.IP {
 		t.Errorf("node.yaml after the retry records %q/%q, want the resolved %q", saved.NodeIP, saved.KubeletNodeIP, choice.IP)
 	}
@@ -194,9 +148,6 @@ func TestRetryWithACorrectedNetworkConvergesOnAPartialFirstStart(t *testing.T) {
 	if b, err := os.ReadFile(version.NetConfigPath); err != nil || string(b) != correctedNetconfig {
 		t.Errorf("netconfig after the retry = %q, %v; want the corrected %q", b, err, correctedNetconfig)
 	}
-
-	// The retry established the node: a further start keeps the network it
-	// converged onto.
 	if err := startController(t, corrected, choice, nil); err != nil {
 		t.Fatalf("the start after the retry: %v", err)
 	}
@@ -205,11 +156,6 @@ func TestRetryWithACorrectedNetworkConvergesOnAPartialFirstStart(t *testing.T) {
 	}
 }
 
-// TestRetryAdoptsTheCorrectedFieldsOfAPendingNode works the same acceptance
-// field by field: a correction usually fixes the one value the deployer
-// mistyped, and every field the retry leaves alone keeps the recorded one.
-// Nothing here depends on the recorded network, so a corrected field is
-// adopted and persisted rather than ignored or refused.
 func TestRetryAdoptsTheCorrectedFieldsOfAPendingNode(t *testing.T) {
 	const podA, svcA, domainA = "10.42.0.0/16", "10.43.0.0/16", "first.internal"
 	for _, tc := range []struct {
@@ -251,21 +197,11 @@ func TestRetryAdoptsTheCorrectedFieldsOfAPendingNode(t *testing.T) {
 	}
 }
 
-// TestCorrectedNetworkRefusedOnAnEstablishedNode is the refusal acceptance:
-// the corrected-network retry succeeds only for a proven-fresh node. A node
-// holding anything that depends on the recorded network — node.yaml with a
-// membership, the cluster CA, or retained etcd data, each with node.yaml
-// absent — is established, not fresh: a corrected cluster domain is refused
-// with both named, and corrected CIDRs never take (the recorded ranges win,
-// as on any other established start).
 func TestCorrectedNetworkRefusedOnAnEstablishedNode(t *testing.T) {
 	const pod, svc, domain = "10.42.0.0/16", "10.43.0.0/16", "cluster.internal"
 	const podB, svcB = "10.99.0.0/16", "10.98.0.0/16"
 	for _, tc := range []struct {
-		name string
-		// establish creates the one artifact that makes the node established
-		// and returns the node state a real start would have loaded (nil when
-		// node.yaml is absent, which alone must not make the node fresh).
+		name        string
 		establish   func(t *testing.T) *NodeState
 		recordedPod string
 		recordedSvc string
@@ -296,8 +232,6 @@ func TestCorrectedNetworkRefusedOnAnEstablishedNode(t *testing.T) {
 			prepareFixture(t)
 			prev := tc.establish(t)
 
-			// A corrected cluster domain is refused, both domains named, and
-			// nothing is written.
 			_, err := resolveNetConfig(Network{PodCIDR: tc.recordedPod, ServiceCIDR: tc.recordedSvc, ClusterDomain: "other.internal"}, prev)
 			if err == nil || !strings.Contains(err.Error(), "other.internal") || !strings.Contains(err.Error(), tc.recordedDm) {
 				t.Errorf("a corrected cluster domain on an established node = %v; want a refusal naming both %q and %q",
@@ -307,8 +241,7 @@ func TestCorrectedNetworkRefusedOnAnEstablishedNode(t *testing.T) {
 				t.Errorf("the refused domain left a netconfig behind: %v", statErr)
 			}
 
-			// Corrected CIDRs never take: the recorded ranges win, and they
-			// are what gets persisted.
+			// Corrected CIDRs never take; the recorded ranges win.
 			netc, err := resolveNetConfig(Network{PodCIDR: podB, ServiceCIDR: svcB, ClusterDomain: tc.recordedDm}, prev)
 			if err != nil {
 				t.Fatalf("the retry with corrected CIDRs: %v", err)
@@ -328,10 +261,6 @@ func TestCorrectedNetworkRefusedOnAnEstablishedNode(t *testing.T) {
 	}
 }
 
-// TestPrepareControllerRefusesAnUnreadableNodeState pins the UNKNOWN state: a
-// node state that exists but cannot be read belongs to a node whose
-// membership and network cannot be seen, so nothing is guessed and nothing is
-// written — the start refuses before the network resolution runs.
 func TestPrepareControllerRefusesAnUnreadableNodeState(t *testing.T) {
 	prepareFixture(t)
 	if err := os.WriteFile(filepath.Join(version.K8sConfDir, "node.yaml"), []byte("{not yaml"), 0o600); err != nil {

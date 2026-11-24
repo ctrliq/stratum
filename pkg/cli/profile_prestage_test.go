@@ -11,9 +11,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// An unregistered profile is refused before the payload is staged or the
-// SELinux labels are forgotten, from whichever place the start would read
-// it: the flag, a control plane's config, or the saved state.
+// refused before the payload is staged or the SELinux labels are forgotten.
 func TestPreStageProfileRefusesAnUnregisteredProfileFromEverySource(t *testing.T) {
 	registerCISForTest(t)
 	dir := t.TempDir()
@@ -70,9 +68,7 @@ func TestPreStageProfileRefusesAnUnregisteredProfileFromEverySource(t *testing.T
 	}
 }
 
-// The wiring: a worker restart whose saved state names a profile this binary
-// does not register stops in runUp before the join, so nothing is staged and
-// no state is touched.
+// the refusal happens in runUp before the join, so nothing is staged and no state changes.
 func TestRunUpWorkerRefusesAnUnregisteredSavedProfileBeforeTheJoin(t *testing.T) {
 	registerCISForTest(t)
 	saved := &cluster.NodeState{Role: "worker", Hostname: "w1", Server: "https://cp:6443", Profile: "stig"}

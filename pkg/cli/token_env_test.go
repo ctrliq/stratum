@@ -7,11 +7,7 @@ import (
 	"testing"
 )
 
-// TestResolveToken pins the precedence and, more importantly, that the
-// environment variable is read at all. The original defect was not a wrong
-// precedence: it was a documented mechanism that no code implemented, so an
-// operator who followed the printed advice got an empty token and a failed
-// join.
+// Pins the precedence and, more importantly, that the env var is read at all.
 func TestResolveToken(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "token")
@@ -48,9 +44,7 @@ func TestResolveToken(t *testing.T) {
 	}
 }
 
-// An unreadable --token-file must fail loudly rather than falling through to the
-// environment: silently joining with a different credential than the operator
-// named is worse than refusing.
+// An unreadable --token-file must fail rather than silently join with a different credential.
 func TestResolveTokenUnreadableFileIsAnError(t *testing.T) {
 	t.Setenv(tokenEnvVar, "env-token")
 	got, err := resolveToken("", filepath.Join(t.TempDir(), "absent"))
@@ -62,10 +56,7 @@ func TestResolveTokenUnreadableFileIsAnError(t *testing.T) {
 	}
 }
 
-// TestTokenGuidanceNamesOnlyWiredMechanisms is the guard that would have caught
-// the unwired-env-var defect. Every mechanism the worker guidance recommends
-// must actually be implemented — the defect was a true-looking sentence with
-// nothing behind it.
+// Every mechanism the guidance recommends must actually be implemented.
 func TestTokenGuidanceNamesOnlyWiredMechanisms(t *testing.T) {
 	// The env var the guidance names must be the one resolveToken reads.
 	t.Setenv(tokenEnvVar, "wired")

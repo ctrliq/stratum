@@ -72,8 +72,7 @@ func servingCertFor(t *testing.T, ca *testCA, pub crypto.PublicKey, s servingSpe
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-// writeServingPair lays out a kubelet cert dir the way the kubelet's
-// certificate manager does: a timestamped pair and the current symlink.
+// writeServingPair lays out the dir the way the kubelet's certificate manager does.
 func writeServingPair(t *testing.T, dir string, certPEM []byte) (current, target string) {
 	t.Helper()
 	current = filepath.Join(dir, pki.KubeletServingCurrent)
@@ -225,10 +224,6 @@ func TestRenewKubeletServingCert(t *testing.T) {
 	}
 }
 
-// TestKubeletServingSwapOnlyOnSuccess runs the renewal against a real cert dir
-// and the real store: a CSR that is never approved leaves the kubelet's current
-// serving pair exactly as it was, and an approved one swaps the current link
-// to a new pair while keeping the previous file.
 func TestKubeletServingSwapOnlyOnSuccess(t *testing.T) {
 	start := time.Now().Truncate(time.Second)
 	oldCA := caStarting(t, "ca", start.Add(-48*time.Hour))
@@ -308,8 +303,6 @@ func TestCheckServingCertSurvives(t *testing.T) {
 	}
 }
 
-// The finalize call site: a worker whose client cert was renewed but whose
-// serving cert is still old-signed must abort before any trust file changes.
 func TestWorkerFinalizeRefusesOldSignedServingCert(t *testing.T) {
 	oldCA, newCA := newTestCA(t, "ca"), newTestCA(t, "ca")
 	url := clusterInfo(t, newCA.serving(t, []net.IP{net.ParseIP("127.0.0.1")}), bundle(newCA))
@@ -474,13 +467,10 @@ func TestCheckKubeletServingTrusted(t *testing.T) {
 	}
 }
 
-// promotedControlPlane lays out a control plane past sign-new: the new root
-// signs and ca-bundle.crt still holds the old one too.
 func promotedControlPlane(t *testing.T) *pki.CA {
 	t.Helper()
 	prep(t)
-	// newestCA tells the roots apart by NotBefore, which has one-second
-	// resolution.
+	// newestCA tells the roots apart by NotBefore, which has one-second resolution.
 	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(1100 * time.Millisecond)))
 	if err := pki.RotateCAMaterial(false); err != nil {
 		t.Fatal(err)
@@ -501,18 +491,13 @@ func promotedControlPlane(t *testing.T) *pki.CA {
 	return newRoot
 }
 
-// kubeletRestarts counts the kubelet restarts a stubbed finalize renewal asks
-// for, and fails them with err when it is set.
 type kubeletRestarts struct {
 	n   int
 	err error
-	// servingNew is whether the running kubelet serves a new-CA cert: it
-	// changes only when a restart succeeds, to whatever pair is on disk then.
+
 	servingNew bool
 }
 
-// stubFinalizeRenewal points the finalize renewal at certDir and at request,
-// records kubelet restarts, and writes kubelet.conf.
 func stubFinalizeRenewal(t *testing.T, certDir, kubeletConf string, request kubeletRequest) *kubeletRestarts {
 	t.Helper()
 	savedArgs, savedRequest, savedRestart, savedConf, savedKC := kubeletArgs, requestServingCert, restartKubelet, version.K8sConfDir, version.KubeconfigDir
@@ -629,8 +614,6 @@ func TestCPRenewServingCert(t *testing.T) {
 	}
 }
 
-// A renewed serving cert the kubelet could not be restarted onto must refuse
-// finalize: until the restart the kubelet still serves the old-CA cert.
 func TestCPFinalizeRefusesWhenTheKubeletCannotRestart(t *testing.T) {
 	newRoot := promotedControlPlane(t)
 	certDir := t.TempDir()
@@ -649,8 +632,6 @@ func TestCPFinalizeRefusesWhenTheKubeletCannotRestart(t *testing.T) {
 	}
 }
 
-// A CIS control plane whose serving cert cannot be renewed must not narrow its
-// trust: the apiservers would then refuse its kubelet.
 func TestCPFinalizeRefusesWhenServingRenewalFails(t *testing.T) {
 	promotedControlPlane(t)
 	certDir := t.TempDir()
@@ -674,9 +655,6 @@ func TestCPFinalizeRefusesWhenServingRenewalFails(t *testing.T) {
 	}
 }
 
-// A finalize whose kubelet restart failed after the renewal must restart the
-// kubelet when it is retried: the renewal is then a no-op, but the running
-// kubelet still serves the old-CA cert it loaded at its last start.
 func TestCPRenewServingCertRestartsOnARetryAfterAFailedRestart(t *testing.T) {
 	newRoot := promotedControlPlane(t)
 	certDir := t.TempDir()
@@ -756,9 +734,6 @@ func TestAbandonCSR(t *testing.T) {
 	}
 }
 
-// A restart proves only that a new kubelet process exists. One that still
-// serves no new-CA cert afterwards must refuse finalize, since the cluster
-// preflight skips CIS control planes and nothing else would catch it.
 func TestCPFinalizeRefusesWhenTheRestartedKubeletServesNoNewCACert(t *testing.T) {
 	newRoot := promotedControlPlane(t)
 	certDir := t.TempDir()

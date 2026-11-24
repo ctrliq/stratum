@@ -9,9 +9,7 @@ import (
 	"testing"
 )
 
-// Every staged member is labelled for its destination while still under its
-// temp name, so a staged binary is never visible with the label the data
-// directory hands a new file.
+// A staged binary must never be visible under the data directory's default label.
 func TestStageLabelsEachMemberBeforeTheRename(t *testing.T) {
 	exe := appendZip(t, map[string]string{
 		"bin/containerd":            "containerd",
@@ -42,7 +40,6 @@ func TestStageLabelsEachMemberBeforeTheRename(t *testing.T) {
 	}
 }
 
-// A member that cannot be labelled is not staged: the old binary stays.
 func TestStageStopsOnALabelFailure(t *testing.T) {
 	exe := appendZip(t, map[string]string{"bin/runc": "new runc"})
 	root := t.TempDir()

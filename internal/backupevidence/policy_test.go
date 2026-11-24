@@ -17,10 +17,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// noSnapshotConf pins the conf seam to the no-file case: the cluster-config
-// base comes back untouched and the file supplied nothing. Every test pins
-// it, because the real seam reads the fixed /etc/stratum path, which a test
-// must not touch.
+// The real seam reads a fixed host path a test must not touch, so every test pins it.
 func noSnapshotConf(t *testing.T) {
 	t.Helper()
 	old := loadSnapshotConf
@@ -28,8 +25,6 @@ func noSnapshotConf(t *testing.T) {
 	loadSnapshotConf = func(_ context.Context, base etcdsnap.Config) (etcdsnap.Config, bool, error) { return base, false, nil }
 }
 
-// snapshotConfSupplies pins the conf seam to a file that exists and wins
-// outright, the way etcdsnap.LoadConfigOr resolves one.
 func snapshotConfSupplies(t *testing.T, c etcdsnap.Config) {
 	t.Helper()
 	old := loadSnapshotConf
@@ -37,9 +32,6 @@ func snapshotConfSupplies(t *testing.T, c etcdsnap.Config) {
 	loadSnapshotConf = func(context.Context, etcdsnap.Config) (etcdsnap.Config, bool, error) { return c, true, nil }
 }
 
-// unreadableSnapshotConf pins the conf seam to an existing file whose read
-// fails: the built-in defaults come back beside the error, exactly what
-// etcdsnap.LoadConfigOr returns for one.
 func unreadableSnapshotConf(t *testing.T) {
 	t.Helper()
 	old := loadSnapshotConf
@@ -49,9 +41,6 @@ func unreadableSnapshotConf(t *testing.T) {
 	}
 }
 
-// recordedConfig writes a cluster config and pins the node-state seam to a
-// controller started with it — what `stratum up --config` records via the
-// node state. It returns the config's path.
 func recordedConfig(t *testing.T, y string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "stratum.yaml")
@@ -66,11 +55,6 @@ func recordedConfig(t *testing.T, y string) string {
 	return p
 }
 
-// The controller's recorded config file (`stratum up --config`) decides the
-// policy, and spec.snapshots.dir decides the directory — the same directory
-// the scheduled loop writes to. This test runs the real node-state read and
-// the real cluster config parse, so the path resolution is exercised end to
-// end, not through a stub.
 func TestPolicyHonorsTheControllersCustomConfigAndSnapshotDir(t *testing.T) {
 	oldConf := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()
@@ -107,8 +91,6 @@ func TestPolicyHonorsTheControllersCustomConfigAndSnapshotDir(t *testing.T) {
 	}
 }
 
-// A node whose config sets retention but no S3 target keeps its snapshots
-// local-only.
 func TestPolicyIsLocalOnlyWithoutARemoteTarget(t *testing.T) {
 	recordedConfig(t, "spec:\n  snapshots:\n    retain: 3\n")
 	noSnapshotConf(t)
@@ -122,10 +104,6 @@ func TestPolicyIsLocalOnlyWithoutARemoteTarget(t *testing.T) {
 	}
 }
 
-// The copy requirement comes from the effective S3 target: a bucket in the
-// cluster config makes every scheduled snapshot require a remote copy, and
-// an existing snapshot.conf wins outright in both directions — it can add a
-// target the cluster config lacks and remove one it has.
 func TestPolicyRequiresRemoteCopiesFromTheEffectiveTarget(t *testing.T) {
 	t.Run("cluster config target", func(t *testing.T) {
 		recordedConfig(t, "spec:\n  snapshots:\n    s3:\n      bucket: offload\n")
@@ -156,8 +134,6 @@ func TestPolicyRequiresRemoteCopiesFromTheEffectiveTarget(t *testing.T) {
 	})
 }
 
-// spec.snapshots.disabled means the controller never starts the snapshot
-// loop. The rest of the policy still reports what is configured beside it.
 func TestPolicyIsDisabledWhenSnapshotsAreDisabled(t *testing.T) {
 	recordedConfig(t, "spec:\n  snapshots:\n    disabled: true\n    dir: /srv/snaps\n")
 	noSnapshotConf(t)
@@ -177,8 +153,6 @@ func TestPolicyIsDisabledWhenSnapshotsAreDisabled(t *testing.T) {
 	}
 }
 
-// Nothing configured anywhere: the loop still runs, on the built-in
-// defaults, and every value says where it came from.
 func TestPolicyUnconfiguredRunsOnTheBuiltInDefaults(t *testing.T) {
 	recordedConfig(t, "spec: {}\n")
 	noSnapshotConf(t)
@@ -204,12 +178,6 @@ func TestPolicyUnconfiguredRunsOnTheBuiltInDefaults(t *testing.T) {
 	}
 }
 
-// A cluster config that cannot be read — corrupt, or one the controller
-// recorded and someone deleted — leaves the schedule unknown: the
-// controller keeps running with the config it was started with, and no
-// default threshold is invented for what cannot be read. A readable
-// snapshot.conf still supplies retention and the copy target, because it
-// wins outright over the cluster config.
 func TestPolicyIsUnknownWhenTheClusterConfigCannotBeRead(t *testing.T) {
 	t.Run("corrupt config", func(t *testing.T) {
 		recordedConfig(t, "spec: [not a mapping\n")
@@ -280,12 +248,6 @@ func TestPolicyIsUnknownWhenTheClusterConfigCannotBeRead(t *testing.T) {
 	})
 }
 
-// An unreadable snapshot.conf is a WARN, not an invented policy: the loop
-// still takes snapshots but prunes nothing and uploads nothing, so no
-// retention threshold and no copy requirement are reported — not the
-// built-in defaults, not the cluster config's values. What only the cluster
-// config carries (schedule, directory, disabled state) stays resolved,
-// because the directory never comes from the conf.
 func TestPolicyUnreadableConfIsAWarnAndNeverInventsThresholds(t *testing.T) {
 	recordedConfig(t, "spec:\n  snapshots:\n    retain: 3\n    intervalHours: 24\n    dir: /srv/snaps\n    s3:\n      bucket: offload\n")
 	unreadableSnapshotConf(t)

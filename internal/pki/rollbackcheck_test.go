@@ -29,9 +29,6 @@ func pkiListing(t *testing.T) []string {
 	return names
 }
 
-// RollbackCheck answers what RollbackCA would do and touches nothing: a clean
-// staged rotation can roll back; a rotation whose old key is gone, or one
-// started with --force, cannot, and the refusal names why.
 func TestRollbackCheckAnswersWithoutChangingAnything(t *testing.T) {
 	t.Run("a clean staged rotation", func(t *testing.T) {
 		genInto(t)
@@ -83,9 +80,6 @@ func TestRollbackCheckAnswersWithoutChangingAnything(t *testing.T) {
 	})
 }
 
-// A rollback target is the signers the rollback would leave live: the old ones
-// from trust-new until finalize, and the new ones after it, when the backups
-// are gone, so a finalized control plane's target differs from the others'.
 func TestRollbackTargetIsTheOldSignersUntilFinalize(t *testing.T) {
 	genInto(t)
 	before := RollbackTarget()

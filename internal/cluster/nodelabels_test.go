@@ -13,9 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// A first boot's kubelet starts before its Node registers, so the kubelet
-// hook finds nothing to label: the node-registered task labels the node with
-// its own state on the tick that finds it registered, once, and holds.
 func TestNodeRegisteredTaskLabelsTheOwnNodeOnceItRegisters(t *testing.T) {
 	var checks atomic.Int32
 	stubNodeTask(t, time.Millisecond, time.Second, "cp1", func(context.Context, string) bool { return checks.Add(1) >= 3 })
@@ -52,8 +49,6 @@ func TestNodeRegisteredTaskLabelsTheOwnNodeOnceItRegisters(t *testing.T) {
 	}
 }
 
-// A node that never registers is never labelled: the give-up is final for
-// the run.
 func TestNodeRegisteredTaskLabelsNothingWhenTheNodeNeverRegisters(t *testing.T) {
 	stubNodeTask(t, time.Millisecond, 20*time.Millisecond, "cp1", func(context.Context, string) bool { return false })
 	var labels atomic.Int32
@@ -66,8 +61,6 @@ func TestNodeRegisteredTaskLabelsNothingWhenTheNodeNeverRegisters(t *testing.T) 
 	}
 }
 
-// stubOwnLabels replaces the node's label reconcile with fail, recording each
-// call's arguments, and paces retries every millisecond.
 func stubOwnLabels(t *testing.T, warnAfter time.Duration, fail func(call int32) error) *atomic.Int32 {
 	t.Helper()
 	workerScratchHost(t)
@@ -90,9 +83,6 @@ func stubOwnLabels(t *testing.T, warnAfter time.Duration, fail func(call int32) 
 var labelledNode = &NodeState{Hostname: "w1", NodeLabels: map[string]string{"zone": "a"},
 	RuntimeHandlers: map[string]string{"kata": "/usr/bin/kata", "gpu": "/usr/bin/nvidia-container-runtime"}}
 
-// One failed label call must not leave a node without its handler labels
-// until its next kubelet start: labelOwnNode retries until the labels land,
-// and says so, warning once they have been failing for bindingWarnAfter.
 func TestLabelOwnNodeRetriesAFailedLabelUntilItLands(t *testing.T) {
 	calls := stubOwnLabels(t, 0, func(call int32) error {
 		if call < 4 {
@@ -114,8 +104,6 @@ func TestLabelOwnNodeRetriesAFailedLabelUntilItLands(t *testing.T) {
 	}
 }
 
-// A label that never lands is retried until shutdown, and the retry ends
-// with the node's context.
 func TestLabelOwnNodeStopsRetryingAtShutdown(t *testing.T) {
 	calls := stubOwnLabels(t, time.Hour, func(int32) error { return errors.New("connection refused") })
 	ctx, cancel := context.WithCancel(context.Background())
@@ -135,7 +123,6 @@ func TestLabelOwnNodeStopsRetryingAtShutdown(t *testing.T) {
 	}
 }
 
-// A labelled node writes once and does not retry.
 func TestLabelOwnNodeLabelsOnceWhenTheFirstCallLands(t *testing.T) {
 	calls := stubOwnLabels(t, 0, func(int32) error { return nil })
 	if out := captureWorkerOutput(t, func() { labelOwnNode(context.Background(), labelledNode) }); out != "" {
@@ -146,8 +133,6 @@ func TestLabelOwnNodeLabelsOnceWhenTheFirstCallLands(t *testing.T) {
 	}
 }
 
-// stubOwnRegistration replaces the worker's registration wait with one that
-// fails until call registered, and the stamp with a no-op.
 func stubOwnRegistration(t *testing.T, registered int32) *atomic.Int32 {
 	t.Helper()
 	oldWait, oldStamp := waitOwnNodeRegistered, stampOwnNode
@@ -166,8 +151,6 @@ func stubOwnRegistration(t *testing.T, registered int32) *atomic.Int32 {
 	return &waits
 }
 
-// A worker whose first registration outlasts one wait keeps waiting, and
-// says so once, so a slow first join is still labelled for its handlers.
 func TestWorkerKubeletStartLabelsASlowFirstRegistration(t *testing.T) {
 	waits := stubOwnRegistration(t, 3)
 	var labelled atomic.Int32
@@ -188,7 +171,6 @@ func TestWorkerKubeletStartLabelsASlowFirstRegistration(t *testing.T) {
 	}
 }
 
-// A worker that never registers stops waiting at shutdown and labels nothing.
 func TestWorkerKubeletStartStopsWaitingAtShutdown(t *testing.T) {
 	stubOwnRegistration(t, 1<<30)
 	old := labelOwnNode
@@ -199,8 +181,6 @@ func TestWorkerKubeletStartStopsWaitingAtShutdown(t *testing.T) {
 	captureWorkerOutput(t, func() { workerKubeletStart(ctx, labelledNode)("w1") })
 }
 
-// A controller's kubelet start labels its own Node once it is registered, and
-// leaves an unregistered one to the node-registered task.
 func TestControllerKubeletStartLabelsTheRegisteredOwnNode(t *testing.T) {
 	for _, registered := range []bool{true, false} {
 		stubNodeTask(t, time.Millisecond, time.Second, "cp1", func(context.Context, string) bool { return registered })
@@ -219,8 +199,6 @@ func TestControllerKubeletStartLabelsTheRegisteredOwnNode(t *testing.T) {
 	}
 }
 
-// stubOwnTaints saves st as this node's state and answers the Node's taints
-// with have, or err.
 func stubOwnTaints(t *testing.T, st *NodeState, have []corev1.Taint, err error) {
 	t.Helper()
 	redirectJoinDirs(t)
@@ -242,11 +220,7 @@ func joinedWithTaints() *NodeState {
 		NodeTaints: []string{"stratum.ciq.com/unverified=true:NoSchedule", "dedicated=gpu:NoExecute"}}
 }
 
-// A join that registers onto a Node already there finds it without the
-// taints the kubelet would have created it with: the worker warns, naming
-// the missing taint and the control-plane fixes, once.
-// The startup taint's fix is `stratum node hold`; a join that missed only
-// another taint is told to add it with kubectl.
+// Only the startup taint's fix is `stratum node hold`; the rest get kubectl.
 func TestCheckJoinedTaintsNamesNodeHoldOnlyForTheStartupTaint(t *testing.T) {
 	st := joinedWithTaints()
 	stubOwnTaints(t, st, []corev1.Taint{{Key: "stratum.ciq.com/unverified", Value: "true", Effect: corev1.TaintEffectNoSchedule}}, nil)
@@ -256,9 +230,7 @@ func TestCheckJoinedTaintsNamesNodeHoldOnlyForTheStartupTaint(t *testing.T) {
 	}
 }
 
-// `stratum node hold` adds only stratum.ciq.com/unverified=true:NoSchedule, so
-// a missing startup-key taint with another effect or value keeps the kubectl
-// fix: following the hold hint would not restore a NoExecute eviction.
+// stratum node hold adds only unverified=true:NoSchedule, never a NoExecute taint.
 func TestCheckJoinedTaintsKeepsKubectlForAnotherStartupTaintEffect(t *testing.T) {
 	st := &NodeState{Role: "worker", Hostname: "w1", NodeTaintsCheckPending: true,
 		NodeTaints: []string{"stratum.ciq.com/unverified=true:NoExecute"}}
@@ -289,8 +261,6 @@ func TestCheckJoinedTaintsWarnsWhenTheNodeLacksADeclaredTaint(t *testing.T) {
 	}
 }
 
-// A Node created with its taints is quiet and clears the check, and a value
-// changed by hand counts as missing.
 func TestCheckJoinedTaintsIsQuietWhenTheNodeCarriesThem(t *testing.T) {
 	st := joinedWithTaints()
 	stubOwnTaints(t, st, []corev1.Taint{
@@ -315,8 +285,6 @@ func TestCheckJoinedTaintsIsQuietWhenTheNodeCarriesThem(t *testing.T) {
 	}
 }
 
-// A Node the worker cannot read leaves the check for the next start, and a
-// restart, which saves no pending check, never reads the Node.
 func TestCheckJoinedTaintsWaitsForANodeItCanRead(t *testing.T) {
 	st := joinedWithTaints()
 	stubOwnTaints(t, st, nil, errors.New("connection refused"))
@@ -335,7 +303,6 @@ func TestCheckJoinedTaintsWaitsForANodeItCanRead(t *testing.T) {
 	checkJoinedTaints(context.Background(), st)
 }
 
-// The worker's kubelet start checks a join's taints once its Node registers.
 func TestWorkerKubeletStartChecksAJoinsTaints(t *testing.T) {
 	stubOwnRegistration(t, 1)
 	st := joinedWithTaints()
@@ -348,10 +315,7 @@ func TestWorkerKubeletStartChecksAJoinsTaints(t *testing.T) {
 	}
 }
 
-// The kubelet hook labels from node.yaml as it is now: `stratum runtime apply`
-// changes the handlers under a running supervisor, and labelling from the
-// state the supervisor started with would take the new handler's label back
-// off at the next kubelet start.
+// runtime apply changes handlers under a running supervisor; label from node.yaml now.
 func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
 	workerScratchHost(t)
 	old := reconcileOwnNodeLabels
@@ -380,9 +344,7 @@ func TestLabelOwnNodeLabelsFromTheSavedState(t *testing.T) {
 	}
 }
 
-// A worker restart only warns about a handler whose binary is missing, so the
-// labels leave that handler out: its RuntimeClass would schedule pods onto a
-// node that cannot start them.
+// Labelling a handler whose binary is missing would schedule pods it cannot run.
 func TestNodeLabelsLeaveOutAHandlerWhoseBinaryIsMissing(t *testing.T) {
 	workerScratchHost(t)
 	old := reconcileOwnNodeLabels

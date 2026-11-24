@@ -14,10 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// fakeEtcd stands up a listener configured exactly as etcd's client listener is
-// in v3.5.16 — RequireAndVerifyClientCert with ClientCAs from --trusted-ca-file —
-// serving this node's real etcd.crt. trustRoot mirrors whether the cluster root
-// is still in etcd's trust bundle, i.e. whether drop-root has run.
+// A listener configured as etcd's is: RequireAndVerifyClientCert, ClientCAs from --trusted-ca-file.
 func fakeEtcd(t *testing.T, trustRoot bool) string {
 	t.Helper()
 	srv, err := tls.LoadX509KeyPair(path("etcd", "crt"), path("etcd", "key"))
@@ -53,13 +50,7 @@ func fakeEtcd(t *testing.T, trustRoot bool) string {
 	return ln.Addr().String()
 }
 
-// TestProbeDetectsMigratedEtcd pins the failure mode that would make this
-// control useless: under TLS 1.2 the Go client filters Config.Certificates
-// against the CertificateRequest's AcceptableCAs, so after drop-root — when etcd
-// advertises only the etcd CA — a root-signed leaf never reached the wire. etcd
-// answered with a bare handshake_failure rather than an unknown-CA alert, and the
-// probe reported INDETERMINATE on precisely the clusters that were fixed. CIS 2.7
-// could report OPEN but never CLOSED.
+// A Config.Certificates leaf is filtered client-side and never reaches the wire: indeterminate.
 func TestProbeDetectsMigratedEtcd(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -73,8 +64,6 @@ func TestProbeDetectsMigratedEtcd(t *testing.T) {
 	}
 }
 
-// TestProbeDetectsVulnerableEtcd: while the root is still trusted, the same
-// certificate must be ACCEPTED and the control must report the cluster exposed.
 func TestProbeDetectsVulnerableEtcd(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
@@ -88,17 +77,12 @@ func TestProbeDetectsVulnerableEtcd(t *testing.T) {
 	}
 }
 
-// TestProbeRejectsImpostorListener closes the forgery hole: the etcd client port
-// is above 1024, so whenever etcd is down any unprivileged local process can bind
-// it. A listener that merely refuses client certificates would otherwise satisfy
-// a control that gates a CIS audit and exits non-zero.
+// The etcd client port is unprivileged, so when etcd is down any local process can bind it.
 func TestProbeRejectsImpostorListener(t *testing.T) {
 	genInto(t)
 	migrateAll(t)
 
-	// An impostor: valid TLS, refuses every client cert, but is not our etcd.
-	// Its leaf is a *different* etcd CA's, so even a chain check would not help —
-	// only comparing against this node's actual etcd.crt catches it.
+	// An impostor whose leaf is a different etcd CA's; only etcd.crt comparison catches it.
 	dir := t.TempDir()
 	realPKI := version.PKIDir
 	version.PKIDir = dir
@@ -149,8 +133,6 @@ func TestProbeRejectsImpostorListener(t *testing.T) {
 	}
 }
 
-// TestProbeIndeterminateWhenNothingListening: a closed port is not evidence that
-// etcd rejects anything. It must never read as a pass.
 func TestProbeIndeterminateWhenNothingListening(t *testing.T) {
 	genInto(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -169,25 +151,7 @@ func TestProbeIndeterminateWhenNothingListening(t *testing.T) {
 	}
 }
 
-// TestIsCertRejectionDiscriminates is the direct test for the classifier the
-// whole control rests on. Nothing else reaches it: the closed-port test fails at
-// the dial, so peerOK is false and the probe returns before isCertRejection is
-// ever called — meaning the function could be widened to `return true` and every
-// other test in this package would still pass, on the one function that decides
-// whether CIS 2.7 reports the etcd trust hole closed.
-//
-// The production logic is an ALLOWLIST of the four alerts etcd sends for an
-// untrusted or absent client cert, plus a requirement that the alert came from
-// the PEER. Both halves are load-bearing and both are pinned here:
-//
-//   - handshake failure must stay INDETERMINATE. It is what a TLS1.3-only or
-//     otherwise mismatched server answers, and it is also what the client-side
-//     AcceptableCAs filtering produces when the leaf is supplied through
-//     Config.Certificates instead of GetClientCertificate — the exact bug
-//     TestProbeDetectsMigratedEtcd pins. Reading it as a rejection would report
-//     the vulnerability closed on a cluster nobody ever probed.
-//   - a peer alert is the only evidence. A string that merely CONTAINS the alert
-//     text, or an alert this side sent, proves nothing about what etcd decided.
+// Direct test for the allowlist; the true branch is also reached by TestProbeDetectsMigratedEtcd.
 func TestIsCertRejectionDiscriminates(t *testing.T) {
 	peerAlert := func(alert string) error { return &net.OpError{Op: "remote error", Err: errors.New("tls: " + alert)} }
 	cases := []struct {
@@ -200,8 +164,7 @@ func TestIsCertRejectionDiscriminates(t *testing.T) {
 		{"unknown certificate authority", peerAlert("unknown certificate authority"), true},
 		{"certificate required", peerAlert("certificate required"), true},
 		{"unknown ca", peerAlert("unknown ca"), true},
-		// Still a rejection once the caller has wrapped it, which is why this
-		// unwraps with errors.As rather than type-asserting.
+		// Still a rejection once the caller has wrapped it, hence errors.As.
 		{"wrapped peer alert", fmt.Errorf("probe etcd at %s: %w", "127.0.0.1:2379", peerAlert("bad certificate")), true},
 
 		// Not rejections. Every one of these must degrade to INDETERMINATE.
@@ -210,19 +173,13 @@ func TestIsCertRejectionDiscriminates(t *testing.T) {
 		{"internal error", peerAlert("internal error"), false},
 		{"timeout", &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}, false},
 		{"connection refused", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: connection refused")}, false},
-		// We sent the alert, not the peer: says nothing about etcd's decision.
+		// A local alert says nothing about etcd's decision.
 		{"local alert", &net.OpError{Op: "local error", Err: errors.New("tls: bad certificate")}, false},
-		// An alert reached only through an outer operation the probe did not make.
-		// errors.As matches the OUTERMOST net.OpError, so this is judged on Op
-		// "read" and degrades to indeterminate — the conservative direction, and
-		// the reason the type/Op guard is not redundant with the text match below
-		// it. The probe pins TLS 1.2 precisely so the alert lands on the handshake
-		// instead of arriving like this.
+		// errors.As matches the outermost net.OpError, so this is judged on Op "read".
 		{"alert behind an outer op", &net.OpError{Op: "read", Net: "tcp", Err: &net.OpError{Op: "remote error", Err: errors.New("tls: bad certificate")}}, false},
 		// The alert text without an alert behind it.
 		{"text only", errors.New("remote error: tls: bad certificate"), false},
-		// Deliberately absent from the production logic: this says WE could not
-		// verify THEIR server cert, which is the opposite claim.
+		// Says the client could not verify the server — the opposite claim.
 		{"our verification of their cert", &tls.CertificateVerificationError{Err: errors.New("x509: certificate signed by unknown authority")}, false},
 	}
 	for _, c := range cases {
@@ -239,8 +196,6 @@ func TestIsCertRejectionDiscriminates(t *testing.T) {
 	}
 }
 
-// TestProbeNeedsRootCAKey: on a worker there is no ca.key to mint with, so the
-// probe must say so rather than concluding anything.
 func TestProbeNeedsRootCAKey(t *testing.T) {
 	version.PKIDir = t.TempDir() // no ca.crt/ca.key here
 	if _, err := EtcdRejectsRootSignedClient(); err == nil {
@@ -248,10 +203,7 @@ func TestProbeNeedsRootCAKey(t *testing.T) {
 	}
 }
 
-// TestEtcdTrustFileNeverUnionsTheClusterRoot pins the rule against an over-broad
-// trust set: this file verifies the etcd SERVER on remote MemberAdd/MemberList calls, so
-// including the Kubernetes root would let any root-signed ServerAuth leaf holding
-// that node's IP SAN impersonate an etcd endpoint during HA join or rejoin.
+// The root in EtcdTrustFile would let a root-signed leaf pose as an etcd server.
 func TestEtcdTrustFileNeverUnionsTheClusterRoot(t *testing.T) {
 	genInto(t)
 	migrateAll(t)

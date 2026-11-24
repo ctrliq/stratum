@@ -16,8 +16,6 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
-// versionReply is a CRI VersionResponse: version(1), runtime_name(2),
-// runtime_version(3), runtime_api_version(4).
 func versionReply(runtimeVersion string) []byte {
 	var b []byte
 	for i, s := range []string{"0.1.0", "containerd", runtimeVersion, "v1"} {
@@ -27,14 +25,11 @@ func versionReply(runtimeVersion string) []byte {
 	return b
 }
 
-// fakeCRI serves the CRI Version call on a unix socket, as the runtime that
-// holds the socket would.
 func fakeCRI(t *testing.T, runtimeVersion string) string {
 	t.Helper()
 	return fakeCRIWith(t, func() ([]byte, error) { return versionReply(runtimeVersion), nil })
 }
 
-// fakeCRIWith serves reply's result (or error) to every Version call.
 func fakeCRIWith(t *testing.T, reply func() ([]byte, error)) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cri-")
@@ -78,10 +73,6 @@ func TestServing(t *testing.T) {
 	}
 }
 
-// TestServingCleansWhatTheSocketSays: the reply is attacker-shaped as far as a
-// terminal is concerned. Control characters and escapes never reach the caller,
-// and neither does more than maxReplyText bytes, in the version or in the error
-// text a server sends.
 func TestServingCleansWhatTheSocketSays(t *testing.T) {
 	const esc = "\x1b[2J\x1b]0;pwned\x07\r\n\x00"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

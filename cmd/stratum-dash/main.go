@@ -1,5 +1,4 @@
-// Command stratum-dash is the dashboard server alone, built into the image the
-// cluster runs it from. `stratum dash` is the same command inside the full binary.
+// Command stratum-dash is the dashboard server alone; `stratum dash` is the same command.
 package main
 
 import (

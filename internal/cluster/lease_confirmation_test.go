@@ -20,8 +20,7 @@ func TestCISKeyMintStopsAfterLosingMaintenanceLeaseDuringPreparation(t *testing.
 	oldAssembly := assembleNode
 	t.Cleanup(func() { assembleNode = oldAssembly })
 	assembleNode = func(_ context.Context, a ha.NodeAssembly, _ ha.AssembleRequest) (host.NodeIPChoice, error) {
-		// Host preparation can outlast a lease. Its successor must fence the
-		// later key write, even though the CLI acquired before preparation.
+		// Preparation can outlast the lease; its successor must fence the later key write.
 		guard.Observe(maintlease.ErrTaken, time.Now())
 		return host.NodeIPChoice{}, a.WriteProfileConfigs()
 	}

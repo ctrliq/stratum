@@ -11,9 +11,7 @@ import (
 	"strings"
 )
 
-// CiliumSettings are the cluster's Cilium options from spec.network.cilium.
-// The zero value is the shipped configuration: VXLAN tunnel, auto-detected
-// devices, Cilium's own MTU, no BGP control plane.
+// CiliumSettings are the cluster's Cilium options; the zero value ships.
 type CiliumSettings struct {
 	MTU                   int      `json:"mtu,omitempty"`
 	Devices               []string `json:"devices,omitempty"`
@@ -24,14 +22,11 @@ type CiliumSettings struct {
 	AutoDirectNodeRoutes  bool     `json:"autoDirectNodeRoutes,omitempty"`
 }
 
-// IsDefault reports whether s is the shipped configuration.
 func (s CiliumSettings) IsDefault() bool {
 	return s.MTU == 0 && len(s.Devices) == 0 && !s.BGPControlPlane && !s.NativeRouting &&
 		s.IPv4NativeRoutingCIDR == "" && s.IPv6NativeRoutingCIDR == "" && !s.AutoDirectNodeRoutes
 }
 
-// Encode is s in the one form two control planes compare: they agree on the
-// cluster's Cilium configuration exactly when their encodings are equal.
 func (s CiliumSettings) Encode() []byte {
 	b, err := json.Marshal(s)
 	if err != nil {
@@ -40,8 +35,7 @@ func (s CiliumSettings) Encode() []byte {
 	return b
 }
 
-// DecodeCiliumSettings reads an Encode. Empty input is the shipped
-// configuration, which is what a cluster that predates the settings runs.
+// DecodeCiliumSettings reads an Encode; empty input is the shipped configuration.
 func DecodeCiliumSettings(b []byte) (CiliumSettings, error) {
 	var s CiliumSettings
 	if len(bytes.TrimSpace(b)) == 0 {
@@ -64,11 +58,7 @@ func DecodeCiliumSettings(b []byte) (CiliumSettings, error) {
 	return s, nil
 }
 
-// The cilium-config lines the settings rewrite, and the configmap checksum
-// line on the agent and operator pod templates. Each cilium-config line is
-// unique in the manifest and the checksum line appears once per pod template,
-// which TestCiliumRenderAnchorsAreUnique pins: a regeneration that moves one
-// fails that test rather than silently dropping a setting.
+// Each anchor is unique in the asset, except the checksum line that appears once per pod template.
 const (
 	ciliumRoutingModeAnchor     = "\n  routing-mode: \"tunnel\"\n"
 	ciliumDevicesAnchor         = "\n  devices: \"\"\n"
@@ -77,9 +67,7 @@ const (
 	ciliumConfigmapChecksumName = "cilium.io/cilium-configmap-checksum"
 )
 
-// ciliumBGPConfig is the cilium-config Cilium's chart renders with
-// bgpControlPlane.enabled: the BGP control plane reads peer authentication
-// Secrets (CiliumBGPPeerConfig authSecretRef) from kube-system.
+// ciliumBGPConfig is the cilium-config the chart renders with the BGP control plane on.
 const ciliumBGPConfig = `  enable-bgp-control-plane: "true"
   bgp-secrets-namespace: "kube-system"
   enable-bgp-control-plane-status-report: "true"
@@ -88,8 +76,7 @@ const ciliumBGPConfig = `  enable-bgp-control-plane: "true"
   enable-bgp-legacy-origin-attribute: "false"
 `
 
-// ciliumBGPSecretsRules is the access the chart's
-// cilium-bgp-control-plane-secrets Role grants with the BGP control plane on.
+// ciliumBGPSecretsRules is the access the chart's cilium-bgp-control-plane-secrets Role grants.
 const ciliumBGPSecretsRules = `rules:
 - apiGroups:
   - ""
@@ -101,13 +88,7 @@ const ciliumBGPSecretsRules = `rules:
   - watch
 `
 
-// ciliumBGPSecretsRBAC is the chart's Role and RoleBinding letting the agent
-// read the peer authentication Secrets, less its version label, with the rules
-// given. They are rendered with the BGP control plane off too, granting
-// nothing: the operator prunes an object from the copy of the stack it last
-// applied itself, so a Role applied while another control plane led would
-// otherwise outlive the setting, and keep read access to every Secret in
-// kube-system.
+// Rendered even with the BGP control plane off, so another leader's apply prunes the access.
 func ciliumBGPSecretsRBAC(rules string) string {
 	return `---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -136,9 +117,7 @@ subjects:
 `
 }
 
-// appendCiliumBGPSecretsRBAC adds the BGP secrets Role and RoleBinding, which
-// grant access only with the BGP control plane on. Neither is read at agent
-// start, so neither changes the agents' configmap checksum.
+// appendCiliumBGPSecretsRBAC adds the BGP secrets RBAC; neither object changes the checksum.
 func appendCiliumBGPSecretsRBAC(m []byte, bgp bool) []byte {
 	rules := "rules: []\n"
 	if bgp {
@@ -147,10 +126,7 @@ func appendCiliumBGPSecretsRBAC(m []byte, bgp bool) []byte {
 	return append(bytes.TrimRight(m, "\n"), []byte("\n"+ciliumBGPSecretsRBAC(rules))...)
 }
 
-// applyCiliumSettings writes s into the cilium-config ConfigMap. The shipped
-// configuration leaves the manifest untouched. Anything else also replaces the
-// configmap checksum on the agent and operator pod templates, so a change to
-// the settings rolls both: each reads cilium-config only when it starts.
+// applyCiliumSettings rewrites cilium-config and replaces the pod checksums, which roll the pods.
 func applyCiliumSettings(m []byte, s CiliumSettings) []byte {
 	if s.IsDefault() {
 		return m
@@ -183,9 +159,6 @@ func applyCiliumSettings(m []byte, s CiliumSettings) []byte {
 	return setCiliumChecksums(m, s)
 }
 
-// setCiliumChecksums derives a checksum from the shipped one and the settings,
-// so it differs from the shipped value and between any two settings, and
-// writes it on every pod template that carries the shipped one.
 func setCiliumChecksums(m []byte, s CiliumSettings) []byte {
 	i := bytes.Index(m, []byte(ciliumChecksumPrefix))
 	if i < 0 {

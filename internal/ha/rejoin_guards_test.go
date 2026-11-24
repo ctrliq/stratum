@@ -18,11 +18,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// TestPlanRejoinRefusesToActOnAStaleMembership: a member list read without
-// quorum may be stale, and every action but resume removes a member or wipes a
-// data dir on the strength of it -- in a cluster that cannot commit the
-// removal. It is the recovery path for the shape a timed-out voting add left behind, where a
-// linearizable member list cannot answer at all.
 func TestPlanRejoinRefusesToActOnAStaleMembership(t *testing.T) {
 	self := etcdMember{ID: 2, PeerURLs: []string{selfPeer}, ClientURLs: []string{"https://10.0.0.2:2379"}}
 	other := etcdMember{ID: 3, Name: "cp3", PeerURLs: []string{"https://10.0.0.3:2380"},
@@ -57,10 +52,6 @@ func TestPlanRejoinRefusesToActOnAStaleMembership(t *testing.T) {
 	}
 }
 
-// TestRejoinWithoutQuorumAndWithoutAMemberStops: resuming needs a member to
-// resume. Wiping and adding one needs a cluster that can commit the add, which
-// is exactly what a quorum-less cluster cannot do, so the old data is the only
-// thing of value left and rejoin must not destroy it.
 func TestRejoinWithoutQuorumAndWithoutAMemberStops(t *testing.T) {
 	f := newFakeRejoin(t, etcdMembership{ClusterID: fakeCluster, Members: []etcdMember{seedMember}}, controller())
 	err := RejoinEtcd(context.Background(), io.Discard, "10.0.0.1", false)
@@ -75,10 +66,6 @@ func TestRejoinWithoutQuorumAndWithoutAMemberStops(t *testing.T) {
 	}
 }
 
-// TestWaitRejoinedChecksIdentityNotJustReachability: a local etcd that answers
-// is not necessarily THIS member of THIS cluster. One still serving the
-// pre-restore data answers Status perfectly well, and treating that as
-// rejoined starts kube-apiserver against the data the restore replaced.
 func TestWaitRejoinedChecksIdentityNotJustReachability(t *testing.T) {
 	f := newFakeRejoin(t, seedWith(etcdMember{ID: 2, Name: "cp2", PeerURLs: []string{selfPeer},
 		ClientURLs: []string{"https://10.0.0.2:2379"}, IsLearner: true}),
@@ -101,9 +88,6 @@ func TestWaitRejoinedChecksIdentityNotJustReachability(t *testing.T) {
 	}
 }
 
-// TestMemberHealthySkipsLoopback: a member's advertised client URL may be a
-// loopback address, and probing it reaches THIS node's etcd rather than that
-// member's. A false positive here is the direction that wipes a vote.
 func TestMemberHealthySkipsLoopback(t *testing.T) {
 	up := map[string]bool{"127.0.0.1": true, "localhost": true, "10.0.0.3": false}
 	m := etcdMember{ID: 3, ClientURLs: []string{"https://127.0.0.1:2379", "https://10.0.0.3:2379"}}
@@ -115,10 +99,6 @@ func TestMemberHealthySkipsLoopback(t *testing.T) {
 	}
 }
 
-// TestMemberHealthyChecksIdentityNotJustReachability: during a restore another
-// control plane can still be up and serving the PRE-restore cluster. Counting
-// it as a healthy voter of the restored one inflates the quorum arithmetic in
-// the one direction that wipes a vote the cluster is waiting on.
 func TestMemberHealthyChecksIdentityNotJustReachability(t *testing.T) {
 	m := etcdMember{ID: 3, ClientURLs: []string{"https://10.0.0.3:2379"}}
 	for _, tc := range []struct {
@@ -139,9 +119,6 @@ func TestMemberHealthyChecksIdentityNotJustReachability(t *testing.T) {
 	}
 }
 
-// TestSameInitialClusterRejectsExtraRecordedMembers: a recorded initial
-// cluster naming a member the cluster no longer has makes etcd refuse to
-// start, so it must count as different and be rewritten.
 func TestSameInitialClusterRejectsExtraRecordedMembers(t *testing.T) {
 	members := []etcdMember{
 		{ID: 1, Name: "cp1", PeerURLs: []string{"https://10.0.0.1:2380"}},
@@ -157,9 +134,6 @@ func TestSameInitialClusterRejectsExtraRecordedMembers(t *testing.T) {
 	}
 }
 
-// TestAddSettlingOnlyRetriesRefusals is addSettling's stated contract: every
-// error the predicate accepts must be a refusal that added nothing, because a
-// retry of anything else adds the member twice.
 func TestAddSettlingOnlyRetriesRefusals(t *testing.T) {
 	t.Cleanup(func() { memberAddSettle = 90 * time.Second })
 	memberAddSettle = 10 * time.Millisecond
@@ -188,10 +162,6 @@ func TestAddSettlingOnlyRetriesRefusals(t *testing.T) {
 	}
 }
 
-// TestMemberAddSettlingRetriesOnlyRefusalsThatAddedNothing pins the refusals
-// a learner add retries. etcd allows one learner at a time, so a join that
-// follows another closely is refused with too-many-learners until the earlier
-// joiner is promoted, and that refusal must be retried, not returned.
 func TestMemberAddSettlingRetriesOnlyRefusalsThatAddedNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -255,10 +225,6 @@ func TestAddSettlingKeepsRejoinRetriesOffStdout(t *testing.T) {
 	}
 }
 
-// TestPromoteErrorsAreClassifiedByWhatEtcdCanReturn. etcd never answers a
-// promote with ErrUnhealthy -- that comes from add, remove and leadership
-// transfer -- while the errors it does return transiently were all treated as
-// final, aborting a rejoin that one more attempt would have finished.
 func TestPromoteErrorsAreClassifiedByWhatEtcdCanReturn(t *testing.T) {
 	for _, err := range []error{
 		rpctypes.ErrGRPCLearnerNotReady, rpctypes.ErrMemberLearnerNotReady,
@@ -284,10 +250,6 @@ func TestPromoteErrorsAreClassifiedByWhatEtcdCanReturn(t *testing.T) {
 	}
 }
 
-// TestEtcdErrorsSurviveWrapping is why these predicates use errors.Is and not
-// a comparison of rendered messages: one %w anywhere between the client and
-// the predicate silently stopped every string comparison from matching, with
-// no compile error and no test failure.
 func TestEtcdErrorsSurviveWrapping(t *testing.T) {
 	wrapped := fmt.Errorf("rejoin: %w", fmt.Errorf("etcd member promote: %w", rpctypes.ErrMemberLearnerNotReady))
 	if !isPromoteNotYet(wrapped) {
@@ -298,12 +260,6 @@ func TestEtcdErrorsSurviveWrapping(t *testing.T) {
 	}
 }
 
-// TestPromoteErrorsMatchAsTheClientReturnsThem builds each error the way it
-// arrives from the wire, a fresh gRPC status rather than rpctypes' singleton,
-// and passes it through clientv3.ContextError as MemberPromote does before
-// memberPromote wraps it. ErrTimeoutWaitAppliedIndex is the case that needs
-// this: rpctypes has no client-side mapping for it, so it reaches the
-// predicate as a raw *status.Error and matches only through status's own Is.
 func TestPromoteErrorsMatchAsTheClientReturnsThem(t *testing.T) {
 	for _, sentinel := range []error{
 		rpctypes.ErrGRPCTimeoutWaitAppliedIndex,
@@ -327,8 +283,6 @@ func TestPromoteErrorsMatchAsTheClientReturnsThem(t *testing.T) {
 	}
 }
 
-// promoteWireErr is sentinel as memberPromote returns it: a fresh status with
-// the same code and message, through clientv3.ContextError, then wrapped.
 func promoteWireErr(t *testing.T, sentinel error) error {
 	t.Helper()
 	s, ok := status.FromError(sentinel)

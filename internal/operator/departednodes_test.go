@@ -18,7 +18,6 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// markedNode is a worker marked by uninstall at mark, Ready or not.
 func markedNode(name string, ready bool, mark time.Time) corev1.Node {
 	n := node(name, ready)
 	n.UID = types.UID("uid-" + name)
@@ -31,12 +30,6 @@ func lease(name string, renewed time.Time) coordinationv1.Lease {
 		Spec: coordinationv1.LeaseSpec{RenewTime: &metav1.MicroTime{Time: renewed}}}
 }
 
-// TestDepartedWorkers is the rule table. Uninstall marks only once
-// kubelet has stopped, so a worker whose last renewal came before the mark and
-// is past the grace period is removed; one whose kubelet renewed since the mark
-// ran again (reinstalled under the same name, onto the same Node), so its mark
-// is stale; anything still within the grace period, Ready, never marked, or a
-// control plane is left.
 func TestDepartedWorkers(t *testing.T) {
 	now := epoch
 	mark := now.Add(-10 * time.Minute)
@@ -106,8 +99,7 @@ func TestDepartedWorkers(t *testing.T) {
 
 func leaseRef(l coordinationv1.Lease) *coordinationv1.Lease { return &l }
 
-// markPolicy is the node-mark admission policy and its denying binding, as
-// the manifest deployer applies them.
+// markPolicy is the node-mark admission policy and its denying binding, as applied.
 func markPolicy() []runtime.Object {
 	return []runtime.Object{
 		&admissionregistrationv1.ValidatingAdmissionPolicy{ObjectMeta: metav1.ObjectMeta{Name: k8sutil.NodeMarkPolicy}},
@@ -117,9 +109,6 @@ func markPolicy() []runtime.Object {
 	}
 }
 
-// TestReconcileDepartedWorkersActsOnlyOnTheNodeItRead: the departed worker is
-// deleted with preconditions on the UID and resourceVersion it was read with,
-// the reinstalled one loses its stale mark and stays, and a live one is left.
 func TestReconcileDepartedWorkersActsOnlyOnTheNodeItRead(t *testing.T) {
 	now := epoch
 	mark := now.Add(-10 * time.Minute)
@@ -156,9 +145,6 @@ func TestReconcileDepartedWorkersActsOnlyOnTheNodeItRead(t *testing.T) {
 	}
 }
 
-// TestReconcileDepartedWorkersRereadsTheLeaseBeforeDeleting:
-// no precondition covers the Lease, so it is read again just before the
-// delete, and a kubelet that renewed since the listing is not deleted.
 func TestReconcileDepartedWorkersRereadsTheLeaseBeforeDeleting(t *testing.T) {
 	now := epoch
 	mark := now.Add(-10 * time.Minute)
@@ -185,10 +171,6 @@ func TestReconcileDepartedWorkersRereadsTheLeaseBeforeDeleting(t *testing.T) {
 	}
 }
 
-// TestReconcileDepartedWorkersDeletesNothingWithoutTheMarkPolicy: only the
-// admission policy makes a mark the node's own, so without it, or with a
-// binding that only warns, nothing is deleted; a stale mark is still taken off,
-// which removes nothing.
 func TestReconcileDepartedWorkersDeletesNothingWithoutTheMarkPolicy(t *testing.T) {
 	now := epoch
 	mark := now.Add(-10 * time.Minute)

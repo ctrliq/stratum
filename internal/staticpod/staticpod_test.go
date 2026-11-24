@@ -25,8 +25,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// testNode redirects the version paths to a temp dir and persists a controller
-// node state there, so LoadState-based verbs (Start, Restart) see it.
+// redirects the version paths to a temp dir and persists a controller node state there.
 func testNode(t *testing.T) *nodestate.NodeState {
 	t.Helper()
 	version.K8sConfDir = t.TempDir()
@@ -54,9 +53,7 @@ func readPod(t *testing.T, name string) (*corev1.Pod, []byte) {
 	return &pod, b
 }
 
-// TestWriteAllIdempotent: repeated renders are byte-identical (an unnecessary
-// content change would make kubelet restart the pod on every controller start),
-// and a restarted-at annotation left by Restart survives the next WriteAll.
+// an unnecessary content change would restart the pod on every controller start.
 func TestWriteAllIdempotent(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -94,8 +91,6 @@ func TestWriteAllIdempotent(t *testing.T) {
 	}
 }
 
-// TestRestartChangesOnlyAnnotation: the restart verb is an annotation bump,
-// nothing else — same command, same mounts, same everything.
 func TestRestartChangesOnlyAnnotation(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -121,9 +116,6 @@ func TestRestartChangesOnlyAnnotation(t *testing.T) {
 	}
 }
 
-// TestEtcdMembershipRerenders: `stratum snapshot rejoin/restore` patches the
-// node state and Starts etcd; the manifest must carry the PATCHED membership
-// flags (the static-pod equivalent of the supervisor's ArgsFn semantics).
 func TestEtcdMembershipRerenders(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -147,15 +139,7 @@ func TestEtcdMembershipRerenders(t *testing.T) {
 	}
 }
 
-// TestControllerManagerEnablesBootstrapSigner is the regression test for the bootstrapsigner.
-//
-// bootstrapsigner is disabled by default in kube-controller-manager, so
-// unless an explicit --controllers value turns it on
-// the control plane never publishes the detached JWS over cluster-info — and
-// bootstrap.DiscoverCA then hard-fails every join rather than install a CA it
-// cannot authenticate. Asserted against the RENDERED manifest, not the constant:
-// the constant holding the right value while nothing renders it is exactly the
-// failure this exists to catch.
+// asserted on the rendered manifest, not the constant: nothing rendering it is the failure.
 func TestControllerManagerEnablesBootstrapSigner(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -181,9 +165,7 @@ func TestControllerManagerEnablesBootstrapSigner(t *testing.T) {
 	}
 }
 
-// TestControllerManagerSignsForTheCAValidity pins the controller-manager's CSR
-// signing duration to the CA lifetime, so the kubelet client certs it signs do
-// not expire after the one-year default.
+// so the kubelet client certs it signs do not expire after the one-year default.
 func TestControllerManagerSignsForTheCAValidity(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -209,18 +191,7 @@ func TestControllerManagerSignsForTheCAValidity(t *testing.T) {
 	}
 }
 
-// TestEtcdTrustsOnlyItsOwnCA is the regression test for the etcd trust hole (etcd accepting
-// any client certificate signed by the cluster root, which also signs every
-// kubelet's certificate): the flags that actually decide the vulnerability.
-//
-// etcd authorizes a client by chaining its certificate to
-// --trusted-ca-file. Pointed at the shared cluster bundle, EVERY
-// certificate the cluster root signed is a valid etcd client — including every
-// kubelet's — so any node with a kubelet cert has full read/write on cluster
-// state. --peer-trusted-ca-file is the same authority for the raft peer port,
-// and the apiserver's --etcd-cafile is the client half of the split. Asserted
-// on the rendered manifests, negatively as well as positively: pointing these
-// back at ca-bundle.crt is a three-character edit that reopens it in full.
+// the shared cluster CA also signs every kubelet's certificate, so etcd must trust only its own.
 func TestEtcdTrustsOnlyItsOwnCA(t *testing.T) {
 	const etcdBundle = "etcd-ca-bundle.crt"
 	st := testNode(t)
@@ -266,10 +237,7 @@ func TestEtcdTrustsOnlyItsOwnCA(t *testing.T) {
 	}
 }
 
-// TestEtcdPeerPortAcceptsOnlyTheEtcdLeaf: the peer port trusts the same
-// bundle as the client port, so without --peer-cert-allowed-cn the
-// apiserver-etcd-client leaf, or any leaf the bundle's CAs sign, is a raft
-// peer credential.
+// without it any leaf the bundle's CAs sign is a raft peer credential.
 func TestEtcdPeerPortAcceptsOnlyTheEtcdLeaf(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -299,10 +267,7 @@ func TestEtcdPeerPortAcceptsOnlyTheEtcdLeaf(t *testing.T) {
 	}
 }
 
-// TestApiserverVerifiesKubeletServingCertsInEveryProfile: without
-// --kubelet-certificate-authority the apiserver accepts any certificate a
-// kubelet presents, so a compromised node can forge one and intercept the
-// apiserver's exec and log streams to it. It must not depend on --cis.
+// without it a compromised node can intercept the apiserver's exec and log streams.
 func TestApiserverVerifiesKubeletServingCertsInEveryProfile(t *testing.T) {
 	for _, cis := range []bool{false, true} {
 		st := &nodestate.NodeState{Role: "controller", NodeIP: "10.0.0.1", CIS: cis}
@@ -318,12 +283,7 @@ func TestApiserverVerifiesKubeletServingCertsInEveryProfile(t *testing.T) {
 	}
 }
 
-// TestKubeVipArgs is a golden test on the kube-vip argv: every flag below was
-// verified against the pinned image's `manager --help` (build/images.txt). A
-// generated flag the pinned binary does not know is a crashloop, not a warning
-// — kube-vip exits on "unknown flag" and the VIP never comes up.
-// If this fails after a kube-vip bump, re-check the args against the new
-// --help before updating the expectation.
+// the pinned binary exits on an unknown flag, so every arg must match its --help.
 func TestKubeVipArgs(t *testing.T) {
 	base := []string{
 		"manager",
@@ -339,8 +299,7 @@ func TestKubeVipArgs(t *testing.T) {
 		vip  nodestate.VIP
 		want []string
 	}{
-		// No --interface at all: kube-vip auto-detects the default-gateway
-		// interface. There is no flag that asks for that.
+		// no flag asks for default-gateway auto-detection; omitting --interface is it.
 		{"auto interface", nodestate.VIP{Address: "192.0.2.40"}, append(base, "--arp")},
 		{"explicit interface", nodestate.VIP{Address: "192.0.2.40", Interface: "eth0"},
 			append(base, "--interface", "eth0", "--arp")},
@@ -355,9 +314,6 @@ func TestKubeVipArgs(t *testing.T) {
 	}
 }
 
-// TestPutAndRead: Put writes a manifest byte for byte, atomically (no temp file
-// is left for kubelet to parse), and Read returns it; Read of a component with
-// no manifest is nil with no error.
 func TestPutAndRead(t *testing.T) {
 	testNode(t)
 	if b, err := Read("etcd"); b != nil || err != nil {
@@ -382,11 +338,7 @@ func TestPutAndRead(t *testing.T) {
 	}
 }
 
-// TestApiserverKeepsTheDefaultEtcdPrefix pins one half of ha.JoinBundleEtcdKey's
-// coupling to the apiserver's storage layout: that key is spelled under
-// kube-apiserver's default --etcd-prefix, /registry, so an apiserver given
-// another prefix would store the stratum-certs bundle where the CIS key gate
-// never looks, and the gate would read every cluster as having none.
+// ha.JoinBundleEtcdKey assumes the default /registry prefix, where the CIS key gate looks.
 func TestApiserverKeepsTheDefaultEtcdPrefix(t *testing.T) {
 	for _, cis := range []bool{false, true} {
 		st := &nodestate.NodeState{Role: "controller", NodeIP: "10.0.0.1", CIS: cis}
@@ -398,10 +350,7 @@ func TestApiserverKeepsTheDefaultEtcdPrefix(t *testing.T) {
 	}
 }
 
-// TestRestartAsIsKeepsTheManifestOnDisk: an upgrade rollback restores
-// older manifests and runs the newer binary, so a restart that re-rendered
-// them would put the newer images back. Only the annotation may change, and a
-// field this binary's Pod type does not know must survive.
+// a rollback runs the newer binary against the older manifests it just restored.
 func TestRestartAsIsKeepsTheManifestOnDisk(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -446,8 +395,7 @@ func TestRestartAsIsWithoutAManifestFails(t *testing.T) {
 	}
 }
 
-// Every etcd listen and advertise URL must bracket IPv6 addresses, matching
-// the peer URL recorded in cluster membership.
+// IPv6 addresses must be bracketed, matching the peer URL in cluster membership.
 func TestEtcdIPv6ListenAndAdvertiseURLs(t *testing.T) {
 	st := &nodestate.NodeState{NodeIP: "fd00::9", EtcdName: "cp1"}
 	args := etcdArgs(st)
@@ -467,11 +415,7 @@ func TestEtcdIPv6ListenAndAdvertiseURLs(t *testing.T) {
 	}
 }
 
-// TestEtcdAdvertisesTheNodeAddress pins etcd's IPv4 peer and client URLs for
-// the node's own address. MemberRemove compares the peer URL byte for byte
-// with the URL the member was added under, so a changed format here strands
-// every rollback of a failed join. Derived from the same state testNode
-// persists, so the rendered manifest and these flags cannot drift apart.
+// MemberRemove compares the peer URL byte for byte with the URL the member was added under.
 func TestEtcdAdvertisesTheNodeAddress(t *testing.T) {
 	st := testNode(t)
 	want := map[string]string{
@@ -496,11 +440,7 @@ func TestEtcdAdvertisesTheNodeAddress(t *testing.T) {
 	}
 }
 
-// TestManifestWriteStagesUnderAHiddenName pins the staging rule of
-// writeFile: kubelet parses EVERY non-hidden file in the manifest directory,
-// so a visible staging name would let it read a half-written manifest as a
-// pod. A directory at the destination makes the final rename fail, and the
-// staging path is read back from the returned *os.LinkError.
+// kubelet parses every non-hidden file, so a visible staging name would be read mid-write.
 func TestManifestWriteStagesUnderAHiddenName(t *testing.T) {
 	testNode(t)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -514,7 +454,7 @@ func TestManifestWriteStagesUnderAHiddenName(t *testing.T) {
 	if !errors.As(err, &linkErr) {
 		t.Fatalf("Put with a blocked destination = %v, want an *os.LinkError from the failed rename", err)
 	}
-	staging := linkErr.Old // the rename's source is the staging path
+	staging := linkErr.Old
 	if !strings.HasPrefix(filepath.Base(staging), ".") {
 		t.Errorf("staging file %q is not hidden — kubelet would parse the half-written manifest as a pod", staging)
 	}
@@ -523,11 +463,7 @@ func TestManifestWriteStagesUnderAHiddenName(t *testing.T) {
 	}
 }
 
-// TestEveryStaticPodHasAListenerOrIsDeclaredListenerless pins the relation
-// between Names and localPort: the upgrade's gate waits on Active, which
-// reports false for a component with no listener entry, so a new static pod
-// without one would make every upgrade wait three minutes and roll back.
-// kube-vip is the one declared listenerless component today.
+// the upgrade's gate waits on Active; a listenerless undeclared component would time it out.
 func TestEveryStaticPodHasAListenerOrIsDeclaredListenerless(t *testing.T) {
 	for _, n := range Names {
 		if _, ok := localPort[n]; !ok && n != "kube-vip" {
@@ -541,11 +477,7 @@ func TestEveryStaticPodHasAListenerOrIsDeclaredListenerless(t *testing.T) {
 	}
 }
 
-// TestNamesForAppliesTheKubeVipRuleOnce pins the one place the VIP rule
-// lives: kube-vip is in the roster exactly when the node state carries a VIP,
-// every other component unconditionally, in Names' order. The upgrade's
-// re-render order and the restore's restart set derive from this, so a copy
-// of the rule restated beside it fails here first.
+// the upgrade's re-render order and the restore's restart set derive from this roster.
 func TestNamesForAppliesTheKubeVipRuleOnce(t *testing.T) {
 	withVIP := &nodestate.NodeState{Role: "controller", VIP: nodestate.VIP{Address: "192.0.2.100"}}
 	if got := NamesFor(withVIP); !slices.Equal(got, Names) {
@@ -563,9 +495,6 @@ func TestNamesForAppliesTheKubeVipRuleOnce(t *testing.T) {
 	}
 }
 
-// TestNamesForGivesTheCallerItsOwnSlice: callers append to and reorder the
-// roster they are handed, so a result aliasing the Names var would let one
-// caller corrupt the roster every other reader sees.
 func TestNamesForGivesTheCallerItsOwnSlice(t *testing.T) {
 	st := &nodestate.NodeState{Role: "controller", VIP: nodestate.VIP{Address: "192.0.2.100"}}
 	got := NamesFor(st)
@@ -575,10 +504,6 @@ func TestNamesForGivesTheCallerItsOwnSlice(t *testing.T) {
 	}
 }
 
-// TestWriteAllRendersExactlyNamesFor ties the roster to the render: after
-// WriteAll, the manifest directory holds exactly the components NamesFor
-// names, with and without a VIP. The rule cannot drift between what is
-// rendered and the roster other code derives from it.
 func TestWriteAllRendersExactlyNamesFor(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -610,11 +535,7 @@ func TestWriteAllRendersExactlyNamesFor(t *testing.T) {
 	}
 }
 
-// TestHasListener reports which components own a localhost listener: every
-// roster component but kube-vip (its metrics server is disabled), and no name
-// outside the roster. The upgrade's gate waits on exactly the components
-// HasListener accepts, so a listenerless component reported as having a
-// listener would make every upgrade wait out its gate timeout and roll back.
+// a listenerless component reported as having one would wait out the upgrade gate.
 func TestHasListener(t *testing.T) {
 	for _, n := range Names {
 		want := n != "kube-vip"
@@ -633,9 +554,7 @@ func readImage(t *testing.T, name string) string {
 	return pod.Spec.Containers[0].Image
 }
 
-// TestRestartAsIsRefusesAnEmptyManifest: an empty or null YAML document
-// unmarshals without error, and writing into the nil map it leaves would panic
-// after etcd has already been restored. It is an error the restore can report.
+// an empty or null document unmarshals without error; writing into the nil map would panic.
 func TestRestartAsIsRefusesAnEmptyManifest(t *testing.T) {
 	testNode(t)
 	for _, content := range []string{"", "\n", "null\n", "# nothing\n"} {
@@ -655,8 +574,6 @@ func TestRestartAsIsRefusesAnEmptyManifest(t *testing.T) {
 	}
 }
 
-// TestWaitReplacedTellsProcessesByStartTime: a process started before the
-// mark holds the wait, and one started after it does not.
 func TestWaitReplacedTellsProcessesByStartTime(t *testing.T) {
 	if _, err := os.Stat("/proc/self/stat"); err != nil {
 		t.Skip("needs /proc")
@@ -667,9 +584,7 @@ func TestWaitReplacedTellsProcessesByStartTime(t *testing.T) {
 	}
 	name := "stratum-replaced-test"
 	start := func() *exec.Cmd {
-		// The test binary stands in for the component under a renamed argv[0],
-		// which is what PIDs matches. A symlinked /bin/sleep does not: a
-		// multi-call coreutils (Ubuntu 26.04's) refuses to run under another name.
+		// a symlinked multi-call sleep refuses another argv[0], so the test binary stands in.
 		cmd := exec.Command(self, "-test.run=^TestHelperSleep$")
 		cmd.Args[0] = filepath.Join(t.TempDir(), name)
 		cmd.Env = append(os.Environ(), "STRATUM_TEST_HELPER_SLEEP=1")
@@ -697,8 +612,7 @@ func TestWaitReplacedTellsProcessesByStartTime(t *testing.T) {
 	}
 }
 
-// TestHelperSleep is the long-running process TestWaitReplacedTellsProcessesByStartTime
-// starts; run directly, it does nothing.
+// the long-running process TestWaitReplacedTellsProcessesByStartTime starts.
 func TestHelperSleep(t *testing.T) {
 	if os.Getenv("STRATUM_TEST_HELPER_SLEEP") == "" {
 		t.Skip("helper process")
@@ -706,8 +620,6 @@ func TestHelperSleep(t *testing.T) {
 	time.Sleep(60 * time.Second)
 }
 
-// TestWaitReplacedCountsTheMarksTickAsBefore: start times have a tick's
-// resolution, so a process that started in the mark's own tick holds the wait.
 func TestWaitReplacedCountsTheMarksTickAsBefore(t *testing.T) {
 	if _, err := os.Stat("/proc/self/stat"); err != nil {
 		t.Skip("needs /proc")
@@ -726,10 +638,7 @@ func TestWaitReplacedCountsTheMarksTickAsBefore(t *testing.T) {
 	}
 }
 
-// TestAuditPolicyChangeRestartsTheAPIServer: the apiserver reads its audit
-// policy only at start, so under CIS its manifest carries the policy's sum: a
-// changed policy changes the manifest, an unchanged one leaves it as it was,
-// and a missing one is an error rather than an apiserver without its policy.
+// the apiserver reads its audit policy only at start, so the manifest carries its sum.
 func TestAuditPolicyChangeRestartsTheAPIServer(t *testing.T) {
 	st := testNode(t)
 	profiletest.Register(t)
@@ -785,12 +694,7 @@ func TestAuditPolicyChangeRestartsTheAPIServer(t *testing.T) {
 	}
 }
 
-// TestAdmissionConfigChangeRestartsTheAPIServer: the apiserver reads the
-// admission config merged from the profile's only at start, so the manifest
-// carries that body's sum in an annotation of its own: a changed body changes
-// the manifest, an unchanged one leaves it byte-identical, the audit policy's
-// annotation keeps the value it had before this one existed, and a missing
-// body is an error.
+// a separate annotation, so the audit policy's keeps the value it had.
 func TestAdmissionConfigChangeRestartsTheAPIServer(t *testing.T) {
 	st := testNode(t)
 	profiletest.Register(t)
@@ -855,9 +759,7 @@ func TestAdmissionConfigChangeRestartsTheAPIServer(t *testing.T) {
 	}
 }
 
-// Every static pod runs as spc_t: with containerd's enable_selinux on, a
-// control-plane pod running as container_t is denied its PKI, kubeconfigs and
-// etcd data.
+// with enable_selinux on, a container_t control-plane pod is denied its PKI and data.
 func TestStaticPodsRunAsSPCT(t *testing.T) {
 	st := testNode(t)
 	st.VIP.Address = "192.0.2.100"
@@ -873,8 +775,7 @@ func TestStaticPodsRunAsSPCT(t *testing.T) {
 	}
 }
 
-// TestKubeVipMountsOnlyItsKubeconfig pins that kube-vip's pod sees its own
-// kubeconfig and no other: the shared directory holds admin.kubeconfig.
+// the shared directory holds admin.kubeconfig.
 func TestKubeVipMountsOnlyItsKubeconfig(t *testing.T) {
 	st := testNode(t)
 	st.VIP.Address = "192.0.2.100"
@@ -898,9 +799,7 @@ func TestKubeVipMountsOnlyItsKubeconfig(t *testing.T) {
 	}
 }
 
-// TestSchedulerMountsOnlyItsKubeconfig pins that kube-scheduler's pod sees its
-// own kubeconfig and no other, and no PKI: the shared directories hold the
-// admin and super-admin credentials and the CA key.
+// the shared directories hold the admin and super-admin credentials and the CA key.
 func TestSchedulerMountsOnlyItsKubeconfig(t *testing.T) {
 	pod, err := render("kube-scheduler", testNode(t))
 	if err != nil {
@@ -924,10 +823,7 @@ func TestSchedulerMountsOnlyItsKubeconfig(t *testing.T) {
 	}
 }
 
-// TestSigningFlagsFollowTheSigner: the controller-manager's CSR signer and
-// both service-account signing keys name the pair pki.Signer picks, so a
-// forced rotation that went ahead without a lost key still has a signer from
-// trust-new to sign-new. The trust flags never move with it.
+// the trust flags never move with the signer, only the signing keys do.
 func TestSigningFlagsFollowTheSigner(t *testing.T) {
 	orig := signer
 	t.Cleanup(func() { signer = orig })
@@ -949,16 +845,7 @@ func TestSigningFlagsFollowTheSigner(t *testing.T) {
 	}
 }
 
-// TestAPIServerCISFlagsAreExactlyTheProfile pins the CIS half of the apiserver
-// argv by rendering one node state with CIS off and on and comparing the two
-// renders with each other: the CIS argv must be the non-CIS one with exactly
-// the profile's flags spliced in, in this order, immediately before
-// --kubelet-certificate-authority, the profile flag every render carries. A CIS flag that is dropped, renamed,
-// revalued, reordered or moved fails; a flag added to both renders by an
-// unrelated change does not, which a whole-argv golden file would not
-// tolerate. Nothing here touches the filesystem — apiserverArgs is pure argv
-// building — so the paths are fixed literals, redirected to keep the render
-// independent of what earlier tests left in the version vars.
+// apiserverArgs builds argv only; fixed literals keep it independent of earlier tests' redirects.
 func TestAPIServerCISFlagsAreExactlyTheProfile(t *testing.T) {
 	oldAudit, oldLog, oldEncryption, oldConf, oldLogDir := version.AuditPolicyPath, version.AuditLogPath, version.EncryptionConfigPath, version.K8sConfDir, version.AuditLogDir
 	t.Cleanup(func() {
@@ -971,7 +858,7 @@ func TestAPIServerCISFlagsAreExactlyTheProfile(t *testing.T) {
 	version.K8sConfDir = "/cfg"
 	pki := func(f string) string { return "/pki/" + f }
 
-	// The two node states differ only in the CIS flag.
+	// the two node states differ only in the CIS flag.
 	base := &nodestate.NodeState{
 		Role: "controller", Hostname: "cp1", NodeIP: "192.0.2.10",
 		PodCIDR: "10.245.0.0/16", ServiceCIDR: "10.96.0.0/12",
@@ -998,16 +885,7 @@ func TestAPIServerCISFlagsAreExactlyTheProfile(t *testing.T) {
 	}
 }
 
-// TestReadContainerSpecReadsTheFileKubeletReads owns the reader the hardening
-// audit's manifest controls rest on. It reads the FILE, not a re-render: an
-// out-of-band edit must be visible, or the audit reports what stratum intended
-// rather than what kubelet was handed. The argv is Command followed by Args —
-// what the container actually execs — and the declared env is the container's
-// whole environment, so a rendered container that carries none must read as
-// none. The fail-closed cases are the contract's other half: valueFrom and
-// envFrom name environment the manifest does not carry, and a manifest without
-// the named container says nothing about it — each must error rather than hand
-// back a spec that reads as complete.
+// the fail-closed cases keep the audit from reading an incomplete view as complete.
 func TestReadContainerSpecReadsTheFileKubeletReads(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -1030,8 +908,7 @@ func TestReadContainerSpecReadsTheFileKubeletReads(t *testing.T) {
 		t.Errorf("the rendered etcd declares env %v — the audit treats the manifest as the container's whole environment, so an unrendered source would read as absent", spec.Env)
 	}
 
-	// An out-of-band edit is exactly what the audit exists to see: the spec
-	// must follow the file, not the node state this manifest was rendered from.
+	// an out-of-band edit is exactly what the audit exists to see.
 	edited := append(slices.Clone(c.Command), "--client-cert-auth=false")
 	c.Command = edited
 	if err := os.WriteFile(Path("etcd"), marshal(t, pod), 0o600); err != nil {
@@ -1045,8 +922,7 @@ func TestReadContainerSpecReadsTheFileKubeletReads(t *testing.T) {
 		t.Errorf("after an out-of-band edit, ReadContainerSpec argv = %q, want the edited file's %q — a re-render would hide the drift the audit is for", after.Argv, edited)
 	}
 
-	// Fail-closed cases over hand-written manifests, written through Put the
-	// way any manifest lands on disk.
+	// Fail-closed cases over hand-written manifests, written through Put.
 	for _, tc := range []struct {
 		name, body, wantErr string
 	}{
@@ -1091,22 +967,13 @@ spec:
 	}
 }
 
-// TestSnapshotRestoreRoundTrip: Snapshot captures the manifest set the render
-// owns — every static pod manifest plus the two render-derived files an
-// apiserver manifest write puts beside it (admission-webhook.yaml and
-// webhook-client.kubeconfig) — and RestoreSnapshot puts exactly that set back
-// through the package's one staging path: manifests into the manifest dir,
-// derived files into the config directory where the render writes them, each
-// with its own mode, and no visible stray file for kubelet to parse. A
-// rollback runs its restored manifests without re-rendering them, so nothing
-// else puts the derived files back.
+// the rollback restores manifests without re-rendering, so the derived files ride the set.
 func TestSnapshotRestoreRoundTrip(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
 		t.Fatal(err)
 	}
-	// Files the CIS config writer owns rather than the render: they ride the
-	// CIS config backup, never the manifest set.
+	// files the CIS config writer owns: they ride its backup, never the manifest set.
 	for name, body := range map[string]string{
 		"admission-config.yaml": "admission config\n",
 		"audit-policy.yaml":     "audit policy\n",
@@ -1116,9 +983,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		}
 	}
 
-	// No VIP in the state: no kube-vip manifest. The render wrote both derived
-	// files 0600; one is given its own mode so the round trip pins that each
-	// file keeps the mode the node had, not the writer's default.
+	// no VIP in the state: no kube-vip manifest.
 	manifests := []string{"etcd", "kube-apiserver", "kube-controller-manager", "kube-scheduler"}
 	derived := map[string]os.FileMode{
 		"admission-webhook.yaml":    0o644,
@@ -1173,8 +1038,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		}
 	}
 
-	// The state the upgrade leaves behind: re-rendered manifests, a rewritten
-	// derived pair, and a manifest the newer render dropped.
+	// the upgrade leaves re-rendered manifests, a rewritten derived pair, and a dropped manifest.
 	for _, n := range manifests {
 		if err := os.WriteFile(Path(n), []byte("new "+n+"\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -1219,8 +1083,7 @@ func TestSnapshotRestoreRoundTrip(t *testing.T) {
 		}
 	}
 
-	// kubelet parses every non-hidden file in the manifest dir: after the
-	// restore it must hold exactly the manifests.
+	// kubelet parses every non-hidden file in the manifest dir.
 	entries, err = os.ReadDir(Dir())
 	if err != nil {
 		t.Fatal(err)
@@ -1302,10 +1165,6 @@ func TestRestoreSnapshotRestoresDerivedFileModeAndType(t *testing.T) {
 	}
 }
 
-// TestSnapshotSkipsStagingLeftoversAndNonManifests: a staging file that joined
-// the snapshot would be restored on every later rollback — a visible one is a
-// pod kubelet parses, a hidden one is a torn write — and the manifest dir holds
-// no non-manifest files worth copying.
 func TestSnapshotSkipsStagingLeftoversAndNonManifests(t *testing.T) {
 	testNode(t)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -1343,13 +1202,7 @@ func TestSnapshotSkipsStagingLeftoversAndNonManifests(t *testing.T) {
 	}
 }
 
-// TestSnapshotSyncsEachCopiedFileThenTheParentDirectory: a backup set the
-// upgrade resumes against must survive a power loss as a set. Every manifest
-// and render-derived file is fsynced at the mode the node had before it lands
-// under the hidden staging name, and the directory holding the snapshot is
-// fsynced once the rename puts the set in place — until that sync a power
-// loss can undo the rename after the upgrade went on believing its backup was
-// taken.
+// a backup the upgrade resumes against must survive a power loss as a set.
 func TestSnapshotSyncsEachCopiedFileThenTheParentDirectory(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -1425,10 +1278,6 @@ func TestSnapshotSyncsEachCopiedFileThenTheParentDirectory(t *testing.T) {
 	}
 }
 
-// TestSnapshotKeepsNoPartialSetWhenASyncFails: a manifest whose fsync fails
-// stops the snapshot. Nothing is left at dir for the upgrade to resume
-// against, and no staging copy survives beside it — a partial set is one a
-// later rollback would restore half-whole.
 func TestSnapshotKeepsNoPartialSetWhenASyncFails(t *testing.T) {
 	st := testNode(t)
 	if err := WriteAll(st); err != nil {
@@ -1457,13 +1306,7 @@ func TestSnapshotKeepsNoPartialSetWhenASyncFails(t *testing.T) {
 	}
 }
 
-// TestRestoreSnapshotSweepsVisibleLeftovers: nodes upgraded before the atomic
-// writer still carry a visible "<name>.yaml.tmp" in the manifest dir, where
-// kubelet parses it as a pod and it sorts after the real manifest in the file
-// source's glob, so it holds that pod's store key permanently. The restore
-// evicts it. A hidden temp is a live write by a concurrent Start and is never
-// ours to remove; a snapshot holding an unchanged manifest must not rewrite it
-// (a fresh inode and an inotify event buy kubelet's pod churn for nothing).
+// a visible leftover is a pod kubelet parses; a hidden temp is a live write.
 func TestRestoreSnapshotSweepsVisibleLeftovers(t *testing.T) {
 	testNode(t)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -1476,8 +1319,7 @@ func TestRestoreSnapshotSweepsVisibleLeftovers(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(snap, "kube-apiserver.yaml"), []byte("restored apiserver\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A file that is neither a manifest nor a derived one must not land in the
-	// manifest dir, whatever a broken snapshot holds.
+	// neither manifest nor derived: it must not land in the manifest dir.
 	if err := os.WriteFile(filepath.Join(snap, "notes.txt"), []byte("not a manifest"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1504,8 +1346,7 @@ func TestRestoreSnapshotSweepsVisibleLeftovers(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(Dir(), "etcd.yaml.tmp")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the visible staging ghost survived the restore (%v); kubelet keeps parsing it as a pod", err)
 	}
-	// The report goes to the caller's writer, never the process's stdout: on
-	// the MCP stdio transport stdout is the protocol stream.
+	// the report goes to the caller's writer; stdout is the MCP stdio protocol stream.
 	want := "  removed stale staging file " + filepath.Join(Dir(), "etcd.yaml.tmp") + " (kubelet was parsing it as a pod)\n"
 	if out.String() != want {
 		t.Errorf("restore output = %q; want %q", out.String(), want)
@@ -1528,9 +1369,7 @@ func TestRestoreSnapshotSweepsVisibleLeftovers(t *testing.T) {
 	}
 }
 
-// TestRestoreSnapshotFailsWhenAGhostSurvives: the honesty contract. If the
-// visible staging file cannot be removed, the restore must report failure
-// rather than claim success while kubelet still parses the ghost as a pod.
+// the restore must report failure rather than claim success with the ghost still parsed.
 func TestRestoreSnapshotFailsWhenAGhostSurvives(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root removes from a directory its mode denies")
@@ -1556,13 +1395,7 @@ func TestRestoreSnapshotFailsWhenAGhostSurvives(t *testing.T) {
 	}
 }
 
-// TestManifestWriteDoesNotStageAtAFixedSharedName: the fixed
-// ".<name>.yaml.tmp" staging name is one path shared by every writer of the
-// manifest — a rollback's Put and a concurrent Start both staging there tear
-// one manifest, one truncating the file the other is about to rename into
-// place. Staging is unique per write: a write must succeed even with the old
-// fixed staging name already held — here by a directory standing in for
-// another writer's occupation.
+// the old fixed staging name is one path shared by every writer of the manifest.
 func TestManifestWriteDoesNotStageAtAFixedSharedName(t *testing.T) {
 	testNode(t)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -1580,10 +1413,7 @@ func TestManifestWriteDoesNotStageAtAFixedSharedName(t *testing.T) {
 	}
 }
 
-// TestManifestWriteSkipsAnUnchangedManifest: a write whose bytes are already on
-// disk must not touch the file — an idempotent re-render or a restore of an
-// identical manifest would otherwise hand kubelet an inotify event and a fresh
-// inode, and kubelet answers with a pod restart nothing needed.
+// a fresh inode and an inotify event buy kubelet a pod restart nothing needed.
 func TestManifestWriteSkipsAnUnchangedManifest(t *testing.T) {
 	testNode(t)
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
@@ -1608,8 +1438,7 @@ func TestManifestWriteSkipsAnUnchangedManifest(t *testing.T) {
 	}
 }
 
-// marshal writes a pod back the way the renderer does, so an edited manifest
-// is a manifest kubelet would still run.
+// an edited manifest must remain one kubelet would still run.
 func marshal(t *testing.T, pod *corev1.Pod) []byte {
 	t.Helper()
 	b, err := yaml.Marshal(pod)
@@ -1619,13 +1448,7 @@ func marshal(t *testing.T, pod *corev1.Pod) []byte {
 	return b
 }
 
-// TestAdmissionFilesLandWhereTheArgvNamesThem pins the three-way resolution
-// version.AdmissionWebhookConfig exists for: the render WRITES the admission
-// file there, the apiserver's rendered ARGV names it there, and the webhook
-// plugin inside it names the client kubeconfig the same render wrote beside it.
-// A writer and an argv that resolve the path differently hand the apiserver an
-// admission file that does not exist — or leave a stale one for it to load —
-// and the audit's 1.2.11 reads exactly the file that argv names.
+// writer, argv and plugin must resolve the paths identically, or the apiserver loads nothing.
 func TestAdmissionFilesLandWhereTheArgvNamesThem(t *testing.T) {
 	st := testNode(t)
 	profiletest.Register(t)

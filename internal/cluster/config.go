@@ -1,11 +1,4 @@
-// Package cluster assembles a SKE node: the declarative cluster config, the
-// persisted per-node state, the component processes the supervisor runs, and
-// the bring-up/join flows around them.
-//
-// The shape is one API-versioned config file rather than flag soup, component
-// configs generated from it, and the control plane as kubelet-managed static
-// pods rendered by internal/staticpod, with the host-process roster in
-// processes.go.
+// Package cluster assembles a SKE node: its config, state, and bring-up and join flows.
 package cluster
 
 import (
@@ -31,8 +24,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Aliases: the state types live in internal/nodestate (a leaf package shared
-// with internal/ha); cluster is their primary consumer.
+// The state types live in internal/nodestate, a leaf package shared with internal/ha.
 type (
 	NodeState = nodestate.NodeState
 	VIP       = nodestate.VIP
@@ -45,15 +37,12 @@ var (
 )
 
 // ClusterConfig is the user-facing declarative config (/etc/stratum/config.yaml).
-// CRD-shaped even though it is consumed locally, so the same document can
-// later live in-cluster.
 type ClusterConfig struct {
 	APIVersion string `json:"apiVersion,omitempty"`
 	Kind       string `json:"kind,omitempty"`
 	Spec       Spec   `json:"spec"`
 
-	// path is the file LoadConfig read this from (even when it was missing and
-	// the config is pure defaults).
+	// path is the file LoadConfig read this from, even when it was missing.
 	path string
 }
 
@@ -69,13 +58,11 @@ type Spec struct {
 	SELinux   *bool      `json:"selinux,omitempty"`   // label Stratum's files for container-selinux (default on)
 	Dashboard *Dashboard `json:"dashboard,omitempty"`
 	Node      NodeSpec   `json:"node,omitempty"`
-	// RuntimeClasses names the runtime handlers the cluster publishes a
-	// RuntimeClass for, read by control planes only.
+	// Read by control planes only.
 	RuntimeClasses []string `json:"runtimeClasses,omitempty"`
 }
 
-// Dashboard is spec.dashboard: the dashboard the cluster runs for itself. It is
-// on by default whenever the operator is.
+// Dashboard is spec.dashboard: on by default whenever the operator is.
 type Dashboard struct {
 	Enabled         *bool  `json:"enabled,omitempty"`
 	NodePort        *int   `json:"nodePort,omitempty"` // default 30443; 0 serves on a ClusterIP only
@@ -108,14 +95,7 @@ func (d *Dashboard) validate(operator bool) error {
 	return nil
 }
 
-// Network is spec.network. A control plane never reads its pod and service
-// ranges or cluster domain from flags: the cluster's first controller boot
-// takes podCIDR, serviceCIDR and clusterDomain from this block and records
-// them, a joining control plane inherits the recorded values and refuses a
-// different one set here, and every later start keeps the recorded values.
-// A worker reads only nodeIP and takes the cluster's network from --pod-cidr,
-// --service-cidr and --cluster-domain, which `stratum up` refuses without
-// --worker.
+// A control plane records the ranges at first boot and inherits them; a worker reads only nodeIP.
 type Network struct {
 	PodCIDR       string  `json:"podCIDR,omitempty"`     // default 10.245.0.0/16; "v4,v6" for dual-stack; set at first boot, a join must match
 	ServiceCIDR   string  `json:"serviceCIDR,omitempty"` // default 10.96.0.0/12; set at first boot, a join must match
@@ -124,9 +104,7 @@ type Network struct {
 	Cilium        *Cilium `json:"cilium,omitempty"`
 }
 
-// Cilium is spec.network.cilium: the cluster's Cilium options. Every field is
-// optional, and an absent block is the shipped configuration. It is
-// cluster-wide, so every control plane's file must carry the same block.
+// Cluster-wide, so every control plane's file must carry the same block.
 type Cilium struct {
 	MTU                   int      `json:"mtu,omitempty"`
 	Devices               []string `json:"devices,omitempty"`
@@ -137,8 +115,7 @@ type Cilium struct {
 	AutoDirectNodeRoutes  *bool    `json:"autoDirectNodeRoutes,omitempty"`
 }
 
-// Settings is the block as the render and the join check take it; a nil block
-// is the shipped configuration.
+// Settings is the block as the render and the join check take it; nil is the shipped config.
 func (c *Cilium) Settings() addons.CiliumSettings {
 	if c == nil {
 		return addons.CiliumSettings{}
@@ -154,13 +131,10 @@ func (c *Cilium) Settings() addons.CiliumSettings {
 	}
 }
 
-// ciliumDevice is an interface name, with Cilium's trailing "+" wildcard
-// allowed: what the kernel accepts as a name, nothing that could break out of
-// the ConfigMap value.
+// An interface name with Cilium's '+' wildcard; nothing that can break out of the ConfigMap value.
 var ciliumDevice = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}\+?$`)
 
-// validate checks the block on its own; dual-stack needs the resolved network,
-// so CheckStack does that part. Errors name the field under spec.network.cilium.
+// Dual-stack needs the resolved network, so CheckStack does that part of the check.
 func (c *Cilium) validate() error {
 	if c == nil {
 		return nil
@@ -230,9 +204,7 @@ func checkFamilyCIDR(s string, v6 bool) error {
 	return nil
 }
 
-// CheckStack checks the parts of the block that depend on the cluster's
-// network: native routing on a dual-stack cluster needs the IPv6 range too,
-// and a single-stack one has no use for it.
+// Native routing on dual-stack needs the IPv6 range; a single-stack one has no use for it.
 func (c *Cilium) CheckStack(dualStack bool) error {
 	if c == nil || c.RoutingMode != "native" {
 		return nil
@@ -264,16 +236,14 @@ type S3 struct {
 	Prefix   string `json:"prefix,omitempty"`
 	Region   string `json:"region,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
-	// PathStyle selects path-style addressing, which MinIO, Ceph and most
-	// non-AWS endpoints need.
+	// Path-style addressing, which MinIO, Ceph and most non-AWS endpoints need.
 	PathStyle bool `json:"pathStyle,omitzero"`
 }
 
 // DefaultConfigPath is the declarative config file `stratum up` reads.
 const DefaultConfigPath = "/etc/stratum/config.yaml"
 
-// LoadConfig reads the cluster config; a missing file yields pure defaults, so
-// `stratum up` with no config at all still brings up a sane single node.
+// LoadConfig reads the cluster config; a missing file yields pure defaults.
 func LoadConfig(path string) (*ClusterConfig, error) {
 	return loadConfig(path, os.ReadFile)
 }
@@ -298,8 +268,7 @@ func loadConfig(path string, read func(string) ([]byte, error)) (*ClusterConfig,
 	if err := c.resolveProfile(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	// Unset stays empty: PrepareController tells "not set" from "set to
-	// cluster.local" so a restart can keep the persisted domain.
+	// Unset stays empty: PrepareController tells "not set" from "set to cluster.local".
 	if d := c.Spec.Network.ClusterDomain; d != "" {
 		if err := netcfg.ValidateDomain(d); err != nil {
 			return nil, fmt.Errorf("%s: spec.network.clusterDomain: %w", path, err)
@@ -315,23 +284,16 @@ type WorkerConfig struct {
 	Node          NodeSpec // spec.node
 }
 
-// workerFields are the fields a --worker honours: a leaf, or a map whose
-// every entry it honours.
+// workerFields are the fields a --worker honours: a leaf, or a map whose every entry it honours.
 var workerFields = []string{"spec.network.nodeIP", "spec.selinux", "spec.node.labels", "spec.node.taints", "spec.node.runtimeHandlers"}
 
-// workerField reports whether a --worker honours the present leaf p.
 func workerField(p string) bool {
 	return slices.ContainsFunc(workerFields, func(f string) bool {
 		return strings.EqualFold(p, f) || len(p) > len(f) && strings.EqualFold(p[:len(f)+1], f+".")
 	})
 }
 
-// WorkerSELinux reads spec.selinux from a worker's config file on a restart,
-// which reads only it and, to refuse a change of profile, WorkerProfile's
-// fields. set is false when the file is missing or
-// does not set spec.selinux, and the worker keeps the setting it saved. Other
-// fields are not checked here: a worker's join already refused a file that
-// set them.
+// set is false when the file is missing or does not set spec.selinux.
 func WorkerSELinux(path string) (optOut, set bool, err error) {
 	c, raw, err := parseConfig(path)
 	if err != nil || raw == nil {
@@ -354,10 +316,7 @@ func WorkerSELinux(path string) (optOut, set bool, err error) {
 	return false, false, nil
 }
 
-// WorkerProfile is the profile a worker's config file names in spec.profile
-// or spec.cis, "" when it names none. A worker restart reads it only to refuse
-// a profile other than the one the worker joined with, and that refusal stops
-// the start at boot too, as it does a start by hand.
+// Read on a worker restart only to refuse a profile other than the one it joined with.
 func WorkerProfile(path string) (string, error) {
 	c, _, err := parseConfig(path)
 	if err != nil {
@@ -369,26 +328,19 @@ func WorkerProfile(path string) (string, error) {
 	return c.ProfileName(), nil
 }
 
-// LoadWorkerConfig is the config a --worker honours: spec.network.nodeIP,
-// spec.selinux and spec.node, and nothing else. The file is parsed as strictly as a control
-// plane parses it, and any other field that is set is an error naming it: a
-// worker has no use for it, and a setting that appears to apply and does not is
-// worse than a refusal. A missing file yields the zero WorkerConfig.
+// Any other set field is an error naming it; a missing file yields the zero WorkerConfig.
 func LoadWorkerConfig(path string) (WorkerConfig, error) {
 	c, raw, err := parseConfig(path)
 	if err != nil {
 		return WorkerConfig{}, err
 	}
-	// Presence is read off the document, not the decoded struct: `operator: false`
-	// and `snapshots.retain: 0` decode to the zero value, which looks the same as
-	// absent, but they are still settings the operator wrote.
+	// Presence is read off the document: zero values still decode from settings the operator wrote.
 	var doc map[string]any
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return WorkerConfig{}, fmt.Errorf("%s: %w", path, err)
 	}
 	var set []string
-	// Every key matches case-insensitively, the root included, as in decoding:
-	// `Spec:` and `spec:` both populate Spec, and may appear together.
+	// Every key matches case-insensitively, the root included, as in decoding.
 	for k, v := range doc {
 		if !strings.EqualFold(k, "spec") {
 			continue
@@ -411,7 +363,6 @@ func LoadWorkerConfig(path string) (WorkerConfig, error) {
 }
 
 // presentFields lists the dotted paths of the leaves a decoded document sets.
-// A null leaf and an empty mapping set nothing.
 func presentFields(v any, path string) []string {
 	switch v := v.(type) {
 	case nil:
@@ -427,9 +378,7 @@ func presentFields(v any, path string) []string {
 	}
 }
 
-// validateNode reports a spec.node the node cannot declare. It is checked
-// where spec.node is read, not in parseConfig: a worker restart, which reads
-// only spec.selinux, must not lose that setting to a field it ignores.
+// Checked where spec.node is read, not in parseConfig: a worker restart reads only spec.selinux.
 func (c *ClusterConfig) validateNode() error {
 	if err := c.Spec.Node.Validate(); err != nil {
 		return fmt.Errorf("%s: spec.node: %w", c.path, err)
@@ -437,8 +386,6 @@ func (c *ClusterConfig) validateNode() error {
 	return nil
 }
 
-// parseConfig reads and strictly parses path without applying defaults, and
-// returns the raw document with it. A missing file is an empty config.
 func parseConfig(path string) (*ClusterConfig, []byte, error) {
 	return parseConfigWithRead(path, os.ReadFile)
 }
@@ -458,10 +405,7 @@ func parseConfigWithRead(path string, read func(string) ([]byte, error)) (*Clust
 	if c.Kind != "" && c.Kind != "ClusterConfig" {
 		return nil, nil, fmt.Errorf("%s: kind %q is not ClusterConfig", path, c.Kind)
 	}
-	// Caught here rather than deep in kube-vip's logs -- and as an error, like
-	// every other bad value in this file. It was a panic in defaults(), which
-	// has no error to return, so a typo crashed `stratum up` with a stack
-	// trace and crash-looped the unit.
+	// Refused here, as an error: a panic in defaults() would crash-loop the unit.
 	if c.Spec.VIP.Address != "" && net.ParseIP(c.Spec.VIP.Address) == nil {
 		return nil, nil, fmt.Errorf("%s: spec.vip.address %q is not an IP address", path, c.Spec.VIP.Address)
 	}
@@ -471,34 +415,16 @@ func parseConfigWithRead(path string, read func(string) ([]byte, error)) (*Clust
 	if err := c.Spec.Dashboard.validate(c.OperatorEnabled()); err != nil {
 		return nil, nil, fmt.Errorf("%s: spec.dashboard.%w", path, err)
 	}
-	// Refused here, as an error like every other bad value in this file,
-	// rather than passed through to the scheduled snapshot loop: its ticker
-	// interval comes straight from this field, and time.NewTicker panics on
-	// a non-positive one, taking the whole `stratum up` down. Zero is not a
-	// bad value — it is the unset marker defaults() replaces with the
-	// built-in interval.
+	// time.NewTicker panics on a non-positive interval; the run group restart-loops the task forever.
 	if c.Spec.Snapshot.IntervalHours < 0 {
 		return nil, nil, fmt.Errorf("%s: spec.snapshots.intervalHours %d is negative", path, c.Spec.Snapshot.IntervalHours)
 	}
-	// The same panic, reached by overflow: the interval the loop's ticker
-	// takes is time.Duration(hours) * time.Hour (run.go's snapshotInterval),
-	// and that product wraps for hours above the duration's representable
-	// range. The wrap is not reliably to a non-positive duration — a band of
-	// wrapping values lands positive but tiny (5124096 hours, say, wraps to
-	// about 25 minutes) — so the product's sign cannot be the check; the
-	// refusal is a direct bound on the hours. The run group would recover the
-	// panic and restart the task forever, so the refusal belongs here, at
-	// load, with the negative one. Zero is exempt like it is above: it is the
-	// unset marker defaults() replaces with the built-in interval.
+	// The hours-to-duration product overflows, and the wrap is not reliably non-positive.
 	const maxIntervalHours = math.MaxInt64 / int64(time.Hour)
 	if h := int64(c.Spec.Snapshot.IntervalHours); h > maxIntervalHours {
 		return nil, nil, fmt.Errorf("%s: spec.snapshots.intervalHours %d is too large", path, h)
 	}
-	// A negative retention is refused at load too, though it fails quietly
-	// rather than with a panic: the scheduled save prunes only for a positive
-	// one, so on a control plane with no snapshot.conf a stray minus sign
-	// would stop pruning until the disk fills. Zero is exempt here too: it is
-	// the unset marker defaults() replaces with the built-in retention.
+	// A negative retention would silently stop pruning until the disk fills.
 	if c.Spec.Snapshot.Retain < 0 {
 		return nil, nil, fmt.Errorf("%s: spec.snapshots.retain %d is negative", path, c.Spec.Snapshot.Retain)
 	}
@@ -506,9 +432,7 @@ func parseConfigWithRead(path string, read func(string) ([]byte, error)) (*Clust
 }
 
 func (c *ClusterConfig) defaults() {
-	// PodCIDR / ServiceCIDR / ClusterDomain stay empty when unset:
-	// resolveNetConfig tells "not set" from "set to the default", and the default
-	// is applied there.
+	// resolveNetConfig tells "not set" from "set to the default" and applies the default there.
 	if c.Spec.Storage.Default == "" {
 		c.Spec.Storage.Default = "local-path"
 	}
@@ -520,8 +444,7 @@ func (c *ClusterConfig) defaults() {
 	}
 }
 
-// ProfileName is the node profile the config selects: spec.profile, or the
-// legacy spec.cis: true as "cis"; empty for none.
+// ProfileName is spec.profile, or the legacy spec.cis: true as "cis"; empty for none.
 func (c *ClusterConfig) ProfileName() string {
 	if c.Spec.Profile != "" {
 		return c.Spec.Profile
@@ -532,15 +455,12 @@ func (c *ClusterConfig) ProfileName() string {
 	return ""
 }
 
-// SetProfile selects a profile from outside the file (the --profile flag) and
-// keeps spec.profile and the legacy spec.cis in step.
+// SetProfile selects a profile from outside the file (the --profile flag).
 func (c *ClusterConfig) SetProfile(name string) {
 	c.Spec.Profile = name
 	c.Spec.CIS = name == nodestate.CISProfile
 }
 
-// resolveProfile folds the legacy spec.cis into spec.profile and refuses a
-// file that names two different profiles or one that is not a label.
 func (c *ClusterConfig) resolveProfile() error {
 	if c.Spec.CIS && c.Spec.Profile != "" && c.Spec.Profile != nodestate.CISProfile {
 		return fmt.Errorf("spec.profile %q and spec.cis: true name two profiles; keep spec.profile and remove spec.cis", c.Spec.Profile)
@@ -555,13 +475,10 @@ func (c *ClusterConfig) resolveProfile() error {
 	return nil
 }
 
-// OperatorEnabled/CertRenewEnabled default to on; a *bool distinguishes
-// "unset" from "explicitly false".
+// A *bool distinguishes "unset" from "explicitly false"; both default to on.
 func (c *ClusterConfig) OperatorEnabled() bool  { return c.Spec.Operator == nil || *c.Spec.Operator }
 func (c *ClusterConfig) CertRenewEnabled() bool { return c.Spec.CertRenew == nil || *c.Spec.CertRenew }
 
-// DashboardEnabled reports whether the cluster runs its dashboard: on unless
-// spec.dashboard.enabled is false or the operator is off.
 func (c *ClusterConfig) DashboardEnabled() bool {
 	if !c.OperatorEnabled() {
 		return false
@@ -570,9 +487,7 @@ func (c *ClusterConfig) DashboardEnabled() bool {
 	return d == nil || d.Enabled == nil || *d.Enabled
 }
 
-// nodeShellDefault is the dashboard node shell's default: on unless the
-// node's profile turns it off. A profile that cannot be resolved leaves it off,
-// the safe side; such a node is refused at start anyway.
+// An unresolvable profile leaves the shell off, the safe side; such a node is refused at start.
 func (c *ClusterConfig) nodeShellDefault() bool {
 	p, err := profile.ForNode(c.ProfileName())
 	return err == nil && !p.DisableNodeShell
@@ -598,5 +513,4 @@ func (c *ClusterConfig) DashboardSettings() addons.DashboardSettings {
 	return s
 }
 
-// SELinuxOptOut reports spec.selinux: false.
 func (c *ClusterConfig) SELinuxOptOut() bool { return c.Spec.SELinux != nil && !*c.Spec.SELinux }

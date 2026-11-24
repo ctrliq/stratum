@@ -23,9 +23,6 @@ func TestWithStacksReachesTheControlPlaneStart(t *testing.T) {
 		{&version.DataDir, filepath.Join(tmp, "data")},
 		{&version.EtcdDataDir, filepath.Join(tmp, "etcd")},
 		{&startLockPath, filepath.Join(tmp, "start.lock")},
-		// `up` refuses an unstamped build before it starts, and this test
-		// is about the stacks hook reaching that start, not about the
-		// stamp, so it runs stamped.
 		{&version.K8sVersion, "v1.37.1"},
 	} {
 		old := *sw.p

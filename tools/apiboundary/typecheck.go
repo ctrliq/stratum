@@ -1,5 +1,3 @@
-// typecheck.go loads a package's fully resolved types from compiler export
-// data and walks them looking for an internal/* reference.
 package main
 
 import (
@@ -15,8 +13,7 @@ import (
 	"path/filepath"
 )
 
-// go list supplies module-aware compiler export files to the standard
-// library importer.
+// go list supplies module-aware compiler export files to the importer.
 func loadExportedTypes(dir string) (*types.Package, []string, moduleScope, error) {
 	cmd := exec.Command("go", "list", "-deps", "-export", "-json", ".")
 	cmd.Dir = dir
@@ -27,7 +24,6 @@ func loadExportedTypes(dir string) (*types.Package, []string, moduleScope, error
 		return nil, nil, moduleScope{}, fmt.Errorf("loading exported API types (the package and its dependencies must build for this check to run — try `go build ./...` first): %w: %s", err, &stderr)
 	}
 	exports := make(map[string]string)
-	// owner is each package's own module, straight from go list.
 	owner := make(map[string]string)
 	var target, module string
 	var files []string
@@ -64,8 +60,7 @@ func loadExportedTypes(dir string) (*types.Package, []string, moduleScope, error
 	if target == "" {
 		return nil, nil, moduleScope{}, fmt.Errorf("no package found in %s", dir)
 	}
-	// A package outside any module has no internal packages of "ours" to
-	// leak, and silently checking nothing would be worse than saying so.
+	// A package outside any module has nothing of ours to leak; say so.
 	if module == "" {
 		return nil, nil, moduleScope{}, fmt.Errorf("%s is not in a module, so there is no module scope to check against", target)
 	}
@@ -91,28 +86,20 @@ func internalTypeRef(t types.Type, seen map[types.Type]bool, mod moduleScope) (s
 		if owner := t.Obj().Pkg(); owner != nil && mod.isInternal(owner.Path()) {
 			return owner.Path(), true
 		}
-		// Unlike *types.Named below, always unwrap: an alias has no identity
-		// of its own beyond Rhs(), so this is the only way to see that e.g. a
-		// sibling public package's `type Public = internal.Foo` denotes an
-		// internal type — Obj().Pkg() only tells us who declared the alias
-		// name, not what it denotes.
+		// Always unwrap: an alias has no identity of its own beyond Rhs().
 		children = append(children, t.Rhs())
 	case *types.Named:
 		if owner := t.Obj().Pkg(); owner != nil && mod.isInternal(owner.Path()) {
 			return owner.Path(), true
 		}
-		// TypeArgs is non-empty for an instantiated use (Foo[int]); TypeParams
-		// is non-empty for the generic declaration itself (type Foo[T
-		// Constraint] ...) — a constraint interface can reference an internal
-		// type just as much as a field can, so both need walking.
+		// A constraint can reference an internal type as much as a field can.
 		for i := 0; i < t.TypeArgs().Len(); i++ {
 			children = append(children, t.TypeArgs().At(i))
 		}
 		for i := 0; i < t.TypeParams().Len(); i++ {
 			children = append(children, t.TypeParams().At(i).Constraint())
 		}
-		// A public wrapper's exported members are reachable from our API too,
-		// even when another package declares the wrapper. seen breaks cycles.
+		// A wrapper's exported members are reachable API even when declared elsewhere.
 		children = append(children, t.Underlying())
 		for i := 0; i < t.NumMethods(); i++ {
 			if m := t.Method(i); m.Exported() {
@@ -131,7 +118,6 @@ func internalTypeRef(t types.Type, seen map[types.Type]bool, mod moduleScope) (s
 		children = append(children, t.Elem())
 	case *types.Signature:
 		children = append(children, t.Params(), t.Results())
-		// A generic function's own type parameters carry constraint interfaces (e.g.
 		for i := 0; i < t.TypeParams().Len(); i++ {
 			children = append(children, t.TypeParams().At(i).Constraint())
 		}
@@ -151,8 +137,7 @@ func internalTypeRef(t types.Type, seen map[types.Type]bool, mod moduleScope) (s
 				children = append(children, m.Type())
 			}
 		}
-		// A constraint interface's type-set terms (~int | internal.Foo) are
-		// embeddeds, not methods — NumMethods alone misses them entirely.
+		// Type-set terms (~int | internal.Foo) are embeddeds, not methods.
 		for i := 0; i < t.NumEmbeddeds(); i++ {
 			children = append(children, t.EmbeddedType(i))
 		}

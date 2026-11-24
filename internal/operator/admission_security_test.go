@@ -31,8 +31,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// Exercise wire-format AdmissionReviews and the JSONPatch the apiserver applies.
-// CREATE has no object UID; persistence adds it after the mutating webhook.
+// CREATE requests carry no UID; the apiserver assigns one after the mutating webhook.
 func admitObject(t *testing.T, obj, old *unstructured.Unstructured, user string, signer *requesterSigner) *unstructured.Unstructured {
 	t.Helper()
 	raw, err := json.Marshal(obj)
@@ -121,10 +120,6 @@ func TestOverlayRequiresCanonicalFullIdentity(t *testing.T) {
 	}
 }
 
-// TestAdmissionRestampsKeepBothStamps: during the signature migration, admission
-// writes BOTH signatures and the key identifier on CREATE, a spec-change re-stamp
-// signs with the CURRENT key after a rotation while keeping both signatures, and a
-// metadata-only update preserves the v2 stamp annotations instead of dropping them.
 func TestAdmissionRestampsKeepBothStamps(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	s0 := keyringFromSecret(t, cs, "k0", map[string][]byte{"k0": testRotationKey(0)})
@@ -144,7 +139,6 @@ func TestAdmissionRestampsKeepBothStamps(t *testing.T) {
 		t.Fatalf("migration CREATE stamp rejected after persistence: %v %s", info, reason)
 	}
 
-	// Rotate: k1 becomes the current key, k0 stays retained.
 	s1 := keyringFromSecret(t, cs, "k1", map[string][]byte{"k0": testRotationKey(0), "k1": testRotationKey(1)})
 
 	changed := created.DeepCopy()
@@ -160,7 +154,6 @@ func TestAdmissionRestampsKeepBothStamps(t *testing.T) {
 	if info, ok, reason := verifiedRequester(updated, s1); !ok || info.Username != "bob" {
 		t.Fatalf("re-stamped object must verify under the rotated signer: %v %s", info, reason)
 	}
-	// The pre-rotation stamp still verifies: its key is retained.
 	if _, ok, reason := verifiedRequester(created.DeepCopy(), s1); !ok {
 		t.Fatalf("the pre-rotation stamp must still verify after rotation (retained key): %s", reason)
 	}
@@ -177,11 +170,6 @@ func TestAdmissionRestampsKeepBothStamps(t *testing.T) {
 	}
 }
 
-// TestAdmissionStampSurvivesSignerReload: a signer reloaded from an unchanged
-// Secret — what a process restart does — must verify the v2 stamps admission wrote
-// before the restart, and stamp subsequent writes with the SAME key identifier.
-// A key id that silently changes identity would turn every pre-restart v2 stamp
-// into a wrong-key refusal.
 func TestAdmissionStampSurvivesSignerReload(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	sec := &corev1.Secret{

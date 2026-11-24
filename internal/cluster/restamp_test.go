@@ -83,8 +83,7 @@ func TestManagedRestampRecoversPanicAndHandlesLaterStarts(t *testing.T) {
 	})
 }
 
-// The supervisor outlives `stratum upgrade`, so a kubelet restart is
-// the moment it must re-assert the node's version annotations.
+// The supervisor outlives `stratum upgrade`, so a kubelet restart re-asserts the version stamp.
 func TestKubeletOnStartRestampsOnKubeletOnly(t *testing.T) {
 	var calls atomic.Int32
 	hostnames := make(chan string, 1)
@@ -93,8 +92,7 @@ func TestKubeletOnStartRestampsOnKubeletOnly(t *testing.T) {
 		hostnames <- h
 	}, nil)
 
-	// Non-kubelet starts go first, with nothing in flight: the single-flight
-	// guard would otherwise absorb a wrongly restamping one.
+	// Non-kubelet starts go first, nothing in flight, or the guard absorbs a wrongly restamping one.
 	onStart("containerd", 1)
 	onStart("operator", 1)
 	time.Sleep(50 * time.Millisecond) // an erroneous restamp would land by now
@@ -113,9 +111,7 @@ func TestKubeletOnStartRestampsOnKubeletOnly(t *testing.T) {
 	}
 }
 
-// A crash-looping kubelet must not pile up restamp goroutines while
-// the node is unregistered. Overlapping starts share the one in flight; a start
-// after it returns (the `stratum upgrade` restart) restamps again.
+// A crash-looping kubelet cannot pile up restamps; a start after the in-flight one restamps again.
 func TestKubeletOnStartSingleFlight(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -154,8 +150,7 @@ func TestKubeletOnStartSingleFlight(t *testing.T) {
 	}
 
 	release <- struct{}{}
-	// The guard clears just after restamp returns; a start that lands in that
-	// gap is dropped, so retry until one runs.
+	// The guard clears after restamp returns; a start in the gap is dropped, so retry until one runs.
 	deadline := time.After(5 * time.Second)
 	for count() < 2 {
 		onStart("kubelet", 4)
@@ -171,9 +166,7 @@ func TestKubeletOnStartSingleFlight(t *testing.T) {
 	}
 }
 
-// A containerd that restarts without its kubelet may load a runtime handler
-// an apply wrote without restarting it, so every containerd start relabels,
-// and only a containerd start does.
+// Every containerd start relabels, nothing else does: a restart may load a handler an apply wrote.
 func TestContainerdStartsRelabelInBothRoles(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())

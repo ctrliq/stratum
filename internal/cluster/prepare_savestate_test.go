@@ -11,9 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// stubSimpleAssembly replaces assembleNode with a stub that resolves net,
-// runs the before-certificates hook, and reports the fixture's node IP, the
-// way a real start does; the original is restored at cleanup.
 func stubSimpleAssembly(t *testing.T) {
 	t.Helper()
 	savedAssembly := assembleNode
@@ -27,23 +24,7 @@ func stubSimpleAssembly(t *testing.T) {
 	}
 }
 
-// TestPrepareKeepsFieldsAnotherWriterRecordedMidStart pins the write rule for
-// the save at the end of a controller start: another writer's record lands in
-// node.yaml while the start runs, and the save must apply bring-up's fields to
-// the state read back under the etcd data lock — never replace the file with
-// the fresh struct the start built, which would drop every field bring-up does
-// not own (recordConfigPath's ConfigPath, learnClusterDNS's ClusterDNSIP) and
-// whatever any other writer recorded in between.
-//
-// The stubbed assembly's before-certificates hook plays the other writer: it
-// records ConfigPath and ClusterDNSIP on disk mid-prepare, the way
-// recordConfigPath and learnClusterDNS write them around a start. The seed
-// deliberately diverges from what this start sets — a profile this config does
-// not name, VIP interface and BGP settings the config dropped, a stale endpoint
-// record no kubeconfig file corroborates, a domain the config does not carry —
-// so the saved state proves a real write happened and that owned fields are
-// copied unconditionally, zero values included: nothing bring-up means to set
-// or clear is resurrected from disk.
+// The before-certificates hook plays another writer recording fields mid-prepare.
 func TestPrepareKeepsFieldsAnotherWriterRecordedMidStart(t *testing.T) {
 	assemblyFixture(t)
 	release := holdDataLock(t)
@@ -71,8 +52,7 @@ func TestPrepareKeepsFieldsAnotherWriterRecordedMidStart(t *testing.T) {
 		if err := a.BeforeCerts(choice); err != nil {
 			return host.NodeIPChoice{}, err
 		}
-		// Another writer records its fields while the start runs, between the
-		// start's own read and its final save.
+		// Another writer records its fields between the start's read and final save.
 		cur, err := LoadState()
 		if err != nil {
 			return host.NodeIPChoice{}, err
@@ -104,30 +84,20 @@ func TestPrepareKeepsFieldsAnotherWriterRecordedMidStart(t *testing.T) {
 		EtcdHasPeers:       true,
 		EtcdPromotePending: true,
 		PodCIDR:            "10.42.0.0/16", ServiceCIDR: "10.43.0.0/16",
-		// The established node keeps the domain its state records (netcfg.ResolveDomain).
 		ClusterDomain: "old.internal",
 		VIP:           VIP{Address: "10.0.0.254"},
-		// The fields the mid-prepare writer recorded; the save keeps them.
-		ConfigPath:   "/srv/other-stratum.yaml",
-		ClusterDNSIP: "10.43.0.99",
+		ConfigPath:    "/srv/other-stratum.yaml",
+		ClusterDNSIP:  "10.43.0.99",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("saved node.yaml =\n %+v\nwant\n %+v", got, want)
 	}
-	// The state handed to RunController reports what was actually saved, so
-	// recordConfigPath's early return and learnClusterDNS read the same file's
-	// truth rather than the start's stale copy.
 	if !reflect.DeepEqual(returned, want) {
 		t.Fatalf("returned node state =\n %+v\nwant\n %+v", returned, want)
 	}
 }
 
-// TestPrepareDoesNotResurrectOwnedFieldsItClears pins the zero-value half of
-// the save: the closure copies each owned field unconditionally, so an owned
-// field the current config leaves empty does not survive from disk. A save
-// that copied a field only when the start's value is non-empty would bring a
-// removed VIP interface and BGP mode, a dropped profile, or an opt-out the
-// state happened to record back past what the config says.
+// Owned fields are copied unconditionally, so an emptied field never survives.
 func TestPrepareDoesNotResurrectOwnedFieldsItClears(t *testing.T) {
 	assemblyFixture(t)
 	release := holdDataLock(t)
@@ -162,11 +132,7 @@ func TestPrepareDoesNotResurrectOwnedFieldsItClears(t *testing.T) {
 	}
 }
 
-// TestPrepareRefusesToSaveWithoutTheHeldDataLock pins the refusal half of the
-// lock contract: the save must write only under the caller's held etcd data
-// lock. A nil release is a caller that holds no lock — an unlocked write would
-// land between another operation's read and write — so the save refuses and
-// node.yaml keeps exactly what it had.
+// A nil release is a caller holding no lock, and an unlocked write races others.
 func TestPrepareRefusesToSaveWithoutTheHeldDataLock(t *testing.T) {
 	assemblyFixture(t)
 
@@ -191,14 +157,7 @@ func TestPrepareRefusesToSaveWithoutTheHeldDataLock(t *testing.T) {
 	}
 }
 
-// TestPrepareReturnsTheProfileTheConfigNames pins the profile the start hands
-// to the run phase: the save normalizes the state written to node.yaml
-// (SaveState's normalizeProfile), but the returned struct is the one this start
-// built, so a config that names the profile — spec.profile: cis — without the
-// legacy spec.cis flag leaves its CIS flag false while the file records it
-// true. The returned state must agree with the saved file on Profile and CIS:
-// the run phase reads its profile back from the returned state, not from
-// node.yaml.
+// The run phase reads its profile from the returned state, not node.yaml.
 func TestPrepareReturnsTheProfileTheConfigNames(t *testing.T) {
 	assemblyFixture(t)
 	release := holdDataLock(t)

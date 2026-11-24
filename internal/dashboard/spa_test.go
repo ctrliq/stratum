@@ -16,12 +16,10 @@ func TestSPACaching(t *testing.T) {
 		"favicon.svg":                 {Data: []byte("<svg/>")},
 	})
 	for _, tc := range []struct{ path, wantCache, wantType string }{
-		// Vite content-hashes everything under assets/, fonts included, so a
-		// new build always lands on a new URL.
+		// Vite content-hashes everything under assets/, fonts included.
 		{"/assets/index-Cz580Qpd.js", "public, max-age=31536000, immutable", "text/javascript; charset=utf-8"},
 		{"/assets/Inter-Bold-BOs.woff2", "public, max-age=31536000, immutable", "font/woff2"},
-		// public/ files keep their names across builds; a year would pin a
-		// stale favicon past an upgrade.
+		// public/ files keep their names across builds; a year pins a stale favicon.
 		{"/favicon.svg", "no-cache", "image/svg+xml"},
 		{"/", "no-cache", "text/html; charset=utf-8"},
 		{"/nodes", "no-cache", "text/html; charset=utf-8"},
@@ -41,19 +39,13 @@ func TestSPACaching(t *testing.T) {
 	}
 }
 
-// A missing asset must not be answered with the SPA. Everything under
-// /assets/ is content-hashed, so a request for one that is not there is a
-// deployment that lost a file or a page holding a URL from an older build —
-// and a 200 of text/html in place of the bundle turns that into a console
-// error about JavaScript syntax, which is a bad place to start looking.
+// A 200 of HTML in place of a missing bundle reads as a script syntax error.
 func TestSPAMissingAssetIs404NotTheIndex(t *testing.T) {
 	h := newSPAHandler(fstest.MapFS{
 		"index.html":               {Data: []byte("<!doctype html>spa")},
 		"assets/index-Cz580Qpd.js": {Data: []byte("bundle")},
 	})
-	// Only paths INSIDE /assets/ qualify. A bare /assets cleans to one path
-	// segment, which registry.js accepts as a route id, so a consumer may
-	// legitimately registerScreen('assets') and that must still reach the SPA.
+	// A bare /assets is a registry.js route id, so it must still reach the SPA.
 	for _, p := range []string{"/assets/index-deleted.js", "/assets/nested/gone.css"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
@@ -64,7 +56,6 @@ func TestSPAMissingAssetIs404NotTheIndex(t *testing.T) {
 			t.Errorf("GET %s served %s; the browser will blame the script, not the deployment", p, ct)
 		}
 	}
-	// The real asset and genuine client-side routes are untouched.
 	for _, tc := range []struct {
 		path string
 		want int
@@ -87,8 +78,7 @@ func TestSPARejectsNonReads(t *testing.T) {
 	}
 }
 
-// Without an embedded dist (-tags noui) the handler must still answer, and
-// must say why rather than serving a blank page.
+// Without an embedded dist (-tags noui) it must say why, not serve a blank page.
 func TestSPAPlaceholderWhenNothingIsEmbedded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	newSPAHandler(fstest.MapFS{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -100,8 +90,7 @@ func TestSPAPlaceholderWhenNothingIsEmbedded(t *testing.T) {
 	}
 }
 
-// onlyReader embeds the fs.File interface, which hides the file's Seek:
-// standing in for an fs.FS whose files are not seekable.
+// Embedding fs.File hides the underlying file's Seek.
 type onlyReader struct{ fs.File }
 
 type noSeekFS struct{ fs.FS }

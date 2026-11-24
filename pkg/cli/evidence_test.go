@@ -1,12 +1,3 @@
-// The exported backup-evidence surface: the supported read-only interface an
-// external pinned binary calls without importing engine internals. The tests
-// drive BackupEvidence through the read seam the way the snapshot commands'
-// tests drive snapshotDir and loadSnapshotConfig, so no test touches the
-// host's node state, cluster config, snapshot directory or S3 target. What
-// they prove is the contract a released consumer compiles and runs against:
-// the options scope and bound the engine read, the caller's context reaches
-// it unchanged, and every wrapper type restates the engine's evidence —
-// including that a partial read stays a floor, never an exact total.
 package cli
 
 import (
@@ -18,10 +9,7 @@ import (
 	mcpsrv "github.com/ctrliq/stratum/internal/mcp"
 )
 
-// useBackupEvidenceRead points the evidence read seam at fn, the same seam
-// swap the snapshot commands' tests use for snapshotDir and
-// loadSnapshotConfig: the exported call reaches the engine's assembled read
-// through backupEvidenceRead, and a swapped fn stands in for it.
+// Points the read seam at fn, the way the snapshot commands' tests swap snapshotDir.
 func useBackupEvidenceRead(t *testing.T, fn func(context.Context, backupevidence.EvidenceOptions) backupevidence.EvidenceResult) {
 	t.Helper()
 	old := backupEvidenceRead
@@ -29,36 +17,18 @@ func useBackupEvidenceRead(t *testing.T, fn func(context.Context, backupevidence
 	backupEvidenceRead = fn
 }
 
-// evidenceTimes are the fixed UTC stamps the crafted evidence carries, so
-// the restatement asserts exactly, whenever the suite runs. The story is
-// one a working node produces at a daily interval — the 2026-11-12 11:00
-// tick saves and uploads the shared snapshot, the next day's 11:00 tick
-// saves again but fails its upload — so the newest artifact is local
-// only. The 2026-11-08 remote copy predating its cutoff is the document's
-// one departure from a working node: under count retention no cutoff
-// exists, the reserved age fields stay empty, and no caller supplies one
-// today — so the old copy and the retention lines it produces pin the
-// restatement's mapping of the reserved fields before anything can fill
-// them.
+// Fixed UTC stamps, so the restatement asserts exactly whenever the suite runs.
 var (
 	evidenceCreated     = time.Date(2026, 11, 12, 11, 0, 0, 0, time.UTC)
 	evidenceOldCreated  = time.Date(2026, 11, 8, 11, 0, 0, 0, time.UTC)
 	evidenceNextCreated = time.Date(2026, 11, 13, 11, 0, 0, 0, time.UTC)
-	// The recorded tick is the next day's: its save succeeded, its upload
-	// and its remote prune failed.
+	// The recorded tick's save succeeded; its upload and remote prune failed.
 	evidenceSaveAttempt = evidenceNextCreated
-	// The upload that last succeeded is the shared copy's, the day
-	// before the recorded tick.
+	// The last successful upload is the shared copy's, the day before the tick.
 	evidenceUploadLast = evidenceCreated
 )
 
-// engineEvidence is the engine's assembled read over one working node: a
-// configured policy with every provenance, two local artifacts (one with a
-// known digest), two remote copies, the census counting the shared snapshot
-// once, and maintenance with typed attempts, separate last-success stamps and
-// safe warnings. Every stage ran whole — except the old copy: a working node
-// under count retention reports no old copies, so that one exercises the
-// reserved age fields a read's caller can flag, which none does today.
+// One working node, except the old remote copy: it exercises the reserved age fields.
 func engineEvidence() backupevidence.EvidenceResult {
 	const (
 		shared   = "etcd-snapshot-cp-1-20261112-110000.db" // local and remote
@@ -118,18 +88,12 @@ func engineEvidence() backupevidence.EvidenceResult {
 			AttemptsKnown:     true,
 		},
 		Complete: true,
-		// The composed warnings a whole engine read emits: the policy's,
-		// the census's and the maintenance record's, in that order —
-		// here only the maintenance record's one.
+		// The policy's, the census's and the maintenance warnings, in that order.
 		Warnings: []string{"WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"},
 	}
 }
 
-// BackupEvidence restates the engine's assembled evidence through the
-// exported value types: the policy with its states and provenance, the local
-// artifacts, the remote copies, the deduplicated census and the maintenance
-// diagnostics, each field for field, with the stable string values the
-// machine-readable contract pins.
+// Restates the engine's evidence field for field, with the contract's stable string values.
 func TestBackupEvidenceRestatesTheEngineEvidence(t *testing.T) {
 	want := engineEvidence()
 	useBackupEvidenceRead(t, func(context.Context, backupevidence.EvidenceOptions) backupevidence.EvidenceResult {
@@ -227,10 +191,7 @@ func TestBackupEvidenceRestatesTheEngineEvidence(t *testing.T) {
 	}
 }
 
-// The options scope and bound the engine read — the node the local half is
-// named for, and the overall page, byte and time budgets — and a call with
-// no options passes zero caps, which the engine read turns into its own
-// built-in defaults: the wrapper never invents bounds of its own.
+// No options passes zero caps, which the engine read turns into its built-in defaults.
 func TestBackupEvidenceOptionsScopeAndBoundTheEngineRead(t *testing.T) {
 	var got backupevidence.EvidenceOptions
 	useBackupEvidenceRead(t, func(_ context.Context, o backupevidence.EvidenceOptions) backupevidence.EvidenceResult {
@@ -255,9 +216,7 @@ func TestBackupEvidenceOptionsScopeAndBoundTheEngineRead(t *testing.T) {
 	}
 }
 
-// The caller's context reaches the engine read unchanged: the same context
-// — its deadline, its cancellation, its values — so the read's bounds and
-// the caller's stop both end the underlying local and remote I/O.
+// The same context reaches the engine read, so the caller's stop ends its I/O.
 func TestBackupEvidencePropagatesTheCallerContext(t *testing.T) {
 	type ctxKey struct{}
 	var gotCtx context.Context
@@ -282,9 +241,7 @@ func TestBackupEvidencePropagatesTheCallerContext(t *testing.T) {
 	}
 }
 
-// A partial engine read stays partial in the exported result: the floors
-// stand, the completeness flags and the warnings are restated, and the
-// wrapper never turns a partial catalog into an exact total.
+// A partial read stays partial: the floors stand and the wrapper invents no total.
 func TestBackupEvidenceKeepsPartialEvidenceAFloorNotATotal(t *testing.T) {
 	partial := backupevidence.EvidenceResult{
 		Policy: backupevidence.EffectivePolicy{State: backupevidence.StateUnknown, IntervalFrom: backupevidence.FromUnknown, RetainFrom: backupevidence.FromUnknown, CopyFrom: backupevidence.FromUnknown, DirFrom: backupevidence.FromUnknown},

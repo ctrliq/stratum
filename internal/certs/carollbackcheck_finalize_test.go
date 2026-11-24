@@ -10,13 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/pki"
 )
 
-// A control plane that finalized and one that lost an old backup key are each
-// half of the one case no advice can mend: the finalized one holds only the
-// new root, the other cannot return to the old one. Its target is readable
-// although it refuses, so it must still count, or the check would see one
-// target, take the finalized control plane for one that never ran trust-new,
-// and tell the operator to restore the key and roll back every node, which
-// cannot restore what finalize deleted.
+// its target is readable although it refuses; it must count, or the check would see one target.
 func TestCheckRollbackClusterSeesAPartialFinalizeBesideALostKey(t *testing.T) {
 	me, build := rollbackCheckClusterNodes(t)
 	stubRollbackStates(t, map[string]rollbackState{
@@ -36,9 +30,7 @@ func TestCheckRollbackClusterSeesAPartialFinalizeBesideALostKey(t *testing.T) {
 	}
 }
 
-// A refusing control plane whose target has an unreadable half says nothing
-// about where it would land, so it joins no group and the advice stays the
-// lost-key one.
+// an unreadable target says nothing about where the node would land, so it joins no group.
 func TestCheckRollbackClusterIgnoresAnUnreadableTarget(t *testing.T) {
 	me, build := rollbackCheckClusterNodes(t)
 	stubRollbackStates(t, map[string]rollbackState{

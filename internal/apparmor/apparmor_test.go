@@ -14,8 +14,7 @@ import (
 	"testing"
 )
 
-// ubuntu2404Runc is the runc profile apparmor 4.0.1 ships, as Ubuntu 24.04
-// does: abi 4.0, /usr/sbin/runc only.
+// The runc profile Ubuntu 24.04's apparmor 4.0.1 ships.
 const ubuntu2404Runc = `# This profile allows everything and only exists to give the
 # application a name instead of having the label "unconfined"
 
@@ -30,7 +29,7 @@ profile runc /usr/sbin/runc flags=(unconfined) {
 }
 `
 
-// ubuntuRunc is the runc profile Ubuntu 26.04's apparmor package ships.
+// The runc profile Ubuntu 26.04's apparmor package ships.
 const ubuntuRunc = `# This profile allows everything and only exists to give the
 # application a name instead of having the label "unconfined"
 
@@ -49,12 +48,9 @@ profile runc /usr/{bin,sbin}/runc flags=(unconfined) {
 const (
 	coveredLabel   = "runc"
 	uncoveredLabel = "unconfined"
-	// notWidenable is a host profile with no attachment to widen.
-	notWidenable = "profile runc flags=(unconfined) {\n}\n"
+	notWidenable   = "profile runc flags=(unconfined) {\n}\n"
 )
 
-// errNoPtrace is what starting runc traced fails with where the kernel
-// forbids ptrace.
 var errNoPtrace = &fs.PathError{Op: "fork/exec", Path: "/var/lib/stratum/bin/runc", Err: syscall.EPERM}
 
 type parseCall struct {
@@ -62,15 +58,11 @@ type parseCall struct {
 	profile string
 }
 
-// fakeHost stands in for a host's AppArmor: its kernel settings, the host's
-// profile files, the label Stratum's runc starts with, and an apparmor_parser
-// whose loads and removals change that label the way the kernel would.
 type fakeHost struct {
 	t     *testing.T
 	calls []parseCall
 	label string
-	// parseErr fails every parse, labelErr every label read; ignoreLoad
-	// leaves the label as it was after a load.
+
 	parseErr, labelErr error
 	ignoreLoad         bool
 }
@@ -115,11 +107,8 @@ func (h *fakeHost) write(path, content string) {
 	}
 }
 
-// restricted turns the restriction on.
 func (h *fakeHost) restricted() { h.write(restrictPath, "1\n") }
 
-// attachLine finds the values of attachVar in a loaded profile; the fake
-// parser reads the header's attachment when it has none.
 var attachLine = regexp.MustCompile(`(?m)^@\{stratum_runc_attach\} = (.*)$`)
 
 func (h *fakeHost) parse(_ context.Context, profile []byte, args ...string) error {
@@ -193,8 +182,7 @@ func TestCoversReadsTheLabelRuncStartsWith(t *testing.T) {
 func TestCoversAsksNothingWithoutAppArmor(t *testing.T) {
 	for name, without := range map[string]func(h *fakeHost){
 		"AppArmor disabled": func(h *fakeHost) { h.write(enabledPath, "N\n") },
-		// A node in a container without securityfs, where containerd applies
-		// no profile at all.
+		// A node in a container without securityfs, where containerd applies no profile at all.
 		"no securityfs": func(h *fakeHost) {
 			if err := os.Remove(securityfsPath); err != nil {
 				t.Fatal(err)
@@ -237,10 +225,6 @@ func TestProfileWidensTheHostsProfile(t *testing.T) {
 	}
 }
 
-// Without a host profile it can widen, the profile is Stratum's own, for its
-// runc alone, which leaves the host's runc as the operator set it. Only a host
-// profile it cannot widen is a reason to warn, rather than a node that does not
-// start; disabling that file is the way past it.
 func TestProfileIsForStratumsRuncAloneWithoutAHostProfileToWiden(t *testing.T) {
 	const twoProfiles = "profile runc /usr/bin/runc {\n}\nprofile runc /usr/sbin/runc {\n}\n"
 	for name, tc := range map[string]struct {
@@ -352,9 +336,6 @@ func TestEnsureWarnsWhenItCannotCheck(t *testing.T) {
 	}
 }
 
-// A failure before anything is loaded fails the start, a permission error
-// included: only reading runc's label after a load may be skipped with a
-// warning.
 func TestEnsureFailsWhenTheParserDoes(t *testing.T) {
 	for _, parseErr := range []error{
 		errors.New("apparmor_parser --replace --skip-cache: exit status 1: syntax error"),
@@ -385,7 +366,6 @@ func TestReconcileLoadsOnlyWhenRuncLostTheProfile(t *testing.T) {
 	h.restricted()
 	h.label = coveredLabel
 	look("with the profile in place", false, 0)
-	// The host's AppArmor reloaded its own runc profile.
 	h.label = uncoveredLabel
 	look("after the host reloaded its profile", true, 1)
 	if h.label != coveredLabel {
@@ -393,9 +373,7 @@ func TestReconcileLoadsOnlyWhenRuncLostTheProfile(t *testing.T) {
 	}
 }
 
-// A look that cannot read runc's label does not know the profile is gone, so
-// it loads nothing. Where the kernel forbids tracing runc that is every look,
-// and a load on each would change the policy and wake the next.
+// Loading on every unreadable look would change the policy and wake the next watch.
 func TestReconcileLoadsNothingWhenItCannotReadRuncsLabel(t *testing.T) {
 	for _, labelErr := range []error{errors.New("input/output error"), errNoPtrace} {
 		h := newFakeHost(t)
@@ -423,7 +401,6 @@ func TestStackedListsProcessesWithAStackedLabel(t *testing.T) {
 	// A kernel without the per-LSM attr directory.
 	h.write(filepath.Join(procDir, "2704", "attr", "current"), "cri-containerd.apparmor.d//&unconfined (enforce)\n")
 	h.write(filepath.Join(procDir, "2704", "cgroup"), "0::/kubepods/burstable/pod1/abc\n")
-	// A stacked process outside any pod is not a container to recreate.
 	h.write(filepath.Join(procDir, "2705", "attr", "apparmor", "current"), "custom//&unconfined (enforce)\n")
 	h.write(filepath.Join(procDir, "2705", "cgroup"), "0::/user.slice/session-1.scope\n")
 	got, err := Stacked()
@@ -467,22 +444,16 @@ func TestCheckNamesWhatContainersLose(t *testing.T) {
 	}
 }
 
-// Uninstall puts the kernel's runc profile back as the host has it, where
-// Stratum's runc runs under it. Where runc cannot be traced, it goes by the
-// restriction and the kernel's loaded profiles instead: without the
-// restriction Stratum loaded nothing, so there is nothing to restore and
-// nothing to fail on.
 func TestRestorePutsBackTheHostsProfile(t *testing.T) {
 	for name, tc := range map[string]struct {
-		label              string // "" when runc cannot be traced
+		label              string
 		restricted, loaded bool
-		hostFile           string // "" for none
+		hostFile           string
 		disabled           bool
-		want               string // the parser's first argument; "" for no run
+		want               string
 	}{
 		"host profile": {label: coveredLabel, hostFile: ubuntuRunc, want: "--replace"},
-		// An operator's workaround for the stacked labels: restoring it is
-		// done, not a failure every uninstall repeats.
+		// An operator's workaround may already cover Stratum's runc; restoring it is done, not a failure.
 		"host profile covering Stratum's runc": {label: coveredLabel, hostFile: strings.Replace(ubuntuRunc, "/usr/{bin,sbin}/runc", "/var/lib/stratum/bin/runc", 1), want: "--replace"},
 		"no host profile":                      {label: coveredLabel, want: "--remove"},
 		"host profile disabled":                {label: coveredLabel, hostFile: ubuntuRunc, disabled: true, want: "--remove"},
@@ -498,7 +469,6 @@ func TestRestorePutsBackTheHostsProfile(t *testing.T) {
 				h.labelErr = errNoPtrace
 			}
 			profiles := filepath.Join(securityfsPath, "policy", "profiles")
-			// Another profile, whose directory also starts with runc.
 			h.write(filepath.Join(profiles, "runc.stratum.7", "name"), "runc.stratum\n")
 			if tc.restricted {
 				h.restricted()
@@ -533,9 +503,6 @@ func TestRestorePutsBackTheHostsProfile(t *testing.T) {
 	}
 }
 
-// What uninstall cannot read is an error for the restore, and a yes for the
-// preview, which errs toward saying so; a host without Stratum's runc has
-// nothing to restore.
 func TestRestoreWhenItCannotTell(t *testing.T) {
 	h := newFakeHost(t)
 	h.labelErr = errors.New("input/output error")
@@ -564,8 +531,6 @@ func TestPrerequisiteCompilesWithoutLoading(t *testing.T) {
 	if len(h.calls) != 1 || !slices.Contains(h.calls[0].args, "--skip-kernel-load") || h.label != uncoveredLabel {
 		t.Errorf("Prerequisite() ran apparmor_parser %v and left runc labelled %q, want one --skip-kernel-load compile and nothing loaded", h.calls, h.label)
 	}
-	// A host profile it cannot widen is no refusal: the node starts with the
-	// built-in profile.
 	h.write(hostProfile, notWidenable)
 	if err := Prerequisite(); err != nil || h.calls[len(h.calls)-1].profile != string(builtinProfile()) {
 		t.Errorf("Prerequisite() with a host profile it cannot widen = %v, compiling %q; want nil, compiling the built-in profile", err, h.calls[len(h.calls)-1].profile)

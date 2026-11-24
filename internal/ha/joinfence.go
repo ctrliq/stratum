@@ -25,8 +25,6 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// joinFencePolicy is the k8sutil.JoinFencePolicy admission policy and its
-// binding as addons.RenderJoinFencePolicy ships them.
 func joinFencePolicy() (*admissionregistrationv1.ValidatingAdmissionPolicy, *admissionregistrationv1.ValidatingAdmissionPolicyBinding, error) {
 	docs := bytes.Split(addons.RenderJoinFencePolicy(), []byte("\n---\n"))
 	if len(docs) != 2 {
@@ -43,13 +41,7 @@ func joinFencePolicy() (*admissionregistrationv1.ValidatingAdmissionPolicy, *adm
 	return &p, &b, nil
 }
 
-// ensureJoinFencePolicy creates the join fence admission policy and its
-// binding, or rewrites existing ones whose spec is not exactly the shipped
-// one. Create-if-absent is not enough: an edited policy, or a binding that
-// only warns or audits, would leave the lease rules of the stratum:certs-reader
-// Role unconstrained. The comparison is the whole spec, so the shipped YAML
-// spells out every field the apiserver defaults; a re-run against a policy
-// already in place writes nothing.
+// an edited policy or a warn-only binding would leave the lease grant unconstrained
 func ensureJoinFencePolicy(ctx context.Context, cs kubernetes.Interface) error {
 	want, wantBinding, err := joinFencePolicy()
 	if err != nil {
@@ -90,14 +82,10 @@ func ensureJoinFencePolicy(ctx context.Context, cs kubernetes.Interface) error {
 	return nil
 }
 
-// awaitJoinFenceEnforcement is indirected for fake-client upload tests, which
-// cannot model independent apiserver admission caches. The real admission
-// boundary is also exercised with envtest.
+// indirected: fake-client upload tests cannot model independent apiserver admission caches
 var awaitJoinFenceEnforcement = waitJoinFenceEnforcement
 
-// waitJoinFenceEnforcement probes each apiserver directly, without a VIP or
-// service load balancer. RBAC and admission have separate informer caches:
-// persisting a policy and binding does not make the new lease rights safe.
+// RBAC and admission have separate caches; a persisted policy does not make lease rights safe
 func waitJoinFenceEnforcement(ctx context.Context, cs kubernetes.Interface) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -109,9 +97,7 @@ func waitJoinFenceEnforcement(ctx context.Context, cs kubernetes.Interface) erro
 	if err != nil {
 		return err
 	}
-	// This validation was added with the metadata protections. Its exact
-	// message proves that the current policy, not the older policy that only
-	// checked holder/name/duration, is enforcing the binding's Deny action.
+	// the exact message proves the current policy, not the older one, enforces
 	message := want.Spec.Validations[1].Message
 	probe := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "stratum-join-fence-probe-", Namespace: "kube-system", Finalizers: []string{"stratum.ciq.com/admission-probe"}},
@@ -128,9 +114,7 @@ func waitJoinFenceEnforcement(ctx context.Context, cs kubernetes.Interface) erro
 				if err != nil {
 					return err
 				}
-				// Probe each group separately: a combined identity would match the
-				// control-plane selector even while workers remain unprotected
-				// through a legacy RoleBinding or a stale RBAC cache.
+				// a combined identity can match the control-plane selector while workers remain unprotected
 				for _, group := range []string{k8sutil.ControlPlaneBootstrapGroup, k8sutil.BootstrapGroup} {
 					attempt, stop := context.WithTimeout(ctx, 5*time.Second)
 					err = peer.CoordinationV1().RESTClient().Post().Namespace("kube-system").Resource("leases").
@@ -139,9 +123,7 @@ func waitJoinFenceEnforcement(ctx context.Context, cs kubernetes.Interface) erro
 						SetHeader("Impersonate-Group", "system:masters", group).
 						Body(probe).Do(attempt).Error()
 					stop()
-					// The masters group authorizes the probe before the token Role exists;
-					// admission still matches the bootstrap group. A plain RBAC denial,
-					// compile failure, or denial by another policy is not enforcement proof.
+					// masters authorizes the probe before the token Role exists; only the fence's message is proof
 					if !k8sutil.JoinFenceDenied(err) || !strings.Contains(err.Error(), message) {
 						last = fmt.Errorf("apiserver %s has not enforced the join fence metadata policy for %s (probe result: %v)", target, group, err)
 						break

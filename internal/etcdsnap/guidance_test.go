@@ -12,34 +12,15 @@ import (
 	"github.com/ctrliq/stratum/internal/staticpod"
 )
 
-// The restore's restart set is data: each RestartEntry names the component, how
-// the restore restarts it, the command that restarts it by hand, and whether
-// that restart belongs in the per-control-plane repeat. The set is derived from
-// the rosters that own its components — the supervised watchers filtered out of
-// comps.Units (every unit but containerd), each with the command the per-name
-// command table gives it, the static pods of staticpod.Names and the workloads
-// of rollout.Workloads — and the four surfaces — RepeatRestartCommands, the
-// guidance's repeat item, the CLI success text and the MCP next-step text —
-// are rendered from it, so a component added to a roster reaches every surface
-// without a second list to forget. The tests below pin the set's membership as
-// a relation over those rosters, the kube-vip entry the pkill list was
-// missing, and the derivation of every surface from the set.
-
-// flat folds every whitespace run into one space, so an assertion about a
-// prose sentence does not depend on where the rendering wraps its lines.
+// flat folds whitespace runs into one space, so assertions ignore rendering wraps.
 func flat(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// debracket removes the square brackets around a pkill pattern's first
-// character (the [k] trick that keeps pkill from matching its own invocation),
-// so a pattern that spells the executable name that way still counts as
-// naming it.
+// debracket strips the [k] that keeps pkill from matching itself; bracketed names still count.
 func debracket(command string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(command, "[", ""), "]", "")
 }
 
-// hasPkillFor reports whether some line of text gives a `sudo pkill` command
-// that names name. Commands are embedded whole (one per line in the guidance,
-// inside backticks in the MCP prose), so the name and its pkill share a line.
+// hasPkillFor reports a sudo pkill naming name; each command is one line, name and pkill together.
 func hasPkillFor(text, name string) bool {
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "sudo pkill") && strings.Contains(debracket(line), name) {
@@ -49,8 +30,7 @@ func hasPkillFor(text, name string) bool {
 	return false
 }
 
-// syntheticHostWatcher and syntheticWorkload are the entries the derivation
-// tests append to the set.
+// Entries the derivation tests append to the set.
 var (
 	syntheticHostWatcher = RestartEntry{
 		Component: "synthetic-agent",
@@ -66,22 +46,8 @@ var (
 	}
 )
 
-// setWith returns the production set with es appended.
 func setWith(es ...RestartEntry) RestartSet { return append(RestoreRestartSet(), es...) }
 
-// TestRestoreRestartSetIsTheRestoreWatchers pins the set as restartWatchers'
-// roster, as a relation over the rosters that own its components. The
-// supervised watchers are comps.Units minus containerd — every roster unit but
-// the one that holds no long watch on the cluster, the filter stated beside the
-// derivation — and each entry carries that unit's command from the per-name
-// command table, so the set is derived from the roster, never hand-named: a
-// synthetic supervised unit swapped into comps.Units, with its command-table
-// entry, has to satisfy the same relation. The static pods are
-// restoredStaticPods's, in its order, restarted from their manifests; the
-// workloads are rollout.Workloads's, rolled once for the cluster. etcd and the
-// apiserver are absent, because the restore restarts and health-gates them
-// itself; containerd is absent, and needs no command-table entry, because the
-// filter drops it before the table is consulted.
 func TestRestoreRestartSetIsTheRestoreWatchers(t *testing.T) {
 	swap(t, &comps.Units, append(slices.Clone(comps.Units), "synthetic-agent"))
 	commands := maps.Clone(supervisedWatcherCommands)
@@ -90,8 +56,6 @@ func TestRestoreRestartSetIsTheRestoreWatchers(t *testing.T) {
 
 	set := RestoreRestartSet()
 
-	// watchers is the whole supervised input the set is built from: the roster
-	// minus containerd, each unit with the command that restarts it by hand.
 	type watcher struct{ name, command string }
 	var watchers []watcher
 	for _, name := range comps.Units {
@@ -117,10 +81,6 @@ func TestRestoreRestartSetIsTheRestoreWatchers(t *testing.T) {
 		}
 	}
 
-	// Every supervised entry is one roster watcher's entry: its command is the
-	// table's for that unit, it repeats on every control plane, and it is
-	// restarted by killing the process for the supervisor to start again. No
-	// supervised entry answers to anything but a roster watcher.
 	seen := map[string]bool{}
 	supervised := 0
 	for _, e := range set {
@@ -156,8 +116,6 @@ func TestRestoreRestartSetIsTheRestoreWatchers(t *testing.T) {
 		}
 	}
 
-	// The static pods are restoredStaticPods's, in its order; the workloads
-	// are rollout.Workloads's, in its order.
 	pods := restoredStaticPods()
 	pi := 0
 	wi := 0
@@ -203,8 +161,6 @@ func TestRestoreRestartSetIsTheRestoreWatchers(t *testing.T) {
 		t.Errorf("the set rolls %d workloads, want the roster's %d", wi, len(rollout.Workloads))
 	}
 
-	// etcd and the apiserver are restarted and health-gated by the restore
-	// itself; containerd holds no long watch. None is in the set.
 	for _, absent := range []string{"etcd", "kube-apiserver", "containerd"} {
 		if got[absent] {
 			t.Errorf("the set has %q: etcd and the apiserver are restarted and health-gated by the restore itself, and containerd holds no long watch", absent)
@@ -212,10 +168,6 @@ func TestRestoreRestartSetIsTheRestoreWatchers(t *testing.T) {
 	}
 }
 
-// TestRestoreRestartSetIsBuiltFromTheRosters: a static pod added to
-// staticpod.Names and a workload added to rollout.Workloads join the set with
-// their mechanism, by-hand command and repeat flag — adding a component is a
-// one-place change in the roster that owns it, not an edit of the set.
 func TestRestoreRestartSetIsBuiltFromTheRosters(t *testing.T) {
 	oldNames := staticpod.Names
 	t.Cleanup(func() { staticpod.Names = oldNames })
@@ -244,12 +196,6 @@ func TestRestoreRestartSetIsBuiltFromTheRosters(t *testing.T) {
 	}
 }
 
-// TestASyntheticWatcherRendersThroughEverySurface: a supervised watcher added
-// to comps.Units, with its command-table entry, reaches every surface the set
-// is rendered into — the per-control-plane block (RepeatRestartCommands, which
-// the guidance's repeat item and the MCP tool text embed), the guidance's
-// still-to-do list, and the restarted sentence that the CLI success text and
-// the MCP next-step text are built from.
 func TestASyntheticWatcherRendersThroughEverySurface(t *testing.T) {
 	swap(t, &comps.Units, append(slices.Clone(comps.Units), "synthetic-agent"))
 	commands := maps.Clone(supervisedWatcherCommands)
@@ -272,12 +218,6 @@ func TestASyntheticWatcherRendersThroughEverySurface(t *testing.T) {
 	}
 }
 
-// TestRestoreRestartSetRefusesAWatcherWithoutACommand: the command table is
-// per roster name, and building the set refuses a comps.Units member that
-// would join it as a supervised watcher without one — the pattern of comps'
-// predicate table, whose init refuses a roster unit without a process
-// predicate. A watcher with no command would render into every surface with
-// nothing for the operator to run.
 func TestRestoreRestartSetRefusesAWatcherWithoutACommand(t *testing.T) {
 	swap(t, &comps.Units, append(slices.Clone(comps.Units), "synthetic-agent"))
 	defer func() {
@@ -288,9 +228,6 @@ func TestRestoreRestartSetRefusesAWatcherWithoutACommand(t *testing.T) {
 	RestoreRestartSet()
 }
 
-// TestRepeatRestartCommandsComeFromTheSet: RepeatRestartCommands is the set's
-// per-control-plane block, so the guidance and the MCP text cannot drift from
-// it, and the commands an operator runs today are pinned word for word.
 func TestRepeatRestartCommandsComeFromTheSet(t *testing.T) {
 	want := RestoreRestartSet().RepeatCommands()
 	if got := RepeatRestartCommands(); !slices.Equal(got, want) {
@@ -305,15 +242,14 @@ func TestRepeatRestartCommandsComeFromTheSet(t *testing.T) {
 		`sudo pkill -x kubelet`,
 		`sudo pkill -TERM -f '^([^[:space:]]*/)?[k]ube-controller-manager([[:space:]]|$)'`,
 		`sudo pkill -TERM -f '^([^[:space:]]*/)?[k]ube-scheduler([[:space:]]|$)'`,
-		// the operator's, which names its subcommand and Stratum's flags, not its executable
+		// the operator's pattern names its subcommand and flags, not its executable
 		"sudo pkill -TERM -f '" + comps.OperatorCommandLinePattern() + "'",
 	} {
 		if !slices.Contains(want, c) {
 			t.Errorf("the per-control-plane block lacks %q", c)
 		}
 	}
-	// Roster order: kubelet first, since the rest are pods it recreates;
-	// kube-vip with the other static pods; the operator last.
+	// Dependency order: kubelet first (it recreates the pods); the operator, a supervisor unit, last.
 	last := -1
 	for _, name := range []string{"kubelet", "kube-controller-manager", "kube-scheduler", "kube-vip", "operator"} {
 		idx := slices.IndexFunc(want, func(c string) bool { return strings.Contains(debracket(c), name) })
@@ -328,11 +264,6 @@ func TestRepeatRestartCommandsComeFromTheSet(t *testing.T) {
 	}
 }
 
-// TestKubeVipIsRestartedOnEveryControlPlane: kube-vip is restarted from its
-// manifest like the controller manager and scheduler, so nothing may omit it
-// from the per-control-plane pkill list — each control plane renders its own
-// kube-vip. It is in the set with a pkill of its own, and the
-// guidance's repeat item, which renders the set, names it too.
 func TestKubeVipIsRestartedOnEveryControlPlane(t *testing.T) {
 	set := RestoreRestartSet()
 	idx := slices.IndexFunc(set, func(e RestartEntry) bool { return e.Component == "kube-vip" })
@@ -352,11 +283,6 @@ func TestKubeVipIsRestartedOnEveryControlPlane(t *testing.T) {
 	}
 }
 
-// TestAddingAComponentUpdatesEverySurface: the four surfaces are rendered from
-// the set, so a synthetic entry appended to it reaches all of them — the
-// per-control-plane commands, the guidance's repeat item, the restarted
-// sentence the CLI success text and the MCP next-step text are built from, and
-// the once-for-the-cluster block of the same surfaces.
 func TestAddingAComponentUpdatesEverySurface(t *testing.T) {
 	host := setWith(syntheticHostWatcher)
 	workload := setWith(syntheticWorkload)
@@ -382,9 +308,6 @@ func TestAddingAComponentUpdatesEverySurface(t *testing.T) {
 		t.Errorf("the restarted sentence does not name the synthetic workload: %s", workload.RestartedProse())
 	}
 
-	// Neither block takes what does not belong to it: a workload is not
-	// restarted on every control plane, and a host-side watcher is not rolled
-	// once for the cluster.
 	if slices.Contains(workload.RepeatCommands(), syntheticWorkload.Command) {
 		t.Errorf("the synthetic workload joined the per-control-plane block: %q", workload.RepeatCommands())
 	}
@@ -393,10 +316,6 @@ func TestAddingAComponentUpdatesEverySurface(t *testing.T) {
 	}
 }
 
-// TestRestartedProseNamesWhatTheRestoreRestarted: the sentence the CLI success
-// text and the MCP next-step text are built from names every component of the
-// set — the node-side watchers first, then the cluster's workloads — and
-// nothing the restore restarts and health-gates itself.
 func TestRestartedProseNamesWhatTheRestoreRestarted(t *testing.T) {
 	prose := flat(RestoreRestartSet().RestartedProse())
 	for _, want := range []string{"This node's", "kubelet", "kube-controller-manager", "kube-scheduler",
@@ -418,10 +337,6 @@ func TestRestartedProseNamesWhatTheRestoreRestarted(t *testing.T) {
 	}
 }
 
-// TestTheSetRendersTheWorkloadCommandsAsTheirOwnerDoes: the once-for-the-cluster
-// block rendered from the set is rollout.RestartCommands — one command per
-// namespace, in roster order — so the rendered texts keep giving the commands
-// the operator-facing docs carry, and the seed forms stay seed-prefixed.
 func TestTheSetRendersTheWorkloadCommandsAsTheirOwnerDoes(t *testing.T) {
 	set := RestoreRestartSet()
 	for _, kubectl := range []string{"stratum kubectl", "stratum kubectl --server https://127.0.0.1:6443"} {
@@ -434,11 +349,6 @@ func TestTheSetRendersTheWorkloadCommandsAsTheirOwnerDoes(t *testing.T) {
 	}
 }
 
-// TestStillToDoIsOneListForRestoreAndRollback: `stratum snapshot restore`,
-// the MCP tool and an upgrade rollback that restores etcd give the operator the
-// same list, built from the same command lists the restore uses. A rollback is
-// single-member, so it drops the two items about other control planes and the
-// numbering stays consecutive.
 func TestStillToDoIsOneListForRestoreAndRollback(t *testing.T) {
 	full, single := StillToDo(true), StillToDo(false)
 	for _, c := range append(RepeatRestartCommands(), RolloutRestartCommands("stratum kubectl")...) {
@@ -460,9 +370,6 @@ func TestStillToDoIsOneListForRestoreAndRollback(t *testing.T) {
 			t.Errorf("a list lacks the item %q", want)
 		}
 	}
-	// A rollback has no other control planes, so no item speaks of them: not the
-	// kubelet item's "each control plane once rejoined", nor the third-party
-	// item's window before they have rejoined.
 	for _, bad := range []string{"each control plane", "rejoined", "other control planes"} {
 		if strings.Contains(single, bad) {
 			t.Errorf("the rollback's list mentions %q:\n%s", bad, single)

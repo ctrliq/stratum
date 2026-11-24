@@ -116,9 +116,6 @@ func TestImportImagesPinsEveryArchivedName(t *testing.T) {
 	}
 }
 
-// An operator's archive is imported and pinned like a payload one, once per
-// archive version. One that fails to import is skipped with a warning rather
-// than failing kubelet's start.
 func TestImportDropInImagesImportsPinsAndSkipsAFailure(t *testing.T) {
 	origBin, origConf, origDropIn := version.BinDir, version.K8sConfDir, version.ImagesDropInDir
 	t.Cleanup(func() { version.BinDir, version.K8sConfDir, version.ImagesDropInDir = origBin, origConf, origDropIn })
@@ -187,8 +184,6 @@ func TestImportDropInImagesImportsPinsAndSkipsAFailure(t *testing.T) {
 	}
 }
 
-// dropInHost stages one operator archive and a ctr that fails any call
-// matching failOn, and returns the file ctr logs its calls to.
 func dropInHost(t *testing.T, failOn string) (calls string) {
 	t.Helper()
 	origBin, origConf, origDropIn := version.BinDir, version.K8sConfDir, version.ImagesDropInDir
@@ -211,9 +206,7 @@ func dropInHost(t *testing.T, failOn string) (calls string) {
 	return calls
 }
 
-// An archive whose images could not be pinned is not stamped: image garbage
-// collection may remove its unpinned images, so the next start imports and
-// pins it again rather than skipping it as current.
+// GC removes unpinned images, so an unstamped archive must import again.
 func TestImportDropInImagesStampsOnlyAfterThePin(t *testing.T) {
 	calls := dropInHost(t, "images\\ label*")
 	tar := filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")
@@ -236,9 +229,7 @@ func TestImportDropInImagesStampsOnlyAfterThePin(t *testing.T) {
 	}
 }
 
-// An archive replaced while it was imported is skipped and not stamped:
-// containerd consumed the old content, so a stamp of the new one would exempt
-// images that were never imported and skip importing them on the next start.
+// A stamp would exempt images containerd never imported from the replaced archive.
 func TestImportDropInImagesSkipsAnArchiveReplacedDuringItsImport(t *testing.T) {
 	calls := dropInHost(t, "nothing")
 	tar := filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")
@@ -262,8 +253,7 @@ func TestImportDropInImagesSkipsAnArchiveReplacedDuringItsImport(t *testing.T) {
 	}
 }
 
-// A stamp that cannot be written is reported, and the start does not count the
-// archive as freshly imported, since kubelet.conf would not exempt it.
+// Without its stamp the archive is not exempt, so it must import again.
 func TestImportDropInImagesReportsAStampItCouldNotWrite(t *testing.T) {
 	dropInHost(t, "nothing")
 	// A file where the stamp directory goes fails the write even as root.
@@ -279,9 +269,7 @@ func TestImportDropInImagesReportsAStampItCouldNotWrite(t *testing.T) {
 	}
 }
 
-// A start that imports a new operator archive renders kubelet.conf again, so
-// kubelet, which reads it as it starts, exempts the new images; a start with
-// nothing new leaves it alone.
+// Kubelet reads kubelet.conf as it starts; the re-render exempts the new images.
 func TestImportOperatorImagesRendersKubeletConfAfterAFreshImport(t *testing.T) {
 	dropInHost(t, "nothing")
 	oldLoad, oldWrite := LoadState, writeKubeletConf
@@ -303,8 +291,6 @@ func TestImportOperatorImagesRendersKubeletConfAfterAFreshImport(t *testing.T) {
 	}
 }
 
-// A stalled import ends with the start's context, so a shutdown or re-exec
-// does not wait for it.
 func TestImportDropInImagesStopsWithItsContext(t *testing.T) {
 	dropInHost(t, "nothing")
 	hang := "#!/bin/sh\nexec sleep 30\n"

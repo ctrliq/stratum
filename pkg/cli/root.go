@@ -1,10 +1,4 @@
-// Package cli builds the stratum command tree as a *cobra.Command. It is
-// stratum's one deliberate public API surface: an importer (e.g. a downstream build)
-// can call NewRootCommand, then AddCommand additional subcommands onto the
-// returned root before calling Execute, without reimplementing any of the
-// base commands. tools/check-cli-api-boundary.sh enforces that this
-// package's exported surface never leaks an internal/* type back out, which
-// is what makes that safe to import from outside this module.
+// Package cli builds the stratum command tree, the engine's public API, leaking no internal type.
 package cli
 
 import (
@@ -75,13 +69,9 @@ type ComponentVersions struct {
 type rootConfig struct {
 	displayVersion string
 	components     ComponentVersions
-	// toolSets are contributed by importers through WithToolSets and
-	// registered onto `stratum mcp`. See toolset.go.
-	toolSets []ToolSet
-	// stacks are contributed by importers through WithStacks. See stacks.go.
-	stacks []StackFunc
-	// profiles are contributed by importers through WithProfiles. See profiles.go.
-	profiles []Profile
+	toolSets       []ToolSet
+	stacks         []StackFunc
+	profiles       []Profile
 }
 
 // Option configures the root command returned by NewRootCommand.
@@ -132,16 +122,7 @@ func StampedVersions() ComponentVersions {
 	}
 }
 
-// refuseUnstampedBuild is the stamp guard the mutating node commands run
-// first (`up`, `upgrade --cluster`): a binary linked without the engine's
-// -X stamp list carries K8sVersion "unknown", and starting or rolling a
-// cluster from it renders unpullable :unknown image references
-// (internal/version stamps every image tag from the same list) and targets
-// Kubernetes version "unknown". It refuses before any host or cluster
-// mutation and names the missing stamp, so the failure of a downstream
-// build's -X flags is diagnosable from the error alone — the Go linker does
-// not report an -X flag whose variable is gone, so a silently unstamped
-// binary is the failure mode this catches.
+// The linker does not report a dead -X variable; this guard is where an unstamped binary is caught.
 func refuseUnstampedBuild(op string) error {
 	if version.K8sVersion != "unknown" {
 		return nil
@@ -211,15 +192,7 @@ what payload it carries, can stage that payload, and runs a node.`,
 	return root
 }
 
-// newGroupCommand builds a command whose only job is to group subcommands
-// (certs, snapshot, token, registry, runtime, node) — it has no logic of its
-// own. unknownCommand and requireSubcommand together make an invalid
-// invocation (no verb, or an unmatched one) print usage and report a clear
-// error, the same way root itself handles the identical mistake, instead of
-// cobra's default of silently printing help and exiting 0 for an unmatched
-// verb on a non-root command. Centralizing this here means a future command
-// group gets correct behavior automatically instead of depending on each
-// constructor to copy the same two field assignments.
+// Centralized so every group refuses an unknown verb with usage, not cobra's exit-0 help.
 func newGroupCommand(use, short string, subs ...*cobra.Command) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   use,
@@ -231,14 +204,7 @@ func newGroupCommand(use, short string, subs ...*cobra.Command) *cobra.Command {
 	return cmd
 }
 
-// requireSubcommand is the RunE every command group (via newGroupCommand)
-// uses when invoked with no verb at all — the case unknownCommand itself
-// ignores (len(args) == 0) so that Args validation can still reach a
-// group's children on a real invocation. RunE's presence is also what makes
-// cobra treat the command as Runnable at all, which is a precondition for
-// Args to be consulted in the first place. Root handles this identical
-// zero-args case with its own separate RunE (see NewRootCommand), not this
-// function.
+// Its presence makes cobra treat the group as Runnable, so Args validation runs at all.
 func requireSubcommand(cmd *cobra.Command, args []string) error {
 	cmd.SetOut(cmd.ErrOrStderr())
 	if err := cmd.Help(); err != nil {
@@ -247,14 +213,7 @@ func requireSubcommand(cmd *cobra.Command, args []string) error {
 	return fmt.Errorf("%s requires a subcommand; see '%s --help'", cmd.CommandPath(), cmd.CommandPath())
 }
 
-// unknownCommand is an Args validator — used by root and by every command
-// group via newGroupCommand — that rejects an unmatched first argument.
-// Cobra's own default for a command with subcommands (legacyArgs) does the
-// same rejection but, with SilenceUsage set, prints nothing before doing
-// so; this prints full usage before reporting an unknown command
-// (e.g. `stratum bogus`, or `stratum registry typo`), while a bare invocation
-// (no args) still falls through unaffected to the command's own RunE (root's
-// ErrNoCommand path, or a group's requireSubcommand).
+// Cobra's legacyArgs prints nothing under SilenceUsage; this prints usage first.
 func unknownCommand(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return nil

@@ -18,8 +18,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodejob"
 )
 
-// A node already on the target build is left alone, not drained, but the
-// upgrade's own cordon is not left behind. An admin's stays.
 func TestCurrentBuildReleasesOwnCordon(t *testing.T) {
 	const target = "v1.37.1"
 	for _, c := range []struct {
@@ -78,9 +76,6 @@ func TestCurrentBuildReleasesOwnCordon(t *testing.T) {
 	}
 }
 
-// A run that no longer holds the lease releases nothing, and does not report
-// the node current, whoever's claim the node carries or whether it needs a
-// write: a successor may have taken the lease and claimed the node.
 func TestCurrentBuildLostLeaseLeavesCordon(t *testing.T) {
 	const target = "v1.37.1"
 	for _, c := range []struct{ name, claim string }{
@@ -125,10 +120,7 @@ func TestCurrentBuildLostLeaseLeavesCordon(t *testing.T) {
 	}
 }
 
-// The confirm after the node is read, before the write, is the only fence on a
-// successor that takes the lease and claims the node during the read, after the
-// first confirm: the read already returns its claim, so the write's
-// resourceVersion check cannot refuse it.
+// The confirm after the node read is the only fence on a successor claiming the node during it.
 func TestCurrentBuildLeaseTakenDuringReadLeavesCordon(t *testing.T) {
 	const target = "v1.37.1"
 	cs, _ := singleNode(t, 0, 0, batchv1.JobStatus{})
@@ -141,8 +133,7 @@ func TestCurrentBuildLeaseTakenDuringReadLeavesCordon(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(release)
-	// Inside the first node GET after a confirm, before it returns, the successor
-	// takes the lease and claims the node. Once only.
+	// Inside the first node GET after a confirm, the successor takes the lease. Once only.
 	renew, confirmed, taken := g.renew, false, false
 	g.renew = func(ctx context.Context) error {
 		err := renew(ctx)

@@ -17,8 +17,6 @@ import (
 	"github.com/ctrliq/stratum/internal/interrupt"
 )
 
-// A --cluster run interrupted between steps must not start the next one: the local
-// phases do not observe ctx, so each is guarded.
 func TestRunInitiatorPhaseDoesNotStartAfterAnInterrupt(t *testing.T) {
 	cause := errors.New("etcd not serving")
 	for _, tc := range []struct {
@@ -105,27 +103,8 @@ func TestClusterCertContextsDoNotStartAfterParentCancellation(t *testing.T) {
 	}
 }
 
-// TestInterruptContextSecondSignalKills moved with interruptContext into the
-// shared package as TestContextSecondSignalKills
-// (internal/interrupt/interrupt_test.go), now covering SIGHUP as well: the
-// signal set certs runs under is owned there.
-
-// TestClusterCertsRunNeverStartsItsNextStepAfterSIGHUP pins the invariant a
-// `certs rotate-ca --cluster` (or `migrate-etcd-ca --cluster`) run owes the
-// operator under SIGHUP: once the signal arrives, the run never starts its
-// next step. Before the shared interrupt package it held because SIGHUP was
-// not in the local set interruptContext installed, so the default action
-// killed the run mid-step; on the shared set (internal/interrupt) it holds by
-// cancelling the run so runInitiatorPhase refuses instead. The pin asserts
-// the invariant, not the mechanism: whichever way the run ends, the sign-new
-// marker must never appear and the run must end.
 func TestClusterCertsRunNeverStartsItsNextStepAfterSIGHUP(t *testing.T) {
 	if os.Getenv("STRATUM_CERTS_SIGHUP_CHILD") == "1" {
-		// A --cluster run in miniature, shaped like RotateCACluster
-		// (internal/certs/cacluster.go:82): the shared interrupt context at
-		// entry, every phase started through runInitiatorPhase
-		// (internal/certs/cacluster.go:134). Wait at the boundary until the
-		// parent sends a signal, so scheduler delays cannot start sign-new early.
 		ctx, stop := interrupt.Context()
 		defer stop()
 		if err := runInitiatorPhase(ctx, PhaseTrustNew, "", func() error {
@@ -155,8 +134,7 @@ func TestClusterCertsRunNeverStartsItsNextStepAfterSIGHUP(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	// Wait closes the stdout pipe once the child exits. Drain it first so a
-	// fast exit cannot lose its last lines to that close.
+	// Drain stdout before Wait: Wait closes the pipe and a fast exit could lose its last lines.
 	drained := make(chan struct{})
 	waited := make(chan error, 1)
 	go func() {
@@ -195,8 +173,7 @@ func TestClusterCertsRunNeverStartsItsNextStepAfterSIGHUP(t *testing.T) {
 	if err := cmd.Process.Signal(syscall.SIGHUP); err != nil {
 		t.Fatal(err)
 	}
-	// Read to the child's end: every line it ever printed is checked, so a
-	// sign-new that started after the SIGHUP cannot hide behind the exit.
+	// Read to the child's end so a sign-new started after the SIGHUP cannot hide behind the exit.
 	deadline := time.After(10 * time.Second)
 drain:
 	for {
@@ -219,20 +196,8 @@ drain:
 	}
 }
 
-// TestClusterCertsRunCancelsAtTheNextStepBoundaryAndASecondSignalKills pins
-// the interrupt contract the shared interrupt package (internal/interrupt)
-// gives the cluster certs commands. On the shared set — SIGINT, SIGTERM and
-// SIGHUP — the first signal must cancel the run so it halts at its next
-// step boundary through runInitiatorPhase, never starting the step, and the
-// second signal must kill the process. A context that trapped only SIGINT and
-// SIGTERM would leave SIGHUP killing the run mid-step, before any boundary halt.
 func TestClusterCertsRunCancelsAtTheNextStepBoundaryAndASecondSignalKills(t *testing.T) {
 	if os.Getenv("STRATUM_CERTS_BOUNDARY_CHILD") == "1" {
-		// A --cluster run in miniature, shaped like RotateCACluster
-		// (internal/certs/cacluster.go:82): the shared interrupt context at
-		// entry, every phase started through runInitiatorPhase
-		// (internal/certs/cacluster.go:134). Wait at the boundary until the
-		// parent sends a signal, so scheduler delays cannot start sign-new early.
 		ctx, stop := interrupt.Context()
 		defer stop()
 		if err := runInitiatorPhase(ctx, PhaseTrustNew, "", func() error {
@@ -248,9 +213,7 @@ func TestClusterCertsRunCancelsAtTheNextStepBoundaryAndASecondSignalKills(t *tes
 			return nil
 		}); err != nil {
 			fmt.Printf("halted before sign-new: %v\n", err)
-			// The run has not exited yet: the deferred cleanup, which deletes
-			// the staged key Secret on a detached context, still runs — so a
-			// second signal must still kill it.
+			// Deferred cleanup still runs on a detached context; a second signal must still kill.
 			time.Sleep(time.Minute)
 			os.Exit(3)
 		}
@@ -275,8 +238,7 @@ func TestClusterCertsRunCancelsAtTheNextStepBoundaryAndASecondSignalKills(t *tes
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			// Wait closes the stdout pipe once the child exits. Drain it
-			// first so a fast exit cannot lose its last lines to that close.
+			// Drain stdout before Wait: Wait closes the pipe and a fast exit could lose its last lines.
 			drained := make(chan struct{})
 			waited := make(chan error, 1)
 			go func() {
@@ -315,9 +277,7 @@ func TestClusterCertsRunCancelsAtTheNextStepBoundaryAndASecondSignalKills(t *tes
 			if err := cmd.Process.Signal(tc.sig); err != nil {
 				t.Fatal(err)
 			}
-			// The first signal must cancel the run, not kill it: the run
-			// proves it reached its boundary and refused sign-new by printing
-			// the interrupted-before halt.
+			// The first signal must cancel the run; the halt proves it reached the boundary.
 			deadline := time.After(10 * time.Second)
 		drain:
 			for {
@@ -353,8 +313,7 @@ func TestClusterCertsRunCancelsAtTheNextStepBoundaryAndASecondSignalKills(t *tes
 			case <-time.After(5 * time.Second):
 				t.Fatalf("a second %s did not kill the child: the default handler was not restored", tc.name)
 			}
-			// Nothing the child printed after the halt may start the next
-			// step either: read to the child's end.
+			// Nothing printed after the halt may start the next step: read to the child's end.
 			for l := range lines {
 				if l == "sign-new started" {
 					t.Fatal("the run started sign-new after the boundary halt")

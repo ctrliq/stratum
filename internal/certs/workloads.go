@@ -1,10 +1,3 @@
-// In-cluster API clients and CA rotation. A client that loads the cluster CA
-// once, at start, fails with x509 errors from sign-new until it restarts. It
-// can restart safely only after kube-controller-manager has republished
-// kube-root-ca.crt as old‖new, which it does once trust-new is on every node,
-// so the restart goes between trust-new and sign-new. This file finds those
-// clients, waits for the republish, rolls what Stratum owns, and gates on what
-// it does not.
 package certs
 
 import (
@@ -39,40 +32,27 @@ import (
 )
 
 const (
-	rootCAConfigMap = "kube-root-ca.crt"
-	// serviceAccountsGroup is the group every ServiceAccount is in; the
-	// per-namespace group is serviceAccountsGroup + ":" + namespace.
+	rootCAConfigMap      = "kube-root-ca.crt"
 	serviceAccountsGroup = "system:serviceaccounts"
-	saTokenSecretType    = "kubernetes.io/service-account-token"
-	// serviceAccountUserPrefix starts the username of a ServiceAccount.
+	// the per-namespace group is serviceAccountsGroup + ":" + namespace
+	saTokenSecretType        = "kubernetes.io/service-account-token"
 	serviceAccountUserPrefix = "system:serviceaccount:"
 
-	// republishClockSkew is how far ahead of this host's clock a kube-root-ca.crt
-	// write time may be before it is not believed. A namespace admin can set
-	// managedFields on their own ConfigMap, and a time in the future would count
-	// their pods as stale for good.
+	// a namespace admin can set managedFields, so a future write time must not be believed
 	republishClockSkew = 5 * time.Minute
-	// projectedCAMargin is how long after the republish a container of a pod that
-	// existed before it can still hold the old ca.crt: kubelet syncs a projected
-	// volume about once a minute, so a container that started inside the window
-	// can have mounted the content from before the write.
+	// kubelet syncs a projected volume about once a minute, so a container may hold the old ca.crt
 	projectedCAMargin = 2 * time.Minute
 )
 
 // Vars, so tests can shorten them.
 var (
-	// republishWait is how long to wait for kube-root-ca.crt to carry the new
-	// CA in every namespace once trust-new is on every node.
-	republishWait = 5 * time.Minute
-	republishPoll = 2 * time.Second
-	// clientRolloutWait is the total time the restarted workloads have to
-	// finish rolling out.
+	republishWait     = 5 * time.Minute
+	republishPoll     = 2 * time.Second
 	clientRolloutWait = 10 * time.Minute
 	clientCallTimeout = 30 * time.Second
 )
 
-// adminKubectl is rollout.Roller's Kubectl against the cluster's admin.conf. A
-// call that gets no answer in time is killed, never waited on.
+// a call with no answer in time is killed, never waited on
 func adminKubectl(ctx context.Context, timeout time.Duration, combined bool, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -93,8 +73,7 @@ func adminKubectl(ctx context.Context, timeout time.Duration, combined bool, arg
 
 func adminKubectlHint(args string) string { return "stratum kubectl " + args }
 
-// stagedNewCA is the CA trust-new staged, the one kube-root-ca.crt must carry:
-// ca-new.crt, or ca.crt on a node whose sign-new promoted it and stopped.
+// ca-new.crt, or ca.crt on a node whose sign-new promoted it and stopped
 func stagedNewCA() (*x509.Certificate, error) {
 	name := pki.StagedRootCAName + ".crt"
 	if !pki.CARotationStaged() && pki.SignNewResumable() {
@@ -115,7 +94,6 @@ func stagedNewCA() (*x509.Certificate, error) {
 	return ca, nil
 }
 
-// carries reports whether the PEM bundle holds ca.
 func carries(bundle string, ca *x509.Certificate) bool {
 	rest := []byte(bundle)
 	for {
@@ -129,8 +107,6 @@ func carries(bundle string, ca *x509.Certificate) bool {
 	}
 }
 
-// lastRepublish is the latest kube-controller-manager write in cm's
-// managedFields, zero when there is none.
 func lastRepublish(cm *corev1.ConfigMap) time.Time {
 	var at time.Time
 	for _, f := range cm.ManagedFields {
@@ -141,8 +117,7 @@ func lastRepublish(cm *corev1.ConfigMap) time.Time {
 	return at
 }
 
-// errForwardDated is an error when at is further ahead than republishClockSkew:
-// the namespace's admin wrote it.
+// a time this far ahead was written by the namespace's admin, not kube-controller-manager
 func errForwardDated(cm *corev1.ConfigMap, at time.Time) error {
 	if at.After(time.Now().Add(republishClockSkew)) {
 		return fmt.Errorf("%s/%s was written by kube-controller-manager at %s, more than %s ahead of this host's clock; its managedFields are not to be trusted (a namespace admin can set them), so pods cannot be told apart by start time",
@@ -151,8 +126,6 @@ func errForwardDated(cm *corev1.ConfigMap, at time.Time) error {
 	return nil
 }
 
-// republishedAt is when kube-controller-manager last wrote cm, which is when
-// the namespace's kube-root-ca.crt took its current content.
 func republishedAt(cm *corev1.ConfigMap) (time.Time, error) {
 	at := lastRepublish(cm)
 	if at.IsZero() {
@@ -161,9 +134,7 @@ func republishedAt(cm *corev1.ConfigMap) (time.Time, error) {
 	return at, errForwardDated(cm, at)
 }
 
-// rootCAConfigMaps is each namespace's kube-root-ca.crt, keyed by namespace,
-// and the namespaces that are not being deleted (a terminating one is not
-// published to).
+// namespaces being deleted are left out: nothing is published to them
 func rootCAConfigMaps(ctx context.Context, cs kubernetes.Interface) (cms map[string]*corev1.ConfigMap, namespaces []string, err error) {
 	nl, err := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -187,9 +158,7 @@ func rootCAConfigMaps(ctx context.Context, cs kubernetes.Interface) (cms map[str
 	return cms, namespaces, nil
 }
 
-// waitRootCARepublished waits until kube-root-ca.crt carries ca in every
-// namespace. A pod that starts before that gets a ca.crt without the new CA and
-// fails after sign-new however often it restarts.
+// a pod that starts before the republish fails with x509 after sign-new, restart as it may
 func waitRootCARepublished(ctx context.Context, cs kubernetes.Interface, ca *x509.Certificate) error {
 	ctx, cancel := context.WithTimeout(ctx, republishWait)
 	defer cancel()
@@ -215,14 +184,12 @@ func waitRootCARepublished(ctx context.Context, cs kubernetes.Interface, ca *x50
 	}
 }
 
-// owner is the controller a pod belongs to.
 type owner struct{ Kind, Namespace, Name string }
 
-// plain is a name that needs no quoting to print or to paste into a shell.
+// a name that needs no quoting to print or to paste into a shell
 var plain = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// quote is s as it is printed: as it is when plain, else Go-quoted, so no name
-// can carry a newline or an escape sequence into the output.
+// Go-quoted when not plain, so no name carries a newline or an escape into the output
 func quote(s string) string {
 	if plain.MatchString(s) {
 		return s
@@ -230,7 +197,7 @@ func quote(s string) string {
 	return strconv.Quote(s)
 }
 
-// shellSafe is an argument a POSIX shell takes literally unquoted.
+// an argument a POSIX shell takes literally unquoted
 var shellSafe = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // shellQuote is s as one argument of a POSIX shell command.
@@ -243,8 +210,7 @@ func shellQuote(s string) string {
 
 func (o owner) String() string { return quote(o.Kind) + " " + quote(o.Namespace) + "/" + quote(o.Name) }
 
-// target is o as rollout.Workload names it, "kind/name", when Stratum rolls
-// that kind. Jobs, bare Pods and anything else are never rolled.
+// "kind/name" when Stratum rolls that kind; Jobs and bare Pods are never rolled
 func (o owner) target() (string, bool) {
 	switch o.Kind {
 	case "Deployment", "DaemonSet", "StatefulSet":
@@ -253,8 +219,7 @@ func (o owner) target() (string, bool) {
 	return "", false
 }
 
-// guidance is what an operator does about o by hand. The command is meant to
-// be pasted into a shell, so every argument is quoted.
+// a command meant to be pasted into a shell, so every argument is quoted
 func (o owner) guidance() string {
 	if t, ok := o.target(); ok {
 		cmd := adminKubectlHint("-n " + shellQuote(o.Namespace) + " rollout restart " + shellQuote(t))
@@ -270,18 +235,13 @@ func (o owner) guidance() string {
 type clientWorkload struct {
 	Owner owner
 	Pods  []*corev1.Pod
-	// Settling is, for the stale pods none of whose containers ran before the
-	// republish, when the wait can end: they have not started, and can still start
-	// on a ca.crt kubelet has not synced. It is nil unless staleClients made it.
+	// the deadline past which the pod cannot start on the old CA; nil unless staleClients made it
 	Settling map[*corev1.Pod]time.Time
-	// Held is why a template change does not recreate all of the owner's pods
-	// (an update strategy that leaves some or all of them), or "" when it does.
+	// why a template change does not recreate all of the owner's pods, or "" when it does
 	Held string
 }
 
-// saGrants is who the cluster's RoleBindings and ClusterRoleBindings give
-// permissions to, among ServiceAccounts, the way the RBAC authorizer reads
-// their subjects.
+// who the cluster's bindings give permissions to, as the RBAC authorizer reads subjects
 type saGrants struct {
 	accounts map[string]bool // "namespace/name"
 	groups   map[string]bool // namespaces with a system:serviceaccounts:<ns> subject
@@ -303,8 +263,7 @@ func (g *saGrants) add(bindingNamespace string, subjects []rbacv1.Subject) {
 				}
 			}
 		case rbacv1.GroupKind:
-			// Not system:serviceaccounts itself: the bootstrap policy binds it
-			// (system:service-account-issuer-discovery), so it would match every pod.
+			// not serviceAccountsGroup itself: the bootstrap policy binds it, so it would match every pod
 			if ns, ok := strings.CutPrefix(s.Name, serviceAccountsGroup+":"); ok {
 				g.groups[ns] = true
 			}
@@ -335,9 +294,7 @@ func listSAGrants(ctx context.Context, cs kubernetes.Interface) (*saGrants, erro
 	return g, nil
 }
 
-// legacyTokenSecrets is the ServiceAccount each kubernetes.io/service-account-token
-// Secret holds a token for, by "namespace/name" of the Secret. That is not
-// necessarily the account of a pod that mounts it.
+// by "namespace/name" of the Secret; not necessarily the account of a pod that mounts it
 func legacyTokenSecrets(ctx context.Context, cs kubernetes.Interface) (map[string]string, error) {
 	sl, err := cs.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{FieldSelector: "type=" + saTokenSecretType})
 	if err != nil {
@@ -352,11 +309,7 @@ func legacyTokenSecrets(ctx context.Context, cs kubernetes.Interface) (map[strin
 	return out, nil
 }
 
-// mountedAccounts is the ServiceAccounts whose tokens a container of the pod
-// mounts: the pod's own for a projected volume with a service-account token
-// source (whatever it is named), and the account each legacy token Secret was
-// issued for, which can be another's. The container can be a regular, init or
-// ephemeral one: a volume nothing mounts is no client.
+// a volume nothing mounts is no client; init and ephemeral containers count too
 func mountedAccounts(pod *corev1.Pod, legacy func() (map[string]string, error)) ([]string, error) {
 	tokenVolumes := map[string]string{} // volume name -> the account its token is for
 	for _, v := range pod.Spec.Volumes {
@@ -393,24 +346,12 @@ func mountedAccounts(pod *corev1.Pod, legacy func() (map[string]string, error)) 
 	return accounts, nil
 }
 
-// onDeleteHeld is the Held of a StatefulSet or DaemonSet with the OnDelete update
-// strategy, which only replaces a pod when it is deleted.
+// only replaces a pod when it is deleted
 const onDeleteHeld = "the OnDelete update strategy does not recreate pods on a restart"
 
-// kindName is what a Kubernetes kind looks like.
 var kindName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,62}$`)
 
-// ownerResolver names the workload a pod belongs to from its controller
-// reference. The reference is the pod author's to write: the API server checks
-// neither that the owner exists nor what its name looks like. So a Deployment,
-// DaemonSet or StatefulSet owner counts only when it exists with the reference's
-// UID and a DNS-1123 name; anything else is the pod itself, which Stratum lists
-// and never restarts. Otherwise a tenant could name a workload that is not
-// theirs, put text in front of the operator, or have the rotation halted by an
-// owner that does not exist.
-//
-// The owners are listed once, on the first pod that needs one, and looked up in
-// maps: a Get per owner is thousands of requests per scan on a big cluster.
+// the owner reference is the author's to write; only a matching UID and valid name are trusted
 type ownerResolver struct {
 	cs          kubernetes.Interface
 	loaded      bool
@@ -418,7 +359,6 @@ type ownerResolver struct {
 	owners      map[string]ownerInfo          // Deployments, DaemonSets and StatefulSets, by kind/namespace/name
 }
 
-// ownerInfo is what is kept of a Deployment, DaemonSet or StatefulSet.
 type ownerInfo struct {
 	uid  types.UID
 	held string // see clientWorkload.Held
@@ -479,8 +419,6 @@ func (r *ownerResolver) load(ctx context.Context) error {
 	return nil
 }
 
-// exists reports whether the Deployment, DaemonSet or StatefulSet ref names
-// exists in namespace with ref's UID.
 func (r *ownerResolver) exists(ctx context.Context, namespace string, ref metav1.OwnerReference) (bool, error) {
 	switch ref.Kind {
 	case "Deployment", "DaemonSet", "StatefulSet":
@@ -497,13 +435,10 @@ func (r *ownerResolver) exists(ctx context.Context, namespace string, ref metav1
 	return ok && ref.UID != "" && info.uid == ref.UID, nil
 }
 
-// held is why a restart of o does not recreate all of its pods, from the lists
-// load made.
 func (r *ownerResolver) held(o owner) string {
 	return r.owners[o.Kind+"/"+o.Namespace+"/"+o.Name].held
 }
 
-// replicaSet is the ReplicaSet ref names, or nil when there is none with ref's UID.
 func (r *ownerResolver) replicaSet(ctx context.Context, namespace string, ref metav1.OwnerReference) (*appsv1.ReplicaSet, error) {
 	if !validName(ref.Name) {
 		return nil, nil
@@ -546,21 +481,14 @@ func (r *ownerResolver) resolve(ctx context.Context, pod *corev1.Pod) (owner, er
 		}
 		return owner{c.Kind, pod.Namespace, c.Name}, nil
 	}
-	// Jobs and whatever else a CRD controller owns: listed, never restarted, so
-	// the reference is not looked up, but it must still look like a kind and a name.
+	// Jobs and whatever else a CRD controller owns: listed, never restarted, but safe to print
 	if kindName.MatchString(c.Kind) && validName(c.Name) {
 		return owner{c.Kind, pod.Namespace, c.Name}, nil
 	}
 	return bare, nil
 }
 
-// selectClients finds the workloads whose pods use in-cluster API credentials.
-// Stratum cannot see which clients do, so a pod counts when it mounts a
-// ServiceAccount token and that ServiceAccount is a subject of a RoleBinding or
-// ClusterRoleBinding, by name or through system:serviceaccounts:<namespace>.
-// A client that has no grant but its group's is missed. Pods that have
-// finished are left out, and so are the workloads Stratum rolls itself unless
-// includeOwned is set.
+// a pod counts when it mounts a token of a ServiceAccount with a grant
 func selectClients(ctx context.Context, cs kubernetes.Interface, includeOwned bool) ([]clientWorkload, error) {
 	pl, err := cs.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -585,7 +513,6 @@ func selectClients(ctx context.Context, cs kubernetes.Interface, includeOwned bo
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue
 		}
-		// A client is a pod that mounts a token of a ServiceAccount that has a grant.
 		accounts, err := mountedAccounts(pod, legacyOnce)
 		if err != nil {
 			return nil, err
@@ -613,7 +540,6 @@ func selectClients(ctx context.Context, cs kubernetes.Interface, includeOwned bo
 	return out, nil
 }
 
-// listWorkloads is one line per workload, with what to do about each.
 func listWorkloads(ws []clientWorkload) string {
 	var b strings.Builder
 	for _, w := range ws {
@@ -622,13 +548,7 @@ func listWorkloads(ws []clientWorkload) string {
 	return b.String()
 }
 
-// refuseHeld refuses a StatefulSet or DaemonSet among ws, Stratum's own add-ons
-// included, that a restart does not reach whole: a rollingUpdate partition leaves
-// the ordinals below it, and OnDelete leaves every pod. They stay on the old CA,
-// so the run would halt after trust-new, to be finished by hand. Held comes
-// from the lists selectClients made. --skip-workload-check is offered for the
-// user workloads only: restartClients rolls the add-ons whatever the flags say,
-// and its rollout status never completes on an OnDelete one.
+// --skip-workload-check is for user workloads only; OnDelete add-ons never finish rolling
 func refuseHeld(ws []clientWorkload) error {
 	var held []clientWorkload
 	var user, addOns bool
@@ -659,12 +579,7 @@ func refuseHeld(ws []clientWorkload) error {
 	return fmt.Errorf("refusing to start: %d workload(s) are not restarted whole by Stratum, so their pods stay on the old CA and the run would halt after trust-new, to be finished by hand:%s", len(held), b.String())
 }
 
-// refuseForwardDated refuses a cluster where the kube-root-ca.crt of a
-// namespace with a client, Stratum's own add-ons included, carries a
-// kube-controller-manager write time in the future. Such a time makes every pod
-// of the namespace count as stale however often it restarts, so the run would halt
-// after trust-new, to be finished by hand. A time in the past that is wrong cannot be seen from here; staleClients
-// still checks after the rollouts.
+// every pod of the namespace counts as stale however often it restarts
 func refuseForwardDated(ctx context.Context, cs kubernetes.Interface, ws []clientWorkload) error {
 	cms, _, err := rootCAConfigMaps(ctx, cs)
 	if err != nil {
@@ -683,9 +598,7 @@ func refuseForwardDated(ctx context.Context, cs kubernetes.Interface, ws []clien
 	return nil
 }
 
-// preflightWorkloads is the check before trust-new (--cluster): a halt after
-// trust-new is recovered by hand, node by node, or rolled back, so a cluster that
-// would need a restart it was not told to do is refused while nothing has changed.
+// a halt after trust-new is recovered by hand, so the run is refused before anything changes
 func preflightWorkloads(ctx context.Context, w io.Writer, cs kubernetes.Interface, o CARotateOptions) error {
 	if o.SkipWorkloadCheck {
 		return nil
@@ -694,11 +607,7 @@ func preflightWorkloads(ctx context.Context, w io.Writer, cs kubernetes.Interfac
 	if err != nil {
 		return fmt.Errorf("find the workloads that use in-cluster API credentials: %w (pass --skip-workload-check to rotate without this check)", err)
 	}
-	// What the post-rollout gate counts, Stratum's own add-ons included, is
-	// refused here when it would halt the run after trust-new: a forward-dated
-	// kube-root-ca.crt, and a workload a restart does not reach whole. Stratum
-	// restarts its add-ons whatever the flags say, so these do not wait for
-	// --restart-workloads.
+	// the post-rollout gate's refusals are checked here too: add-ons are rolled whatever the flags say
 	if err := refuseForwardDated(ctx, cs, all); err != nil {
 		return err
 	}
@@ -718,9 +627,6 @@ func preflightWorkloads(ctx context.Context, w io.Writer, cs kubernetes.Interfac
 		"or --skip-workload-check to rotate without this check and restart them yourself", len(ws), listWorkloads(ws))
 }
 
-// restartClients runs between trust-new and sign-new: it waits for the new CA
-// to be republished, then rolls the add-ons Stratum ships and, with
-// RestartWorkloads, the user workloads that use in-cluster API credentials.
 func restartClients(ctx context.Context, w io.Writer, cs kubernetes.Interface, o CARotateOptions, roller rollout.Roller) error {
 	ca, err := stagedNewCA()
 	if err != nil {
@@ -758,8 +664,7 @@ func restartClients(ctx context.Context, w io.Writer, cs kubernetes.Interface, o
 				fmt.Fprintf(w, "  restarted %s\n", r.Name)
 			}
 		}
-		// A rollout that has not finished leaves old pods holding the old CA, and
-		// sign-new would cut them off.
+		// an unfinished rollout leaves old pods on the old CA, and sign-new would cut them off
 		return errors.Join(failed...)
 	}
 	rolledAt := time.Now()
@@ -769,15 +674,9 @@ func restartClients(ctx context.Context, w io.Writer, cs kubernetes.Interface, o
 	if o.SkipWorkloadCheck {
 		return nil
 	}
-	// A rollout can succeed and leave containers on the old CA (a StatefulSet
-	// with a rollingUpdate partition does not touch the ordinals below it), and
-	// a client can have appeared since the preflight. The check --phase makes,
-	// once, before sign-new, apart from the Jobs and bare Pods that were listed
-	// and are not Stratum's to restart: counting those would halt a run over
-	// workloads the operator was already told about.
+	// a stale container or a newer client halts the run; unrolled Jobs and Pods are exempt
 	err = waitClientsRestarted(ctx, cs, ca, unrolled)
-	// kube-controller-manager can write kube-root-ca.crt again during the
-	// restarts, dating every rolled pod before the republish. Roll once more.
+	// a republish during the restarts dates every rolled pod before it; roll once more
 	if err != nil && republishedSince(ctx, cs, rolledAt) {
 		fmt.Fprintf(w, "  %s was republished after the restarts; restarting them again\n", rootCAConfigMap)
 		if err := roll(); err != nil {
@@ -788,9 +687,6 @@ func restartClients(ctx context.Context, w io.Writer, cs kubernetes.Interface, o
 	return err
 }
 
-// republishedSince reports whether kube-controller-manager wrote any
-// namespace's kube-root-ca.crt at or after t, to the second its managedFields
-// record.
 func republishedSince(ctx context.Context, cs kubernetes.Interface, t time.Time) bool {
 	cms, _, err := rootCAConfigMaps(ctx, cs)
 	if err != nil {
@@ -804,19 +700,11 @@ func republishedSince(ctx context.Context, cs kubernetes.Interface, t time.Time)
 	return false
 }
 
-// waitClientsRestarted makes the final check before sign-new, after the rollouts.
-// A rollout is done when the new pods are ready, while the old ones are still
-// terminating, and a terminating pod's containers keep running on the old CA
-// until its grace period ends, so those are waited for, for as long as the
-// rollouts were allowed to take. A stale pod that is not terminating will not go
-// by itself (a StatefulSet partition, a client that appeared since the
-// preflight), and ends the wait. The budget bounds the API calls as well as the
-// polling: the admin client has no request timeout of its own.
+// terminating pods run on the old CA until their grace period ends; those are waited for
 func waitClientsRestarted(ctx context.Context, cs kubernetes.Interface, ca *x509.Certificate, exempt map[owner]bool) error {
 	wctx, cancel := context.WithTimeout(ctx, clientRolloutWait)
 	defer cancel()
 	var last []clientWorkload // the stale pods seen at the last look
-	// outOfTime is what ends the wait when the budget does, and not the caller.
 	outOfTime := func(err error) error {
 		if ctx.Err() != nil {
 			return err // interrupted, not out of time
@@ -851,14 +739,11 @@ func waitClientsRestarted(ctx context.Context, cs kubernetes.Interface, ca *x509
 	}
 }
 
-// clientRoller is the roller restartClients uses in a cluster.
 func clientRoller() rollout.Roller {
 	return rollout.Roller{Kubectl: adminKubectl, Hint: adminKubectlHint, CallTimeout: clientCallTimeout, Wait: clientRolloutWait}
 }
 
-// clientRollerWithFence checks ownership at each restart dispatch, after the
-// republish wait and between targets. A failed check ends mutation for this run,
-// even though Roller continues collecting results for the remaining targets.
+// a failed check ends mutation for this run, though Roller keeps collecting results
 func clientRollerWithFence(ctx context.Context, roller rollout.Roller, confirm func(string) error) rollout.Roller {
 	kubectl := roller.Kubectl
 	var stopped error
@@ -880,13 +765,7 @@ func clientRollerWithFence(ctx context.Context, roller rollout.Roller, confirm f
 	return roller
 }
 
-// checkClientsRestarted is the gate before sign-new (--phase): it refuses while
-// any container of a workload that uses in-cluster API credentials started
-// before its namespace's kube-root-ca.crt carried ca. A container that started
-// after reads the new CA with it (a restart in place re-reads ca.crt, which
-// kubelet has already written), so one that started before still holds only the
-// old CA. It runs on the Stratum-owned workloads too, since a --phase run does
-// not roll them. exempt is the workloads not to count (nil for --phase).
+// started before the republish means the old CA; add-ons count too: --phase does not roll them
 func checkClientsRestarted(ctx context.Context, cs kubernetes.Interface, ca *x509.Certificate, exempt map[owner]bool) error {
 	stale, err := staleClients(ctx, cs, ca, exempt)
 	if err != nil || len(stale) == 0 {
@@ -900,9 +779,7 @@ func staleError(stale []clientWorkload) error {
 		"  Restart them before sign-new, or pass --skip-workload-check to sign-new to proceed anyway", len(stale), listStale(stale))
 }
 
-// staleClients is the workloads with a pod that has not restarted since its
-// namespace's kube-root-ca.crt carried ca, each with only those pods. Pods that
-// are terminating count: their containers are running.
+// terminating pods count: their containers are running
 func staleClients(ctx context.Context, cs kubernetes.Interface, ca *x509.Certificate, exempt map[owner]bool) ([]clientWorkload, error) {
 	cms, _, err := rootCAConfigMaps(ctx, cs)
 	if err != nil {
@@ -953,16 +830,13 @@ func staleClients(ctx context.Context, cs kubernetes.Interface, ca *x509.Certifi
 	return stale, nil
 }
 
-// allTerminating reports whether every stale pod is being deleted.
 func allTerminating(stale []clientWorkload) bool {
 	return !slices.ContainsFunc(stale, func(w clientWorkload) bool {
 		return slices.ContainsFunc(w.Pods, func(p *corev1.Pod) bool { return p.DeletionTimestamp == nil })
 	})
 }
 
-// allSettle reports whether every stale pod either is being deleted or has not
-// started and is waiting out projectedCAMargin: time ends those, a restart does
-// not.
+// time ends these, a restart does not
 func allSettle(stale []clientWorkload) bool {
 	return !slices.ContainsFunc(stale, func(w clientWorkload) bool {
 		return slices.ContainsFunc(w.Pods, func(p *corev1.Pod) bool {
@@ -972,9 +846,7 @@ func allSettle(stale []clientWorkload) bool {
 	})
 }
 
-// listStale is one line per stale workload: what to restart, or, when all of its
-// stale pods are terminating, which they are and how long their grace period has
-// left, since restarting does not hurry them.
+// what to restart, or, for terminating pods, their grace period left
 func listStale(stale []clientWorkload) string {
 	var b strings.Builder
 	for _, w := range stale {
@@ -999,20 +871,12 @@ func listStale(stale []clientWorkload) string {
 	return b.String()
 }
 
-// startedBefore reports whether a container of any of the pods that is running
-// may hold a ca.crt from before at. Native sidecars and long-running init
-// containers, and ephemeral containers, are not in ContainerStatuses, and hold
-// the CA they started with as well.
+// native sidecars and ephemeral containers hold the CA they started with too
 func startedBefore(pods []*corev1.Pod, at time.Time) bool {
 	return slices.ContainsFunc(pods, func(p *corev1.Pod) bool { return podStartedBefore(p, at) })
 }
 
-// podMayStillStart is true for a pod that was created at or before at, is not
-// being deleted and has a container that is not running (Pending, waiting out a
-// CrashLoopBackOff, between restarts), while now is within projectedCAMargin of
-// at: kubelet may not have synced the projected ca.crt yet, so a container that
-// starts now can read the old one. After the margin it reads the synced file. A
-// container that is running is judged by when it started (podStartedBefore).
+// kubelet may not have synced the projected ca.crt yet, so the margin waits out that sync
 func podMayStillStart(p *corev1.Pod, at, now time.Time) bool {
 	if p.CreationTimestamp.After(at) || now.After(at.Add(projectedCAMargin)) || p.DeletionTimestamp != nil {
 		return false
@@ -1022,12 +886,7 @@ func podMayStillStart(p *corev1.Pod, at, now time.Time) bool {
 	})
 }
 
-// podStartedBefore is true for a container that started before at, or at it
-// (StartedAt and the write time of the ConfigMap have one-second precision, so a
-// container that started in the second the CA was republished may have read the
-// old one). A pod that was created before at also counts for projectedCAMargin
-// after it: its ca.crt was projected before the republish, and kubelet may not
-// have synced it yet. A pod created after at had the new CA to project.
+// StartedAt and the ConfigMap write time have one-second precision, so that second counts as stale
 func podStartedBefore(p *corev1.Pod, at time.Time) bool {
 	if !p.CreationTimestamp.After(at) {
 		at = at.Add(projectedCAMargin)
@@ -1040,9 +899,7 @@ func podStartedBefore(p *corev1.Pod, at time.Time) bool {
 	return false
 }
 
-// signNewClientGate is checkClientsRestarted from a control plane's own admin
-// client and staged CA, unless the caller has already done the check
-// (SkipWorkloadCheck: --cluster rolls them, and a node's Job is not gated again).
+// --cluster rolls the workloads itself, so a node's Job is not gated again
 func signNewClientGate(ctx context.Context, o CARotateOptions) error {
 	if o.SkipWorkloadCheck {
 		return nil

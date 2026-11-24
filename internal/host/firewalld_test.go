@@ -11,10 +11,7 @@ import (
 	"testing"
 )
 
-// fakeFirewalld models the part of firewalld this code uses: a runtime and a
-// permanent configuration, each a map from source to zone, answered with the
-// exit codes firewall-cmd 2.4.3 gives (0 yes, 1 no, 2 NO_ZONE, 252 NOT_RUNNING),
-// plus firewall-offline-cmd, which edits the permanent one with firewalld down.
+// Exit codes as firewall-cmd 2.4.3 gives them: 0 yes, 1 no, 2 no-zone, 252 not-running.
 type fakeFirewalld struct {
 	running                 bool
 	stateFailure            bool
@@ -162,8 +159,7 @@ func (f *fakeFirewalld) added() int {
 	return n
 }
 
-// quiet captures the self-logging so a failure shows only what matters, and
-// returns what was printed. Stdout is restored even if fn fails the test.
+// Returns what was printed; stdout is restored even if fn fails the test.
 func quiet(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -196,8 +192,7 @@ func untrust(t *testing.T) (string, error) {
 	return out, err
 }
 
-// Seed the legacy ownership record and firewall state: trust recorded as
-// a source binding rather than the interface bindings new starts create.
+// Trust recorded as a source binding, as legacy starts did.
 func seedLegacySource(t *testing.T, f *fakeFirewalld, cidr string) {
 	t.Helper()
 	f.runtime[cidr], f.perm[cidr] = firewalldZone, firewalldZone
@@ -206,7 +201,6 @@ func seedLegacySource(t *testing.T, f *fakeFirewalld, cidr string) {
 	}
 }
 
-// No firewalld running, nothing to do and nothing asked beyond --state.
 func TestTrustPodCIDRsDoesNothingWithoutFirewalld(t *testing.T) {
 	f := newFakeFirewalld(t)
 	f.running = false
@@ -246,8 +240,6 @@ func TestTrustPodCIDRsRetainsLegacyPermanentSourceWhenOfflineToolMissing(t *test
 	}
 }
 
-// Uninstall removes what stratum added, from both configurations, and leaves
-// an operator's own binding alone.
 func TestUntrustPodCIDRsRemovesOnlyWhatStratumAdded(t *testing.T) {
 	f := newFakeFirewalld(t)
 	f.runtime["192.168.50.0/24"], f.perm["192.168.50.0/24"] = "trusted", "trusted"
@@ -271,7 +263,6 @@ func TestUntrustPodCIDRsRemovesOnlyWhatStratumAdded(t *testing.T) {
 	}
 }
 
-// A binding already gone is reported as gone, not as removed.
 func TestUntrustPodCIDRsSaysSoWhenTheBindingIsAlreadyGone(t *testing.T) {
 	f := newFakeFirewalld(t)
 	seedLegacySource(t, f, "10.245.0.0/16")
@@ -286,8 +277,6 @@ func TestUntrustPodCIDRsSaysSoWhenTheBindingIsAlreadyGone(t *testing.T) {
 	}
 }
 
-// A query that fails is not a "no": the binding may still be there, so it is
-// an error carrying the exact commands, and nothing claims it was removed.
 func TestUntrustPodCIDRsDoesNotMistakeAFailedQueryForAbsence(t *testing.T) {
 	f := newFakeFirewalld(t)
 	seedLegacySource(t, f, "10.245.0.0/16")
@@ -349,8 +338,6 @@ func TestUntrustPodCIDRsReportsOwnershipRecordFailure(t *testing.T) {
 	}
 }
 
-// firewalld stopped: its runtime configuration is gone with it, and the
-// permanent one is edited offline so the binding does not come back.
 func TestUntrustPodCIDRsEditsThePermanentConfigOfflineWhenStopped(t *testing.T) {
 	f := newFakeFirewalld(t)
 	seedLegacySource(t, f, "10.245.0.0/16")
@@ -367,8 +354,6 @@ func TestUntrustPodCIDRsEditsThePermanentConfigOfflineWhenStopped(t *testing.T) 
 	}
 }
 
-// firewalld removed from the host since: nothing is left to hold the binding,
-// so there is nothing to undo and nothing to fail.
 func TestUntrustPodCIDRsKeepsPermanentOwnershipWhenOfflineToolIsMissing(t *testing.T) {
 	f := newFakeFirewalld(t)
 	seedLegacySource(t, f, "10.245.0.0/16")
@@ -408,9 +393,6 @@ func TestUntrustPodCIDRsPreservesOwnershipWhenStateCannotBeChecked(t *testing.T)
 	}
 }
 
-// An offline edit that fails names the CIDR and the reason, and the error
-// carries the offline command, since firewall-cmd cannot reach a stopped
-// firewalld.
 func TestUntrustPodCIDRsReportsAFailedOfflineEdit(t *testing.T) {
 	f := newFakeFirewalld(t)
 	seedLegacySource(t, f, "10.245.0.0/16")
@@ -430,8 +412,6 @@ func TestUntrustPodCIDRsReportsAFailedOfflineEdit(t *testing.T) {
 	}
 }
 
-// A torn record is an error in the preview as well as at --yes, and the real
-// run says how to see what is still trusted.
 func TestAnUnreadableRecordIsReported(t *testing.T) {
 	newFakeFirewalld(t)
 	if err := os.WriteFile(firewalldRecordPath, []byte("{"), 0o644); err != nil {

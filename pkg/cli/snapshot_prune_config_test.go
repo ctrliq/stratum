@@ -15,11 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/objstore"
 )
 
-// unreadableSnapshotConfig reproduces an unreadable snapshot.conf through the
-// loadSnapshotConfig seam (the real one reads the fixed /etc/stratum path, which
-// a test must not touch): a directory at the config path, whose read fails with
-// exactly the error loadConfigFrom would return for one. It returns that error
-// so tests can pin it in the output.
 func unreadableSnapshotConfig(t *testing.T) error {
 	t.Helper()
 	useSnapshotDir(t)
@@ -35,8 +30,6 @@ func unreadableSnapshotConfig(t *testing.T) error {
 	return readErr
 }
 
-// writeSnapshots writes count timestamped snapshots for the test host into dir
-// and returns their names, oldest first.
 func writeSnapshots(t *testing.T, dir string, count int) []string {
 	t.Helper()
 	h, err := host.Hostname()
@@ -53,9 +46,6 @@ func writeSnapshots(t *testing.T, dir string, count int) []string {
 	return names
 }
 
-// Prune must not discard a config read error and prune to the
-// built-in default retention, deleting snapshots the operator's retention kept.
-// With no explicit --retain it must refuse and delete nothing.
 func TestSnapshotPruneRefusesToDeleteWhenConfigIsUnreadable(t *testing.T) {
 	readErr := unreadableSnapshotConfig(t)
 	dir := snapshotDir()
@@ -76,9 +66,6 @@ func TestSnapshotPruneRefusesToDeleteWhenConfigIsUnreadable(t *testing.T) {
 	}
 }
 
-// An explicit --retain says exactly what to keep, so prune honours it locally
-// and leaves S3 (whose target comes from the unreadable config) alone, warning
-// about the read error.
 func TestSnapshotPruneWithExplicitRetainPrunesLocalWhenConfigIsUnreadable(t *testing.T) {
 	readErr := unreadableSnapshotConfig(t)
 	dir := snapshotDir()
@@ -114,8 +101,6 @@ func TestSnapshotPruneWithExplicitRetainPrunesLocalWhenConfigIsUnreadable(t *tes
 	}
 }
 
-// The s3:// restore must not report "needs an S3 target" for an unreadable
-// config, because the defaults carry no bucket; it must name the read error.
 func TestSnapshotRestoreS3ReportsTheConfigError(t *testing.T) {
 	readErr := unreadableSnapshotConfig(t)
 	oldDL, oldRestore := s3Download, restoreLocalSeed

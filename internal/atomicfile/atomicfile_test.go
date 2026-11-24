@@ -13,11 +13,6 @@ import (
 	"testing"
 )
 
-// TestWriteFileSyncsTheDirectoryAfterTheRename: the rename is durable only
-// once the directory holding it is synced, so the sync has to happen, on that
-// directory, after the file is in place -- and a failed sync is a failed
-// write, since the caller cannot know the rename will last. That failure is
-// marked ErrNotDurable: the new file is already at path.
 func TestWriteFileSyncsTheDirectoryAfterTheRename(t *testing.T) {
 	saved := syncDir
 	t.Cleanup(func() { syncDir = saved })
@@ -52,9 +47,6 @@ func TestWriteFileSyncsTheDirectoryAfterTheRename(t *testing.T) {
 	}
 }
 
-// TestWriteFileFailureBeforeTheRename: the file at path is left byte for
-// byte, the temp file is removed, and a temp file that cannot be removed is
-// named in the error as ErrStrayCopy.
 func TestWriteFileFailureBeforeTheRename(t *testing.T) {
 	savedSync, savedRemove := syncFile, removeTempName
 	t.Cleanup(func() { syncFile, removeTempName = savedSync, savedRemove })
@@ -89,11 +81,6 @@ func TestWriteFileFailureBeforeTheRename(t *testing.T) {
 	}
 }
 
-// TestAtomicWritesSetTheModeBeforeTheSync: a mode changed after the fsync is
-// not covered by it, so a crash could leave a write that reported success at
-// the temp file's 0600. Both writers must have the final mode on the file
-// when it is synced, and the file at path must carry that mode afterwards --
-// not the 0600 the temp file is created with.
 func TestAtomicWritesSetTheModeBeforeTheSync(t *testing.T) {
 	saved := syncFile
 	t.Cleanup(func() { syncFile = saved })
@@ -130,10 +117,6 @@ func TestAtomicWritesSetTheModeBeforeTheSync(t *testing.T) {
 	}
 }
 
-// TestWriteFileLabelsBeforeTheRename: the files written atomically are
-// labelled for their destination path while still under the temp name -- a
-// file renamed over its destination otherwise keeps the label of the temp
-// name. The temp file is the hidden, unique name in the file's own directory.
 func TestWriteFileLabelsBeforeTheRename(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stratum.service")
@@ -161,9 +144,6 @@ func TestWriteFileLabelsBeforeTheRename(t *testing.T) {
 	}
 }
 
-// TestWriteFileStopsOnALabelFailure: a file whose label cannot be set must
-// never reach path with the wrong label. The old file is kept and the temp
-// file is cleaned up.
 func TestWriteFileStopsOnALabelFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stratum.service")
@@ -185,12 +165,6 @@ func TestWriteFileStopsOnALabelFailure(t *testing.T) {
 	}
 }
 
-// TestWriteFileReplacesASymlinkDestination: the rename replaces a symlink at
-// path rather than writing through it, so the file at path is afterwards a
-// regular file holding the new contents and the link's target is untouched.
-// This order of events is what the reboot unit's mask guard relies on: a
-// masked unit is a symlink to /dev/null, and InstallUnit checks for it before
-// writing because a rename over it would silently undo the mask.
 func TestWriteFileReplacesASymlinkDestination(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real-unit")
@@ -219,11 +193,6 @@ func TestWriteFileReplacesASymlinkDestination(t *testing.T) {
 	}
 }
 
-// TestWriteFileTempNamesAreUniqueUnderConcurrentWriters: the temp name is
-// unique per write. A fixed temp name -- the shared-name hazard this package
-// exists to retire -- makes concurrent writers to one path fail on each
-// other's temp file; unique names let every write through and leave exactly
-// the file behind.
 func TestWriteFileTempNamesAreUniqueUnderConcurrentWriters(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f")
@@ -259,9 +228,6 @@ func TestWriteFileTempNamesAreUniqueUnderConcurrentWriters(t *testing.T) {
 	}
 }
 
-// TestCreateExclusive: the at-rest key is minted on an earlier look at its
-// path, so the write must never replace a file that appeared since; and no
-// temp file is left behind unreported.
 func TestCreateExclusive(t *testing.T) {
 	savedSync := syncDir
 	t.Cleanup(func() { syncDir = savedSync })
@@ -288,8 +254,7 @@ func TestCreateExclusive(t *testing.T) {
 			if _, err := os.Stat(path); err != nil {
 				t.Errorf("directory synced before the file was linked in: %v", err)
 			}
-			// The temp name is gone before the sync, so the sync covers its
-			// removal too.
+			// The sync covers the temp name's removal too.
 			if entries, _ := os.ReadDir(d); len(entries) != 1 {
 				t.Errorf("directory synced with %d entries, want only the file (temp name still there?)", len(entries))
 			}
@@ -337,8 +302,6 @@ func TestCreateExclusive(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "key")
 		created, err := CreateExclusive(path, []byte("k"), 0o600)
-		// Nothing was replaced -- the file was linked in create-only -- so the
-		// failure is the sync's error alone, not ErrNotDurable.
 		if !errors.Is(err, boom) || created == nil || errors.Is(err, ErrNotDurable) {
 			t.Fatalf("got %v, %v; want the created file and the sync's error alone", created, err)
 		}
@@ -391,9 +354,6 @@ func TestCreateExclusive(t *testing.T) {
 	})
 }
 
-// TestSyncDirReportsAnUnopenableDirectory: the real sync, not the seam, fails
-// on a directory it cannot open rather than reporting a sync that never ran,
-// through both the seam and the exported SyncDir.
 func TestSyncDirReportsAnUnopenableDirectory(t *testing.T) {
 	if err := syncDir(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Fatal("syncDir reported success for a directory that does not exist")
@@ -406,17 +366,6 @@ func TestSyncDirReportsAnUnopenableDirectory(t *testing.T) {
 	}
 }
 
-// TestDefaultLabelerKeepsDiagnosticsOffStdout pins the default label route's
-// protocol safety: this writer runs under handlers whose stdout is not for
-// diagnostics (the MCP server's stdio among them), so when the real selinux
-// route has something to say — a policy-gone warning, on a labelled node
-// whose tools are gone — the file's own stdout carries none of it. The test
-// creates the emitting condition itself: a labelling stamp under a redirected
-// data dir, and no matchpathcon on PATH, which is exactly the host the
-// warning fires on. Where the kernel exposes no selinuxfs at all, the route
-// says nothing and the pin below degenerates to a stdout smoke; the warning's
-// delivery to the caller's writer is pinned against the fake policy host in
-// the selinux package.
 func TestDefaultLabelerKeepsDiagnosticsOffStdout(t *testing.T) {
 	saved := labelLike
 	t.Cleanup(func() { labelLike = saved })

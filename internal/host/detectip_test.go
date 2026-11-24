@@ -18,9 +18,6 @@ func cidr(t *testing.T, s string) net.Addr {
 	return n
 }
 
-// With no default route the UDP dial fails, and detection falls back
-// to the host's only global unicast IPv4 — or refuses, saying why. The refusal
-// names no source to pin the address with: each caller adds the ones it reads.
 func TestDetectIPv4NoDefaultRoute(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -75,12 +72,6 @@ func TestDetectIPv4NoDefaultRoute(t *testing.T) {
 	}
 }
 
-// A detection failure on a host without a default route reaches the operator
-// as the detector's reason followed by its caller's hint, and only the hint
-// names a source to pin the address with. So a start that does not read
-// spec.network.nodeIP is never told to set it, and no source is named twice.
-// On a dual-stack node the IPv6 lookup is detection too, and its failure keeps
-// the same rule: it says why, and the caller's hint says what to pin.
 func TestAFailedDetectionNamesEachSourceOnlyInItsCallersHint(t *testing.T) {
 	t.Setenv("NODE_IP", "")
 	detect := func() (string, error) { return DetectNodeIPs(false) }
@@ -149,17 +140,12 @@ func TestAFailedDetectionNamesEachSourceOnlyInItsCallersHint(t *testing.T) {
 				{name: "no address to fall back on", addrs: []string{"127.0.0.1/8", "::1/128"}},
 				{name: "interface listing fails", listErr: errors.New("boom")},
 				{
-					// The IPv4 is found through the fallback; the IPv6 is not, so
-					// the reason is the IPv6 lookup's. It still says why, and the
-					// v4,v6 pair a dual-stack pin takes, bracketed or not.
 					name:  "dual stack with no routable IPv6 beside the fallback IPv4",
 					addrs: []string{"10.0.0.5/24", "fe80::1/64", "::1/128"},
 					dual:  true,
 					says:  []string{`no routable node IPv6`, `<?v4>?,<?v6>?`},
 				},
 			} {
-				// A single-stack caller detects the IPv4 alone, which this
-				// failure leaves it, so only a dual-stack caller fails on it.
 				if failure.dual && !caller.dual {
 					continue
 				}
@@ -199,11 +185,6 @@ func TestAFailedDetectionNamesEachSourceOnlyInItsCallersHint(t *testing.T) {
 	}
 }
 
-// The node IPv6 is the first IPv6 on the host's interfaces that is neither
-// loopback nor link-local. It is read from the same interface listing as the
-// IPv4 fallback, so a test standing in for a host decides both addresses, and
-// the dual-stack failures above hold whatever addresses the machine running
-// them has.
 func TestNodeIPv6IsTheFirstRoutableIPv6OfTheListedInterfaces(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

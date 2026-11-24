@@ -15,8 +15,7 @@ var dashboardYAML []byte
 //go:embed manifests/dashboard-tokens.yaml
 var dashboardTokensYAML []byte
 
-// The in-cluster dashboard's fixed names, shared with the operator that keeps
-// its Secrets.
+// The in-cluster dashboard's fixed names, shared with the operator keeping its Secrets.
 const (
 	DashboardStack         = "dashboard"
 	DashboardNamespace     = "stratum-dashboard"
@@ -28,14 +27,12 @@ const (
 	DefaultDashboardPort   = 30443
 )
 
-// DashboardTokenSecrets maps each sign-in token Secret the stack carries to its
-// ServiceAccount.
 var DashboardTokenSecrets = map[string]string{
 	"stratum-dashboard-admin-token":  "stratum-dashboard-admin",
 	"stratum-dashboard-viewer-token": "stratum-dashboard-viewer",
 }
 
-// DashImage is the dashboard image the payload carries, stamped at link time.
+// DashImage is stamped at link time.
 var DashImage = "unknown"
 
 // DashboardSettings is spec.dashboard as the render takes it.
@@ -47,8 +44,6 @@ type DashboardSettings struct {
 	TokenSecrets  bool
 }
 
-// RenderDashboard renders the dashboard stack. A zero NodePort gives a
-// ClusterIP Service.
 func RenderDashboard(s DashboardSettings) []byte {
 	m := bytes.ReplaceAll(dashboardYAML, []byte("__STRATUM_DASH_IMAGE__"), []byte(DashImage))
 	if s.NodePort == 0 {

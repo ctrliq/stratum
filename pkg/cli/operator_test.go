@@ -16,11 +16,7 @@ import (
 	"time"
 )
 
-// deadAPIServerKubeconfig addresses a port nothing serves, so every API call
-// the operator makes fails the moment it is issued and only the signal decides
-// when the command returns — the shape of `stratum operator` on a node whose
-// apiserver is down, which is exactly the case where a signal stop must not
-// be mistaken for a failure.
+// a port nothing serves: only the signal decides when the command returns.
 const deadAPIServerKubeconfig = `apiVersion: v1
 kind: Config
 clusters:
@@ -38,27 +34,7 @@ users:
     user: {}
 `
 
-// TestOperatorCancelledContextSurfacesAStopError pins that a cancelled
-// operator context surfaces through the CLI as the stop error: `stratum
-// operator`'s handler builds its signal context (pkg/cli/operator.go:28) and
-// returns the run's error, so a SIGTERM that cancels the command's context
-// must come back from root.Execute() wrapping context.Canceled — the identity
-// the `stratum up` and `stratum mcp` handlers already filter their clean
-// stops on (pkg/cli/up.go:227-229, internal/mcp/server.go:59). Deliberately
-// NOT pinned, because the shared handler owns them: the process exit code
-// (ExitCode maps a signal-caused stop to 0), the operator's second-signal
-// rule (the second signal kills), and the operator's signal set (SIGINT,
-// SIGTERM and SIGHUP).
-// The pin that must hold: the stop error keeps surfacing
-// through the CLI so the exit mapping has something to map.
-//
-// The parent re-executes the test binary as a child that runs the real root
-// command in-process — the house re-exec child pattern
-// (internal/certs/interrupt_test.go:87-158; no unit test builds a Go binary)
-// — and signals it once. The operator's startup log is the barrier that the
-// signal context is installed: it prints inside operator.Run, after the
-// handler's signal.NotifyContext, so a signal sent earlier would kill the
-// child by the default action and the test would report a false failure.
+// the startup log is the barrier proving the signal context is installed.
 func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 	if os.Getenv("STRATUM_OPERATOR_STOP_CHILD") == "1" {
 		kc := filepath.Join(t.TempDir(), "kubeconfig")
@@ -76,10 +52,7 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 		return
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestOperatorCancelledContextSurfacesAStopError$", "-test.v")
-	// KUBEBUILDER_ASSETS is dropped so the child's TestMain does not stand up
-	// the envtest control plane (pkg/cli/mcp_k8s_test.go:29-33): this child
-	// never touches it, and starting it would spend seconds the barrier's
-	// own deadline has to absorb.
+	// KUBEBUILDER_ASSETS is dropped so the child's TestMain never stands up envtest.
 	env := make([]string, 0, len(os.Environ())+1)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "KUBEBUILDER_ASSETS=") {
@@ -99,10 +72,7 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	// Wait closes both pipes once the child exits. The verdict is the last
-	// stdout line, so drain stdout first: a fast exit cannot lose the verdict
-	// to that close. Stderr is only read up to its barrier line, so its tail
-	// is not waited for.
+	// drain stdout before Wait: Wait closes the pipes and a fast exit would lose the verdict.
 	drained := make(chan struct{})
 	waited := make(chan error, 1)
 	go func() {
@@ -136,9 +106,7 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 			}
 		}
 	}
-	// Barrier: this line prints inside operator.Run, after the handler's
-	// signal.NotifyContext is installed, so the SIGTERM that follows cannot
-	// race ahead of the signal context and kill the child by default.
+	// the startup log prints inside operator.Run, after the signal context is installed.
 	waitForLog("stratum-operator: reconciling")
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -171,10 +139,7 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 		}
 	}
 	waitFor("stop error surfaced")
-	// The verdict is printed only after root.Execute() returned, so the CLI
-	// has already unwound the stop; require the child to be gone. Its exit
-	// code is not asserted: a signal-caused stop maps to exit 0 (pinned in
-	// TestOperatorSignalStopExitsZero).
+	// the exit code is not asserted: a signal-caused stop maps to exit 0.
 	select {
 	case <-waited:
 	case <-time.After(5 * time.Second):
@@ -182,13 +147,7 @@ func TestOperatorCancelledContextSurfacesAStopError(t *testing.T) {
 	}
 }
 
-// exitAsMainMaps reports the process exit status cmd/stratum/main.go gives a
-// root-command error, printing the default case's line exactly the same way
-// (cmd/stratum/main.go:46-70): nil exits 0, the special error types keep
-// their codes, everything else prints "stratum: <err>" and exits 1. The
-// re-exec children below exit with the mapped code, so a test observes the
-// exit status the real binary would produce — and, on stderr, whether the
-// failure was logged as one.
+// maps a root-command error the way cmd/stratum/main.go does, so children exit as main would.
 func exitAsMainMaps(err error) int {
 	if err == nil {
 		return 0
@@ -210,8 +169,6 @@ func exitAsMainMaps(err error) int {
 	}
 }
 
-// writeDeadKubeconfig writes the unreachable-apiserver kubeconfig the
-// operator and mcp children run against (deadAPIServerKubeconfig above).
 func writeDeadKubeconfig(t *testing.T) string {
 	t.Helper()
 	kc := filepath.Join(t.TempDir(), "kubeconfig")
@@ -221,8 +178,7 @@ func writeDeadKubeconfig(t *testing.T) string {
 	return kc
 }
 
-// operatorChild runs the real `stratum operator` command in-process, maps
-// the result the way cmd/stratum/main.go would, and exits with that code.
+// runs the real `stratum operator` in-process and exits with the code main would map.
 func operatorChild(t *testing.T, kubeconfig string, args ...string) {
 	t.Helper()
 	root := NewRootCommand()
@@ -233,10 +189,7 @@ func operatorChild(t *testing.T, kubeconfig string, args ...string) {
 	os.Exit(code)
 }
 
-// cliProc is a re-executed test binary running one of the command children:
-// the real root command in-process, with its stdout, stderr and exit wired
-// back to the parent test. Its stdin is a pipe this parent holds open, so a
-// stdio child blocks reading it and only a signal decides when it returns.
+// stdin is a held-open pipe, so a stdio child blocks until a signal arrives.
 type cliProc struct {
 	cmd      *exec.Cmd
 	lines    chan string
@@ -246,11 +199,7 @@ type cliProc struct {
 	stderr   []string
 }
 
-// startCLIChild re-executes the test binary as the child of the test named
-// run, selected by the env var env — the house re-exec pattern
-// (internal/certs/interrupt_test.go:125). KUBEBUILDER_ASSETS is dropped so
-// the child's TestMain does not stand up the envtest control plane
-// (pkg/cli/mcp_k8s_test.go:29-33): the child never touches it.
+// KUBEBUILDER_ASSETS is dropped so the child's TestMain never stands up envtest.
 func startCLIChild(t *testing.T, env, run string) *cliProc {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^"+run+"$", "-test.v")
@@ -285,8 +234,7 @@ func startCLIChild(t *testing.T, env, run string) *cliProc {
 		waited:   make(chan error, 1),
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() })
-	// Wait closes StdoutPipe and StderrPipe. Drain both streams first so a
-	// fast clean exit cannot lose its final verdict to that close.
+	// drain both pipes before Wait, or a fast clean exit loses its final verdict.
 	var streams sync.WaitGroup
 	streams.Add(2)
 	go func() {
@@ -316,7 +264,6 @@ func startCLIChild(t *testing.T, env, run string) *cliProc {
 	return p
 }
 
-// waitForErrLog blocks until the child logs a stderr line containing substr.
 func (p *cliProc) waitForErrLog(t *testing.T, substr string) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -335,8 +282,6 @@ func (p *cliProc) waitForErrLog(t *testing.T, substr string) {
 	}
 }
 
-// waitForExitCode blocks until the child prints the exit status it mapped,
-// and returns it.
 func (p *cliProc) waitForExitCode(t *testing.T) int {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -358,9 +303,6 @@ func (p *cliProc) waitForExitCode(t *testing.T) int {
 	}
 }
 
-// waitExitedCode waits for the child to end after its verdict and fails the
-// test unless it exited with exactly the wanted code, never killed by a
-// signal.
 func (p *cliProc) waitExitedCode(t *testing.T, want int) {
 	t.Helper()
 	select {
@@ -385,8 +327,6 @@ func (p *cliProc) waitExitedCode(t *testing.T, want int) {
 	}
 }
 
-// stderrSnapshot returns every stderr line the child produced. It waits for
-// the child's stderr to close, so the snapshot is complete.
 func (p *cliProc) stderrSnapshot(t *testing.T) []string {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
@@ -404,16 +344,7 @@ func (p *cliProc) stderrSnapshot(t *testing.T) []string {
 	}
 }
 
-// TestOperatorSignalStopExitsZero checks signal handling for `stratum operator`:
-// a stop a signal asked for must be a clean stop, exiting 0, on the whole
-// shared set — SIGINT, SIGTERM and SIGHUP. Fails in every case if the
-// operator's signals are not the shared interrupt set: a cancellation
-// returned as a plain error reaches main's default case and exits 1 with a
-// "stratum: context canceled" line, and a SIGHUP outside the set kills the
-// process outright. The operator rides internal/interrupt — SIGHUP
-// included, the second signal killing — and the signal-caused stop maps
-// to exit 0 through the shared clean-stop helper, so main does not log
-// it as a failed exit.
+// a signal-caused stop must be a clean exit 0 on SIGINT, SIGTERM and SIGHUP.
 func TestOperatorSignalStopExitsZero(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -429,10 +360,7 @@ func TestOperatorSignalStopExitsZero(t *testing.T) {
 				return
 			}
 			p := startCLIChild(t, "STRATUM_OPERATOR_EXIT_CHILD", "TestOperatorSignalStopExitsZero")
-			// Barrier: the operator's startup log prints inside operator.Run
-			// (internal/operator/operator.go:124), after the handler at
-			// pkg/cli/operator.go:28 is installed, so the signal cannot race
-			// ahead of it and kill the child by the default action.
+			// the startup log prints inside operator.Run, after the signal context is installed.
 			p.waitForErrLog(t, "stratum-operator: reconciling")
 			if err := p.cmd.Process.Signal(tc.sig); err != nil {
 				t.Fatal(err)
@@ -441,9 +369,7 @@ func TestOperatorSignalStopExitsZero(t *testing.T) {
 				t.Fatalf("operator stopped by one %s maps to exit %d, want 0 (a signal-caused clean stop)", tc.name, code)
 			}
 			p.waitExitedCode(t, 0)
-			// The stop is not a failure: main's default case is the only
-			// place a failing command's error is printed, so a clean stop
-			// must produce no "stratum: ..." line of its own.
+			// a clean stop must produce no "stratum: ..." failure line of its own.
 			for _, l := range p.stderrSnapshot(t) {
 				if strings.HasPrefix(l, "stratum: ") {
 					t.Errorf("the signal stop was logged as a failed exit: %q", l)
@@ -453,10 +379,7 @@ func TestOperatorSignalStopExitsZero(t *testing.T) {
 	}
 }
 
-// TestOperatorUnrelatedErrorStillExitsNonzero pins the other half of the
-// exit mapping: only a signal-caused stop is clean. An operator failure with
-// nothing to do with signals — here a kubeconfig no client can load — must
-// keep exiting 1 with the shared handler, as it did before.
+// only a signal-caused stop is clean; any other operator failure keeps exit 1.
 func TestOperatorUnrelatedErrorStillExitsNonzero(t *testing.T) {
 	if os.Getenv("STRATUM_OPERATOR_ERR_CHILD") == "1" {
 		kc := filepath.Join(t.TempDir(), "kubeconfig")
@@ -473,15 +396,7 @@ func TestOperatorUnrelatedErrorStillExitsNonzero(t *testing.T) {
 	p.waitExitedCode(t, 1)
 }
 
-// TestOperatorStopsWhenTheParentContextIsCancelled pins the derivation the
-// shared handler must keep: the operator's signal context descends from the
-// command's parent context (pkg/cli/operator.go:28 uses cmd.Context()), so a
-// host that cancels the context it passed to ExecuteContext stops the
-// operator instead of leaving it running. It is green today and guards the
-// move onto internal/interrupt, which must not detach the operator from its
-// parent. The parent asks for the cancellation over SIGUSR1, a signal
-// outside the shared set, so the request cannot be mistaken for one of the
-// signals under test.
+// the operator's signal context descends from the command's parent context.
 func TestOperatorStopsWhenTheParentContextIsCancelled(t *testing.T) {
 	if os.Getenv("STRATUM_OPERATOR_PARENT_CHILD") == "1" {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -505,9 +420,7 @@ func TestOperatorStopsWhenTheParentContextIsCancelled(t *testing.T) {
 	if err := p.cmd.Process.Signal(syscall.SIGUSR1); err != nil {
 		t.Fatal(err)
 	}
-	// A host's cancellation is not a signal's clean stop — interrupt's
-	// clean-stop helper must not claim it — so the operator reports the
-	// cancellation and main's default case exits 1, exactly as today.
+	// a host's cancellation is not a signal's clean stop, so it exits 1.
 	if code := p.waitForExitCode(t); code != 1 {
 		t.Fatalf("a parent-context cancellation maps to exit %d, want 1: a host's cancellation is not a signal's clean stop", code)
 	}

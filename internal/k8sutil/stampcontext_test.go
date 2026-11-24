@@ -11,9 +11,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The stamp context must cancel the installed-version probe that is actually
-// running. Wait for that probe to start instead of budgeting process startup
-// against a short wall-clock deadline, which is unreliable on busy CI runners.
 func TestReviewStampContextBoundsVersionProbes(t *testing.T) {
 	for _, slow := range []string{"kubelet", "stratum"} {
 		t.Run(slow, func(t *testing.T) {
@@ -26,8 +23,7 @@ func TestReviewStampContextBoundsVersionProbes(t *testing.T) {
 			for name, output := range map[string]string{"kubelet": "Kubernetes v1.37.1", "stratum": "v1.37.1-stratum.0 linux/arm64", "kubectl": ""} {
 				body := "printf '%s\\n' '" + output + "'\n"
 				if name == slow {
-					// exec lets cancellation kill the sleeper itself, leaving
-					// no child process behind after the test.
+					// exec lets cancellation kill the sleeper, leaving no child behind.
 					body = "printf x > \"$STRATUM_TEST_PROBE_STARTED\"\nexec sleep 30\n"
 				}
 				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
@@ -70,7 +66,6 @@ func TestReviewStampContextBoundsVersionProbes(t *testing.T) {
 	}
 }
 
-// A failing stamp's error carries kubectl's stderr, trimmed and capped.
 func TestStampNodeContextIncludesKubectlStderr(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	for _, tc := range []struct {

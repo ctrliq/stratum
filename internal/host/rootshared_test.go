@@ -11,7 +11,6 @@ import (
 	"testing"
 )
 
-// fakeProcMountinfo points procMountinfo at a file holding the given content.
 func fakeProcMountinfo(t *testing.T, content string) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "mountinfo")
@@ -23,8 +22,6 @@ func fakeProcMountinfo(t *testing.T, content string) {
 	t.Cleanup(func() { procMountinfo = old })
 }
 
-// fakeMount stands in for the mount binary: each call is recorded, and answer
-// decides its output and error.
 func fakeMount(t *testing.T, answer func(args []string) (string, error)) *[][]string {
 	t.Helper()
 	var calls [][]string
@@ -37,22 +34,16 @@ func fakeMount(t *testing.T, answer func(args []string) (string, error)) *[][]st
 	return &calls
 }
 
-// A systemd host's /: a shared peer group.
 const sharedRootMountinfo = "30 1 0:24 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"
 
-// A BusyBox/OpenRC host's /: no peer group tag, so private.
 const privateRootMountinfo = "30 1 0:24 / / rw,relatime - ext4 /dev/sda1 rw\n"
 
-// A / that is a slave of another namespace's peer group.
 const slaveRootMountinfo = "30 1 0:24 / / rw,relatime master:36 - ext4 /dev/sda1 rw\n"
 
-// A / that is a slave which is itself shared: the kernel writes each tag as
-// its own optional field, and shared wins.
+// The kernel writes each tag as its own optional field, and shared wins.
 const slaveSharedRootMountinfo = "30 1 0:24 / / rw,relatime shared:102 master:36 - ext4 /dev/sda1 rw\n"
 
-// Prereqs wires the check in. A source pin, because Prereqs runs its whole
-// host stack (the cgroup-v2 floor check, a real sysctl --system) before it,
-// which no external test can stand in for.
+// A source pin: no external test can stand in for Prereqs's host stack.
 func TestPrereqsCallsEnsureRootShared(t *testing.T) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, "host.go", nil, 0)
@@ -84,9 +75,6 @@ func TestPrereqsCallsEnsureRootShared(t *testing.T) {
 	}
 }
 
-// A private / is made recursively shared, with exactly one mount command and
-// one line saying so: containerd refuses Cilium's host-to-container bind
-// mounts otherwise, and the operator should see what stratum changed.
 func TestEnsureRootSharedMakesAPrivateRootShared(t *testing.T) {
 	fakeProcMountinfo(t, privateRootMountinfo)
 	calls := fakeMount(t, func(args []string) (string, error) { return "", nil })
@@ -100,7 +88,6 @@ func TestEnsureRootSharedMakesAPrivateRootShared(t *testing.T) {
 	}
 }
 
-// A shared / (every systemd host) is left alone: nothing run, nothing printed.
 func TestEnsureRootSharedLeavesASharedRootAlone(t *testing.T) {
 	fakeProcMountinfo(t, sharedRootMountinfo)
 	calls := fakeMount(t, func(args []string) (string, error) { return "", nil })
@@ -113,8 +100,6 @@ func TestEnsureRootSharedLeavesASharedRootAlone(t *testing.T) {
 	}
 }
 
-// A slave root already satisfies containerd's "shared or slave" requirement,
-// so it is left alone too.
 func TestEnsureRootSharedLeavesASlaveRootAlone(t *testing.T) {
 	fakeProcMountinfo(t, slaveRootMountinfo)
 	calls := fakeMount(t, func(args []string) (string, error) { return "", nil })
@@ -127,7 +112,6 @@ func TestEnsureRootSharedLeavesASlaveRootAlone(t *testing.T) {
 	}
 }
 
-// A root that is both a slave and shared reads as shared, and is left alone.
 func TestEnsureRootSharedLeavesASlaveSharedRootAlone(t *testing.T) {
 	if private, ok := rootPrivate(slaveSharedRootMountinfo); !ok || private {
 		t.Errorf("rootPrivate = %v, %v; want private = false, true", private, ok)
@@ -143,8 +127,6 @@ func TestEnsureRootSharedLeavesASlaveSharedRootAlone(t *testing.T) {
 	}
 }
 
-// A failing mount does not stop bring-up: the warning carries mount's own
-// output, and Cilium's own error will say why the node will not come up.
 func TestEnsureRootSharedWarnsAndContinuesWhenTheMountFails(t *testing.T) {
 	fakeProcMountinfo(t, privateRootMountinfo)
 	calls := fakeMount(t, func(args []string) (string, error) {
@@ -160,7 +142,6 @@ func TestEnsureRootSharedWarnsAndContinuesWhenTheMountFails(t *testing.T) {
 	}
 }
 
-// An unreadable mountinfo is warned about, not fatal.
 func TestEnsureRootSharedWarnsWhenMountinfoIsUnreadable(t *testing.T) {
 	fakeProcMountinfo(t, "")
 	if err := os.Remove(procMountinfo); err != nil {
@@ -178,7 +159,6 @@ func TestEnsureRootSharedWarnsWhenMountinfoIsUnreadable(t *testing.T) {
 	}
 }
 
-// A mountinfo with no / line cannot be told, so nothing is mounted.
 func TestEnsureRootSharedWarnsWhenMountinfoHasNoRootLine(t *testing.T) {
 	fakeProcMountinfo(t, "30 1 0:24 /mnt/data /mnt/data rw,relatime shared:1 - ext4 /dev/sda1 rw\n")
 	calls := fakeMount(t, func(args []string) (string, error) { return "", nil })
@@ -192,8 +172,7 @@ func TestEnsureRootSharedWarnsWhenMountinfoHasNoRootLine(t *testing.T) {
 	}
 }
 
-// Other mounts must not be mistaken for /: the mount point is the fifth
-// field, not the mount root (the fourth).
+// The mount point is the fifth field, not the mount root (the fourth).
 func TestRootPrivateReadsTheMountPointNotTheMountRoot(t *testing.T) {
 	mi := "30 1 0:24 / / rw,relatime - ext4 /dev/sda1 rw\n" +
 		"45 30 0:40 / /sys/fs/bpf rw,relatime shared:7 - bpf bpf rw\n"
@@ -202,9 +181,6 @@ func TestRootPrivateReadsTheMountPointNotTheMountRoot(t *testing.T) {
 	}
 }
 
-// With mounts stacked on /, the mount stacked on the other (its parent ID
-// names the other's mount ID) is in effect and decides, whichever way round
-// the two differ and in whichever order the lines come.
 func TestRootPrivateTakesTheTopmostRootMount(t *testing.T) {
 	const (
 		privateBase = "30 1 0:24 / / rw,relatime - ext4 /dev/sda1 rw\n"

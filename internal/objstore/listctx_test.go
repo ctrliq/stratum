@@ -13,23 +13,19 @@ import (
 	"time"
 )
 
-// stubListObj is one object a stub listing serves.
 type stubListObj struct {
 	key      string
 	size     int64
 	modified string
 }
 
-// listObjTime is the fixed LastModified listObj serves, so the times a
-// listing reports assert exactly.
+// one value in the stub XML and the assertions, so they cannot drift.
 var listObjTime = time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 
-// listObj builds a stub object with listObjTime as its LastModified.
 func listObj(key string, size int64) stubListObj {
 	return stubListObj{key: key, size: size, modified: "2026-11-12T00:00:00.000Z"}
 }
 
-// listObjs builds the size-1 stub objects the named keys hold.
 func listObjs(keys ...string) []stubListObj {
 	objs := make([]stubListObj, len(keys))
 	for i, k := range keys {
@@ -38,8 +34,6 @@ func listObjs(keys ...string) []stubListObj {
 	return objs
 }
 
-// listPageXML renders one ListObjectsV2 response: truncated with next as the
-// continuation token when another page follows, complete otherwise.
 func listPageXML(next string, objs ...stubListObj) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name>`)
@@ -55,26 +49,18 @@ func listPageXML(next string, objs ...stubListObj) string {
 	return b.String()
 }
 
-// deniedBody is the AccessDenied XML a refusing stub serves with 403.
 const deniedBody = `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`
 
-// denyList refuses a listing the way a store refuses one it is not allowed to
-// answer.
 func denyList(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = w.Write([]byte(deniedBody))
 }
 
-// targetAt points a path-style target at a stub server.
 func targetAt(url string) *Target {
 	return &Target{Endpoint: url, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
 }
 
-// stubListing serves ListObjectsV2 a page at a time like S3: the request's
-// continuation token picks the page (no token is the first), and a page with
-// a successor is truncated carrying the successor's token. It records every
-// continuation token the SDK asked for, so a test can pin the pagination.
 func stubListing(t *testing.T, pages ...[]stubListObj) (*Target, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
@@ -116,7 +102,6 @@ func stubListing(t *testing.T, pages ...[]stubListObj) (*Target, func() []string
 	}
 }
 
-// names projects a listing's objects to their names, in order.
 func names(objs []Object) []string {
 	ns := make([]string, len(objs))
 	for i, o := range objs {
@@ -125,12 +110,6 @@ func names(objs []Object) []string {
 	return ns
 }
 
-// A truncated listing is followed through its continuation tokens to the
-// end: every page's objects come back once, with the sizes and modification
-// times their pages carried, and the listing ends complete — the objects are
-// the store's exact total. The pagination is pinned on the wire: the listing
-// asks for the first page untokened and every next page with the token the
-// page before it returned.
 func TestListBoundedFollowsTruncatedPagination(t *testing.T) {
 	tgt, tokens := stubListing(t,
 		[]stubListObj{listObj("b.db", 2), listObj("a.db", 1)},
@@ -159,10 +138,6 @@ func TestListBoundedFollowsTruncatedPagination(t *testing.T) {
 	}
 }
 
-// A key the store lists again on a later page is one object, not two: the
-// same key across pages is the same object, so wherever the listing feeds a
-// count it counts once. The listing still ends complete when it reaches the
-// end.
 func TestListBoundedDeduplicatesKeysAcrossPages(t *testing.T) {
 	tgt, _ := stubListing(t,
 		[]stubListObj{listObj("a.db", 1), listObj("b.db", 1)},
@@ -179,11 +154,6 @@ func TestListBoundedDeduplicatesKeysAcrossPages(t *testing.T) {
 	}
 }
 
-// A listing that fails midway still returns what the pages so far listed,
-// and that floor keeps the contract every other end keeps: sorted by name.
-// A floor that comes back shuffled reads as a different store than the same
-// floor sorted, and a consumer paging or diffing against the sorted order
-// misreads it.
 func TestListBoundedSortsTheFloorItReturnsWhenAListingFailsMidway(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -194,9 +164,7 @@ func TestListBoundedSortsTheFloorItReturnsWhenAListingFailsMidway(t *testing.T) 
 			denyList(w)
 			return
 		}
-		// The first page carries its objects in an order that is not the
-		// name order, so only the listing's own sort can produce a sorted
-		// floor.
+		// the first page's objects are unsorted, so only the listing's sort can sort them
 		w.Header().Set("Content-Type", "application/xml")
 		_, _ = w.Write([]byte(listPageXML("page1", listObj("z.db", 1), listObj("a.db", 1))))
 	}))
@@ -212,8 +180,6 @@ func TestListBoundedSortsTheFloorItReturnsWhenAListingFailsMidway(t *testing.T) 
 	}
 }
 
-// A store holding nothing under the target's prefix lists zero objects and
-// ends complete: an exact zero, never an unknown.
 func TestListBoundedEmptyBucketIsAnExactZero(t *testing.T) {
 	tgt, _ := stubListing(t, []stubListObj{})
 
@@ -224,15 +190,6 @@ func TestListBoundedEmptyBucketIsAnExactZero(t *testing.T) {
 	}
 }
 
-// A store that never answers is hung up on, not waited out: the caller's
-// context — which the listing propagates into the S3 call — ends the request,
-// the store sees its request context end, and the listing returns within its
-// bound, classified by what stopped it — a time bound as timeout, a caller
-// cancellation as cancelled — with the objects it already listed as a floor.
-// Each subtest runs against its own store and its own proof channel, so the
-// cancellation it asserts is its own request's: a channel shared between the
-// subtests is closed once, by whichever ran first, and the later subtest
-// would read the first one's proof — a vacuous check that cannot fail.
 func TestListBoundedHungListingIsBounded(t *testing.T) {
 	hungStore := func(t *testing.T) (list func(ctx context.Context, o ListOptions) ListResult, sawTheStoreGiveUp func()) {
 		t.Helper()
@@ -285,9 +242,6 @@ func TestListBoundedHungListingIsBounded(t *testing.T) {
 	})
 }
 
-// A store that refuses the listing with 403 is classified denied — the
-// store's answer, distinct from an ordinary failure — and the objects already
-// listed stand as a floor while the listing stops, never becoming a total.
 func TestListBoundedDeniedListingIsClassifiedDenied(t *testing.T) {
 	t.Run("refused outright", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,8 +280,6 @@ func TestListBoundedDeniedListingIsClassifiedDenied(t *testing.T) {
 	})
 }
 
-// The page cap bounds how deep a listing goes: it stops after that many
-// pages, classified capped, without asking for the page after the cap.
 func TestListBoundedStopsAtThePageCap(t *testing.T) {
 	tgt, tokens := stubListing(t,
 		[]stubListObj{listObj("a.db", 1)},
@@ -348,9 +300,6 @@ func TestListBoundedStopsAtThePageCap(t *testing.T) {
 	}
 }
 
-// The byte cap bounds the object bytes a listing accounts for: it stops
-// before the object that would cross the cap, classified capped, and the
-// objects it did list stand as a floor.
 func TestListBoundedStopsAtTheByteCap(t *testing.T) {
 	tgt, _ := stubListing(t,
 		[]stubListObj{listObj("a.db", 100), listObj("b.db", 100)},

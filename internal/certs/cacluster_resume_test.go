@@ -17,9 +17,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// workerResumeCluster uses the real worker trust-transition rules against the
-// initiator's published bundle. Unlike the control-plane-only fixture, its
-// worker cannot replay trust-new after a control plane publishes new-only trust.
+// its worker cannot replay trust-new once a control plane publishes new-only trust.
 type workerResumeCluster struct {
 	*fakeCACluster
 	workerTrust []*x509.Certificate
@@ -77,8 +75,7 @@ func TestPartialFinalizeResumeKeepsCompletedWorkerPhases(t *testing.T) {
 	if len(f.workerTrust) != 2 || len(f.publishedTrust()) != 1 {
 		t.Fatalf("partial-finalize fixture: worker trusts %d roots, published bundle holds %d", len(f.workerTrust), len(f.publishedTrust()))
 	}
-	// This is the real rejection a phase-major replay would hit. A resume must
-	// retain the global checkpoint rather than try that trust-new again.
+	// the real rejection a phase-major replay would hit; the resume must keep the global checkpoint.
 	if _, _, err := checkTrustTransition(f.workerTrust, f.publishedTrust(), trustWiden); err == nil {
 		t.Fatal("worker accepted narrowing its trust during trust-new")
 	}
@@ -131,8 +128,7 @@ func TestResumedTokenGateScansAfterLocalOldKeyWasRemoved(t *testing.T) {
 			if err := pki.FinalizeCA(); err != nil {
 				t.Fatal(err)
 			}
-			// Production finalization records which shared run this node
-			// finished, so another run's finalized marker cannot authorize it.
+			// another run's finalized marker must not authorize this node's finalize.
 			markCarotateFinishedRun(io.Discard, d.rotationRun)
 			if _, err := oldSAKeyID(); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("finalize did not remove local old public key: %v", err)
@@ -146,8 +142,7 @@ func TestResumedTokenGateScansAfterLocalOldKeyWasRemoved(t *testing.T) {
 				k := &kubelet{root: kubeletRoot, failure: errors.New("restart denied by fixture")}
 				k.install(t)
 			}
-			// A new driver resolves the persisted run after the first control
-			// plane finalized. Exercise production TokensChecked, not its fake.
+			// exercise the production TokensChecked, not its fake.
 			resumed := &prodCADriver{w: io.Discard, ctx: context.Background(), cs: cs, confirm: func(string) error { return nil }}
 			if _, resume, err := resumed.ResolveRotation(); err != nil || !resume {
 				t.Fatalf("resolve partial-finalize resume: resumed=%v, err=%v", resume, err)

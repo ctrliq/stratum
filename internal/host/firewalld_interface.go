@@ -11,19 +11,13 @@ import (
 	"strings"
 )
 
-// Cilium names the host end of each pod veth lxcXXXXXX. firewalld accepts a
-// trailing + as an interface-prefix wildcard on both nftables and iptables.
-// Unlike a pod-CIDR source binding, this cannot admit traffic from a physical
-// NIC merely because its source address was spoofed. The more-specific LXC
-// bridge prefix must be pinned outside trusted before this binding is added.
+// A trailing + is a prefix wildcard; unlike a source binding it cannot admit spoofed traffic.
 const (
 	ciliumPodInterface = "lxc+"
 	lxcBridgeInterface = "lxcbr+"
 )
 
-// A stopped daemon can still have the old broad wildcard in permanent
-// configuration. Remove it before a later daemon start can activate it
-// without the LXC bridge exclusion in place.
+// Remove it before the daemon next starts, or the wildcard activates without the bridge guard.
 func removeOwnedCiliumWildcardOffline() {
 	r, err := readFirewalldRecord()
 	if err != nil {
@@ -43,15 +37,9 @@ func removeOwnedCiliumWildcardOffline() {
 	}
 }
 
-// sysClassNet lists the host's interfaces; a var so a test can fake it.
 var sysClassNet = "/sys/class/net"
 
-// lxcLookalikes are the interfaces lxc+ would match that are not Cilium's.
-// Cilium's lxcXXXXXX and lxc_health are veths. LXC's own lxcbr0 is a bridge,
-// and binding lxc+ would trust every container behind it.
-// A bridge has a bridge/ directory and a physical NIC a device link; a veth
-// has neither. ifindex against iflink is no test: a veth's peer index lives
-// in another namespace and can equal its own.
+// A bridge has a bridge/ directory and a physical NIC a device link; a veth neither.
 func lxcLookalikes() ([]string, error) {
 	ents, err := os.ReadDir(sysClassNet)
 	if err != nil {
@@ -75,8 +63,7 @@ func lxcLookalikes() ([]string, error) {
 	return odd, nil
 }
 
-// Remove an older owned wildcard without touching a more-specific bridge
-// guard. Keep and report ownership when removal cannot be confirmed.
+// Keep and report ownership when removal cannot be confirmed.
 func revokeOwnedPodWildcard(r firewalldRecord) {
 	owned := firewalldRecord{}
 	for _, t := range r.TrustedInterfaces {
@@ -100,9 +87,7 @@ func trustCiliumInterface() {
 		fmt.Printf("  WARN: firewalld: cannot read interface ownership record: %v\n", err)
 		return
 	}
-	// Checked on every start, so LXC installed after the cluster is caught at
-	// the next one. The standard lxcbr prefix is handled by the more-specific
-	// firewalld zone binding; other bridge and physical interfaces fail closed.
+	// Checked every start, so LXC installed after the cluster is caught at the next one.
 	odd, err := lxcLookalikes()
 	var unsafe []string
 	for _, name := range odd {
@@ -144,7 +129,7 @@ func trustCiliumInterface() {
 		}
 	}
 	if len(need) == 0 && !owned {
-		return // operator-owned binding
+		return
 	}
 	for _, s := range need {
 		if out, code := firewallCmd(s.args("--zone="+firewalldZone, "--add-interface="+ciliumPodInterface)...); code != 0 {
@@ -166,9 +151,7 @@ func trustCiliumInterface() {
 	}
 }
 
-// Firewalld orders longer interface prefixes before shorter ones. Pin the
-// standard LXC bridge prefix to the host's existing default zone so lxcbr0
-// cannot inherit the lxc+ trusted binding. A failure prevents pod trust.
+// Firewalld matches longer interface prefixes first, so lxcbr+ must be pinned outside trusted.
 func excludeLXCBridge() bool {
 	defaultZone, code := firewallCmd("--get-default-zone")
 	if code != 0 || defaultZone == "" || defaultZone == firewalldZone {
@@ -182,7 +165,7 @@ func excludeLXCBridge() bool {
 				fmt.Printf("  WARN: firewalld: %s already belongs to trusted (%s); did not add pod trust\n", lxcBridgeInterface, s.name)
 				return false
 			}
-			continue // operator-owned exclusion
+			continue
 		}
 		if code != exitNoZone {
 			fmt.Printf("  WARN: firewalld: cannot check %s (%s): %s (exit %d); did not add pod trust\n", lxcBridgeInterface, s.name, zone, code)
@@ -244,8 +227,7 @@ func forgetTrustedInterface(iface, zone string, s scope) error {
 	return writeFirewalldRecord(r)
 }
 
-// OwnedFirewalldInterfaces lists interface bindings Stratum will remove, with
-// their zones. This includes the non-trusted LXC bridge exclusion.
+// OwnedFirewalldInterfaces lists interface bindings stratum will remove, with their zones.
 func OwnedFirewalldInterfaces() ([]string, error) {
 	r, err := readFirewalldRecord()
 	var names []string
@@ -262,9 +244,7 @@ func untrustCiliumInterfaces(w io.Writer, r firewalldRecord, running bool, fixes
 			*recordFailures = append(*recordFailures, fmt.Sprintf("%s (%s): %v", t.Interface, s.name, err))
 		}
 	}
-	// Remove broad pod trust before the bridge exclusion. Otherwise a failed
-	// wildcard removal followed by a successful exclusion removal would
-	// expose co-located LXC traffic to the trusted zone.
+	// Remove broad pod trust before the bridge exclusion, or failed removals expose LXC traffic.
 	bindings := slices.Clone(r.TrustedInterfaces)
 	slices.SortStableFunc(bindings, func(a, b trustedInterface) int {
 		if a.Interface == ciliumPodInterface {
@@ -277,8 +257,7 @@ func untrustCiliumInterfaces(w io.Writer, r firewalldRecord, running bool, fixes
 	})
 	for _, t := range bindings {
 		if t.Interface == lxcBridgeInterface && len(*fixes) > 0 {
-			// A failed wildcard removal must not be followed by removal of
-			// its more-specific bridge protection.
+			// Do not remove the bridge guard while the wildcard cleanup failed.
 			continue
 		}
 		for _, s := range scopes {

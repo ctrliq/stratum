@@ -129,8 +129,6 @@ func TestServingBootstrappedAgreesWithTheRenderedKubeletConf(t *testing.T) {
 	}
 }
 
-// A node's spec.node taints reach the kubelet.conf both roles render, and a
-// node with none renders no registerWithTaints.
 func TestKubeletConfCarriesTheNodeTaints(t *testing.T) {
 	kubeletProfileFixture(t)
 	registerForTest(t)
@@ -154,8 +152,7 @@ func TestKubeletConfCarriesTheNodeTaints(t *testing.T) {
 	}
 }
 
-// A taint node.yaml carries that the kubelet could not read fails the render,
-// naming it, and writes no kubelet.conf a kubelet would refuse.
+// A taint the kubelet could not read fails the render, naming it.
 func TestKubeletConfRefusesASavedTaintTheKubeletCannotRead(t *testing.T) {
 	kubeletProfileFixture(t)
 	registerForTest(t)

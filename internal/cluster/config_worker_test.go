@@ -8,8 +8,6 @@ import (
 	"testing"
 )
 
-// A --worker honours spec.network.nodeIP, spec.selinux and spec.node and refuses every
-// other set field, naming it, rather than dropping it.
 func TestLoadWorkerConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml, wantIP string

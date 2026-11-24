@@ -13,40 +13,14 @@ import (
 	"github.com/ctrliq/stratum/internal/bootstrap/clusterinfo"
 )
 
-// clusterInfoPath is the kube-public cluster-info ConfigMap, shared by the
-// initial-join fetch and the already-joined verified fetch.
 const clusterInfoPath = "/api/v1/namespaces/kube-public/configmaps/cluster-info"
 
-// maxClusterInfoBytes is defined once in bootstrap.go and shared: the same cap
-// protects both fetches, and two copies is how one of them silently stops
-// matching the other.
-
-// FetchClusterCAVerified fetches the cluster-info CA trust bundle over a TLS
-// connection VERIFIED against roots (an already-joined node's on-disk trust
-// bundle), and returns the fetched bundle together with the verified peer chain
-// so the caller can check the bundle against the connection it arrived on.
-//
-// Like DiscoverCA this sends no credential, and deliberately so — the two differ
-// in what they authenticate, not in what they present. The cluster-info ConfigMap is
-// granted to system:anonymous alone (token.ensureClusterInfo binds the
-// stratum:cluster-info Role to exactly that one subject), and the apiserver runs
-// --authorization-mode=Node,RBAC: presenting the kubelet's client certificate
-// would authenticate the request as system:node:<host>, which has no grant on
-// that ConfigMap and no Node-authorizer path to it, turning a request RBAC
-// permits into a 403. Anonymous is both the working answer and the least
-// privileged one for reading a ConfigMap published for anonymous read.
-//
-// Dropping InsecureSkipVerify enables TWO checks, not one: chain validation and
-// SAN/hostname validation. An endpoint outside the apiserver leaf's SANs
-// fails closed on purpose — such a mismatch is a real misconfiguration, and
-// this path rewrites the file that decides who is
-// cluster-admin on the kubelet. classifyFetchError keeps that case distinguishable
-// from a trust failure.
 func FetchClusterCAVerified(server string, roots []byte) ([]byte, []*x509.Certificate, error) {
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(roots) {
 		return nil, nil, fmt.Errorf("cluster-info: on-disk trust bundle holds no usable certificate, so there is nothing to verify the apiserver against")
 	}
+	// No client credential: this ConfigMap is anonymous-only; a kubelet cert would get a 403.
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
@@ -79,11 +53,7 @@ func FetchClusterCAVerified(server string, roots []byte) ([]byte, []*x509.Certif
 	return ca, resp.TLS.PeerCertificates, nil
 }
 
-// caFromClusterInfo pulls the CA bundle out of a cluster-info ConfigMap body.
-// The reading rule is clusterinfo.Parse's, shared with TrustBundle and RepinCA:
-// an ambiguous ConfigMap is refused rather than answered by whichever cluster
-// entry the map happened to iterate first — these bytes become the node's trust
-// store, so guessing between two differing bundles is not an acceptable outcome.
+// Reads with clusterinfo.Parse: an ambiguous ConfigMap is refused, never answered by map order.
 func caFromClusterInfo(body []byte) ([]byte, error) {
 	var cm struct {
 		Data map[string]string `json:"data"`
@@ -91,8 +61,7 @@ func caFromClusterInfo(body []byte) ([]byte, error) {
 	if err := json.Unmarshal(body, &cm); err != nil {
 		return nil, fmt.Errorf("parse cluster-info ConfigMap: %w", err)
 	}
-	// clusterinfo.KubeConfigKey rather than a local "kubeconfig" literal: the
-	// authenticated path keys off the same constant, and the two must not drift.
+	// The authenticated path keys off the same constant; the two must not drift.
 	raw, ok := cm.Data[clusterinfo.KubeConfigKey]
 	if !ok || raw == "" {
 		return nil, fmt.Errorf("cluster-info ConfigMap missing data.%s", clusterinfo.KubeConfigKey)
@@ -107,17 +76,7 @@ func caFromClusterInfo(body []byte) ([]byte, error) {
 	return ca, nil
 }
 
-// classifyFetchError turns a TLS failure into a self-contained diagnosis. The
-// cases call for opposite responses — repoint the endpoint, or treat the peer as
-// hostile — and this string is the only record of which one happened: it reaches
-// the operator through the failed carotate Job's pod log, which nodejob.Run
-// deliberately retains (it deletes the Job only on success).
-//
-// The SAN case cannot be inferred from the error type alone. x509.Verify checks
-// the hostname BEFORE it builds chains, so a HostnameError comes back with chain
-// building never attempted and says nothing about whether the peer is trusted.
-// Trust is therefore established separately, against the same roots, rather than
-// assumed from which error surfaced first.
+// x509.Verify checks the hostname before chains, so HostnameError says nothing about trust.
 func classifyFetchError(server string, roots *x509.CertPool, err error) error {
 	var hostErr x509.HostnameError
 	if errors.As(err, &hostErr) {
@@ -138,9 +97,6 @@ func classifyFetchError(server string, roots *x509.CertPool, err error) error {
 	return fmt.Errorf("cluster-info: fetch from %s: %w", server, err)
 }
 
-// peerChainsTo reports whether the certificates the failed handshake rejected
-// would chain to roots on their own. tls.CertificateVerificationError carries
-// them, so trust can be judged independently of which x509 error surfaced first.
 func peerChainsTo(roots *x509.CertPool, err error) bool {
 	var cve *tls.CertificateVerificationError
 	if !errors.As(err, &cve) || len(cve.UnverifiedCertificates) == 0 {

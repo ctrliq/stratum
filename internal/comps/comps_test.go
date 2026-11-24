@@ -17,10 +17,6 @@ func TestIsStratumProcess(t *testing.T) {
 		return []string{exe, "operator", "--kubeconfig", version.AdminConf, "--manifests-dir", version.ManifestsDir, "--helm-cache", version.HelmCacheDir, "--leader-elect"}
 	}
 
-	// The top-level stratum identity compares a process's /proc/<pid>/exe
-	// with the running executable, so every "stratum" case below runs
-	// against this very test binary: the process is Stratum's when its exe
-	// resolves to the same file.
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -59,10 +55,6 @@ func TestIsStratumProcess(t *testing.T) {
 	}
 }
 
-// TestEveryUnitHasAPredicate: the identity table is keyed by roster name, so
-// a unit added to comps.Units without a predicate must fail here — and, with
-// the table checked at init, refuse to build — instead of answering false for
-// every process and letting uninstall leave the unit running.
 func TestEveryUnitHasAPredicate(t *testing.T) {
 	if len(processPredicates) == 0 {
 		t.Fatal("no process predicates are registered")
@@ -74,11 +66,6 @@ func TestEveryUnitHasAPredicate(t *testing.T) {
 	}
 }
 
-// TestEveryUnitHasAnIdentityRule pins that uninstall can recognise every unit
-// in comps.Units after the supervisor has died: each roster entry holds one
-// command line isStratumProcess must accept and one it must refuse. The
-// runtime-shim and top-level stratum names uninstall also probes are not
-// roster units; their boundaries are procid's tests.
 func TestEveryUnitHasAnIdentityRule(t *testing.T) {
 	table := map[string]struct {
 		accept []string
@@ -86,16 +73,16 @@ func TestEveryUnitHasAnIdentityRule(t *testing.T) {
 	}{
 		"containerd": {
 			accept: []string{filepath.Join(version.BinDir, "containerd")},
-			refuse: []string{"/usr/bin/containerd"}, // a distro-owned same-named binary
+			refuse: []string{"/usr/bin/containerd"},
 		},
 		"kubelet": {
 			accept: []string{filepath.Join(version.BinDir, "kubelet")},
-			refuse: []string{"/usr/bin/kubelet"}, // a distro-owned same-named binary
+			refuse: []string{"/usr/bin/kubelet"},
 		},
 		"operator": {
 			accept: []string{"/usr/local/bin/stratum", "operator", "--kubeconfig", version.AdminConf,
 				"--manifests-dir", version.ManifestsDir, "--helm-cache", version.HelmCacheDir, "--leader-elect"},
-			refuse: []string{"/usr/local/bin/other", "operator"}, // another program's operator
+			refuse: []string{"/usr/local/bin/other", "operator"},
 		},
 	}
 	if len(table) != len(Units) {
@@ -116,11 +103,6 @@ func TestEveryUnitHasAnIdentityRule(t *testing.T) {
 	}
 }
 
-// TestOperatorPatternAgrees checks that the pattern `pkill -f` is given for
-// the operator matches the command lines the operator predicate accepts and
-// nothing it rejects, with the executable named canonically or after a
-// release artifact. The regexp is Go's, which the pattern's POSIX syntax is a
-// subset of.
 func TestOperatorPatternAgrees(t *testing.T) {
 	re := regexp.MustCompile(OperatorCommandLinePattern())
 	canonical := func(exe string) []string {
@@ -155,15 +137,6 @@ func TestOperatorPatternAgrees(t *testing.T) {
 	}
 }
 
-// TestUninstallStratumPredicateAgreesWithUpDetection: uninstall identifies the
-// top-level `stratum up` process through the "stratum" entry of
-// processPredicates, and that entry must decide the up subcommand exactly as
-// procid.IsUpCommand — the legacy-supervisor check's rule — so the two
-// stratum-up rules cannot drift into a second argv scan. The rows are the
-// shared table of procid's TestStratumUpPredicatesAgree (keep the two in
-// sync): flags before and after up, the "--" terminator, a missing up. Every
-// process's exe is this test binary, the only file IsStratumTopLevel can
-// confirm, so the comparison answers purely the up question.
 func TestUninstallStratumPredicateAgreesWithUpDetection(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
@@ -200,8 +173,6 @@ func TestUninstallStratumPredicateAgreesWithUpDetection(t *testing.T) {
 	}
 }
 
-// seedProc creates one fake /proc entry for the fixture root: a directory
-// named pid with a cmdline file built from args.
 func seedProc(t *testing.T, root, pid string, args ...string) {
 	t.Helper()
 	dir := filepath.Join(root, pid)
@@ -213,11 +184,6 @@ func seedProc(t *testing.T, root, pid string, args ...string) {
 	}
 }
 
-// TestProcessPIDsWalksTheFixtureRoot: the /proc walk and the per-unit
-// predicate meet in processPIDs. Through a real /proc-style tree it finds the
-// owned processes, skips a distro-owned same-named binary, stops after enough
-// matches for the liveness probe, and reports no live process without error
-// when nothing matches.
 func TestProcessPIDsWalksTheFixtureRoot(t *testing.T) {
 	root := t.TempDir()
 	seedProc(t, root, "100", filepath.Join(version.BinDir, "containerd"))

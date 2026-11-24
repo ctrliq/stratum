@@ -37,9 +37,7 @@ var operatorRecordStaged = func(ctx context.Context, staged operator.StagedGener
 	return operator.RecordStagedGeneration(ctx, cs, staged, previous)
 }
 
-// stageDesiredBundles saves the pending activation before contacting the API.
-// Only a successful publish advances the acknowledged publication, so a cold first
-// boot can retry after the apiserver starts or after this process restarts.
+// stageDesiredBundles saves the pending activation before contacting the API, so it can retry.
 func stageDesiredBundles(cfg *ClusterConfig, st *NodeState, bundles map[string][]byte) error {
 	inputs, err := clusterInputs(cfg, st)
 	if err != nil {
@@ -64,10 +62,7 @@ func stageDesiredBundles(cfg *ClusterConfig, st *NodeState, bundles map[string][
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), desiredRecordBudget)
 	defer cancel()
-	// A prior API commit can precede its local success stamp. Preserve those
-	// possible predecessors until acknowledged; the API accepts one only if
-	// it is the currently active publication ID. An acknowledged request clears
-	// its history so ordinary stale restarts gain no additional authority.
+	// A prior commit stays until acknowledged; the API takes one only if it is the active publication.
 	priorBytes, err := os.ReadFile(filepath.Join(version.ManifestsDir, pendingStagingName))
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -78,8 +73,7 @@ func stageDesiredBundles(cfg *ClusterConfig, st *NodeState, bundles map[string][
 			return err
 		}
 		if prior.Generation.PublicationID != "" && prior.Generation.Fingerprint() == pending.Generation.Fingerprint() {
-			// An unchanged restart retries the same request, including any
-			// terminal refusal, rather than creating a new activation attempt.
+			// an unchanged restart retries the same request, refusal included.
 			return publishPendingStaging(ctx)
 		}
 		matchedAck := prior.Generation.PublicationID != "" && prior.Generation.PublicationID == acknowledged

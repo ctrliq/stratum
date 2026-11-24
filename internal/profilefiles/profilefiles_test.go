@@ -9,10 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Write renders every file before it writes any: a profile whose second file
-// cannot render leaves the first file's previous body in place and creates
-// nothing, so a start, join or upgrade that cannot pin a file does not leave
-// the node half-configured. Once every file renders, every file lands.
+// Every file renders before any is written, so a render failure changes nothing on disk.
 func TestWriteWritesEveryFileOrNothing(t *testing.T) {
 	old := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()

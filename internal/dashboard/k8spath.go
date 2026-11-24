@@ -2,42 +2,21 @@ package dashboard
 
 import "strings"
 
-// Request paths are parsed rather than matched by position because the
-// deprecated-but-still-served watch form inserts a segment right after the
-// version: a positional matcher can read
-// /api/v1/watch/namespaces/x/secrets as a request for a resource called
-// "watch" and let it through. The node-shell gate below makes the same kind of
-// decision about the same kind of path, so it uses the same parser.
-//
-// The shapes the API server serves, per
-// k8s.io/apiserver/pkg/endpoints/installer.go:
-//
-//	/api/v1/{resource}[/{name}[/{subresource}]]
-//	/api/v1/namespaces/{ns}/{resource}[/{name}[/{subresource}]]
-//	/apis/{group}/{version}/{resource}[/{name}[/{subresource}]]
-//	/apis/{group}/{version}/namespaces/{ns}/{resource}[/{name}[/{subresource}]]
-//
-// each also reachable as /api/v1/watch/... or /api/v1/watch/namespaces/{ns}/...
+// The legacy watch form inserts a segment after the version, so parse, do not position-match.
 
 // k8sRequest is one parsed Kubernetes API path.
 type k8sRequest struct {
-	// Group is "" for the core group (/api/v1/...).
 	Group   string
 	Version string
-	// Verb is "watch" when the path used the legacy watch form, otherwise "".
-	// It is not the HTTP method; callers still need that separately.
-	Verb string
-	// Namespace is "" for cluster-scoped or all-namespace requests.
+	// Not the HTTP method: it marks the legacy /watch/ path form only.
+	Verb        string
 	Namespace   string
 	Resource    string
 	Name        string
 	Subresource string
 }
 
-// parseK8sPath splits a Kubernetes API path already stripped of the proxy
-// prefix. ok=false means "not an /api or /apis resource request" (/version,
-// /openapi, /healthz), which callers treat as "nothing addressed here" rather
-// than as an error.
+// ok=false means not a Kubernetes resource request (/version, /openapi), not an error.
 func parseK8sPath(path string) (k8sRequest, bool) {
 	p := strings.Trim(path, "/")
 	if p == "" {
@@ -63,9 +42,6 @@ func parseK8sPath(path string) (k8sRequest, bool) {
 		return k8sRequest{}, false
 	}
 
-	// Strip the watch segment and let the rest of the parse proceed
-	// identically. This is the line whose absence makes a deny-list
-	// bypassable.
 	if seg[0] == "watch" {
 		r.Verb = "watch"
 		seg = seg[1:]

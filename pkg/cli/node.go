@@ -53,7 +53,8 @@ func Layout() NodeLayout {
 	}
 }
 
-// PKIRotationCopies returns the staged and pre-rotation names a CA rotation keeps beside the PKI file name, or nil when it keeps none.
+// PKIRotationCopies returns the staged and pre-rotation names a CA rotation
+// keeps beside the PKI file name, or nil when it keeps none.
 func PKIRotationCopies(name string) []string {
 	staged := pki.StagedTrustName(name)
 	if staged == "" {
@@ -67,12 +68,14 @@ func TLSCipherSuites() []string {
 	return strings.Split(version.TLSCipherSuites, ",")
 }
 
-// EngineAPIServerArgs returns the apiserver argv entries every control plane renders whatever its profile.
+// EngineAPIServerArgs returns the apiserver argv entries every control plane
+// renders whatever its profile.
 func EngineAPIServerArgs() []string {
 	return enginesettings.APIServerFlags(pkiFile)
 }
 
-// ProfileAPIServerArgs returns the apiserver argv entries p contributes, as a control plane renders them.
+// ProfileAPIServerArgs returns the apiserver argv entries p contributes, as a
+// control plane renders them.
 func ProfileAPIServerArgs(p Profile) ([]string, error) {
 	pp := toProfile(p)
 	if err := pp.Validate(); err != nil {
@@ -83,7 +86,8 @@ func ProfileAPIServerArgs(p Profile) ([]string, error) {
 
 func pkiFile(name string) string { return filepath.Join(version.PKIDir, name) }
 
-// NodeAdminClientset returns a clientset on this node's internal admin kubeconfig: super-admin.conf, else admin.conf.
+// NodeAdminClientset returns a clientset on this node's internal admin
+// kubeconfig: super-admin.conf, else admin.conf.
 func NodeAdminClientset() (kubernetes.Interface, error) {
 	cs, err := k8sutil.AdminClientset()
 	if err != nil {

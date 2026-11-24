@@ -18,8 +18,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// runtimeApplyHost saves st as this node's state on a scratch host and stubs
-// the drop-in write, returning the handler sets the stub was asked to write.
+// runtimeApplyHost saves st as the node's state on a scratch host and stubs the drop-in write.
 func runtimeApplyHost(t *testing.T, st *NodeState) *[]map[string]string {
 	t.Helper()
 	workerScratchHost(t)
@@ -122,8 +121,7 @@ func TestApplyRuntimeHandlersOnAWorker(t *testing.T) {
 	}
 }
 
-// writeControlPlaneConfig writes a cluster config declaring handlers and
-// records it as the config the controller was started with.
+// writeControlPlaneConfig records a handler-declaring config as the controller's config.
 func writeControlPlaneConfig(t *testing.T, handlers map[string]string) (*NodeState, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "config.yaml")
@@ -138,9 +136,7 @@ func writeControlPlaneConfig(t *testing.T, handlers map[string]string) (*NodeSta
 	return &NodeState{Role: "controller", Hostname: "cp1", ConfigPath: path}, path
 }
 
-// A control plane rebuilds its handlers from its config file at every start,
-// so apply re-reads that file and refuses flags that node.yaml alone would
-// hold only until the next `stratum up`.
+// a control plane rebuilds its handlers from its config file at every start, so apply re-reads it.
 func TestApplyRuntimeHandlersOnAControlPlane(t *testing.T) {
 	want := map[string]string{"nvidia": executable(t)}
 	t.Run("reads_the_recorded_config", func(t *testing.T) {
@@ -208,8 +204,7 @@ func TestCheckRuntimeHandlersReportsAControlPlaneConfigDrift(t *testing.T) {
 	}
 }
 
-// A kernel that would stack the default handler's container profile fails
-// the check on any node, the worker included.
+// a kernel that would stack the default handler's container profile fails the check on any node.
 func TestCheckRuntimeHandlersReportsAnUncoveredRunc(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	for _, tc := range []struct {
@@ -233,8 +228,7 @@ func TestCheckRuntimeHandlersReportsAnUncoveredRunc(t *testing.T) {
 	}
 }
 
-// Containers the kernel stacked keep their label once the profile is back, so
-// the check names them and how to recreate them, listing the first few.
+// stacked containers keep their label once the profile is back; the check names them and the fix.
 func TestCheckRuntimeHandlersReportsStackedProcesses(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	var procs []apparmor.StackedProcess
@@ -257,8 +251,7 @@ func TestCheckRuntimeHandlersReportsStackedProcesses(t *testing.T) {
 	}
 }
 
-// apply relabels the Node with the handlers it applied, so a RuntimeClass
-// schedules onto it now; an API server it cannot reach only warns.
+// apply relabels the Node with the applied handlers; an unreachable API server only warns.
 func TestApplyRuntimeHandlersRelabelsTheNode(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", NodeLabels: map[string]string{"zone": "a"}})
 	want := map[string]string{"nvidia": executable(t)}
@@ -282,8 +275,7 @@ func TestApplyRuntimeHandlersRelabelsTheNode(t *testing.T) {
 	}
 }
 
-// A containerd config that does not import the drop-in refuses the apply
-// before node.yaml changes, so the refusal leaves the node as it was.
+// a config without the drop-in import refuses the apply before node.yaml changes.
 func TestApplyRuntimeHandlersRefusesAConfigWithoutTheImportBeforeSaving(t *testing.T) {
 	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	requireHandlersImport = func() error { return errors.New("containerd.toml does not import the drop-in") }
@@ -295,8 +287,7 @@ func TestApplyRuntimeHandlersRefusesAConfigWithoutTheImportBeforeSaving(t *testi
 	}
 }
 
-// `stratum runtime restart` relabels the node from node.yaml once containerd
-// is back, since the restart is what loads a handler written without one.
+// the restart is what loads a handler written without one, so it relabels from node.yaml.
 func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	saved := map[string]string{"nvidia": executable(t)}
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
@@ -325,8 +316,7 @@ func TestRestartRuntimeRelabelsTheNode(t *testing.T) {
 	}
 }
 
-// `stratum runtime restart` refuses, restarting nothing, when a shared conf.d
-// file does not parse: containerd would not start again with it.
+// a restart is refused, restarting nothing, when a shared conf.d file does not parse.
 func TestRestartRuntimeRefusesASharedConfDThatDoesNotParse(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	oldRestart := restartContainerd
@@ -342,9 +332,7 @@ func TestRestartRuntimeRefusesASharedConfDThatDoesNotParse(t *testing.T) {
 	}
 }
 
-// A node is labelled for a runtime handler only once its containerd has
-// loaded it, on every path that labels: an apply that left containerd running
-// without the new handler, a restart, and a kubelet start.
+// a node is labelled for a handler only once its containerd has loaded it, on every labelling path.
 func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1"})
 	oldLoaded, oldRestart := loadedHandlers, restartContainerd
@@ -376,10 +364,7 @@ func TestNodeLabelsFollowOnlyTheHandlersContainerdLoaded(t *testing.T) {
 	}
 }
 
-// Two applies at once could save one handler set and leave containerd and
-// the labels on the other, so an apply or a restart refuses while another
-// node operation holds the maintenance lock, before it reads or writes
-// anything.
+// applies and restarts refuse while the node is locked: two could split the save from the drop-in.
 func TestRuntimeApplyAndRestartRefuseWhileTheNodeIsLocked(t *testing.T) {
 	saved := map[string]string{"nvidia": "/usr/bin/nvidia-container-runtime"}
 	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
@@ -409,8 +394,7 @@ func TestRuntimeApplyAndRestartRefuseWhileTheNodeIsLocked(t *testing.T) {
 	}
 }
 
-// A drop-in that could not be written leaves node.yaml as it was, so no later
-// start labels the node for handlers containerd was never given.
+// a failed drop-in write leaves node.yaml as it was, so no start labels for handlers never given.
 func TestApplyRuntimeHandlersSavesNothingWhenTheDropInWriteFails(t *testing.T) {
 	saved := map[string]string{"gvisor": executable(t)}
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
@@ -426,10 +410,7 @@ func TestApplyRuntimeHandlersSavesNothingWhenTheDropInWriteFails(t *testing.T) {
 	}
 }
 
-// A drop-in written but whose containerd restart failed is what the next
-// containerd start loads, so node.yaml saves its handlers all the same: left
-// naming the old ones, a later `runtime restart` would label the node for a
-// handler containerd no longer has.
+// a written drop-in whose restart failed is what the next containerd start loads, so it is saved.
 func TestApplyRuntimeHandlersSavesAWrittenDropInWhoseRestartFailed(t *testing.T) {
 	kata := map[string]string{"kata": executable(t)}
 	runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: map[string]string{"gvisor": executable(t)}})
@@ -448,8 +429,7 @@ func TestApplyRuntimeHandlersSavesAWrittenDropInWhoseRestartFailed(t *testing.T)
 	}
 }
 
-// A shared conf.d file that does not parse would stop the restarted
-// containerd from starting, so apply refuses before it writes or saves.
+// an unparseable shared conf.d file would stop the restarted containerd, so apply refuses first.
 func TestApplyRuntimeHandlersRefusesASharedConfDThatDoesNotParse(t *testing.T) {
 	saved := map[string]string{"gvisor": executable(t)}
 	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})
@@ -462,8 +442,7 @@ func TestApplyRuntimeHandlersRefusesASharedConfDThatDoesNotParse(t *testing.T) {
 	}
 }
 
-// apply refuses to replace a drop-in stratum did not write, before it writes
-// or saves anything.
+// apply refuses to replace a drop-in stratum did not write, before it writes or saves.
 func TestApplyRuntimeHandlersRefusesADropInItDidNotWrite(t *testing.T) {
 	saved := map[string]string{"gvisor": executable(t)}
 	written := runtimeApplyHost(t, &NodeState{Role: "worker", Hostname: "w1", RuntimeHandlers: saved})

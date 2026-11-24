@@ -48,8 +48,7 @@ func TestNoRuntimeClassesRenderNoStack(t *testing.T) {
 	}
 }
 
-// The operator decodes manifests without a schema, so a handler name YAML
-// reads as a bool, null or number would not reach the API as a string.
+// The operator decodes manifests without a schema, so names must reach the API as strings.
 func TestRuntimeClassNamesStayStringsWithoutASchema(t *testing.T) {
 	names := []string{"123", "null", "true"}
 	docs := bytes.Split(RenderRuntimeClasses(names), []byte("---\n"))

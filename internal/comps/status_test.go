@@ -14,9 +14,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestStatusIsOneSnapshotAndReportsWhenItCannotBeRead: the roster comes back
-// by name with running and wanted as the supervisor reports them, and a
-// supervisor that cannot be asked is an error, not an empty roster.
 func TestStatusIsOneSnapshotAndReportsWhenItCannotBeRead(t *testing.T) {
 	dir, err := os.MkdirTemp("", "status-")
 	if err != nil {
@@ -43,8 +40,7 @@ func TestStatusIsOneSnapshotAndReportsWhenItCannotBeRead(t *testing.T) {
 			if err != nil {
 				return
 			}
-			// Read the request first, as the supervisor does: closing on a
-			// client still writing is a broken pipe on Linux.
+			// Read the request first: closing on a client still writing is a broken pipe on Linux.
 			_, _ = bufio.NewReader(conn).ReadBytes('\n')
 			_ = json.NewEncoder(conn).Encode(map[string]any{"ok": true, "procs": []supervisor.ProcStatus{
 				{Name: "containerd", Pid: 100, Running: true, Wanted: true},
@@ -62,9 +58,6 @@ func TestStatusIsOneSnapshotAndReportsWhenItCannotBeRead(t *testing.T) {
 	}
 }
 
-// TestIsActiveRefusesAForeignSocketOwner pins that a component with a pid
-// whose socket another process serves is not active, so a health gate that asks
-// IsActive does not pass on it.
 func TestIsActiveRefusesAForeignSocketOwner(t *testing.T) {
 	dir, err := os.MkdirTemp("", "active-")
 	if err != nil {
@@ -102,9 +95,6 @@ func TestIsActiveRefusesAForeignSocketOwner(t *testing.T) {
 	}
 }
 
-// TestIsActiveContextDoesNotWaitOnAHungSupervisor: a
-// supervisor that accepts the connection and never answers is given up on when
-// ctx ends, not after the 30s of the plain request.
 func TestIsActiveContextDoesNotWaitOnAHungSupervisor(t *testing.T) {
 	dir, err := os.MkdirTemp("", "hung-")
 	if err != nil {

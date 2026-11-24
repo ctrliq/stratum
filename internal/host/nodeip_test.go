@@ -6,16 +6,6 @@ import (
 	"testing"
 )
 
-// TestResolveNodeIPPrecedence pins the precedence: flag, saved state, config,
-// $NODE_IP, then detection — the first non-empty source wins, and detection
-// is never consulted while an explicit source exists (a node with a pinned
-// address on an air-gapped network must not need a route to 8.8.8.8).
-//
-// state outranks config and $NODE_IP: the reboot-persistence
-// unit's ExecStart carries no --node-ip, so on restart, state is the only
-// source that can still name the address this node's etcd membership and
-// certificates actually recorded — config/$NODE_IP may have moved on for
-// reasons that have nothing to do with this node.
 func TestResolveNodeIPPrecedence(t *testing.T) {
 	noDetect := func() (string, error) {
 		t.Helper()
@@ -45,7 +35,6 @@ func TestResolveNodeIPPrecedence(t *testing.T) {
 	}
 }
 
-// Detection is the last resort, and a failure names the explicit fixes.
 func TestResolveNodeIPFallsBackToDetection(t *testing.T) {
 	t.Setenv("NODE_IP", "")
 	got, err := ResolveNodeIP("", "", "", func() (string, error) { return "192.0.2.7", nil })
@@ -63,9 +52,6 @@ func TestResolveNodeIPFallsBackToDetection(t *testing.T) {
 	}
 }
 
-// A start that does not read spec.network.nodeIP keeps the precedence every
-// other start uses, without its config step: flag, saved state, $NODE_IP, then
-// detection, which is never consulted while an explicit source exists.
 func TestResolveNodeIPWithoutConfigPrecedence(t *testing.T) {
 	for _, tc := range []struct {
 		name, flag, state, env string
@@ -97,12 +83,6 @@ func TestResolveNodeIPWithoutConfigPrecedence(t *testing.T) {
 	}
 }
 
-// A detection failure tells the operator how to pin the address, so it names
-// exactly the explicit sources the start reads: a start that does not read
-// spec.network.nodeIP must not send the operator to it. Saved node state is
-// never named, since an operator cannot pin it. The hint of a start that reads
-// every source stays word for word what it was, and a lookup offered no source
-// an operator can set returns the detection failure alone.
 func TestADetectionFailureNamesOnlyTheSourcesItsStartReads(t *testing.T) {
 	t.Setenv("NODE_IP", "")
 	noRoute := errors.New("no route")
@@ -143,14 +123,6 @@ func TestADetectionFailureNamesOnlyTheSourcesItsStartReads(t *testing.T) {
 	}
 }
 
-// CheckNodeIP accepts what kubelet --node-ip registers for a node of the given
-// stack, in the form every start path saves -- an IPv4 address on a
-// single-stack node, since a cluster's primary family is IPv4, and the IPv4
-// then the IPv6 on a dual-stack one -- and refuses everything else, naming the
-// value it refused. It also refuses a loopback, all-zeros, multicast or
-// link-local address, which the kubelet never registers as a node IP on any
-// host, and the broadcast address, which names every host on the link rather
-// than one node; an IPv4-mapped IPv6 is judged as the IPv4 it names.
 func TestCheckNodeIPAcceptsOnlyAnAddressForTheNodesStack(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -165,9 +137,7 @@ func TestCheckNodeIPAcceptsOnlyAnAddressForTheNodesStack(t *testing.T) {
 		{name: "the all-zeros address", ip: "0.0.0.0", want: `"0.0.0.0" is the all-zeros address, which the kubelet does not register as a node IP`},
 		{name: "an IPv4-mapped all-zeros address", ip: "::ffff:0.0.0.0", want: `"::ffff:0.0.0.0" is the all-zeros address, which the kubelet does not register as a node IP`},
 		{name: "a multicast address", ip: "224.0.0.1", want: `"224.0.0.1" is a multicast address, which the kubelet does not register as a node IP`},
-		// 224.0.0.1 is link-local multicast. These two rows pin that a
-		// multicast address of any scope is refused: it names a group of
-		// hosts rather than one node, however far its scope reaches.
+		// A multicast address of any scope is refused: it names a group, not one node.
 		{name: "an administratively scoped multicast address", ip: "239.1.1.1", want: `"239.1.1.1" is a multicast address, which the kubelet does not register as a node IP`},
 		{name: "a pair with a global-scope multicast IPv6", ip: "10.0.0.1,ff0e::1", dualStack: true, want: `"ff0e::1" is a multicast address, which the kubelet does not register as a node IP`},
 		{name: "a link-local address", ip: "169.254.1.1", want: `"169.254.1.1" is a link-local address, which the kubelet does not register as a node IP`},
@@ -175,8 +145,7 @@ func TestCheckNodeIPAcceptsOnlyAnAddressForTheNodesStack(t *testing.T) {
 		{name: "a pair with a loopback IPv6", ip: "10.0.0.1,::1", dualStack: true, want: `"::1" is a loopback address, which the kubelet does not register as a node IP`},
 		{name: "a pair with a link-local IPv6", ip: "10.0.0.1,fe80::1", dualStack: true, want: `"fe80::1" is a link-local address, which the kubelet does not register as a node IP`},
 		{name: "a pair of all-zeros addresses", ip: "0.0.0.0,::", dualStack: true, want: `"0.0.0.0" is the all-zeros address, which the kubelet does not register as a node IP`},
-		// The kind is judged on the unmapped address, before the pair's order,
-		// so a mapped broadcast is refused as the broadcast it names.
+		// The kind is judged on the unmapped address, before the pair's order.
 		{name: "a pair with an IPv4-mapped broadcast IPv6", ip: "10.0.0.1,::ffff:255.255.255.255", dualStack: true, want: `"::ffff:255.255.255.255" is the broadcast address, which names every host on the link rather than one node`},
 		{name: "the pair on a dual-stack node", ip: "10.0.0.1,fd00::1", dualStack: true},
 		{name: "an address that does not parse", ip: "10.0.0.300", want: `"10.0.0.300" is not an IP address`},

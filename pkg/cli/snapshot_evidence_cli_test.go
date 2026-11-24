@@ -1,13 +1,5 @@
 package cli
 
-// The machine-readable half of `stratum snapshot list`: -o json emits the
-// engine's backup evidence as one stable document — the same rows the
-// backup_evidence MCP tool serves — while the default text table stays
-// byte-for-byte what it always was. The tests drive the evidence through the
-// read seam the snapshot commands' tests use (useBackupEvidenceRead,
-// useSnapshotDir), so nothing touches the host's node state, cluster config,
-// snapshot directory or S3 target.
-
 import (
 	"bytes"
 	"context"
@@ -22,9 +14,6 @@ import (
 	mcpsrv "github.com/ctrliq/stratum/internal/mcp"
 )
 
-// runSnapshotList runs `stratum snapshot list` with ctx as the command's
-// context and returns its output and the command's error, so a test can pin
-// both the -o json rows and the refusals.
 func runSnapshotList(t *testing.T, ctx context.Context, args ...string) (string, error) {
 	t.Helper()
 	if ctx == nil {
@@ -42,9 +31,7 @@ func runSnapshotList(t *testing.T, ctx context.Context, args ...string) (string,
 	return out.String(), err
 }
 
-// The crafted evidence, as the machine-readable contract states it: the
-// fixed stamps and names engineEvidence carries, spelled out so a renamed or
-// retyped field fails here instead of silently moving the wire format.
+// Spelled out so a renamed or retyped field fails here, not on the wire.
 const (
 	jsonSharedID    = "etcd-snapshot-cp-1-20261112-110000.db"
 	jsonLocalOnlyID = "etcd-snapshot-cp-1-20261113-110000.db"
@@ -52,9 +39,7 @@ const (
 	jsonDigest      = "sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 )
 
-// snapshotListJSON mirrors the document `snapshot list -o json` prints: an
-// independent statement of the machine-readable contract, field for field,
-// so a change to the wire format fails this decode or the assertions below.
+// An independent statement of the machine-readable contract, field for field.
 type snapshotListJSON struct {
 	Policy struct {
 		State           string   `json:"state"`
@@ -124,13 +109,6 @@ type snapshotListJSONAttempt struct {
 	Outcome     string `json:"outcome"`
 }
 
-// TestSnapshotListJSONEmitsTheEvidenceRows: -o json emits the same evidence
-// rows the backup_evidence tool serves — the effective policy with every
-// value's provenance, the local artifacts, the remote copies, the
-// deduplicated census counting each backup once, and the maintenance
-// diagnostics — with RFC 3339 stamps and whole-second durations. A stage the
-// bounds stop stays a floor: the completeness flags say which totals are
-// exact.
 func TestSnapshotListJSONEmitsTheEvidenceRows(t *testing.T) {
 	useBackupEvidenceRead(t, func(context.Context, backupevidence.EvidenceOptions) backupevidence.EvidenceResult {
 		return engineEvidence()
@@ -222,9 +200,6 @@ func TestSnapshotListJSONEmitsTheEvidenceRows(t *testing.T) {
 	}
 }
 
-// TestSnapshotListJSONRefusesAnUnknownOutput: -o takes the one
-// machine-readable format; anything else is refused rather than silently
-// falling back to the text table.
 func TestSnapshotListJSONRefusesAnUnknownOutput(t *testing.T) {
 	_, err := runSnapshotList(t, nil, "-o", "yaml")
 	if err == nil || !strings.Contains(err.Error(), "json") {
@@ -232,11 +207,7 @@ func TestSnapshotListJSONRefusesAnUnknownOutput(t *testing.T) {
 	}
 }
 
-// The JSON rows come from one bounded read through the supported pkg/cli
-// evidence surface: the command's own context reaches the read — so a
-// Ctrl-C ends the underlying local and remote I/O — and a bare -o json
-// passes no caps, so the engine read applies its built-in budgets. The CLI
-// never invents bounds of its own.
+// The command's own context reaches the read; a bare -o json passes no caps of its own.
 func TestSnapshotListJSONReadsThroughTheSupportedSurface(t *testing.T) {
 	var gotCtx context.Context
 	var gotOpts backupevidence.EvidenceOptions
@@ -258,9 +229,7 @@ func TestSnapshotListJSONReadsThroughTheSupportedSurface(t *testing.T) {
 	}
 }
 
-// textTableRow pads one row of the native text table to the fixed widths it
-// has always printed: 46, 6 and 10. Building the expected bytes here, not
-// calling the command's own formatting, is what makes the pin independent.
+// Built here, not read back from the command, so the pin stays independent.
 func textTableRow(name, where, size, modified string) string {
 	pad := func(s string, w int) string {
 		return s + strings.Repeat(" ", w-len(s))
@@ -268,10 +237,6 @@ func textTableRow(name, where, size, modified string) string {
 	return pad(name, 46) + " " + pad(where, 6) + " " + pad(size, 10) + " " + modified + "\n"
 }
 
-// TestSnapshotListKeepsTheTextTableUnchanged: the native text table is the
-// default and stays byte-for-byte what it was — the same fixed-width rows,
-// printed without any evidence read behind them. The JSON rows are additive,
-// not a replacement.
 func TestSnapshotListKeepsTheTextTableUnchanged(t *testing.T) {
 	dir := useSnapshotDir(t)
 	const name = "snap-1.db"
@@ -304,10 +269,7 @@ func TestSnapshotListKeepsTheTextTableUnchanged(t *testing.T) {
 	}
 }
 
-// The backup_evidence MCP tool reads through the same supported surface the
-// JSON flag reads: the CLI wires the reader at startup — the engine's MCP
-// package cannot import this one — and the caller's caps reach the engine
-// read unchanged, so one evidence contract stands behind both surfaces.
+// The engine's MCP package cannot import this one, so the CLI wires the reader at startup.
 func TestSnapshotListJSONBacksTheMCPToolWithTheSameSurface(t *testing.T) {
 	if mcpsrv.BackupEvidenceRead == nil {
 		t.Fatal("the backup_evidence tool has no reader: the CLI must wire the supported evidence surface in at startup")

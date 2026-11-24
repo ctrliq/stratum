@@ -1,6 +1,4 @@
-// Command apiboundary asserts that a package's exported API (exported func,
-// type, var, and const declarations) never references a type from one of
-// this module's own internal/... packages.
+// Command apiboundary fails when an exported declaration references an internal package.
 package main
 
 import (
@@ -43,20 +41,13 @@ func main() {
 func checkDir(dir string) ([]string, error) {
 	fset := token.NewFileSet()
 
-	// loadExportedTypes compiles dir and its whole dependency graph (compiler
-	// export data only exists for something that built), so it needs the
-	// package to build even to check the syntactically simplest exported
-	// declaration — see its own doc comment for what that costs a standalone
-	// invocation vs. one running after `go vet`/`go test` in this repo's
-	// Makefile.
 	pkg, files, mod, err := loadExportedTypes(dir)
 	if err != nil {
 		return nil, err
 	}
 
 	var violations []string
-	// Parse exactly the files selected by go list, including its OS, build-tag,
-	// and CGO settings. Inactive declarations must not enter either check.
+	// Parse only the files go list selected: inactive build-tag files must not enter.
 	for _, filename := range files {
 		file, err := parser.ParseFile(fset, filename, nil, 0)
 		if err != nil {
@@ -70,8 +61,7 @@ func checkDir(dir string) ([]string, error) {
 	return violations, nil
 }
 
-// importPathsByName uses each file's explicit aliases and the compiler's
-// declared package names for unaliased imports. Import bindings are file-local.
+// Import bindings are file-local.
 func importPathsByName(file *ast.File, pkg *types.Package) map[string]string {
 	names := make(map[string]string, len(pkg.Imports()))
 	for _, imp := range pkg.Imports() {
@@ -91,10 +81,6 @@ func importPathsByName(file *ast.File, pkg *types.Package) map[string]string {
 	return m
 }
 
-// checkExportedDecl looks up each of decl's exported top-level names in pkg
-// — the type-checked package, already loaded from compiler export data — and
-// checks its fully resolved type for an internal/* reference via
-// internalTypeRef.
 func checkExportedDecl(decl ast.Decl, pkg *types.Package, byName map[string]string, fset *token.FileSet, filename string, mod moduleScope) []string {
 	var violations []string
 	report := func(name string, pos token.Pos, path string) {
@@ -117,12 +103,7 @@ func checkExportedDecl(decl ast.Decl, pkg *types.Package, byName map[string]stri
 	switch d := decl.(type) {
 	case *ast.FuncDecl:
 		if d.Recv != nil || !d.Name.IsExported() {
-			// Methods aren't in package scope by name (two types in the same
-			// package can both have a method called the same thing), so
-			// they're not looked up here — they're already covered by
-			// internalTypeRef walking their receiver type's own
-			// NumMethods()/Method(i).Type(), the same way struct fields are
-			// covered by walking the type's Underlying().
+			// Methods are reached via their receiver type, not package scope.
 			return nil
 		}
 		check(d.Name.Name, d.Name.Pos())
@@ -158,13 +139,6 @@ func checkExportedDecl(decl ast.Decl, pkg *types.Package, byName map[string]stri
 	return violations
 }
 
-// definedFromInternal reports whether typ — a defined (non-alias) type
-// declaration's right-hand side — directly names a type from an internal
-// package, e.g. `type Defined internal.Token` or `type Defined
-// *internal.Token`. Deliberately narrow: this exists only to catch that one
-// specific, textually-obvious pattern, not to re-implement general type
-// resolution — internalTypeRef already does that correctly for every case
-// that's an actual API-surface leak.
 func definedFromInternal(typ ast.Expr, byName map[string]string, mod moduleScope) (string, bool) {
 	if star, ok := typ.(*ast.StarExpr); ok {
 		typ = star.X
@@ -184,15 +158,11 @@ func definedFromInternal(typ ast.Expr, byName map[string]string, mod moduleScope
 	return path, true
 }
 
-// moduleScope is this module's path plus, for every package in the
-// dependency graph, the module that actually owns it.
 type moduleScope struct {
 	path  string
 	owner map[string]string
 }
 
-// isInternal reports whether path is one of THIS module's own internal
-// packages.
 func (m moduleScope) isInternal(path string) bool {
 	if m.path == "" || m.owner[path] != m.path {
 		return false

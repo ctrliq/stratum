@@ -8,9 +8,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-// Confirming ownership must renew each lease once. A second common-lease
-// renewal can reject a valid confirmation if the API becomes unavailable after
-// both leases have already been renewed successfully.
+// A second shared-lease renewal could reject a valid confirmation after an API blip.
 func TestLeaseConfirmRenewsEachFenceOnce(t *testing.T) {
 	ctx := context.Background()
 	cs := fake.NewSimpleClientset()

@@ -23,8 +23,6 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube/kubetest"
 )
 
-// writeKubeconfig writes a minimal but real kubeconfig naming one server,
-// and returns its path.
 func writeKubeconfig(t *testing.T, dir, name, server string, contexts ...string) string {
 	t.Helper()
 	if len(contexts) == 0 {
@@ -51,8 +49,7 @@ func writeKubeconfig(t *testing.T, dir, name, server string, contexts ...string)
 	return path
 }
 
-// isolateHome keeps the developer's real cluster out of the suite. The
-// implementation is shared with the protocol tests in pkg/cli.
+// Shared with the protocol tests in pkg/cli.
 func isolateHome(t *testing.T) string { return kubetest.IsolateHome(t) }
 
 func TestSelectedKubeconfigNeverFallsBack(t *testing.T) {
@@ -133,9 +130,7 @@ func TestResolvePrecedence(t *testing.T) {
 		}
 	})
 
-	// In-cluster is last, and this is the reachable half of proving it: with no
-	// kubeconfig anywhere and no ServiceAccount, resolve reports "nothing
-	// configured" rather than inventing one.
+	// With no kubeconfig and no ServiceAccount, resolve reports "nothing configured".
 	t.Run("nothing configured", func(t *testing.T) {
 		isolateHome(t)
 		// rest.InClusterConfig keys off these two.
@@ -149,7 +144,6 @@ func TestResolvePrecedence(t *testing.T) {
 	})
 }
 
-// A named file that is not there is a hard error.
 func TestExplicitMissingFileDoesNotFallThrough(t *testing.T) {
 	home := isolateHome(t)
 	writeKubeconfig(t, home, ".kube/config", "https://home.example")
@@ -205,12 +199,7 @@ func TestContextSelection(t *testing.T) {
 	})
 }
 
-// TestCluster_ReusedWhileItsKubeconfigIsUnchanged: the connector caches one
-// client per kubeconfig context and reuses it across calls. Rebuilding a
-// cluster per call would also rebuild its discovery cache on every tool
-// call, discarding the cache that makes "po" mean "pods". Building a cluster
-// contacts no API server (the address below is unreachable on purpose), so
-// this pin runs where envtest is skipped too.
+// Building a cluster contacts no API server, so this pin runs where envtest is skipped.
 func TestCluster_ReusedWhileItsKubeconfigIsUnchanged(t *testing.T) {
 	isolateHome(t)
 	const server = "https://192.0.2.1:6443" // TEST-NET-1: unreachable by design
@@ -240,11 +229,7 @@ func TestCluster_ReusedWhileItsKubeconfigIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestCacheEventsAreLogged: a digest-driven rebuild and an Invalidate() leave
-// a trace in the diagnostics log. A rotation that rebuilds a client silently
-// is invisible to whoever is diagnosing a sudden reconnect or a TLS failure
-// that outlived the rotation — the exact scenarios the digest cache exists
-// for. Stable reuse logs nothing, so the log line always means something.
+// Stable reuse logs nothing, so a rebuild line in the log always means something.
 func TestCacheEventsAreLogged(t *testing.T) {
 	isolateHome(t)
 	dir := t.TempDir()
@@ -263,7 +248,6 @@ func TestCacheEventsAreLogged(t *testing.T) {
 		t.Errorf("stable reuse logged a rebuild: %s", buf.String())
 	}
 
-	// A rewrite the digest catches must say so, naming the context it rebuilt.
 	writeKubeconfig(t, dir, "logged.yaml", "https://192.0.2.2:6443", "a")
 	if _, err := conn.Cluster("a"); err != nil {
 		t.Fatalf("Cluster(a) after the rewrite: %v", err)
@@ -272,26 +256,17 @@ func TestCacheEventsAreLogged(t *testing.T) {
 		t.Errorf("a rebuild left no trace in the diagnostics log: %s", buf.String())
 	}
 
-	// An invalidation names how many contexts it dropped, so a cert rotation
-	// run through a destructive tool explains the reconnect that follows.
 	conn.Invalidate()
 	if !strings.Contains(buf.String(), "kubernetes client cache invalidated") {
 		t.Errorf("Invalidate left no trace in the diagnostics log: %s", buf.String())
 	}
 }
 
-// TestFingerprintNamesUnreadableFiles: a fingerprinted file that cannot be
-// read hashes as absent, so a rotation that fails mid-copy — a truncated or
-// permission-lost credential file — must be named in the resolution, not
-// silently digested into "absent" where it is indistinguishable from a file
-// that never existed. The fingerprint covers every entry of a merged config,
-// while the load validates only the selected context's credentials, so the
-// reachable case is an unselected user whose credential file is gone.
+// The fingerprint covers every merged entry; the load validates only the selected context.
 func TestFingerprintNamesUnreadableFiles(t *testing.T) {
 	isolateHome(t)
 	dir := t.TempDir()
-	// A directory in the token-file slot: reading it always fails with a
-	// non-NotExist error in every environment.
+	// Reading a directory always fails with a non-NotExist error.
 	tokenSlot := filepath.Join(dir, "tokens")
 	if err := os.Mkdir(tokenSlot, 0o755); err != nil {
 		t.Fatal(err)
@@ -334,9 +309,7 @@ current-context: a
 	}
 }
 
-// TestDigestFileReportsUnreadable: the fingerprint has no third state — a file
-// it cannot read digests exactly as an absent one does — but the read error
-// still comes back so the caller can name the file.
+// An unreadable file digests as absent, but the read error still names it.
 func TestDigestFileReportsUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	slot := filepath.Join(dir, "slot")
@@ -349,8 +322,7 @@ func TestDigestFileReportsUnreadable(t *testing.T) {
 	}
 }
 
-// $KUBECONFIG is a path LIST. Honouring only the first entry is a common bug
-// and silently ignores the rest of an operator's configuration.
+// Honouring only the first entry silently ignores the rest of the configuration.
 func TestKubeconfigEnvIsAPathList(t *testing.T) {
 	isolateHome(t)
 	dir := t.TempDir()
@@ -368,10 +340,7 @@ func TestKubeconfigEnvIsAPathList(t *testing.T) {
 	}
 }
 
-// The fallback is what makes the generic Kubernetes tools work on a
-// Stratum node: a control plane has no $KUBECONFIG and no ~/.kube/config,
-// and it is not a pod, so without it pod_list and node_list report "no
-// kubernetes configuration found" on the very node they are managing.
+// A control plane has no $KUBECONFIG, no ~/.kube/config, and is not a pod.
 func TestFallbackKubeconfig(t *testing.T) {
 	t.Run("used when nothing else is configured", func(t *testing.T) {
 		isolateHome(t)
@@ -391,8 +360,7 @@ func TestFallbackKubeconfig(t *testing.T) {
 		}
 	})
 
-	// After the operator's own configuration, deliberately: if they set
-	// $KUBECONFIG, that is the cluster they mean even when standing on a node.
+	// After the operator's own configuration: if they set $KUBECONFIG, that is the cluster they mean.
 	t.Run("loses to $KUBECONFIG", func(t *testing.T) {
 		isolateHome(t)
 		env := writeKubeconfig(t, t.TempDir(), "env.yaml", "https://env.example")
@@ -422,8 +390,7 @@ func TestFallbackKubeconfig(t *testing.T) {
 		}
 	})
 
-	// An absent fallback is the normal case off a node, and must not turn
-	// into an error — it simply falls through to in-cluster.
+	// An absent fallback is normal off a node and must fall through to in-cluster.
 	t.Run("an absent fallback falls through", func(t *testing.T) {
 		isolateHome(t)
 		t.Setenv("KUBERNETES_SERVICE_HOST", "")
@@ -436,9 +403,6 @@ func TestFallbackKubeconfig(t *testing.T) {
 	})
 }
 
-// kubeconfigWithServer renders the same minimal kubeconfig the writeKubeconfig
-// fixture writes, as a string, so a test can rewrite a file changing only the
-// server it names.
 func kubeconfigWithServer(server string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Config
@@ -460,9 +424,6 @@ current-context: default
 `, server)
 }
 
-// kubeconfigYAMLFor renders a kubeconfig whose cluster and context carry
-// explicit names, as a string, so a test can rewrite such a file under a new
-// server.
 func kubeconfigYAMLFor(cluster, server, contextName string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Config
@@ -483,8 +444,6 @@ current-context: %s
 `, cluster, server, contextName, cluster, contextName)
 }
 
-// writeNamedKubeconfig writes kubeconfigYAMLFor's kubeconfig to a path and
-// returns the path.
 func writeNamedKubeconfig(t *testing.T, path, cluster, server, contextName string) string {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -496,10 +455,7 @@ func writeNamedKubeconfig(t *testing.T, path, cluster, server, contextName strin
 	return path
 }
 
-// writeReferencingKubeconfig writes a kubeconfig that points at credential
-// files by path — the form an operator's managed-cluster kubeconfig takes,
-// since Stratum's own generated kubeconfigs embed their credentials inline.
-// A path passed as empty omits that reference. Returns the kubeconfig path.
+// The form an operator's managed-cluster kubeconfig takes: credentials by path.
 func writeReferencingKubeconfig(t *testing.T, dir, name, server, caPath, certPath, keyPath, tokenPath string) string {
 	t.Helper()
 	var b strings.Builder
@@ -525,10 +481,7 @@ func writeReferencingKubeconfig(t *testing.T, dir, name, server, caPath, certPat
 	return path
 }
 
-// writeCertPair writes a self-signed certificate and its key as PEM files.
-// They only have to be loadable: building a cluster parses the credentials
-// but contacts no API server, so nothing here needs to be trusted by
-// anything.
+// Only loadability matters: no API server is contacted, nothing must trust them.
 func writeCertPair(t *testing.T, dir, name string) (certPath, keyPath string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -567,7 +520,6 @@ func writeCertPair(t *testing.T, dir, name string) (certPath, keyPath string) {
 	return certPath, keyPath
 }
 
-// mustRead returns a file's content, for rewriting one file with another's.
 func mustRead(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -577,10 +529,7 @@ func mustRead(t *testing.T, path string) string {
 	return string(b)
 }
 
-// rewriteSameMtime replaces a file's content while restoring the mtime the
-// file had before — what a rotation that copies a staged file over its target
-// can leave behind: a timestamp that says nothing happened. The fingerprint
-// must therefore be a content digest, not a stat.
+// A rotation can land with the old mtime still on it.
 func rewriteSameMtime(t *testing.T, path, content string) {
 	t.Helper()
 	before, err := os.Stat(path)
@@ -603,9 +552,7 @@ func rewriteSameMtime(t *testing.T, path, content string) {
 	}
 }
 
-// rewriteWithLaterMtime rewrites a file's content unchanged and moves its
-// mtime forward: the negative control that keeps the fingerprint a digest of
-// content rather than a stat of the file.
+// The negative control: an mtime move over unchanged content.
 func rewriteWithLaterMtime(t *testing.T, path, content string) {
 	t.Helper()
 	before, err := os.Stat(path)
@@ -621,12 +568,7 @@ func rewriteWithLaterMtime(t *testing.T, path, content string) {
 	}
 }
 
-// TestCluster_RebuiltWhenItsKubeconfigIsRewrittenWithTheSameMtime: rotation
-// and repoint rewrite admin.conf in place while this process is live, and a
-// staged copy can land with the old timestamp still on it. The cluster cache
-// is therefore keyed on what the file says, not when it was written: a
-// same-mtime rewrite must rebuild the client, and a mtime move with the
-// content untouched must not.
+// Same-mtime rewrite must rebuild; an mtime move over unchanged content must not.
 func TestCluster_RebuiltWhenItsKubeconfigIsRewrittenWithTheSameMtime(t *testing.T) {
 	isolateHome(t)
 	const server = "https://192.0.2.1:6443" // TEST-NET-1: unreachable by design
@@ -654,8 +596,7 @@ func TestCluster_RebuiltWhenItsKubeconfigIsRewrittenWithTheSameMtime(t *testing.
 		t.Errorf("Host = %q, want the rewritten server %q", again.Host, rewritten)
 	}
 
-	// The digest half: moving mtime without changing content says nothing
-	// changed, and must not throw away a working client.
+	// Moving mtime without changing content must not throw away a working client.
 	rewriteWithLaterMtime(t, path, kubeconfigWithServer(rewritten))
 	touched, err := conn.Cluster("")
 	if err != nil {
@@ -666,11 +607,7 @@ func TestCluster_RebuiltWhenItsKubeconfigIsRewrittenWithTheSameMtime(t *testing.
 	}
 }
 
-// TestCluster_RebuiltWhenKUBECONFIGPrecedenceSwaps: $KUBECONFIG is a path
-// list and its order decides which file wins a conflict, so swapping the
-// order — what an operator does when they change which cluster they mean —
-// must be visible to the fingerprint even though every file keeps its
-// content.
+// Order decides which file wins a merge, so a swap must be visible to the fingerprint.
 func TestCluster_RebuiltWhenKUBECONFIGPrecedenceSwaps(t *testing.T) {
 	isolateHome(t)
 	dir := t.TempDir()
@@ -700,11 +637,7 @@ func TestCluster_RebuiltWhenKUBECONFIGPrecedenceSwaps(t *testing.T) {
 		t.Errorf("Host = %q, want the now-first file's server", swapped.Host)
 	}
 
-	// Merging is where a list quietly becomes several inputs: the first file
-	// alone decides nothing, and a fingerprint that reads only it misses a
-	// rewrite of a later entry. Each file here names its own cluster, because
-	// merging is per map key and two files that both name their cluster "c"
-	// collide on the first file's definition.
+	// Each file names its own cluster: merging is per map key, so same names collide.
 	t.Run("a rewrite of a later list entry rebuilds", func(t *testing.T) {
 		isolateHome(t)
 		dir := t.TempDir()
@@ -735,9 +668,7 @@ func TestCluster_RebuiltWhenKUBECONFIGPrecedenceSwaps(t *testing.T) {
 	})
 }
 
-// TestCluster_RebuiltWhenTheFallbackKubeconfigChanges: on a Stratum node the
-// fallback IS the production source — the node's own admin.conf — so it joins
-// the fingerprint like any other source.
+// On a node the fallback is the production source, so it joins the fingerprint.
 func TestCluster_RebuiltWhenTheFallbackKubeconfigChanges(t *testing.T) {
 	isolateHome(t)
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
@@ -769,12 +700,7 @@ func TestCluster_RebuiltWhenTheFallbackKubeconfigChanges(t *testing.T) {
 	}
 }
 
-// TestCluster_RebuiltWhenACredentialFileChanges: operator kubeconfigs point
-// at credential files — a tokenFile, a client certificate and its key, a
-// certificate-authority bundle — and a rotation rewrites those files while
-// the kubeconfig itself does not change. Each referenced file must therefore
-// carry its own digest in the fingerprint: rewriting one with the mtime
-// preserved must rebuild the cluster and serve the new credential.
+// A rotation rewrites credential files while the kubeconfig itself does not change.
 func TestCluster_RebuiltWhenACredentialFileChanges(t *testing.T) {
 	const server = "https://192.0.2.1:6443" // TEST-NET-1: unreachable by design
 
@@ -856,14 +782,7 @@ func TestCluster_RebuiltWhenACredentialFileChanges(t *testing.T) {
 	})
 }
 
-// TestCluster_InvalidatedAfterACancelledOperation: certs_rotate_ca and its
-// siblings rewrite credentials and endpoint configuration from inside this
-// very process, and they end three ways — success, partial failure, or
-// cancellation mid-connect. However they end, the invalidation they defer
-// must apply: the next Cluster call re-resolves instead of handing back the
-// client captured before, while that captured client keeps working for
-// requests already in flight. The fingerprint alone cannot carry this, since
-// an operation cancelled before its rewrite leaves every file untouched.
+// The fingerprint alone cannot carry this: a cancelled operation leaves files untouched.
 func TestCluster_InvalidatedAfterACancelledOperation(t *testing.T) {
 	isolateHome(t)
 	const server = "https://192.0.2.1:6443" // TEST-NET-1: unreachable by design
@@ -875,8 +794,6 @@ func TestCluster_InvalidatedAfterACancelledOperation(t *testing.T) {
 		t.Fatalf("Cluster: %v", err)
 	}
 
-	// The operation is cancelled while it is still connecting, and unwinds
-	// through its deferred invalidation.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	if ctx.Err() == nil {
@@ -884,9 +801,6 @@ func TestCluster_InvalidatedAfterACancelledOperation(t *testing.T) {
 	}
 	conn.Invalidate()
 
-	// Cancellation must not have let the invalidation lapse: every file here
-	// is unchanged, and the next call must still re-resolve rather than trust
-	// them.
 	fresh, err := conn.Cluster("")
 	if err != nil {
 		t.Fatalf("Cluster after invalidation: %v", err)
@@ -895,8 +809,7 @@ func TestCluster_InvalidatedAfterACancelledOperation(t *testing.T) {
 		t.Error("invalidation after a cancelled operation left the captured cluster in the cache")
 	}
 
-	// Invalidation is one-shot, not a sticky mode: with inputs stable again,
-	// reuse resumes.
+	// Invalidation is one-shot: stable inputs resume reuse.
 	reused, err := conn.Cluster("")
 	if err != nil {
 		t.Fatalf("second Cluster after invalidation: %v", err)
@@ -905,8 +818,7 @@ func TestCluster_InvalidatedAfterACancelledOperation(t *testing.T) {
 		t.Error("stable inputs were not reused after the post-invalidation rebuild")
 	}
 
-	// What the operation rewrote is what subsequent resolution sees — again
-	// with the mtime preserved.
+	// Again with the mtime preserved.
 	const repointed = "https://192.0.2.2:6443" // TEST-NET-1 as well
 	rewriteSameMtime(t, path, kubeconfigWithServer(repointed))
 	after, err := conn.Cluster("")
@@ -917,8 +829,6 @@ func TestCluster_InvalidatedAfterACancelledOperation(t *testing.T) {
 		t.Errorf("Host = %q, want the rewritten server %q", after.Host, repointed)
 	}
 
-	// In-flight requests keep the client they captured: invalidation hands
-	// out new clusters, it never mutates one that was already handed out.
 	if captured.Host != server {
 		t.Errorf("the captured cluster's Host changed to %q", captured.Host)
 	}

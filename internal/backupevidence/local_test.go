@@ -84,7 +84,7 @@ func TestLocalRejectsFIFOsWithoutBlocking(t *testing.T) {
 			case res = <-done:
 			case <-time.After(300 * time.Millisecond):
 				t.Error("the FIFO blocked the local catalog past its deadline")
-				// Release a blocked open/read so the failing test leaves no reader.
+				// Release the blocked open/read so a failing test leaves no reader parked.
 				f, err := os.OpenFile(fifo, os.O_RDWR|syscall.O_NONBLOCK, 0)
 				if err != nil {
 					t.Fatal(err)
@@ -108,14 +108,10 @@ func TestLocalRejectsFIFOsWithoutBlocking(t *testing.T) {
 	}
 }
 
-// snapTime is a fixed UTC time for the snapshots a test writes, so the
-// creation times the catalog reports assert exactly.
 func snapTime(min int) time.Time {
 	return time.Date(2026, 7, 4, 0, min, 0, 0, time.UTC)
 }
 
-// writeSnapshot writes one snapshot file of the given size with a fixed
-// modification time — the creation time the catalog reports.
 func writeSnapshot(t *testing.T, dir, name string, size int, mod time.Time) {
 	t.Helper()
 	p := filepath.Join(dir, name)
@@ -127,12 +123,6 @@ func writeSnapshot(t *testing.T, dir, name string, size int, mod time.Time) {
 	}
 }
 
-// The catalog walks the node's snapshot directory: every snapshot file (the
-// .db naming every save path uses) with its stable name-derived ID, the
-// node-scoped location, its creation time, its size, and a digest only when a
-// sidecar records one. Everything else in the directory — partial saves,
-// sidecars, unrelated files, nested directories — is not an artifact and
-// raises no diagnostic.
 func TestLocalCatalogsSnapshotDirEntries(t *testing.T) {
 	dir := t.TempDir()
 	s1 := etcdsnap.ScheduledName("cp-1", "20260704-010000")
@@ -173,9 +163,6 @@ func TestLocalCatalogsSnapshotDirEntries(t *testing.T) {
 	}
 }
 
-// An empty store is a valid, complete zero — not an unknown — and a directory
-// that was never created, the store before the first snapshot, is the same
-// zero.
 func TestLocalEmptyStoreIsACompleteExactZero(t *testing.T) {
 	t.Run("empty dir", func(t *testing.T) {
 		r := Local(context.Background(), LocalOptions{Dir: t.TempDir(), Node: "cp-1"})
@@ -191,11 +178,6 @@ func TestLocalEmptyStoreIsACompleteExactZero(t *testing.T) {
 	})
 }
 
-// The local store keeps no ETag, so a digest is reported only when a sha256
-// sidecar beside the snapshot records one — the catalog never hashes a
-// snapshot to guess one. A sidecar that exists but carries no sha256 leaves
-// the digest unknown with a safe warning; the artifact itself stays fully
-// described and the catalog stays complete.
 func TestLocalReportsADigestOnlyWhenASidecarKnowsIt(t *testing.T) {
 	newDir := func(t *testing.T) (string, string) {
 		t.Helper()
@@ -249,10 +231,6 @@ func TestLocalReportsADigestOnlyWhenASidecarKnowsIt(t *testing.T) {
 	})
 }
 
-// A cancelled request stops the walk where it stands: the entries it already
-// described are returned, the rest of the store is never read, and the result
-// says it is not a complete total — never a raw error. A context that already
-// ended launches no read at all.
 func TestLocalCancellationStopsTheWalk(t *testing.T) {
 	dir := t.TempDir()
 	s1 := etcdsnap.ScheduledName("cp-1", "20260704-010000")
@@ -313,11 +291,6 @@ func TestLocalCancellationStopsTheWalk(t *testing.T) {
 	})
 }
 
-// The page cap bounds how deep the walk goes: it stops after that many
-// artifacts and says the catalog is not a complete total. The directory
-// streams its entries in a filesystem-defined order, so which entries survive
-// the cap is not the contract: the test counts the per-entry reads through
-// the seam and asserts the walk stopped after exactly the cap's number.
 func TestLocalStopsAtThePageCap(t *testing.T) {
 	dir := t.TempDir()
 	var names []string
@@ -356,11 +329,6 @@ func TestLocalStopsAtThePageCap(t *testing.T) {
 	}
 }
 
-// The byte cap bounds the artifact bytes the walk accounts for: it stops
-// before the entry that would cross the cap and says the catalog is not a
-// complete total. The directory streams its entries in a filesystem-defined
-// order, so which snapshot stays below the cap is not the contract: the test
-// asserts the stop and that the surviving artifact is one it wrote.
 func TestLocalStopsAtTheByteCap(t *testing.T) {
 	dir := t.TempDir()
 	names := []string{
@@ -387,12 +355,6 @@ func TestLocalStopsAtTheByteCap(t *testing.T) {
 	}
 }
 
-// An entry the walk cannot read becomes a safe diagnostic that names the
-// snapshot and what is unknown about it — never the raw storage error — and
-// the catalog says it is not a complete total. An entry that vanished between
-// the listing and the read is not a diagnostic at all: it is no longer an
-// artifact. A directory the walk cannot even open yields no artifacts and the
-// same safe shape.
 func TestLocalUnreadableEntriesBecomeSafeDiagnostics(t *testing.T) {
 	dir := t.TempDir()
 	s1 := etcdsnap.ScheduledName("cp-1", "20260704-010000")
@@ -458,10 +420,6 @@ func TestLocalUnreadableEntriesBecomeSafeDiagnostics(t *testing.T) {
 	})
 }
 
-// The catalog's location is node-scoped: the result names the node whose
-// store the walk read — the options' Node when the caller scopes it (the
-// earlier tests assert that), else this host's short name. A host whose name
-// cannot be determined warns safely and reports no node.
 func TestLocalScopesTheCatalogToTheNode(t *testing.T) {
 	dir := t.TempDir()
 	s := etcdsnap.ScheduledName("cp-1", "20260704-010000")

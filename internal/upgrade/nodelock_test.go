@@ -17,14 +17,8 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// holdLockEnv makes the test binary a lock holder instead of a test run: see
-// TestHelperHoldNodeLock.
 const holdLockEnv = "STRATUM_TEST_HOLD_NODE_LOCK"
 
-// TestHelperHoldNodeLock is not a test. Re-executed with holdLockEnv set to a
-// lock path, it takes the node lock there, says so, and holds it until killed
-// or its parent dies — a second process on the same node, which is what two
-// upgrade Jobs are.
 func TestHelperHoldNodeLock(t *testing.T) {
 	path := os.Getenv(holdLockEnv)
 	if path == "" {
@@ -36,21 +30,13 @@ func TestHelperHoldNodeLock(t *testing.T) {
 		fmt.Println("error:", err)
 		os.Exit(1)
 	}
-	// Deferred, so the closure — and the *os.File whose finalizer would
-	// otherwise close the descriptor and drop the lock — stays reachable for
-	// as long as this process holds it.
+	// The defer keeps the *os.File's finalizer from closing the descriptor and dropping the lock.
 	defer release()
 	fmt.Println("held")
-	// Held until the parent closes stdin or dies, not parked on select {}:
-	// with every goroutine parked, a test binary without cgo — what macOS
-	// builds by default — dies of the runtime's deadlock detector milliseconds after
-	// saying "held", and the kernel drops the lock with it. A blocked read
-	// keeps a thread in a syscall, which that detector counts as running.
+	// Held until the parent closes stdin or dies; select{} trips the no-cgo deadlock detector.
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
-// holdNodeLockInChild starts a separate process holding the node lock at the
-// redirected path and returns it once the lock is held.
 func holdNodeLockInChild(t *testing.T) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldNodeLock$")
@@ -59,8 +45,7 @@ func holdNodeLockInChild(t *testing.T) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The holder holds until it is killed, or until this process dies and
-	// the pipe closes; cmd keeps the write end open until its Wait.
+	// cmd keeps the write end open until Wait, so the holder dies if this process does.
 	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
@@ -75,14 +60,8 @@ func holdNodeLockInChild(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
-// holdRawFlockEnv makes the test binary a raw lock holder instead of a test
-// run: see TestHelperHoldRawNodeLock.
 const holdRawFlockEnv = "STRATUM_TEST_HOLD_RAW_NODE_LOCK"
 
-// TestHelperHoldRawNodeLock is not a test. Re-executed with holdRawFlockEnv set
-// to a lock path, it takes a raw syscall.Flock there, records its pid the way
-// lockNode does, and holds until killed or its parent dies — what a released
-// binary's lockNode leaves behind.
 func TestHelperHoldRawNodeLock(t *testing.T) {
 	path := os.Getenv(holdRawFlockEnv)
 	if path == "" {
@@ -103,16 +82,10 @@ func TestHelperHoldRawNodeLock(t *testing.T) {
 	}
 	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }()
 	fmt.Println("held")
-	// Held until the parent closes stdin or dies, not parked on select {}:
-	// with every goroutine parked, a test binary without cgo — what macOS
-	// builds by default — dies of the runtime's deadlock detector milliseconds after
-	// saying "held", and the kernel drops the lock with it. A blocked read
-	// keeps a thread in a syscall, which that detector counts as running.
+	// Held until the parent closes stdin or dies; select{} trips the no-cgo deadlock detector.
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
-// holdRawFlockInChild starts a separate process holding a raw flock at the
-// redirected node-lock path and returns it once the lock is held.
 func holdRawFlockInChild(t *testing.T) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldRawNodeLock$")
@@ -121,8 +94,7 @@ func holdRawFlockInChild(t *testing.T) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The holder holds until it is killed, or until this process dies and
-	// the pipe closes; cmd keeps the write end open until its Wait.
+	// cmd keeps the write end open until Wait, so the holder dies if this process does.
 	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,13 +109,6 @@ func holdRawFlockInChild(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
-// TestNodeLockExcludesAHolderOfTheReleasedLockFile is the cross-version
-// contract: every released binary fences at version.RunDir + "-upgrade.lock"
-// with a flock, so a node mid-upgrade refuses the next binary's upgrade,
-// --check and rollback too. The holder here takes a raw flock, the way a
-// released binary's lockNode does, rather than running this build's lockNode —
-// both sides of the fence must not move together. A new path or a new kind of
-// lock needs a compatibility release first.
 func TestNodeLockExcludesAHolderOfTheReleasedLockFile(t *testing.T) {
 	if version.NodeUpgradeLockPath != version.RunDir+"-upgrade.lock" {
 		t.Fatalf("node lock path = %q, want %q: every released binary opens that path",
@@ -180,9 +145,6 @@ func TestNodeLockExcludesAHolderOfTheReleasedLockFile(t *testing.T) {
 	}
 }
 
-// TestNodeLockRefusesASecondRun is the node-lock fence: while one process
-// upgrades a node, a second upgrade or rollback on that node — whatever
-// created it — refuses, names the holder, and changes nothing.
 func TestNodeLockRefusesASecondRun(t *testing.T) {
 	backupFixture(t)
 	redirect(t, &version.K8sConfDir, t.TempDir()) // no node.yaml there
@@ -210,8 +172,6 @@ func TestNodeLockRefusesASecondRun(t *testing.T) {
 	}
 }
 
-// TestNodeLockDiesWithItsHolder: a holder that is killed — the OOM-killed or
-// deadline-killed Job — does not leave the node locked for the next run.
 func TestNodeLockDiesWithItsHolder(t *testing.T) {
 	backupFixture(t)
 	redirect(t, &version.K8sConfDir, t.TempDir())
@@ -222,14 +182,11 @@ func TestNodeLockDiesWithItsHolder(t *testing.T) {
 	}
 	_ = holder.Wait()
 
-	// Past the lock to the next step, the node-state load.
 	if err := UpgradeNode(io.Discard, NodeOptions{}); err == nil || !strings.Contains(err.Error(), "node state") {
 		t.Errorf("upgrade after the holder died should get past the lock, got: %v", err)
 	}
 }
 
-// TestNodeLockReleases: a finished run hands the node on. Two runs in a row
-// must both get past the lock, which a release that did nothing would fail.
 func TestNodeLockReleases(t *testing.T) {
 	backupFixture(t)
 	redirect(t, &version.K8sConfDir, t.TempDir())
@@ -241,8 +198,6 @@ func TestNodeLockReleases(t *testing.T) {
 	}
 }
 
-// TestNodeLockExactlyOneWinner: runs racing for one node leave exactly one
-// holding it and every other refusing.
 func TestNodeLockExactlyOneWinner(t *testing.T) {
 	redirect(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "upgrade.lock"))
 	const n = 16
@@ -281,8 +236,6 @@ func TestNodeLockExactlyOneWinner(t *testing.T) {
 	}
 }
 
-// TestNodeLockSkippedByDryRun: a preview writes nothing, so it must not be
-// blocked by — or block — a real run.
 func TestNodeLockSkippedByDryRun(t *testing.T) {
 	backupFixture(t)
 	probeFixture(t, false, nil)

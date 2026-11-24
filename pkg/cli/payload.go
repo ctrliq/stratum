@@ -14,21 +14,10 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// stagePayload is assets.Stage behind a seam: the test binary carries no
-// payload, so a test stubs the extraction to see whether and where stage ran
-// it.
+// seam: the test binary carries no payload, so tests stub the extraction.
 var stagePayload = assets.Stage
 
-// lockStageRoot takes the etcd data lock when staging can write into the node
-// data tree, and returns a no-op release for unrelated roots. Uninstall holds that
-// lock while it deletes version.DataDir, and `stratum up` and the HA join hold
-// it while they stage into it; a stage that skipped it could recreate part of
-// the dir uninstall is removing. Other roots stay unlocked because CI stages
-// into temp dirs as an unprivileged user, who cannot create the lock beside the
-// data dir. Both lexical descendants and symlink aliases take the lock. The
-// payload's bin and images directories are checked too: an unrelated root can
-// have a child symlink into the data tree. Paths that cannot be resolved refuse
-// staging before extraction.
+// uninstall deletes DataDir under this lock; other roots: CI stages unprivileged and can't lock.
 func lockStageRoot(root string) (release func(), err error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -43,8 +32,7 @@ func lockStageRoot(root string) (release func(), err error) {
 		return nil, fmt.Errorf("resolve node data directory %s: %w", dataDir, err)
 	}
 	for _, path := range []string{abs, filepath.Join(abs, assets.BinDir), filepath.Join(abs, assets.ImagesDir)} {
-		// Uninstall removes lexical descendants even if one currently links
-		// outside the tree. Check before resolving that link.
+		// uninstall removes lexical descendants even when a link points outside, so check first.
 		if stagePathWithin(dataDir, path) {
 			return etcddata.Lock(version.EtcdDataDir)
 		}
@@ -64,9 +52,7 @@ func stagePathWithin(dir, path string) bool {
 	return err == nil && filepath.IsLocal(rel)
 }
 
-// resolveStagePath resolves existing ancestors without creating the missing
-// tail that staging would write. A dangling link is refused: its target can
-// reappear in the node data tree after uninstall removes it.
+// a dangling link is refused: its target can reappear after uninstall deletes it.
 func resolveStagePath(path string) (string, error) {
 	rest := ""
 	for p := path; ; p = filepath.Dir(p) {
@@ -117,9 +103,6 @@ func newStageCommand() *cobra.Command {
 	return cmd
 }
 
-// newWhichCommand answers "where would the supervisor find this component" —
-// the question that matters for a no-payload build, where components come
-// from the staging dir or PATH rather than from inside the binary.
 func newWhichCommand() *cobra.Command {
 	var root string
 	cmd := &cobra.Command{

@@ -30,7 +30,6 @@ import (
 )
 
 func TestBuildWebhookConfig(t *testing.T) {
-	// kube-system is the default privileged set.
 	cfg := buildWebhookConfig([]byte("CABUNDLE"), []string{"kube-system"})
 	if len(cfg.Webhooks) != 1 {
 		t.Fatalf("want 1 webhook, got %d", len(cfg.Webhooks))
@@ -60,7 +59,6 @@ func TestBuildWebhookConfig(t *testing.T) {
 		t.Errorf("service path = %v, want %s", wh.ClientConfig.Service.Path, webhookPath)
 	}
 
-	// Rules cover both CRs on CREATE + UPDATE.
 	if len(wh.Rules) != 1 {
 		t.Fatalf("want 1 rule, got %d", len(wh.Rules))
 	}
@@ -68,7 +66,6 @@ func TestBuildWebhookConfig(t *testing.T) {
 	if !slices.Equal(r.Resources, []string{"helmcharts", "helmchartconfigs"}) {
 		t.Errorf("resources = %v", r.Resources)
 	}
-	// The rule must match the CRDs' group/version, which k8sutil declares once.
 	if !slices.Equal(r.APIGroups, []string{k8sutil.HelmChartGroup}) {
 		t.Errorf("apiGroups = %v", r.APIGroups)
 	}
@@ -80,8 +77,6 @@ func TestBuildWebhookConfig(t *testing.T) {
 		t.Errorf("operations = %v, want CREATE+UPDATE", ops)
 	}
 
-	// The default privileged set is exempt so add-on bring-up never waits on
-	// the webhook.
 	if wh.NamespaceSelector == nil || len(wh.NamespaceSelector.MatchExpressions) != 1 {
 		t.Fatalf("namespaceSelector = %+v", wh.NamespaceSelector)
 	}
@@ -171,7 +166,6 @@ func TestEnsureWebhookServiceCreateThenReassert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("service not created: %v", err)
 	}
-	// Simulate an externally-set ClusterIP; a re-assert must preserve it.
 	svc.Spec.ClusterIP = "10.96.0.42"
 	if _, err := cs.CoreV1().Services(webhookNamespace).Update(ctx, svc, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
@@ -202,7 +196,6 @@ func TestEnsureEndpointSliceLifecycle(t *testing.T) {
 	if es.Endpoints[0].Addresses[0] != "10.0.0.5" {
 		t.Errorf("endpoint address = %v", es.Endpoints[0].Addresses)
 	}
-	// Re-ensure with a changed IP updates in place.
 	if err := ensureEndpointSlice(ctx, cs, "cp-1", "10.0.0.9"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -210,7 +203,6 @@ func TestEnsureEndpointSliceLifecycle(t *testing.T) {
 	if es.Endpoints[0].Addresses[0] != "10.0.0.9" {
 		t.Errorf("endpoint not updated: %v", es.Endpoints[0].Addresses)
 	}
-	// Deregister removes it.
 	if err := deleteEndpointSlice(ctx, cs, "cp-1"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -225,7 +217,6 @@ func TestEnsureEndpointSliceReplacesOnAddressFamilyChange(t *testing.T) {
 	if err := ensureEndpointSlice(ctx, cs, "cp-1", "10.0.0.5"); err != nil {
 		t.Fatal(err)
 	}
-	// AddressType is immutable; flipping the node to IPv6 must replace the slice.
 	if err := ensureEndpointSlice(ctx, cs, "cp-1", "fd00::5"); err != nil {
 		t.Fatalf("family change: %v", err)
 	}
@@ -302,8 +293,6 @@ func TestPruningConcurrentRenewalIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestMintServingCertUsesTheStagedSignerForALostKey: between a forced
-// trust-new and sign-new, ca.key is gone and the staged root signs the webhook.
 func TestMintServingCertUsesTheStagedSignerForALostKey(t *testing.T) {
 	old := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -331,10 +320,6 @@ func TestMintServingCertUsesTheStagedSignerForALostKey(t *testing.T) {
 	}
 }
 
-// TestWebhookServingCertNamesTheClusterDomain: the apiserver may reach the
-// webhook by its Service's full name, which on a custom-domain cluster ends in
-// that domain rather than the default one. An operator started without a
-// domain names the default.
 func TestWebhookServingCertNamesTheClusterDomain(t *testing.T) {
 	old := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -361,7 +346,6 @@ func TestWebhookServingCertNamesTheClusterDomain(t *testing.T) {
 		if !slices.Contains(leaf.DNSNames, tc.want) {
 			t.Errorf("domain %q: DNS names %v lack %s", tc.domain, leaf.DNSNames, tc.want)
 		}
-		// The domain-free Service name stays whatever the domain.
 		if !slices.Contains(leaf.DNSNames, svc) {
 			t.Errorf("domain %q: DNS names %v lack %s", tc.domain, leaf.DNSNames, svc)
 		}
@@ -376,10 +360,6 @@ func TestWebhookServingCertNamesTheClusterDomain(t *testing.T) {
 	}
 }
 
-// TestWebhookCertRefreshNamesTheClusterDomain: the periodic re-mint that picks
-// up a CA rotation names the cluster's domain, as the first mint did, so a
-// custom-domain cluster's webhook does not fall back to the default domain on
-// its first refresh.
 func TestWebhookCertRefreshNamesTheClusterDomain(t *testing.T) {
 	old := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -392,8 +372,7 @@ func TestWebhookCertRefreshNamesTheClusterDomain(t *testing.T) {
 	certRefreshInterval = 10 * time.Millisecond
 	t.Cleanup(func() { certRefreshInterval = oldInterval })
 
-	// maintainWebhook never mints the first cert (runWebhookOnce does, before
-	// calling it), so a cert in this empty cache can only come from a refresh.
+	// maintainWebhook never mints the first cert, so a cert in this cache only comes from a refresh.
 	cache := &certCache{domain: "fuzz.internal"}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -434,10 +413,6 @@ func TestWebhookCertRefreshNamesTheClusterDomain(t *testing.T) {
 	}
 }
 
-// TestWebhookServesACertNamingTheClusterDomain: the domain runWebhook is given
-// reaches the cert the webhook's first bring-up mints and serves, not only the
-// refresh, so from its first handshake a custom-domain cluster's webhook
-// verifies for its Service's full name in that domain.
 func TestWebhookServesACertNamingTheClusterDomain(t *testing.T) {
 	old := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -472,8 +447,7 @@ func TestWebhookServesACertNamingTheClusterDomain(t *testing.T) {
 		t.Fatal("the webhook never bound its port")
 	}
 
-	// The webhook requires a client certificate this test does not have, so
-	// the handshake is stopped once the served certificate has been verified.
+	// The webhook requires a client cert the test lacks, so the handshake stops after verification.
 	const want = "stratum-operator-webhook.kube-system.svc.fuzz.internal"
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.Cert)

@@ -15,18 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// Regression guards for the leader's two reconcile loops: HelmChart
-// reconciliation on its own goroutine and ticker, and the shared pass of
-// cluster controllers — manifests deployer, CoreDNS spreader, departed-worker
-// cleanup — that the kube-system/stratum-operator Lease holder runs once and
-// then on every tick. They pin the guarantees through the runLeaderLoop seam
-// under a synctest bubble, whose fake clock drives the tickers and the
-// per-iteration deadlines: no real-clock sleeps, no skips. runLeaderLoop is
-// the body of the leader callback, so a guarantee pinned here — the helm loop
-// joined before runLeaderLoop returns — is the callback's guarantee: the
-// elector joins the callback before reporting leadership loss
-// (leaderelect_test.go).
-
 const testInterval = 20 * time.Second
 
 const (
@@ -36,8 +24,6 @@ const (
 	cleanupStepName  = "cleanup"
 )
 
-// stepRecord is one run of a loop step: its name, the bubble-clock time it
-// started, and the deadline and liveness of the context it received.
 type stepRecord struct {
 	name     string
 	start    time.Time
@@ -45,9 +31,6 @@ type stepRecord struct {
 	live     bool
 }
 
-// stepRecorder records every run of the leader loop's steps. Recording is
-// guarded by a mutex, because a later change may move a step onto its own
-// goroutine, and the guards must survive that.
 type stepRecorder struct {
 	mu          sync.Mutex
 	records     []stepRecord
@@ -77,7 +60,6 @@ func (r *stepRecorder) leave() {
 	r.inFlight--
 }
 
-// runsOf reports how many times the step ran, counting the run in progress.
 func (r *stepRecorder) runsOf(name string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -102,9 +84,6 @@ func (r *stepRecorder) recordsOf(name string) []stepRecord {
 	return out
 }
 
-// passTimes returns the distinct start times of the recorded passes, in order.
-// It is only meaningful for loops whose steps do not sleep, where every step
-// of a pass starts at the same bubble-clock instant.
 func (r *stepRecorder) passTimes() []time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -129,7 +108,6 @@ func (r *stepRecorder) namesAt(start time.Time) []string {
 	return out
 }
 
-// startTimesOf returns the recorded start times of one step's runs, in order.
 func startTimesOf(records []stepRecord) []time.Time {
 	out := make([]time.Time, 0, len(records))
 	for _, rec := range records {
@@ -138,16 +116,12 @@ func startTimesOf(records []stepRecord) []time.Time {
 	return out
 }
 
-// maxConcurrent reports the largest number of steps ever in flight at once.
 func (r *stepRecorder) maxConcurrent() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.maxInFlight
 }
 
-// stepOptions tell a recording step how to behave beyond recording: block
-// until its context ends, block until released, sleep on the bubble's clock,
-// panic, or run a hook with its 1-based run number.
 type stepOptions struct {
 	blockUntilDone bool
 	release        chan struct{}
@@ -156,9 +130,6 @@ type stepOptions struct {
 	onRun          func(run int)
 }
 
-// newStep returns a leaderStep that records its name, its start on the
-// bubble's clock and the context it received, tracks its concurrency, then
-// behaves as its options direct.
 func (r *stepRecorder) newStep(name string, opts stepOptions) func(context.Context) {
 	return func(ctx context.Context) {
 		r.record(name, ctx)
@@ -182,9 +153,6 @@ func (r *stepRecorder) newStep(name string, opts stepOptions) func(context.Conte
 	}
 }
 
-// clusterSequence filters the HelmChart step out of a recorded pass: the
-// guards pin the cluster controllers' order, not where HelmChart work sits in
-// the pass.
 func clusterSequence(names []string) []string {
 	var out []string
 	for _, n := range names {
@@ -217,12 +185,6 @@ func countName(names []string, name string) int {
 	return n
 }
 
-// TestLeaderPassRunsClusterControllersInOrder pins the pass's gating, order
-// and cadence: the manifests deployer only with a manifests directory, CoreDNS
-// spreading only with one and leader election, departed-worker cleanup always;
-// the cluster controllers in that order; the first pass before the first tick
-// and the next one one interval later, so a new leader applies the bundled
-// add-ons at once and then on every tick.
 func TestLeaderPassRunsClusterControllersInOrder(t *testing.T) {
 	for _, row := range []struct {
 		name         string
@@ -279,20 +241,12 @@ func TestLeaderPassRunsClusterControllersInOrder(t *testing.T) {
 	}
 }
 
-// TestLeaderPassGivesEachClusterControllerItsOwnDeadline pins the deadlines:
-// the deployer's expires perIterationTimeout after the deployer step itself
-// starts — not after the pass starts — so a HelmChart pass longer than the
-// iteration window cannot spend the deployer's budget; and spreading and
-// cleanup each start with a live context whose deadline is perIterationTimeout
-// after their own start, so a slow manifest pass cannot spend theirs. The
-// HelmChart step takes simulated time longer than the whole window, so a
-// deadline anchored to the pass's start is visibly expired, or nearly so,
-// before the deployer runs at all.
 func TestLeaderPassGivesEachClusterControllerItsOwnDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := &stepRecorder{}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
+		// a deadline anchored to the pass's start would be spent before the deployer ran.
 		helm := rec.newStep(helmStepName, stepOptions{sleep: 2 * perIterationTimeout})
 		deployer := rec.newStep(deployerStepName, stepOptions{blockUntilDone: true})
 		spread := rec.newStep(spreadStepName, stepOptions{})
@@ -300,9 +254,6 @@ func TestLeaderPassGivesEachClusterControllerItsOwnDeadline(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			// Keep the ticker beyond the whole pass — HelmChart work plus the
-			// blocked deployer: the loop may select a pending tick beside
-			// cancellation.
 			runLeaderLoop(ctx, 4*perIterationTimeout, true, true, helm, deployer, spread, cleanup)
 		}()
 		<-loopDone
@@ -340,13 +291,6 @@ func TestLeaderPassGivesEachClusterControllerItsOwnDeadline(t *testing.T) {
 	})
 }
 
-// TestLeaderPassKeepsClusterControllersOnCadenceWhenHelmBlocks pins that the
-// shared pass does not wait behind HelmChart work: a helmStep blocked for
-// four intervals — far past perIterationTimeout — must leave the deployer,
-// spreader and cleanup running their own pass on every tick, on cadence, and
-// must not start a second helm pass over the one still in flight. While
-// HelmChart work runs inside the sequential pass, a blocked helmStep holds
-// every cluster controller back instead.
 func TestLeaderPassKeepsClusterControllersOnCadenceWhenHelmBlocks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := &stepRecorder{}
@@ -354,6 +298,7 @@ func TestLeaderPassKeepsClusterControllersOnCadenceWhenHelmBlocks(t *testing.T) 
 		defer cancel()
 		started := make(chan struct{})
 		release := make(chan struct{})
+		// snapshot before release and cancel: a pending tick beside cancellation must not skew the pins.
 		helm := rec.newStep(helmStepName, stepOptions{release: release, onRun: func(run int) {
 			if run == 1 {
 				close(started)
@@ -371,8 +316,6 @@ func TestLeaderPassKeepsClusterControllersOnCadenceWhenHelmBlocks(t *testing.T) 
 		<-started
 		time.Sleep(4 * testInterval)
 		synctest.Wait()
-		// Snapshot before releasing HelmChart work: shutdown must not
-		// satisfy the cadence pins.
 		helmRuns := rec.runsOf(helmStepName)
 		clusterRecords := make(map[string][]stepRecord)
 		for _, name := range []string{deployerStepName, spreadStepName, cleanupStepName} {
@@ -399,12 +342,6 @@ func TestLeaderPassKeepsClusterControllersOnCadenceWhenHelmBlocks(t *testing.T) 
 	})
 }
 
-// TestLeaderHelmStepRunsOnItsOwnTickerWhenAClusterControllerBlocks pins the
-// mirror side of the two-loop shape: HelmChart reconciliation runs on its own
-// ticker inside the leader callback, so a deployer blocked for four intervals
-// must not stop the helm step from starting one pass per interval of its own.
-// While HelmChart work runs inside the sequential pass, a blocked deployer
-// holds it back after its first run.
 func TestLeaderHelmStepRunsOnItsOwnTickerWhenAClusterControllerBlocks(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := &stepRecorder{}
@@ -412,6 +349,7 @@ func TestLeaderHelmStepRunsOnItsOwnTickerWhenAClusterControllerBlocks(t *testing
 		defer cancel()
 		started := make(chan struct{})
 		release := make(chan struct{})
+		// snapshot before release and cancel: a pass during shutdown must not satisfy the cadence pins.
 		helm := rec.newStep(helmStepName, stepOptions{})
 		deployer := rec.newStep(deployerStepName, stepOptions{release: release, onRun: func(run int) {
 			if run == 1 {
@@ -429,8 +367,6 @@ func TestLeaderHelmStepRunsOnItsOwnTickerWhenAClusterControllerBlocks(t *testing
 		<-started
 		time.Sleep(4 * testInterval)
 		synctest.Wait()
-		// Snapshot before releasing the deployer: shutdown must not satisfy
-		// the cadence pin.
 		helmRecords := rec.recordsOf(helmStepName)
 		close(release)
 		cancel()
@@ -447,13 +383,6 @@ func TestLeaderHelmStepRunsOnItsOwnTickerWhenAClusterControllerBlocks(t *testing
 	})
 }
 
-// TestLeaderPassDoesNotBoundHelmChartWorkByTheIterationWindow pins that the
-// HelmChart step runs under the loop's context with no deadline, so an install
-// that needs longer than the 30-second iteration window but less than its
-// chart's spec.timeout completes. The step cancels the loop's context itself,
-// after its work: the cluster controllers run on their own loop and do not
-// wait behind HelmChart work, so a cancellation from another step would end the
-// helm loop's context before the step could prove it stayed live.
 func TestLeaderPassDoesNotBoundHelmChartWorkByTheIterationWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := &stepRecorder{}
@@ -470,13 +399,11 @@ func TestLeaderPassDoesNotBoundHelmChartWorkByTheIterationWindow(t *testing.T) {
 			}
 			cancel()
 		}
+		// no tick is pending here; this assertion concerns the context, not select order.
 		cleanup := rec.newStep(cleanupStepName, stepOptions{})
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			// No tick is pending when the helm step cancels after its
-			// two-minute pass; this assertion concerns its context, not
-			// select order.
 			runLeaderLoop(ctx, 3*time.Minute, false, false, helm, nil, nil, cleanup)
 		}()
 		<-loopDone
@@ -490,9 +417,6 @@ func TestLeaderPassDoesNotBoundHelmChartWorkByTheIterationWindow(t *testing.T) {
 	})
 }
 
-// TestLeaderPassSurvivesAPanickingStep pins the panic recovery: a panic in any
-// one step stops neither the later steps of that pass nor the next pass, so
-// the loop and the process survive a broken step.
 func TestLeaderPassSurvivesAPanickingStep(t *testing.T) {
 	for _, victim := range []string{helmStepName, deployerStepName, spreadStepName, cleanupStepName} {
 		t.Run(victim, func(t *testing.T) {
@@ -513,12 +437,7 @@ func TestLeaderPassSurvivesAPanickingStep(t *testing.T) {
 				cleanupOpts := optsFor(cleanupStepName)
 				cleanupOpts.onRun = func(run int) {
 					if run >= 2 {
-						// Cancel just past the tick instant: in the
-						// two-loop shape the helm loop's ticker and the
-						// shared pass's fire together, and a cancellation
-						// landing exactly on that instant would race the
-						// helm loop's select, leaving whether one more
-						// helm pass starts to the scheduler.
+						// a cancellation landing exactly on the tick instant would race the helm loop's select.
 						time.Sleep(time.Millisecond)
 						cancel()
 					}
@@ -554,13 +473,6 @@ func TestLeaderPassSurvivesAPanickingStep(t *testing.T) {
 	}
 }
 
-// TestLeaderLoopWaitsForHelmChartWorkBeforeReturning pins that the leader
-// callback does not return while HelmChart work is still running: the helm
-// loop is joined before the callback returns, so a demoted leader neither goes
-// on installing charts while the new leader reconciles the same releases nor
-// starts new helm work after leadership loss. The elector joins this callback
-// before returning errLeadershipLost (leaderelect_test.go), which joins the
-// helm loop with it.
 func TestLeaderLoopWaitsForHelmChartWorkBeforeReturning(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := &stepRecorder{}
@@ -595,17 +507,12 @@ func TestLeaderLoopWaitsForHelmChartWorkBeforeReturning(t *testing.T) {
 	})
 }
 
-// TestLeaderLoopNeverOverlapsHelmChartPasses pins that one HelmChart pass
-// never overlaps another: the loop starts the next pass only after the
-// previous one returns, so no chart is reconciled twice at once.
 func TestLeaderLoopNeverOverlapsHelmChartPasses(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		rec := &stepRecorder{}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		started := make(chan struct{})
-		// Only Helm contributes to the concurrency recorder: cleanup may
-		// overlap Helm without two Helm passes ever running at once.
 		helm := rec.newStep(helmStepName, stepOptions{sleep: 70 * time.Second, onRun: func(run int) {
 			if run == 1 {
 				close(started)
@@ -620,9 +527,8 @@ func TestLeaderLoopNeverOverlapsHelmChartPasses(t *testing.T) {
 		<-started
 		time.Sleep(5 * time.Minute)
 		synctest.Wait()
-		// Snapshot the observation window before cancellation and joining:
-		// calls during shutdown must not satisfy the minimum cadence.
 		max, runs := rec.maxConcurrent(), rec.runsOf(helmStepName)
+		// only Helm feeds the recorder; snapshot before cancel, or shutdown passes satisfy the runs pin.
 		cancel()
 		<-loopDone
 
@@ -635,17 +541,6 @@ func TestLeaderLoopNeverOverlapsHelmChartPasses(t *testing.T) {
 	})
 }
 
-// TestGroupConstantIsAnAliasOfK8sutilHelmChartGroup pins the operator's group
-// constant to its one declared source, k8sutil.HelmChartGroup — the same pair
-// the HelmChart CRDs, the dynamic client and the webhook's admission rule
-// already read. group is the domain of the operator's annotations and labels
-// (requester stamps, managed-by, stack names); that it coincides with the
-// HelmChart API group must be spelled through the alias, not as a second
-// string literal that could drift from internal/k8sutil while every GVR/GVK
-// construction follows it. An alias and a same-valued copy are
-// indistinguishable through the compiled value — both are "stratum.ciq.com"
-// today — so the test reads the declaration in operator.go itself and refuses
-// a string literal on the right-hand side.
 func TestGroupConstantIsAnAliasOfK8sutilHelmChartGroup(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -668,7 +563,6 @@ func TestGroupConstantIsAnAliasOfK8sutilHelmChartGroup(t *testing.T) {
 	if rhs == "" {
 		t.Fatal("operator.go declares no group constant — the annotation and label domain has no single declaration to pin")
 	}
-	// Drop a trailing // comment before comparing the expression itself.
 	if i := strings.Index(rhs, "//"); i >= 0 {
 		rhs = strings.TrimSpace(rhs[:i])
 	}
@@ -683,8 +577,6 @@ func TestGroupConstantIsAnAliasOfK8sutilHelmChartGroup(t *testing.T) {
 	}
 }
 
-// TestParseFlagsClusterDomainDefaultsToClusterLocal: --cluster-domain parses
-// to the given domain, and to the default domain when it is not given.
 func TestParseFlagsClusterDomainDefaultsToClusterLocal(t *testing.T) {
 	for _, tc := range []struct {
 		args []string

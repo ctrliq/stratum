@@ -12,9 +12,7 @@ import (
 	"github.com/ctrliq/stratum/internal/netcfg/netdefault"
 )
 
-// TestNetworkDefaultsKeepTheirValues: the defaults moved home, not value. A
-// different one would move the pod or service range, the kubernetes Service IP,
-// the DNS address or the domain under every cluster installed on the old one.
+// A different default would move every installed cluster's ranges and addresses.
 func TestNetworkDefaultsKeepTheirValues(t *testing.T) {
 	for _, tc := range []struct{ name, got, want string }{
 		{"PodCIDR", netdefault.PodCIDR, "10.245.0.0/16"},
@@ -29,18 +27,13 @@ func TestNetworkDefaultsKeepTheirValues(t *testing.T) {
 	}
 }
 
-// TestNodeCIDRMasksAreFixed: the per-node pod-CIDR masks are what the
-// controller-manager carves each node's range at, the same on every release.
 func TestNodeCIDRMasksAreFixed(t *testing.T) {
 	if NodeCIDRMask != 24 || NodeCIDRMaskV6 != 64 {
 		t.Errorf("NodeCIDRMask, NodeCIDRMaskV6 = %d, %d; want 24, 64", NodeCIDRMask, NodeCIDRMaskV6)
 	}
 }
 
-// TestDefaultIsTheBuiltInNetwork: Default is the network a cluster gets when
-// the user names none, and its Service and DNS addresses are the ones derived
-// from the default service range, so the named defaults and the range they
-// come from cannot drift apart.
+// Deriving the addresses keeps the named defaults from drifting from their range.
 func TestDefaultIsTheBuiltInNetwork(t *testing.T) {
 	c := Default()
 	if c.PodCIDR != netdefault.PodCIDR || c.ServiceCIDR != netdefault.ServiceCIDR {
@@ -67,9 +60,7 @@ func TestDefaultIsTheBuiltInNetwork(t *testing.T) {
 	}
 }
 
-// TestDomainOrFillsOnlyAnEmptyDomain: a domain the user gives is never
-// swapped for the default, even one that is not a valid domain — refusing it
-// is the validator's job, and dropping it silently would hide the mistake.
+// A given domain is never swapped for the default, which would hide the mistake.
 func TestDomainOrFillsOnlyAnEmptyDomain(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"", netdefault.ClusterDomain},
@@ -83,9 +74,7 @@ func TestDomainOrFillsOnlyAnEmptyDomain(t *testing.T) {
 	}
 }
 
-// TestWithDefaultsFillsOnlyAnEmptyCIDR: each range the user gives is kept
-// verbatim and its addresses derived from it; only a range left empty takes
-// the default. The domain is the default, as with Parse.
+// Only a range left empty takes the default; a given one is kept verbatim.
 func TestWithDefaultsFillsOnlyAnEmptyCIDR(t *testing.T) {
 	for _, tc := range []struct {
 		name, pod, svc string
@@ -124,9 +113,7 @@ func TestWithDefaultsFillsOnlyAnEmptyCIDR(t *testing.T) {
 	}
 }
 
-// TestWithDefaultsRefusesAGivenCIDRItCannotUse: a range the user gives that
-// is not usable is an error naming why, never replaced by the default, which
-// would start the cluster on a network the user did not ask for.
+// An unusable given range is an error, never silently replaced by the default.
 func TestWithDefaultsRefusesAGivenCIDRItCannotUse(t *testing.T) {
 	for _, tc := range []struct{ name, pod, svc, wantErr string }{
 		{"invalid pod range", "not-a-cidr", "", "invalid CIDR"},
@@ -143,10 +130,7 @@ func TestWithDefaultsRefusesAGivenCIDRItCannotUse(t *testing.T) {
 	}
 }
 
-// TestNetdefaultImportsNothingFromThisModule: nodestate reads the default
-// domain and netcfg imports nodestate, so the defaults can serve both only
-// from a package that imports neither, nor anything of this module that could
-// reach back to them.
+// nodestate reads the default domain, so netdefault imports nothing that reaches back.
 func TestNetdefaultImportsNothingFromThisModule(t *testing.T) {
 	const module = "github.com/ctrliq/stratum"
 	files, err := filepath.Glob(filepath.Join("netdefault", "*.go"))
@@ -210,11 +194,7 @@ func netcfgSources(t *testing.T) map[string]*ast.File {
 	return parsed
 }
 
-// TestLegacyDNSIPStaysItsOwnAddress: legacyDNSIP is the kube-dns address
-// every earlier release used, which an upgraded cluster's immutable Service
-// still holds. It equals the default DNS IP only by coincidence, so it stays a
-// literal of its own: aliased to the default, a change to the default would
-// move every such cluster's DNS address with it.
+// Aliased to the default, a change to the default would move upgraded clusters' DNS IPs.
 func TestLegacyDNSIPStaysItsOwnAddress(t *testing.T) {
 	found := false
 	for p, f := range netcfgSources(t) {

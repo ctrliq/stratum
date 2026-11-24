@@ -23,23 +23,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Protocol-boundary tests for the generic read toolset.
-
-// TestMain also takes the worker path's host side effects away from every
-// test in the package: cluster.PrepareWorker runs firewall-cmd, which on a
-// test host with firewalld running would change its real trusted zone and
-// write the production ownership record, and it loads modules and writes
-// sysctls. A test that drives the worker path installs its own
-// prepareWorkerFn and restores this refusal; one that forgets fails here and
-// cannot reach the host.
+// cluster.PrepareWorker would change the test host's firewall and kernel settings.
 func TestMain(m *testing.M) {
 	prepareWorkerFn = func(context.Context, cluster.WorkerOptions) (*cluster.NodeState, error) {
 		return nil, errors.New("cli tests: prepareWorkerFn is not stubbed, and cluster.PrepareWorker would change this host's firewall and kernel settings")
 	}
-	// The certs commands take the node maintenance lock
-	// (internal/nodelock) at /run/stratum-upgrade.lock, which a non-root test
-	// run cannot create. Point the whole package's lock path at a temp file,
-	// the way internal/certs' and internal/etcdsnap's TestMain fixtures do.
+	// a non-root test run cannot create /run/stratum-upgrade.lock.
 	dir, err := os.MkdirTemp("", "cli-test-lock-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cli tests: temp dir for the node lock: %v\n", err)
@@ -51,8 +40,6 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// k8sSession is a live client session wired to a server whose tools address
-// the envtest cluster, plus a typed client for arranging fixtures.
 type k8sSession struct {
 	cs        *sdk.ClientSession
 	typed     kubernetes.Interface
@@ -84,14 +71,9 @@ func newK8sSession(t *testing.T) *k8sSession {
 	return s
 }
 
-// namespaceSeq makes each namespace name unique even when two tests sanitize
-// to the same prefix.
 var namespaceSeq atomic.Int64
 
-// createNamespace gives each test its own namespace, so list assertions are
-// not perturbed by whatever another test left behind. envtest has no
-// namespace controller, so deleting one never completes — the namespace is
-// left in place and the unique name is what provides the isolation.
+// envtest has no namespace controller, so the unique name is the only isolation.
 func (s *k8sSession) createNamespace(t *testing.T) string {
 	t.Helper()
 	name := nsName(t.Name())
@@ -103,7 +85,6 @@ func (s *k8sSession) createNamespace(t *testing.T) string {
 	return name
 }
 
-// nsName turns a test name into a valid RFC 1123 label.
 func nsName(testName string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(testName) {
@@ -145,8 +126,6 @@ func (s *k8sSession) call(t *testing.T, name string, args map[string]any, out an
 	}
 }
 
-// callExpectingError invokes a tool that should fail, and returns the
-// message a model would see.
 func (s *k8sSession) callExpectingError(t *testing.T, name string, args map[string]any) string {
 	t.Helper()
 	res, err := s.cs.CallTool(t.Context(), &sdk.CallToolParams{Name: name, Arguments: args})
@@ -182,9 +161,7 @@ func (s *k8sSession) createPod(t *testing.T, name string) {
 	}
 }
 
-// Every read tool must be advertised read-only, or the registry drops it
-// from every tier including read — a tool silently missing is a poor
-// symptom to debug from a client.
+// the registry drops a tool without the read-only hint from every tier.
 func TestK8sReadToolsAreAdvertisedReadOnly(t *testing.T) {
 	s := newK8sSession(t)
 
@@ -209,7 +186,7 @@ func TestK8sReadToolsAreAdvertisedReadOnly(t *testing.T) {
 		if tool.Description == "" {
 			t.Errorf("%s has no description; a model chooses tools by description", name)
 		}
-		// Schema inference is what makes typed inputs worth having.
+		// schema inference is what makes typed inputs worth having.
 		if tool.InputSchema == nil {
 			t.Errorf("%s has no input schema", name)
 		}
@@ -274,8 +251,7 @@ func TestPodListOverProtocol(t *testing.T) {
 		if p.Namespace != s.namespace {
 			t.Errorf("pod %s in namespace %q, want %q", p.Name, p.Namespace, s.namespace)
 		}
-		// No kubelet, so nothing runs; Ready is still reported as a ratio
-		// over the spec's containers rather than left blank.
+		// no kubelet, so nothing runs; Ready is a ratio over the spec's containers.
 		if p.Ready != "0/1" {
 			t.Errorf("pod %s ready = %q, want 0/1", p.Name, p.Ready)
 		}
@@ -309,9 +285,7 @@ func TestPodGetOverProtocol(t *testing.T) {
 	if out.Summary.Ready != "0/1" {
 		t.Errorf("ready = %q, want 0/1", out.Summary.Ready)
 	}
-	// Containers and Conditions are deliberately not asserted non-empty: envtest
-	// runs no scheduler or kubelet, so a pod is never admitted and the API
-	// server populates neither.
+	// envtest runs no scheduler or kubelet, so Containers and Conditions stay empty.
 
 	t.Run("a missing pod is an error, not an empty result", func(t *testing.T) {
 		msg := s.callExpectingError(t, "pod_get", map[string]any{"name": "absent", "namespace": s.namespace})
@@ -332,8 +306,7 @@ func TestResourceListAndGetOverProtocol(t *testing.T) {
 	s := newK8sSession(t)
 	s.createPod(t, "probe-generic")
 
-	// Short name, resolved through discovery — the generic path all the way
-	// down rather than a hardcoded pods client.
+	// the short name exercises discovery resolution, not a hardcoded pods client.
 	var list mcpsrv.ResourceListOut
 	s.call(t, "resource_list", map[string]any{"resource": "po", "namespace": s.namespace}, &list)
 	if list.Count != 1 {
@@ -365,9 +338,7 @@ func TestResourceListAndGetOverProtocol(t *testing.T) {
 	})
 }
 
-// The bound is the property every list tool copies, so it is asserted end to
-// end rather than on the helper alone: over the protocol, against a real
-// API server, with more objects than the limit allows.
+// asserted end to end, not on the helper: silent truncation is the failure the envelope prevents.
 func TestListBoundIsReportedNotSilent(t *testing.T) {
 	s := newK8sSession(t)
 	for i := range 5 {
@@ -467,9 +438,7 @@ func TestEventListOverProtocol(t *testing.T) {
 	}
 }
 
-// pod_logs cannot be exercised end to end: envtest runs no kubelet, so no
-// container ever produces output. The byte cap is not covered here;
-// internal/mcp.TestReadLogTail covers it.
+// envtest runs no kubelet, so no container output exists to cap here.
 func TestPodLogsOnAPodThatNeverRan(t *testing.T) {
 	s := newK8sSession(t)
 	s.createPod(t, "probe-logs")
@@ -503,10 +472,7 @@ func contains(haystack []string, needle string) bool {
 	return false
 }
 
-// TestSecretsAreRefusedAtTheReadTier. The on-node fallback is admin.conf,
-// which is cluster-admin, so the default server has the RIGHTS to read every
-// Secret. A Secret's contents in a model's context cannot be taken back, so
-// the refusal is policy here rather than something RBAC is trusted to do.
+// admin.conf is cluster-admin; secret contents cannot be taken back from a model's context.
 func TestSecretsAreRefusedAtTheReadTier(t *testing.T) {
 	s := newK8sSession(t)
 

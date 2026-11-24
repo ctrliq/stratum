@@ -14,8 +14,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// Trust can change while a join prepares its local files, before it takes the
-// maintenance fence. Admission must recheck the exact grant under that fence.
+// trust can change between the grant download and the maintenance fence; admission must recheck
 func TestJoinRevalidatesDownloadedGrantUnderFence(t *testing.T) {
 	for _, tc := range []struct {
 		name, entry string

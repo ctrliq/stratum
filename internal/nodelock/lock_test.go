@@ -13,8 +13,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirect points one of the version package's path vars at value for the test
-// and restores it afterwards.
 func redirect(t *testing.T, v *string, value string) {
 	t.Helper()
 	old := *v
@@ -22,8 +20,7 @@ func redirect(t *testing.T, v *string, value string) {
 	t.Cleanup(func() { *v = old })
 }
 
-// lockPathFor redirects the node lock to a file in a fresh temp dir and returns
-// its path, so tests never touch the production lock at /run.
+// Redirects the node lock to a temp file so tests never touch /run.
 func lockPathFor(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "upgrade.lock")
@@ -31,10 +28,6 @@ func lockPathFor(t *testing.T) string {
 	return path
 }
 
-// TestAcquirePathIsTheReleasedLockPath is the compatibility pin: every released
-// binary fences at version.RunDir + "-upgrade.lock" — /run/stratum-upgrade.lock
-// in production. A new path needs a compatibility release first, so the leaf
-// package must not move it.
 func TestAcquirePathIsTheReleasedLockPath(t *testing.T) {
 	if version.NodeUpgradeLockPath != version.RunDir+"-upgrade.lock" {
 		t.Errorf("node lock path = %q, want %q: every released binary opens that path",
@@ -46,10 +39,6 @@ func TestAcquirePathIsTheReleasedLockPath(t *testing.T) {
 	}
 }
 
-// TestAcquireHoldsTheRedirectedPath: Acquire flocks the exact file
-// version.NodeUpgradeLockPath names — the var tests redirect, so a package that
-// opened a hard-coded path would strand every holder on /run and refuse
-// nothing.
 func TestAcquireHoldsTheRedirectedPath(t *testing.T) {
 	path := lockPathFor(t)
 	release, err := Acquire("upgrade")
@@ -69,9 +58,6 @@ func TestAcquireHoldsTheRedirectedPath(t *testing.T) {
 	}
 }
 
-// TestAcquireWritesOperationAndPid: the lock file records the holder's
-// operation and pid, and only that — a stale longer file left by an earlier
-// holder must not survive the write, or a refusal would parse garbage.
 func TestAcquireWritesOperationAndPid(t *testing.T) {
 	path := lockPathFor(t)
 	release, err := Acquire("upgrade")
@@ -81,8 +67,6 @@ func TestAcquireWritesOperationAndPid(t *testing.T) {
 	assertHoldsOperationAndPid(t, path, "upgrade")
 	release()
 
-	// Releasing hands the file on: the next operation rewrites it with its own
-	// operation, over whatever the last holder left.
 	stale := strings.Repeat("stale-holder-op 999999 leftover\n", 4)
 	if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
 		t.Fatal(err)
@@ -95,8 +79,6 @@ func TestAcquireWritesOperationAndPid(t *testing.T) {
 	assertHoldsOperationAndPid(t, path, "rollback")
 }
 
-// assertHoldsOperationAndPid fails the test unless the lock file at path holds
-// exactly op and this process's pid.
 func assertHoldsOperationAndPid(t *testing.T, path, op string) {
 	t.Helper()
 	content, err := os.ReadFile(path)
@@ -110,9 +92,6 @@ func assertHoldsOperationAndPid(t *testing.T, path, op string) {
 	}
 }
 
-// TestAcquireRefusesASecondOperation is the node-maintenance fence: while one
-// operation holds the lock, a second operation on that node — whatever created
-// it — refuses, names the holder operation and pid, and changes nothing.
 func TestAcquireRefusesASecondOperation(t *testing.T) {
 	lockPathFor(t)
 	holder := holdNodeLockInChild(t, "upgrade")
@@ -136,11 +115,7 @@ func TestAcquireRefusesASecondOperation(t *testing.T) {
 	}
 }
 
-// TestAcquireRefusalNamesTheHolderOperation pins what "names the holder
-// operation" means: the refusal repeats the operation the holder recorded in
-// the file, which is how an operator tells a rollback from an upgrade. The
-// holder here runs a differently named operation than the refused caller, so
-// the assertion cannot pass on the caller's own name.
+// The holder runs a different operation, so the assertion cannot pass on the caller's own name.
 func TestAcquireRefusalNamesTheHolderOperation(t *testing.T) {
 	lockPathFor(t)
 	holdNodeLockInChild(t, "rollback")
@@ -154,10 +129,7 @@ func TestAcquireRefusalNamesTheHolderOperation(t *testing.T) {
 	}
 }
 
-// TestAcquireRefusesALegacyPidOnlyHolder: every released binary's lockNode
-// records only its pid. The extraction must keep refusing such a holder — and
-// still name the pid — or an upgrade running beside a released binary would
-// run unfenced.
+// A refusal that drops the pid would leave an upgrade beside a released binary unfenced.
 func TestAcquireRefusesALegacyPidOnlyHolder(t *testing.T) {
 	lockPathFor(t)
 	holder := holdRawFlockInChild(t)
@@ -177,8 +149,6 @@ func TestAcquireRefusesALegacyPidOnlyHolder(t *testing.T) {
 	}
 }
 
-// TestAcquireExactlyOneWinner: operations racing for one node leave exactly one
-// holding it and every other refusing.
 func TestAcquireExactlyOneWinner(t *testing.T) {
 	lockPathFor(t)
 	const n = 16
@@ -217,9 +187,6 @@ func TestAcquireExactlyOneWinner(t *testing.T) {
 	}
 }
 
-// TestAcquireReleaseUnlocks: a finished run hands the node on. After release a
-// fresh exclusive flock — and a fresh Acquire — must both succeed, which a
-// release that did nothing would fail.
 func TestAcquireReleaseUnlocks(t *testing.T) {
 	path := lockPathFor(t)
 	release, err := Acquire("upgrade")
@@ -245,10 +212,7 @@ func TestAcquireReleaseUnlocks(t *testing.T) {
 	release()
 }
 
-// TestAcquireFdIsCloseOnExec: os.OpenFile's default — but the whole reason
-// flock survives here is that a unit the upgrade restarts cannot inherit the
-// lock, so the package must not open the file any other way. The fd is found
-// through /proc/self/fd because Acquire hands back only the release closure.
+// The fd is found via /proc/self/fd because Acquire hands back only the release closure.
 func TestAcquireFdIsCloseOnExec(t *testing.T) {
 	path := lockPathFor(t)
 	release, err := Acquire("upgrade")

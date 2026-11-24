@@ -21,15 +21,10 @@ func TestScheduledSaveOptions(t *testing.T) {
 	cfg.Spec.Snapshot.Dir = "/snaps"
 	cfg.Spec.Snapshot.S3 = &S3{Bucket: "b", Prefix: "p", Region: "r", Endpoint: "e", PathStyle: true}
 
-	// File absent: LoadConfigOr hands back the base it was given.
 	absent := func(base etcdsnap.Config) (etcdsnap.Config, error) { return base, nil }
-	// File present: its values replace the cluster config's.
 	present := func(etcdsnap.Config) (etcdsnap.Config, error) {
 		return etcdsnap.Config{Retain: 9, S3: objstore.Target{Bucket: "file"}}, nil
 	}
-	// File present but unreadable: LoadConfigOr returns an error, so pruning to
-	// the base retention or uploading to the base S3 target could act on
-	// settings the operator never configured.
 	readErr := errors.New("permission denied")
 	broken := func(etcdsnap.Config) (etcdsnap.Config, error) { return etcdsnap.Config{}, readErr }
 
@@ -47,8 +42,6 @@ func TestScheduledSaveOptions(t *testing.T) {
 	}
 	buf.Reset()
 	o = scheduledSaveOptions(cfg, broken, &buf)
-	// The snapshot is still taken (Dir stands) but nothing may be pruned
-	// (Retain 0 keeps all) and nothing may be uploaded (no S3 target).
 	if o.Retain != 0 || o.S3 != nil || o.Dir != "/snaps" {
 		t.Errorf("unreadable file: %+v, want keep-all, no S3, unchanged dir", o)
 	}
@@ -72,9 +65,7 @@ func TestLoadConfigS3PathStyle(t *testing.T) {
 	}
 }
 
-// A manual `snapshot save`, list, prune, restore s3:// and the MCP snapshot
-// tools all resolve through LoadSnapshotConfig, so a config.yaml-only node
-// agrees with its scheduled loop instead of reverting to retain 5, no S3.
+// manual save/list/prune/restore and the MCP tools resolve through LoadSnapshotConfig too.
 func TestLoadSnapshotConfigUsesClusterConfigWhenFileAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	y := "spec:\n  snapshots:\n    retain: 10\n    s3:\n      bucket: b\n      pathStyle: true\n"
@@ -107,8 +98,7 @@ func TestLoadSnapshotConfigBadClusterConfigFallsBackToDefaults(t *testing.T) {
 	}
 }
 
-// absentConf stands in for etcdsnap.LoadConfigOr with no snapshot.conf: the
-// base comes back untouched and the file did not supply it.
+// absentConf stands in for etcdsnap.LoadConfigOr with no snapshot.conf.
 func absentConf(base etcdsnap.Config) (etcdsnap.Config, bool, error) { return base, false, nil }
 
 // presentConf stands in for LoadConfigOr with a snapshot.conf on disk.
@@ -152,8 +142,7 @@ func TestLoadSnapshotConfigWarnsOnlyWhenBrokenClusterConfigForcesDefaults(t *tes
 	}
 }
 
-// `stratum up --config /srv/stratum.yaml` is what the scheduled loop reads, so
-// the CLI and MCP must read it too, not /etc/stratum/config.yaml.
+// the CLI and MCP must read the config the controller was started with, not the default path.
 func TestSnapshotConfigFollowsTheControllersNonDefaultConfigPath(t *testing.T) {
 	redirectNodeStateAndLock(t)
 	dir := t.TempDir()
@@ -162,7 +151,6 @@ func TestSnapshotConfigFollowsTheControllersNonDefaultConfigPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// What RunController records from the config `stratum up --config` loaded.
 	cfg, err := LoadConfig(custom)
 	if err != nil {
 		t.Fatal(err)
@@ -189,10 +177,7 @@ func TestSnapshotConfigFollowsTheControllersNonDefaultConfigPath(t *testing.T) {
 	}
 }
 
-// A node with no state yet, or state with no recorded path, reads the default
-// path quietly. Any other state error (unreadable, corrupt) also falls back to
-// the default path, but warns: on a node started with a custom --config that
-// would otherwise silently apply the default path's retention.
+// an unreadable state falls back to the default path with a warning; a missing one quietly.
 func TestActiveConfigPathFallsBackToDefault(t *testing.T) {
 	wrappedNotExist := fmt.Errorf("read node state: %w", fs.ErrNotExist)
 	for _, tc := range []struct {
@@ -256,10 +241,7 @@ func TestRecordConfigPath(t *testing.T) {
 	}
 }
 
-// Deleting the config the controller recorded must not silently select the
-// defaults (retain 5, no S3) while the running controller keeps its loaded
-// settings: that is warned about, like an unreadable config.yaml. Quiet when
-// snapshot.conf supplies the settings, and for the ordinary no-config node.
+// a deleted recorded config warns like an unreadable one instead of silently selecting defaults.
 func TestLoadSnapshotConfigRecordedConfigDeleted(t *testing.T) {
 	dir := t.TempDir()
 	custom := filepath.Join(dir, "stratum.yaml")
@@ -312,8 +294,7 @@ func TestLoadSnapshotConfigRecordedConfigDeleted(t *testing.T) {
 	}
 }
 
-// The real LoadState reports a missing node.yaml as fs.ErrNotExist, so the
-// quiet case is what an uninitialised node actually hits, not just the stub.
+// a real missing node.yaml reports fs.ErrNotExist, the quiet case above.
 func TestActiveConfigPathWithRealNodeState(t *testing.T) {
 	old := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()
@@ -333,7 +314,7 @@ func TestActiveConfigPathWithRealNodeState(t *testing.T) {
 	}
 }
 
-// The CLI's list/prune and the scheduled loop must name the same directory.
+// the CLI's list/prune and the scheduled loop must name the same directory.
 func TestSnapshotDirIsSharedWithTheScheduledLoop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte("spec:\n  snapshots:\n    dir: /srv/etcd-snaps\n"), 0o600); err != nil {
@@ -358,8 +339,7 @@ func TestSnapshotDirIsSharedWithTheScheduledLoop(t *testing.T) {
 	}
 }
 
-// A relative spec.snapshots.dir names a different place per process, and "-x"
-// would reach etcdutl as a flag, so it is ignored.
+// a relative dir names a different place per process, and "-x" would reach etcdutl as a flag.
 func TestSnapshotDirIgnoresARelativeDir(t *testing.T) {
 	for _, d := range []string{"-backups", "backups", "./backups", "../backups"} {
 		p := writeCfg(t, "spec:\n  snapshots:\n    dir: "+d+"\n")
@@ -376,10 +356,7 @@ func TestSnapshotDirIgnoresARelativeDir(t *testing.T) {
 	}
 }
 
-// ".." is resolved after symlinks by the kernel (ReadDir) and before them by
-// filepath.Clean (Join), so such a dir could name two places. The
-// other unclean forms mean the same to both, so they are cleaned, not dropped:
-// an existing node must keep finding its snapshots.
+// the kernel resolves ".." after symlinks and filepath.Clean before them, so such a dir is dropped.
 func TestSnapshotDirHandlesAnUncleanDir(t *testing.T) {
 	for d, want := range map[string]string{
 		"/srv/snaps/../x":  "/var/backups/etcd",
@@ -387,7 +364,7 @@ func TestSnapshotDirHandlesAnUncleanDir(t *testing.T) {
 		"/srv/snaps/":      "/srv/snaps",
 		"//srv//snaps":     "/srv/snaps",
 		"/srv/./snaps":     "/srv/snaps",
-		"/srv/..snaps/x..": "/srv/..snaps/x..", // not a ".." element
+		"/srv/..snaps/x..": "/srv/..snaps/x..",
 	} {
 		p := writeCfg(t, "spec:\n  snapshots:\n    dir: "+d+"\n")
 		cfg, err := LoadConfig(p)

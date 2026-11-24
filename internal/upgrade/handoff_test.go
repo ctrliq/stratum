@@ -20,8 +20,6 @@ type execCall struct {
 	env  []string
 }
 
-// stubHandOff points the running binary at self and records every exec
-// instead of replacing the test process.
 func stubHandOff(t *testing.T, self string, execErr error) *[]execCall {
 	t.Helper()
 	var calls []execCall
@@ -45,9 +43,6 @@ func writeBinary(t *testing.T, path string, mode os.FileMode) string {
 	return path
 }
 
-// The documented one-node command: the installed binary, given a
-// different --from, becomes the upgrade binary with the same arguments, and
-// marks the process so the upgrade binary cannot hand off again.
 func TestHandOffExecsTheUpgradeBinary(t *testing.T) {
 	dir := t.TempDir()
 	self := writeBinary(t, filepath.Join(dir, "stratum"), 0o755)
@@ -80,9 +75,7 @@ func TestHandOffExecsTheUpgradeBinary(t *testing.T) {
 	}
 }
 
-// The upgrade binary sees --from naming itself, which is the cluster Job's
-// argv too (nodeUpgradeArgv): it must proceed, not exec itself forever. Also
-// through a hard link, where the path differs but the file does not.
+// Also through a hard link, where the path differs but the file does not.
 func TestHandOffIsANoOpForThisBinary(t *testing.T) {
 	dir := t.TempDir()
 	self := writeBinary(t, filepath.Join(dir, "stratum"), 0o755)
@@ -140,9 +133,7 @@ func TestHandOffReportsAFailedExec(t *testing.T) {
 	}
 }
 
-// UpgradeNode is also called directly by MCP, which cannot replace its server
-// process with the staged binary. Refuse before a default target or payload
-// extraction can pair this process's old manifests with newer host binaries.
+// MCP cannot replace its process with the staged binary.
 func TestUpgradeNodeRejectsDifferentFromWithoutHandoff(t *testing.T) {
 	dir := t.TempDir()
 	self := writeBinary(t, filepath.Join(dir, "stratum"), 0o755)
@@ -160,8 +151,7 @@ func TestUpgradeNodeRejectsDifferentFromWithoutHandoff(t *testing.T) {
 	}
 }
 
-// Each refusal says what to do next, because a single message cannot be
-// right for all three cases.
+// A single message cannot be right for all three refusal cases.
 func TestTargetMismatchSaysWhatToDo(t *testing.T) {
 	k := version.K8sVersion
 	for name, tc := range map[string]struct {
@@ -231,8 +221,7 @@ func TestHandOffDoesNotLabelThisBinary(t *testing.T) {
 	}
 }
 
-// A read-only run (--dry-run, --check) still hands off, so the preview comes
-// from the version being installed, but changes no label on the node.
+// A read-only run still hands off, so the preview matches the version installed.
 func TestHandOffDoesNotRelabelOnAReadOnlyRun(t *testing.T) {
 	dir := t.TempDir()
 	self := writeBinary(t, filepath.Join(dir, "stratum"), 0o755)

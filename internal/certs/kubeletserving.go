@@ -29,22 +29,15 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// errNoKubeletServingCert marks a kubelet that holds no bootstrap-issued
-// serving cert yet. Rotation must stop until one is issued: a kubelet without
-// a serving cert cannot satisfy the apiserver's kubelet TLS verification.
+// A kubelet without a serving cert cannot satisfy the apiserver's kubelet TLS verification.
 var errNoKubeletServingCert = errors.New("the kubelet has no serving cert yet")
 
-// kubeletServingCertPath is a worker's serving pair, in the --cert-dir that
-// checkWorkerReissueConfig requires the running kubelet to use.
+// kubeletServingCertPath must sit in the running kubelet's --cert-dir.
 func kubeletServingCertPath() string {
 	return filepath.Join(filepath.Dir(kubeletClientCertPath()), pki.KubeletServingCurrent)
 }
 
-// kubeletBootstrapsServing reports whether this node's kubelet gets its serving
-// cert through a kubelet-serving CSR rather than a static PKI leaf, which leaf
-// rotation already reissues under the new CA. It decides the way the kubelet's
-// config was written, and refuses when the node state cannot be read rather
-// than guess "static leaf".
+// A static serving leaf is reissued by leaf rotation; unreadable state refuses rather than guess.
 var kubeletBootstrapsServing = func() (bool, error) {
 	st, err := nodestate.LoadState()
 	if err != nil {
@@ -53,12 +46,6 @@ var kubeletBootstrapsServing = func() (bool, error) {
 	return runtime.ServingBootstrapped(st, version.PKIDir)
 }
 
-// renewKubeletServingCert is renewKubeletClientCert for the kubelet's serving
-// cert: it obtains one signed by the newest CA in anchor, for the same node and
-// the same SANs, and installs it without removing the current one first. The
-// CSR goes to the kubernetes.io/kubelet-serving signer, so the operator's
-// approver must approve it. A current cert the new CA already signed is left
-// alone and reported as not renewed.
 func renewKubeletServingCert(ctx context.Context, certPath string, anchor []*x509.Certificate, ops kubeletRenewOps) (renewed bool, err error) {
 	current, err := pki.ReadKubeletServingLeaf(certPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -106,9 +93,6 @@ func renewKubeletServingCert(ctx context.Context, certPath string, anchor []*x50
 	return true, nil
 }
 
-// checkRenewedServingCert accepts an issued serving cert only when it is for
-// the same node and SANs as current, carries the key this run generated, is
-// valid now, and was signed by newCA.
 func checkRenewedServingCert(certPEM []byte, key *ecdsa.PrivateKey, current *x509.Certificate, anchor []*x509.Certificate, newCA *x509.Certificate) error {
 	issued, err := pki.FirstCertificate(certPEM)
 	if err != nil {
@@ -141,20 +125,15 @@ func checkRenewedServingCert(certPEM []byte, key *ecdsa.PrivateKey, current *x50
 	return fmt.Errorf("the issued kubelet serving cert was signed by a CA this node does not trust (issuer %q)", issued.Issuer.String())
 }
 
-// requestServingCert is requestKubeletServingCert, a var so a test can stand
-// in for the operator's approval and the controller-manager's signature.
+// requestServingCert is a var so a test can stand in for approval and signing.
 var requestServingCert = requestKubeletServingCert
 
-// requestKubeletServingCert sends csrPEM to the kubelet-serving signer as the
-// kubelet, using kubeconfigPath's client cert and trust.
 func requestKubeletServingCert(kubeconfigPath string) kubeletRequest {
 	return requestKubeletCert(kubeconfigPath, certificatesv1.KubeletServingSignerName,
 		[]certificatesv1.KeyUsage{certificatesv1.UsageDigitalSignature, certificatesv1.UsageServerAuth})
 }
 
-// storeKubeletServingCert installs the pair the way the kubelet's certificate
-// manager does: a timestamped kubelet-server-*.pem, then a swap of the
-// kubelet-server-current.pem symlink.
+// Installs the pair the way the kubelet's certificate manager does: timestamped file, symlink swap.
 func storeKubeletServingCert(certPath string) func(certPEM, keyPEM []byte) error {
 	return func(certPEM, keyPEM []byte) error {
 		dir := filepath.Dir(certPath)
@@ -167,12 +146,6 @@ func storeKubeletServingCert(certPath string) func(certPEM, keyPEM []byte) error
 	}
 }
 
-// renewServingCert renews this node's bootstrap-issued kubelet serving cert
-// under the newest CA in anchor, authenticating as the kubelet through
-// kubeconfigPath, and reports whether it installed a new one. A node whose
-// kubelet pins a static serving leaf has nothing to renew. A bootstrap kubelet
-// with no serving cert refuses the phase. A failure leaves the current cert in
-// place.
 func renewServingCert(w io.Writer, o CARotateOptions, phase, kubeconfigPath, certPath string, anchor []*x509.Certificate) (bool, error) {
 	bootstraps, err := kubeletBootstrapsServing()
 	if err != nil || !bootstraps {
@@ -199,11 +172,6 @@ func renewServingCert(w io.Writer, o CARotateOptions, phase, kubeconfigPath, cer
 	return renewed, nil
 }
 
-// checkServingCertSurvives refuses a finalize that would drop the CA the
-// kubelet serving cert at path was signed by: the apiservers would then reject
-// it, and kubectl logs, exec and port-forward to this node would fail. A
-// missing or unreadable cert also refuses: the worker cannot prove its kubelet
-// will serve a trusted certificate after finalize restarts it.
 func checkServingCertSurvives(dropped []*x509.Certificate, path string) error {
 	if len(dropped) == 0 {
 		return nil
@@ -221,19 +189,9 @@ func checkServingCertSurvives(dropped []*x509.Certificate, path string) error {
 	return nil
 }
 
-// probeKubelet is pki.ProbeKubeletServing, a var so a test can stand in for the
-// kubelets.
+// probeKubelet is a var so a test can stand in for the kubelets.
 var probeKubelet pki.KubeletProbe = pki.ProbeKubeletServing
 
-// checkKubeletServingTrusted is the kubelet arm of FinalizePreflight. When the
-// cluster's profile bootstraps control-plane serving certs (cpBootstrap) the
-// control planes are skipped:
-// their kubelets bootstrap their serving certs and renew them in their own
-// finalize, since before then not every controller-manager signs with the new
-// CA. A worker whose kubelet cannot be checked is reported but does not
-// refuse, since its own finalize checks its cert on disk; a control plane has
-// no such check and a kubelet that restarted best-effort may still serve the
-// old-CA cert, so one that cannot be checked refuses.
 func checkKubeletServingTrusted(ctx context.Context, w io.Writer, nodes []corev1.Node, cpBootstrap bool, newCA *x509.Certificate, probe pki.KubeletProbe) error {
 	var targets []pki.KubeletTarget
 	var probed []*corev1.Node
@@ -270,11 +228,6 @@ func checkKubeletServingTrusted(ctx context.Context, w io.Writer, nodes []corev1
 
 func isControlPlane(n *corev1.Node) bool { return n.Labels[k8sutil.ControlPlaneLabel] == "true" }
 
-// untrustedServingRemedy is what clears an old-CA serving cert on n. A worker
-// renews it at sign-new. A control plane's kubelet bootstraps it only under a
-// profile that declares bootstrap serving certs, which renews it in finalize;
-// otherwise it serves the static kubelet.crt leaf that sign-new reissued, and a
-// kubelet that did not restart onto it at sign-new needs a restart, since sign-new cannot run again once it promoted.
 func untrustedServingRemedy(n *corev1.Node) string {
 	if isControlPlane(n) {
 		return "restart Stratum on that control plane (`sudo systemctl restart stratum`) so its kubelet serves its new-CA cert, then retry finalize"

@@ -15,21 +15,11 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// rotationNameFragment matches the spellings a CA rotation's file names are
-// built from: a staged replacement's "-new.<ext>" and a promotion backup's
-// ".pre-carotate". Phase names (trust-new, sign-new) carry neither.
 var rotationNameFragment = regexp.MustCompile(`-new\.(crt|key|pub)\b|\.pre-carotate\b`)
 
-// TestNoPackageOutsidePKISpellsARotationFileName: which files a CA rotation
-// stages and backs up is pki's decision. A package that spells one of those
-// names for itself drifts from pki's manifest silently the next time a name or
-// an anchor changes, and the phase it infers from that file drifts with it, so
-// every reader outside pki asks pki for the name (StagedTrustName,
-// StagedRootCAName, PreRotationBackupName) instead. Test files are exempt:
-// they lay out PKI directories by hand on purpose.
+// Drift from pki's manifest is silent, so every reader outside pki asks pki for the name.
 func TestNoPackageOutsidePKISpellsARotationFileName(t *testing.T) {
-	// The bare staged base names ("ca-new") a pair reader names without an
-	// extension, taken from the manifest itself.
+	// The bare staged base names ("ca-new") a pair reader names, from the manifest itself.
 	stagedBases := map[string]bool{}
 	for _, f := range TrustLayout() {
 		if f.StagedAs != "" {
@@ -78,9 +68,6 @@ func TestNoPackageOutsidePKISpellsARotationFileName(t *testing.T) {
 	}
 }
 
-// TestRotationNameAccessorsNameWhatTheRotationWrites: the accessors other
-// packages read the names through answer the files sign-new actually stages
-// and backs up.
 func TestRotationNameAccessorsNameWhatTheRotationWrites(t *testing.T) {
 	old := version.PKIDir
 	t.Cleanup(func() { version.PKIDir = old })

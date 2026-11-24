@@ -15,19 +15,7 @@ import (
 	ktesting "k8s.io/client-go/testing"
 )
 
-// TestHelmChartRestartMidRecoveryHolds pins that the hold on a pending-install
-// recovery survives an operator restart between Helm's purge and the
-// "uninstall incomplete:" status write. The recovery uninstalls a release with
-// nothing that served, Helm purges it and leaves objects whose ownership it
-// could not verify, and the status write that would hold the reinstall keeps
-// failing, so the operator parks that write in its own memory. A restart
-// discards that memory, and the release is gone with it: a next reconcile that
-// finds no hold reinstalls over the objects Helm could not verify. The outage
-// lets the writes a reconcile makes before it decides on the release through,
-// so the post-restart reconcile reaches the release lookup, and the hold must
-// rest on status.unrecordedRecovery — the marker write's standing record, not
-// the in-memory one: nothing reinstalls, and deleting the HelmChart keeps its
-// finalizer until the objects are gone.
+// the hold must rest on status.unrecordedRecovery once a restart discards the parked write.
 func TestHelmChartRestartMidRecoveryHolds(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	shortIncompleteWriteBackoff(t)
@@ -37,10 +25,7 @@ func TestHelmChartRestartMidRecoveryHolds(t *testing.T) {
 	dyn := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
 	outage := failIncompleteWrites(t, dyn)
 
-	// One reconcile: the pre-Helm Pending write succeeds, the recovery
-	// uninstall purges the release and leaves app-cm behind, and the
-	// "uninstall incomplete:" write fails for every retry, so the record of it
-	// is parked in the operator's memory.
+	// the recovery uninstall purges the release; the hold write fails every retry.
 	reconcileFlow(t, dyn)
 
 	if hist := h.history(t, flowNS, flowRelease); hist != nil {
@@ -51,18 +36,13 @@ func TestHelmChartRestartMidRecoveryHolds(t *testing.T) {
 		t.Fatalf("no unwritten recovery record parked for this HelmChart; status = %+v", readFlowStatus(t, dyn))
 	}
 
-	// The operator restarts before the parked record reaches the status: the
-	// process, and with it the record, is gone. Helm's reads of the cluster
-	// answer again, so a reinstall would now succeed; the write outage
-	// continues until the deletion below.
+	// the restart discards the parked record; the write outage continues.
 	forgetUnwrittenIncomplete(t)
 	kc.DummyResources = nil
 
 	reconcileFlow(t, dyn)
 
-	// The hold must survive the restart on status.unrecordedRecovery: the
-	// reconcile reached the release lookup — the outage rejected its hold
-	// write — and reinstalls nothing, staying off Deployed.
+	// the hold must rest on status.unrecordedRecovery, not the parked record.
 	outage.wantEveryAttemptRejected(t, "after the post-restart reconcile")
 	if hist := h.history(t, flowNS, flowRelease); hist != nil {
 		t.Errorf("after the restart, the next reconcile reinstalled over the objects Helm could not verify: %+v; status = %+v", hist, readFlowStatus(t, dyn))
@@ -71,10 +51,7 @@ func TestHelmChartRestartMidRecoveryHolds(t *testing.T) {
 		t.Errorf("after the restart, the next reconcile marked the HelmChart Deployed over the objects Helm could not verify: %+v", st)
 	}
 
-	// Deleting the same HelmChart then keeps its finalizer: the restart must
-	// not let the deletion conclude while the objects are still there. The
-	// outage ends first, so the rewrite the deletion drives can reach the
-	// status.
+	// the restart must not let the deletion conclude while the objects remain.
 	outage.end()
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 		deleted := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -87,14 +64,7 @@ func TestHelmChartRestartMidRecoveryHolds(t *testing.T) {
 	}
 }
 
-// TestHelmChartSecondRestartKeepsTheHold pins that the hold outlives a second
-// restart. After the first restart the reconcile records the hold from the
-// standing recovery evidence, but its "uninstall incomplete:" write fails and
-// parks in the operator's memory. A second restart discards that memory, so
-// the next reconcile must hold on what the status still says: it reinstalls
-// nothing, stays off Deployed, and deleting the HelmChart keeps its finalizer.
-// The writes a reconcile makes before it decides on the release must not
-// destroy that evidence.
+// the hold outlives a second restart on what the status still says.
 func TestHelmChartSecondRestartKeepsTheHold(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	shortIncompleteWriteBackoff(t)
@@ -104,10 +74,7 @@ func TestHelmChartSecondRestartKeepsTheHold(t *testing.T) {
 	dyn := newFlowHC(t, map[string]interface{}{"chartContent": flowChart(t, "1.0.0")})
 	outage := failIncompleteWrites(t, dyn)
 
-	// One reconcile: the pre-uninstall marker write gets through, the recovery
-	// uninstall purges the release and leaves app-cm behind, and the
-	// "uninstall incomplete:" write fails for every retry, so the record of it
-	// is parked in the operator's memory.
+	// the recovery uninstall purges the release; the hold write fails and parks.
 	reconcileFlow(t, dyn)
 
 	if hist := h.history(t, flowNS, flowRelease); hist != nil {
@@ -115,8 +82,7 @@ func TestHelmChartSecondRestartKeepsTheHold(t *testing.T) {
 	}
 	outage.wantEveryAttemptRejected(t, "after the recovery uninstall")
 
-	// First restart: the parked record is gone. The recovery evidence in the
-	// status must drive the hold, and its write fails again and parks.
+	// the status evidence must drive the hold; its write fails again and parks.
 	forgetUnwrittenIncomplete(t)
 	kc.DummyResources = nil
 
@@ -127,8 +93,7 @@ func TestHelmChartSecondRestartKeepsTheHold(t *testing.T) {
 	}
 	outage.wantEveryAttemptRejected(t, "after the first post-restart reconcile")
 
-	// Second restart: the parked record is gone again. The status is all that
-	// is left, and it must still hold.
+	// the status is all that is left, and it must still hold.
 	forgetUnwrittenIncomplete(t)
 
 	reconcileFlow(t, dyn)
@@ -143,7 +108,7 @@ func TestHelmChartSecondRestartKeepsTheHold(t *testing.T) {
 		t.Errorf("after the second restart, no hold write was parked for this HelmChart; status = %+v", readFlowStatus(t, dyn))
 	}
 
-	// Deleting the same HelmChart once the outage ends keeps its finalizer.
+	// deleting the HelmChart once the outage ends keeps its finalizer.
 	outage.end()
 	updateFlowHC(t, dyn, func(hc *unstructured.Unstructured) {
 		deleted := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -156,16 +121,7 @@ func TestHelmChartSecondRestartKeepsTheHold(t *testing.T) {
 	}
 }
 
-// TestHelmChartDeletionHoldsWhenMarkerMessageWasReplaced pins the deletion
-// path's recovery check on status.unrecordedRecovery, the field that stands
-// when the marker message itself no longer does. The sequence it pins is
-// reachable: the recovery's pre-uninstall marker write gets through, the
-// operator restarts, and a Failed write the next reconcile makes before the
-// release lookup — a load-chart error, or the containment refusal — replaces
-// the marker message while the field it wrote survives. Deleting the HelmChart
-// then must hold on the field: the uninstall finds the release gone, which
-// proves nothing about what the interrupted uninstall left, so the finalizer
-// stays and the deletion wording names the release.
+// the deletion path must hold on the unrecordedRecovery field once the marker message is gone.
 func TestHelmChartDeletionHoldsWhenMarkerMessageWasReplaced(t *testing.T) {
 	forgetUnwrittenIncomplete(t)
 	useFakeHelm(t, fakeHelmOptions{}) // no release: the interrupted uninstall purged it
@@ -190,9 +146,7 @@ func TestHelmChartDeletionHoldsWhenMarkerMessageWasReplaced(t *testing.T) {
 	}
 }
 
-// A clean recovery result is still known to this process if only its status
-// write fails. Retrying that result must clear the pre-uninstall marker before
-// a missing Helm release is mistaken for objects that might remain.
+// retrying the observed outcome must clear the marker before a missing release reads as a hold.
 func TestHelmChartCleanRecoveryOutcomeWriteIsRetried(t *testing.T) {
 	h := useFakeHelm(t, fakeHelmOptions{})
 	h.seed(t, flowNS, flowRelease, helmRecord{revision: 1, status: "pending-install", chartVersion: "1.0.0"})
@@ -228,8 +182,7 @@ func TestHelmChartCleanRecoveryOutcomeWriteIsRetried(t *testing.T) {
 		t.Fatalf("rejected %d clean outcome writes, want 1", rejected)
 	}
 
-	// While the outcome write still fails, this process must retain what it
-	// observed and neither install nor invent an uninstall-incomplete hold.
+	// while the outcome write fails, neither install nor invent a hold.
 	reconcileFlow(t, dyn)
 	if hist := h.history(t, flowNS, flowRelease); hist != nil {
 		t.Fatalf("reinstalled before the clean recovery outcome was recorded: %+v", hist)
@@ -252,19 +205,13 @@ func TestHelmChartCleanRecoveryOutcomeWriteIsRetried(t *testing.T) {
 	wantLatestRelease(t, h, helmRecord{revision: 1, status: "deployed", chartVersion: "1.0.0"})
 }
 
-// incompleteOutage rejects, until end, every HelmChart status write whose
-// message starts with uninstallIncompletePrefix, and counts the rejections
-// since the last wantEveryAttemptRejected.
+// rejects, until end, every status write whose message starts with uninstallIncompletePrefix.
 type incompleteOutage struct {
 	ended    bool
 	rejected int
 }
 
-// failIncompleteWrites starts an incompleteOutage on the HelmChart in dyn.
-// Unlike failStatusWritesFromIncomplete it lets every other status write
-// through, so a reconcile after a restart reaches the hold write instead of
-// stopping at its pre-Helm writes: the outage models an apiserver failure that
-// began when the first "uninstall incomplete:" write ran.
+// unlike failStatusWritesFromIncomplete it lets every other status write through.
 func failIncompleteWrites(t *testing.T, dyn dynamic.Interface) *incompleteOutage {
 	t.Helper()
 	fake, ok := dyn.(*dynfake.FakeDynamicClient)
@@ -293,13 +240,9 @@ func failIncompleteWrites(t *testing.T, dyn dynamic.Interface) *incompleteOutage
 	return o
 }
 
-// end lets every later status write through.
 func (o *incompleteOutage) end() { o.ended = true }
 
-// wantEveryAttemptRejected fails unless the outage rejected exactly
-// incompleteWriteAttempts "uninstall incomplete:" writes since the last call,
-// so the reconcile just run tried the write, used up its retries, and left the
-// status unwritten.
+// fails unless one reconcile's retries were all rejected and the status left unwritten.
 func (o *incompleteOutage) wantEveryAttemptRejected(t *testing.T, when string) {
 	t.Helper()
 	if o.rejected != incompleteWriteAttempts {

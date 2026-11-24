@@ -11,13 +11,7 @@ import (
 	"github.com/ctrliq/stratum/internal/pki"
 )
 
-// kubeletServing sorts the nodes by whether their kubelet serves a certificate
-// roots verify. untrusted names the nodes whose kubelet serves one no CA in
-// roots signed: the apiserver verifies kubelet serving certs against that
-// bundle in every profile, so kubectl logs and exec to those nodes fail. A node
-// that finalized a `certs rotate-ca` on a release whose default profile did not
-// verify them can still hold one signed by the CA the rotation dropped.
-// unverified describes each node that could not be checked.
+// A node can hold a serving cert signed by a CA an earlier rotate-ca dropped.
 func kubeletServing(ctx context.Context, nodes []Node, roots []*x509.Certificate, probe pki.KubeletProbe) (untrusted, unverified []string) {
 	targets := make([]pki.KubeletTarget, len(nodes))
 	for i, n := range nodes {
@@ -34,11 +28,7 @@ func kubeletServing(ctx context.Context, nodes []Node, roots []*x509.Certificate
 	return untrusted, unverified
 }
 
-// warnUntrustedKubeletServing prints the upgrade's known gap: from the first
-// control-plane upgrade until each named node is upgraded, logs and exec to it
-// fail. The upgraded node's kubelet moves the untrusted cert aside as it starts
-// and requests a new one, which closes the gap. A node it could not check is
-// named too, so no warning never stands in for "checked and fine".
+// The gap closes once the node upgrades: its kubelet requests a new serving cert.
 func warnUntrustedKubeletServing(w io.Writer, ctx context.Context, nodes []Node) {
 	roots, err := pki.KubeletServingRoots()
 	if err != nil {

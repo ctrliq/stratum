@@ -34,8 +34,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Retained member data is refused before even parsing the server URL. The
-// invalid URL keeps a regression from proceeding to real host writes.
 func TestJoinRefusesRetainedMemberBeforePreparation(t *testing.T) {
 	dir := t.TempDir()
 	member := filepath.Join(dir, "member", "wal")
@@ -47,8 +45,6 @@ func TestJoinRefusesRetainedMemberBeforePreparation(t *testing.T) {
 		t.Fatal(err)
 	}
 	opts := JoinOptions{Server: "https://%", Token: "token", CAHash: "pin", CertKey: "key"}
-	// runUp threads a live context through preparation; a Background context
-	// keeps this test focused on the refusal.
 	_, err := prepareControlPlaneJoin(context.Background(), opts, dir, productionJoinEffects())
 	if err == nil {
 		t.Fatal("accepted retained member")
@@ -62,8 +58,6 @@ func TestJoinRefusesRetainedMemberBeforePreparation(t *testing.T) {
 	if err != nil || string(data) != "original member data" {
 		t.Fatalf("retained data changed: %q %v", data, err)
 	}
-	// A partial directory must fail at this same early gate, before URL
-	// validation and before certificate download can alter recovery material.
 	residueDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(residueDir, "leftover"), []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
@@ -71,7 +65,6 @@ func TestJoinRefusesRetainedMemberBeforePreparation(t *testing.T) {
 	if _, err := prepareControlPlaneJoin(context.Background(), opts, residueDir, productionJoinEffects()); err == nil || !strings.Contains(err.Error(), "residue") {
 		t.Fatalf("non-member residue passed early preflight: %v", err)
 	}
-	// With no member data, preparation gets as far as URL validation.
 	_, err = prepareControlPlaneJoin(context.Background(), opts, t.TempDir(), productionJoinEffects())
 	if err == nil || !strings.Contains(err.Error(), "invalid URL escape") {
 		t.Fatalf("fresh preflight: %v", err)
@@ -96,8 +89,6 @@ func TestAddMemberIfEtcdDataDirEmptyRollsBackConcurrentData(t *testing.T) {
 	}
 }
 
-// Any entry, including a non-member file, blocks the join before it can change
-// shared PKI material. A missing or empty directory is safe to prepare.
 func TestRefuseRetainedMember(t *testing.T) {
 	check := func(dir string, want bool, what string) {
 		t.Helper()
@@ -148,8 +139,6 @@ func TestRefuseRetainedMemberFailsClosed(t *testing.T) {
 	}
 }
 
-// A member arriving after the early preflight must survive the late empty-dir
-// replacement. Non-member residue is also retained for explicit inspection.
 func TestPrepareEmptyEtcdDataDirPreservesConcurrentEntries(t *testing.T) {
 	for _, name := range []string{"member", "leftover"} {
 		t.Run(name, func(t *testing.T) {
@@ -189,8 +178,7 @@ func TestPrepareEmptyEtcdDataDirPreservesConcurrentEntries(t *testing.T) {
 	}
 }
 
-// keyBundle is a downloaded bundle that carried the cis profile's at-rest key,
-// or none, from an uploader whose profile it does not say.
+// keyBundle is a downloaded bundle that carried the cis key, or none, with an unnamed uploader.
 func keyBundle(carried bool) bundleProfile {
 	if carried {
 		return bundleProfile{Secrets: []string{encryptionConfigEntry}}
@@ -198,7 +186,6 @@ func keyBundle(carried bool) bundleProfile {
 	return bundleProfile{}
 }
 
-// cisFor is the profile a join with the CIS flag runs.
 func cisFor(cis bool) profile.Profile {
 	if cis {
 		return profiletest.Profile()
@@ -242,9 +229,7 @@ func TestRequireSharedSecrets(t *testing.T) {
 	}
 }
 
-// A bundle names its uploader's profile, and a join of any other is refused
-// whatever secrets it carries: a profile without shared secrets is told from
-// none only by its name.
+// A bundle names its uploader's profile; a join of any other is refused whatever it carries.
 func TestRequireSharedSecretsComparesTheUploadersProfile(t *testing.T) {
 	plain := profile.Profile{Name: "plain"}
 	for _, tc := range []struct {
@@ -278,9 +263,7 @@ func TestRequireSharedSecretsComparesTheUploadersProfile(t *testing.T) {
 	}
 }
 
-// A journal an earlier binary wrote says only whether the bundle carried the
-// cis profile's key; read back, that is the key's entry. A journal this binary
-// writes says which secrets, and still sets the earlier field for that binary.
+// An earlier journal says only whether the bundle carried the cis key; that reads as the entry.
 func TestJoinRecoveryCarriedReadsAnEarlierJournal(t *testing.T) {
 	var r joinRecovery
 	if err := json.Unmarshal([]byte(`{"carriedKey":true}`), &r); err != nil {
@@ -301,8 +284,7 @@ func TestJoinRecoveryCarriedReadsAnEarlierJournal(t *testing.T) {
 	}
 }
 
-// A profile other than cis gets the same comparison of the secrets it
-// declares with the ones the bundle carried, by name.
+// A profile other than cis gets the same comparison of its declared secrets, by name.
 func TestRequireSharedSecretsForAnotherProfile(t *testing.T) {
 	mint := func() ([]byte, error) { return []byte("s"), nil }
 	two := profile.Profile{Name: "two", SharedSecrets: []profile.Secret{{Name: "b.yaml", Mint: mint}, {Name: "a.yaml", Mint: mint}}}
@@ -319,10 +301,7 @@ func TestRequireSharedSecretsForAnotherProfile(t *testing.T) {
 	}
 }
 
-// TestApplyBundleReportsWhatTheBundleCarried: a key left on
-// disk by an earlier failed join survives a keyless bundle, because a bundle
-// does not remove the optional entries it leaves out. Asking the disk afterwards
-// would call that join keyed; the answer has to come from the bundle.
+// The answer has to come from the bundle: asking the disk would call an earlier failed join keyed.
 func TestApplyBundleReportsWhatTheBundleCarried(t *testing.T) {
 	keyless := uploadSet(t)
 	delete(keyless, encryptionConfigEntry)
@@ -339,8 +318,7 @@ func TestApplyBundleReportsWhatTheBundleCarried(t *testing.T) {
 		if carried {
 			t.Fatal("reported the stale on-disk key as carried by a bundle that had none")
 		}
-		// applyBundle is also CA rotation's path (DownloadCertsAdmin), on a
-		// joined control plane whose key this is: it must never remove it.
+		// applyBundle is also CA rotation's path, on a control plane whose key this is: never remove it.
 		if b, err := os.ReadFile(filepath.Join(dir, encryptionConfigEntry)); err != nil || string(b) != "stale" {
 			t.Fatalf("applyBundle touched the key on disk: %q, %v", b, err)
 		}
@@ -353,27 +331,7 @@ func TestApplyBundleReportsWhatTheBundleCarried(t *testing.T) {
 	})
 }
 
-// --- the join's effects, recorded ---
-//
-// The join's safety order — every step that can refuse returns before the etcd
-// member-add — is a property of prepareControlPlaneJoin's behaviour, not of its
-// source text. These helpers run the join with an effect set that records each
-// call instead of touching the host or the cluster, so the guards below assert
-// on what ran, in what order, with which arguments.
-
-// recordedJoin is what a recording effect set captured: the order the effects
-// ran in, and the arguments of the ones the guards pin. failCIS and failProbe
-// inject the refusals those gates produce in production; carriedKey is what the
-// download reports the bundle carried, which the key gate decides on. The
-// recovery guards inject the post-add failures (failSaveState,
-// failRuntimeConfigs) and answer for the cluster (listMembers, quorumHeldErr,
-// failRemoveByID) the compensation asks; the intent snapshots record whether
-// the journal file existed, with its bytes and permissions, when the member-add
-// and the state save ran. The resume guards inject the fresh add's lost reply
-// (failAdd) and answer the member-list reads dynamically (clusterMembersFn);
-// addCalls and memberListReads count what the reconciliation decided on. The
-// assembly guards record how often the join ran the shared node assembly
-// (assembleCalls) and the request it handed it (assembleReq).
+// What a recording effect set captured: the order the effects ran in and the pinned arguments.
 type recordedJoin struct {
 	order           []string
 	carriedKey      bool
@@ -398,29 +356,17 @@ type recordedJoin struct {
 	kcHost, kcServer     string
 	kcVIP                bool
 	saved                *nodestate.NodeState
-	// rtState is the NodeState the runtime-config write received. The join
-	// builds the node state before membership, so the runtime configs run
-	// before the member-add on the state whose fields they render from.
-	rtState *nodestate.NodeState
+	rtState              *nodestate.NodeState
 
 	failSaveState      error
 	failRuntimeConfigs error
 	listMembers        etcdMembership
 	quorumHeldErr      error
 	failRemoveByID     error
-	// detectIP is the address detection answers with; empty is the fixture's
-	// 192.0.2.9. A re-run with a different address drives the intent
-	// reconciliation against a journal recorded for another one.
-	detectIP string
-	// failAdd is the member-add's answer on its first call: the lost-reply
-	// case the reconciliation decides on. A call after the first succeeds,
-	// unless failRetry is set: then it is the second call's answer.
-	failAdd   error
-	failRetry error
-	// clusterMembersFn, when set, answers every member-list read in place of
-	// the static listMembers, so a guard can make the cluster's answer change
-	// between reads.
-	clusterMembersFn func() (etcdMembership, error)
+	detectIP           string
+	failAdd            error
+	failRetry          error
+	clusterMembersFn   func() (etcdMembership, error)
 
 	quorumSeen         bool
 	quorumHeldCalls    int
@@ -435,11 +381,6 @@ type recordedJoin struct {
 	intentAtSave       bool
 	intentAtSaveRaw    []byte
 
-	// failVIP is the VIP check's answer: nil for a VIP that serves this
-	// cluster's apiserver. vipCalls and vipAddr record how often the check ran
-	// and the address it was asked about; vipAfterKubeconfigs and intentAtVIP
-	// record, at the moment it ran, whether the kubeconfigs it reads the
-	// cluster CA from were written and whether the intent file existed.
 	failVIP             error
 	vipCalls            int
 	vipAddr             string
@@ -447,9 +388,7 @@ type recordedJoin struct {
 	intentAtVIP         bool
 }
 
-// fakeJoinEffects is a joinEffects set that records each call, in order, and
-// succeeds. resolveNodeIP calls the detection it is handed — as the production
-// one does — so the wiring is exercised, and returns the detected address.
+// A joinEffects set that records each call in order and succeeds.
 func fakeJoinEffects(r *recordedJoin) joinEffects {
 	return joinEffects{
 		verifyResumeTrust:  func(string) error { return nil },
@@ -571,10 +510,7 @@ func fakeJoinEffects(r *recordedJoin) joinEffects {
 			r.rtState = st
 			return r.failRuntimeConfigs
 		},
-		// The real shared node assembly, behind a recorder: the guards
-		// below drive the join's common steps THROUGH the assembly, so a
-		// fold that stops routing them there leaves the effects unrun and
-		// fails the order pins.
+		// The real assembly behind a recorder, so a fold off the shared path fails the order pins.
 		assemble: func(ctx context.Context, a NodeAssembly, req AssembleRequest) (host.NodeIPChoice, error) {
 			r.assembleCalls++
 			r.assembleReq = &req
@@ -583,10 +519,7 @@ func fakeJoinEffects(r *recordedJoin) joinEffects {
 	}
 }
 
-// joinFixture points the paths a fresh join's gates read at temporary ones and
-// saves the netconfig the (recorded) download is taken to have delivered, as
-// TestCheckJoinDomain does: the domain gate, the key gate's stat and the
-// netconfig resolve all stay inside the test's temp tree.
+// Points the version paths and the intent path at temporary ones.
 func joinFixture(t *testing.T) {
 	t.Helper()
 	origNet := version.NetConfigPath
@@ -609,9 +542,7 @@ func joinFixture(t *testing.T) {
 	t.Cleanup(func() { joinIntentPath = origIntent })
 }
 
-// freshJoinOpts is a complete JoinOptions for the documented join shape: an
-// IPv4 node joining through the VIP 10.0.0.10, whose published etcd endpoints
-// (the recorded download reports 10.0.0.11) win over the join host.
+// A complete JoinOptions for an IPv4 node joining through the VIP 10.0.0.10.
 func freshJoinOpts() JoinOptions {
 	return JoinOptions{
 		Server:  "https://10.0.0.10:6443",
@@ -622,20 +553,7 @@ func freshJoinOpts() JoinOptions {
 	}
 }
 
-// TestControlPlaneJoinRunsEffectsInSafetyOrder pins the fresh join's whole step
-// order by behaviour: stage, host directories, prerequisites, discover,
-// bootstrap kubeconfig, clear stale Cilium settings, download, trust pod CIDRs, resolve node IP, issue
-// certificates, write kubeconfigs, CIS configs (a --cis join only), probe etcd,
-// VIP check (the join has a VIP), runtime configs, member-add, save state.
-// Every fallible effect that needs no
-// member-add result runs before the add — runtime configs included, after the
-// etcd probe, so the node state it renders from can carry an EtcdInitialCluster
-// derived from the cluster's member list rather than the add's return. The
-// member-add is the first membership effect; save state follows it, because the
-// persisted state asserts the membership the add established and carries the
-// initial-cluster string the add returned (or the adopted membership gave).
-// Any refactor that reorders these effects, drops one, or runs one twice fails
-// here — including one that moves a refusing step below the member-add.
+// Any reorder, drop or double-run of the effects fails here, including one below the member-add.
 func TestControlPlaneJoinRunsEffectsInSafetyOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -673,8 +591,6 @@ func TestControlPlaneJoinRunsEffectsInSafetyOrder(t *testing.T) {
 			if r.clearCiliumPath != version.CiliumSettingsPath {
 				t.Errorf("cleared Cilium path %q, want %q", r.clearCiliumPath, version.CiliumSettingsPath)
 			}
-			// The member-add hands etcd the peer URL this node's member will be
-			// removed under again: the primary IPv4, not the VIP it joined via.
 			if !r.addCalled || r.addPeer != "https://192.0.2.9:2380" {
 				t.Errorf("member-add peer URL = %q (called %v), want this node's https://192.0.2.9:2380", r.addPeer, r.addCalled)
 			}
@@ -684,8 +600,6 @@ func TestControlPlaneJoinRunsEffectsInSafetyOrder(t *testing.T) {
 			if r.saved.EtcdState != "existing" || st.EtcdState != "existing" {
 				t.Errorf("saved EtcdState = %q, returned %q, want existing", r.saved.EtcdState, st.EtcdState)
 			}
-			// The runtime configs run before the add on the node state the join
-			// built before membership, not on a post-add patch.
 			if r.rtState == nil || r.rtState.Role != "controller" || r.rtState.EtcdName != r.saved.EtcdName {
 				t.Errorf("the runtime-config write got %+v, want the node state built before membership", r.rtState)
 			}
@@ -693,12 +607,7 @@ func TestControlPlaneJoinRunsEffectsInSafetyOrder(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinAddressInputs pins the addresses a fresh IPv4 join with
-// VIP 10.0.0.10 hands downstream: the member-add receives this node's peer URL
-// under its own IP, and the certificate effect receives the resolved node IP
-// with the netconfig's VIP SANs and the cluster domain. The kubeconfig endpoint
-// the join writes, the server every controller start uses, is pinned by
-// TestControlPlaneJoinTargetsTheControllerStartsServer.
+// Pins the addresses a fresh IPv4 join with VIP 10.0.0.10 hands downstream.
 func TestControlPlaneJoinAddressInputs(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{}
@@ -726,18 +635,7 @@ func TestControlPlaneJoinAddressInputs(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRecordsTheBringUpEndpoint pins that a joined control
-// plane's kubeconfigs keep their endpoint across its first restart, because the
-// join records and writes the endpoint by the same rule bring-up uses
-// (serverURL, pinned by TestBringUpAddressesFromNodeState in
-// internal/cluster/addresses_test.go: the VIP when one is configured, the local
-// apiserver otherwise) — not loopback kubeconfigs plus the join URL recorded as
-// the node's Server, which today move the node's clients to the VIP only when
-// bring-up rewrites them at the first restart. The join here runs through a
-// control plane's node address (joinEtcdEndpoints documents it as a supported
-// shape), so neither the join URL nor loopback can pass for the VIP cluster:
-// the kubeconfig write and the saved node state must both carry the endpoint
-// bring-up's rule returns for the same state, and agree with each other.
+// The kubeconfigs and the saved server must agree with bring-up's endpoint rule, not the join URL.
 func TestControlPlaneJoinRecordsTheBringUpEndpoint(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{}
@@ -768,14 +666,7 @@ func TestControlPlaneJoinRecordsTheBringUpEndpoint(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesBeforeTheMemberAdd drives the join into each
-// refusal and requires it to return before the etcd member-add: nothing after
-// the add removes the member again, so a gate that moves below it leaves a
-// voting member behind for a node that never starts. The moved steps are
-// covered too: a runtime-config write that fails refuses the join before the
-// add, because the runtime configs need no member-add result. The domain row
-// also requires the refusal before any certificate is issued, and no row may
-// save node state or run the post-add compensation on its way out.
+// Every gate must refuse before the member-add; no row may save state or compensate.
 func TestControlPlaneJoinRefusesBeforeTheMemberAdd(t *testing.T) {
 	retained := func(t *testing.T) string {
 		dir := filepath.Join(t.TempDir(), "etcd")
@@ -849,10 +740,7 @@ func TestControlPlaneJoinRefusesBeforeTheMemberAdd(t *testing.T) {
 	}
 }
 
-// TestEtcdProbeRefusalSaysToJoinOneAtATime: a second controller joined while
-// another's member-add takes effect times out in the etcd probe, and re-running
-// it alone succeeds. The refusal says so, on top of the probe's own error and
-// the note that nothing was added.
+// A parallel controller's join can time out the probe; re-running it alone succeeds.
 func TestEtcdProbeRefusalSaysToJoinOneAtATime(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{failProbe: errors.New("context deadline exceeded")}
@@ -870,9 +758,7 @@ func TestEtcdProbeRefusalSaysToJoinOneAtATime(t *testing.T) {
 	}
 }
 
-// customBundleNetwork overwrites the netconfig joinFixture saved with one for a
-// cluster initialised on custom ranges, so a join that falls back to the
-// built-in defaults anywhere cannot pass for one that took the bundle's.
+// Overwrites the fixture's netconfig with custom ranges, so defaults cannot pass for the bundle's.
 func customBundleNetwork(t *testing.T) {
 	t.Helper()
 	if err := netcfg.Save("10.42.0.0/16", "10.43.0.0/16", "fuzz.internal"); err != nil {
@@ -880,13 +766,7 @@ func customBundleNetwork(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesADifferingNetwork: a joining control plane whose
-// spec.network.podCIDR or serviceCIDR differs from the range the cluster
-// recorded in the netconfig the shared certs delivered is refused, each field
-// on its own, before it trusts the pod range, issues a certificate or touches
-// etcd. Without the refusal a lone range is dropped for the bundle's and a pair
-// silently replaces the cluster's, and the node's first restart is the first
-// notice either way.
+// A differing lone range would be dropped for the bundle's; a pair would replace the cluster's.
 func TestControlPlaneJoinRefusesADifferingNetwork(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
@@ -915,10 +795,7 @@ func TestControlPlaneJoinRefusesADifferingNetwork(t *testing.T) {
 					t.Errorf("refusal missing %q: %v", want, err)
 				}
 			}
-			// Each value in its role: the field carries the value the node was
-			// given, and the remedy names the value the cluster recorded. A
-			// refusal that swaps them tells the user to set the value that
-			// was just refused.
+			// Each value in its role: the given one beside its field, the recorded one as the value to set.
 			for _, want := range []string{
 				fmt.Sprintf("%s %q", tc.field, tc.given),
 				fmt.Sprintf("set it to %q", tc.bundle),
@@ -927,8 +804,6 @@ func TestControlPlaneJoinRefusesADifferingNetwork(t *testing.T) {
 					t.Errorf("refusal does not put each value in its role, missing %q: %v", want, err)
 				}
 			}
-			// The refusal stands where the domain's does: after the download
-			// delivered the cluster's netconfig, before every later effect.
 			want := []string{
 				"stage", "host directories", "prerequisites", "discover", "bootstrap kubeconfig",
 				"clear cilium settings", "download",
@@ -947,12 +822,7 @@ func TestControlPlaneJoinRefusesADifferingNetwork(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinInheritsTheBundlesNetwork: a joining control plane whose
-// spec.network ranges are unset or match the cluster's, together or one alone,
-// joins on the ranges and domain the shared certs delivered. Its apiserver
-// certificate carries the cluster's kubernetes Service IP, its node state
-// records the cluster's network, and its firewall trusts the cluster's pod
-// range, none of them a built-in default.
+// An unset or matching spec.network joins on the ranges and domain the shared certs delivered.
 func TestControlPlaneJoinInheritsTheBundlesNetwork(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
@@ -999,10 +869,7 @@ func TestControlPlaneJoinInheritsTheBundlesNetwork(t *testing.T) {
 	}
 }
 
-// A join compares the networks a config names, while retaining the spelling
-// delivered by the shared certs or the recovery journal. Alternate CIDR
-// spellings must work on both paths; different or invalid ranges still refuse
-// before issuing certificates or changing membership.
+// Alternate CIDR spellings must be equal by value; different or invalid ranges still refuse.
 func TestControlPlaneJoinComparesNetworkRanges(t *testing.T) {
 	const pods = "10.42.0.0/16,fd00:42::/56"
 	const services = "10.43.0.0/16,fd00:43::/108"
@@ -1077,16 +944,7 @@ func TestControlPlaneJoinComparesNetworkRanges(t *testing.T) {
 	}
 }
 
-// TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues: a join
-// resumed from its recovery journal refuses a spec.network.podCIDR or
-// serviceCIDR that differs from the range the journal recorded, each field on
-// its own, and the refusal names the field, the configured value and the
-// recorded value. Up passes spec.network into the join, so a config edited
-// between the failed run and its re-run reaches this refusal, and a message
-// that names neither leaves the user to guess which line to fix. The refusal
-// changes nothing — no certificate, kubeconfig, pod-range trust, member-add or
-// state save — and keeps the journal, so the re-run with the recorded ranges
-// resumes the join.
+// The refusal names field, configured and recorded value; the re-run with recorded ones resumes.
 func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
@@ -1109,9 +967,7 @@ func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testi
 			joinFixture(t)
 			customBundleNetwork(t)
 			etcdDir := t.TempDir()
-			// The wedge: the first run, with spec.network unset, adds its
-			// member and fails the state save with quorum unconfirmed, so the
-			// journal survives as the recovery record of the cluster's ranges.
+			// The first run adds its member and fails the state save, so the journal survives.
 			r1 := &recordedJoin{listMembers: listedMembers(), failSaveState: errors.New("disk full"),
 				quorumHeldErr: errors.New("no quorum")}
 			if _, err := prepareControlPlaneJoin(context.Background(), freshJoinOpts(), etcdDir, fakeJoinEffects(r1)); err == nil {
@@ -1139,8 +995,7 @@ func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testi
 			opts := freshJoinOpts()
 			opts.PodCIDR, opts.ServiceCIDR = tc.podCIDR, tc.serviceCIDR
 			_, err = prepareControlPlaneJoin(context.Background(), opts, etcdDir, fx)
-			// The re-run resumed from the journal: a fresh join would reach
-			// the bundle's netconfig check, whose refusal is another one.
+			// The re-run resumed from the journal; a fresh join would reach another refusal.
 			if slices.Contains(r2.order, "discover") || slices.Contains(r2.order, "download") {
 				t.Fatalf("the re-run did not resume from the journal: effects %v", r2.order)
 			}
@@ -1153,9 +1008,7 @@ func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testi
 					t.Errorf("refusal missing %q: %v", want, err)
 				}
 			}
-			// Each value stands in its role: the configured one beside its
-			// field, the recorded one as the value to set. A refusal that
-			// swapped them would tell the user to keep the wrong range.
+			// Each value in its role: a swap would tell the user to keep the wrong range.
 			for _, want := range []string{fmt.Sprintf("%s %q", tc.field, tc.given), fmt.Sprintf("set it to %q", tc.recorded)} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("refusal does not give %q in its role: %v", want, err)
@@ -1172,8 +1025,7 @@ func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testi
 				t.Fatalf("the refused resume changed or lost the journal (%v):\n got %s\nwant %s", err, kept, wedged)
 			}
 
-			// The remedy: the re-run with the recorded ranges resumes the join
-			// on them, adopting the journal's member without a second add.
+			// The remedy: the re-run with the recorded ranges resumes, adopting the member without an add.
 			r3 := &recordedJoin{listMembers: listedMembers()}
 			opts.PodCIDR, opts.ServiceCIDR = "10.42.0.0/16", "10.43.0.0/16"
 			if _, err := prepareControlPlaneJoin(context.Background(), opts, etcdDir, fakeJoinEffects(r3)); err != nil {
@@ -1187,23 +1039,7 @@ func TestResumedJoinRefusesADifferingNetworkNamingTheFieldAndBothValues(t *testi
 	}
 }
 
-// --- the VIP check ---
-//
-// A joining controller with a VIP writes its kubeconfigs against the VIP, so a
-// VIP that is not this cluster's apiserver (a mistyped spec.vip.address, or an
-// address another service answers on) would leave the new member's clients
-// dialing an address that does not serve the cluster. The join checks the VIP
-// with VIPServes, a TLS handshake that trusts only the cluster CA the
-// kubeconfigs carry and requires the VIP in the certificate, after those
-// kubeconfigs are written and before anything about membership moves: the
-// intent journal, the etcd data directory, the member-add. A member the intent
-// journal records and the cluster still lists is adopted rather than added,
-// and adoption skips the check (join_recovery_test.go).
-
-// TestControlPlaneJoinChecksTheVIPBeforeTheMemberAdd: a fresh join whose VIP
-// serves the cluster checks it once, for the VIP's address, after the
-// kubeconfigs it reads the cluster CA from are written and before the intent
-// file exists, and then proceeds to the member-add as before.
+// The check runs once, for the VIP, after the kubeconfigs and before the intent file exists.
 func TestControlPlaneJoinChecksTheVIPBeforeTheMemberAdd(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers()}
@@ -1232,17 +1068,7 @@ func TestControlPlaneJoinChecksTheVIPBeforeTheMemberAdd(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesAVIPThatDoesNotServe: a VIP that does not answer
-// as this cluster's apiserver refuses the join before membership, both for a
-// fresh join and for one replacing a stale intent (a journal whose member the
-// cluster no longer lists, which proceeds as a fresh member-add). The join goes
-// through cp1's own address, so only the VIP puts 10.0.0.10 in the refusal. The
-// refusal names the VIP, carries the check's error, says nothing was added to
-// etcd, and says to set spec.vip.address to the cluster's VIP. Nothing about
-// membership moved: no member-add and no saved state, the intent file as it was
-// (absent, or the stale journal byte for byte), and the etcd data directory the
-// same directory at the same mode, where prepareEmptyEtcdDataDir would have
-// replaced it with a new one at 0700.
+// Nothing about membership moves: no add, no state, the intent and etcd dir as they were.
 func TestControlPlaneJoinRefusesAVIPThatDoesNotServe(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1315,19 +1141,7 @@ func TestControlPlaneJoinRefusesAVIPThatDoesNotServe(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesALocalCAProblemAsSuch: a VIP check that never
-// reached the VIP, because no cluster CA could be read from this node's
-// kubeconfigs, refuses the join before membership as a check that could not
-// run. The refusal names the VIP, carries the check's error and says nothing
-// was added to etcd, but it neither reports the VIP as not answering nor tells
-// the operator to change spec.vip.address: the address may be right, and
-// changing it would not fix a local problem. Any other failure of the check
-// keeps the refusal that says the VIP does not answer, and gives both ways
-// out: set spec.vip.address when it is wrong, or, when it is right, bring the
-// VIP up on the existing controllers by the steps ha-repoint's refusal gives.
-// The join goes through cp1's own address, so only the VIP puts 10.0.0.10 in
-// the refusal, and neither row adds a member, saves state or writes the
-// intent.
+// A check that never reached the VIP must not tell the operator to change spec.vip.address.
 func TestControlPlaneJoinRefusesALocalCAProblemAsSuch(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1383,16 +1197,7 @@ func TestControlPlaneJoinRefusesALocalCAProblemAsSuch(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesAVIPThatIsANodeAddress: a spec.vip.address that
-// is an existing controller's own address, such as the host copied from a
-// --join URL, passes the TLS check, because every controller's apiserver
-// certificate names that controller's node addresses. A join that took it
-// would point every kubeconfig on the new controller at that one controller,
-// and its kube-vip would announce that controller's address as the VIP. The
-// published etcd endpoints identify their primary addresses; the node records
-// add the secondary addresses. A VIP among them, or the joining node's own address, is refused
-// before membership, with the address it is and what to set instead. The VIP
-// check answers that the VIP serves, as cp1's apiserver would.
+// A controller's own address passes the TLS check, so it is refused before membership.
 func TestControlPlaneJoinRefusesAVIPThatIsANodeAddress(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1478,8 +1283,7 @@ func TestControlPlaneJoinRefusesAControllerSecondaryAddressAsVIP(t *testing.T) {
 	}
 }
 
-// A reused certificate bundle can predate an unlabeled controller's join.
-// Identify that controller from the live etcd probe, rather than the bundle.
+// A reused bundle can predate a newer controller; identify it from the live etcd probe.
 func TestControlPlaneJoinChecksControllersAddedAfterBundlePublication(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers()}
@@ -1531,10 +1335,6 @@ func TestControlPlaneJoinRefusesWhenControllerAddressesCannotBeRead(t *testing.T
 	}
 }
 
-// TestControlPlaneJoinWithoutAVIPSkipsTheVIPCheck: a join without a VIP writes
-// its kubeconfigs against the local apiserver and has no VIP to check, so the
-// check never runs (one that would refuse proves it) and the join proceeds to
-// the member-add.
 func TestControlPlaneJoinWithoutAVIPSkipsTheVIPCheck(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers(), failVIP: errors.New("there is no VIP to check")}
@@ -1557,10 +1357,7 @@ func TestControlPlaneJoinWithoutAVIPSkipsTheVIPCheck(t *testing.T) {
 	}
 }
 
-// TestProductionJoinEffectsCheckTheVIPWithVIPServes: the production effect set
-// checks the VIP with VIPServes, the TLS check ha-repoint runs, so the join's
-// refusal rests on the same handshake, and a test that stands in for VIPServes
-// stands in for the join's check too.
+// The join's refusal rests on the same TLS handshake ha-repoint runs.
 func TestProductionJoinEffectsCheckTheVIPWithVIPServes(t *testing.T) {
 	cause := errors.New("dial tcp 10.0.0.10:6443: connect: connection refused")
 	var asked []string
@@ -1579,9 +1376,7 @@ func TestProductionJoinEffectsCheckTheVIPWithVIPServes(t *testing.T) {
 	}
 }
 
-// TestSettleJoinSecrets: a join keeps exactly the key its bundle carried. A key on disk that the bundle did not supply, or one a
-// refused join just downloaded, is removed, and the removal is said: a line on
-// the join's output, and in the refusal when there is one.
+// A key the bundle did not supply, or a refused join downloaded, is removed and said so.
 func TestSettleJoinSecrets(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -1669,10 +1464,7 @@ func TestSettleJoinSecrets(t *testing.T) {
 	})
 }
 
-// TestCISSecretIsTheKeyPath: a joiner writes each bundle entry to
-// PKIDir/<entry>, and the apiserver reads the cis profile's key from
-// version.EncryptionConfigPath. One is the other only while that path sits
-// directly in PKIDir under the secret's name.
+// The bundle entry is the key path only while EncryptionConfigPath sits in PKIDir under its name.
 func TestCISSecretIsTheKeyPath(t *testing.T) {
 	if got := filepath.Dir(version.EncryptionConfigPath); got != version.PKIDir {
 		t.Fatalf("EncryptionConfigPath is in %s, not PKIDir %s: a downloaded key would land where the apiserver does not read it", got, version.PKIDir)
@@ -1687,8 +1479,7 @@ func TestCISSecretIsTheKeyPath(t *testing.T) {
 	}
 }
 
-// A registered profile whose secret takes the name of an entry the engine
-// shares itself is refused, so the bundle never carries one file for both.
+// A secret named like an engine entry is refused: the bundle never carries one file for both.
 func TestProfileSecretEntriesRefuseAnEngineName(t *testing.T) {
 	prev := profile.All()
 	t.Cleanup(func() { _ = profile.SetRegistered(prev) })
@@ -1701,8 +1492,6 @@ func TestProfileSecretEntriesRefuseAnEngineName(t *testing.T) {
 	}
 }
 
-// A joining control plane whose config sets a cluster domain other
-// than the cluster's is refused, before it issues certificates or touches etcd.
 func TestCheckJoinDomain(t *testing.T) {
 	orig := version.NetConfigPath
 	version.NetConfigPath = filepath.Join(t.TempDir(), "netconfig")
@@ -1725,27 +1514,9 @@ func TestCheckJoinDomain(t *testing.T) {
 	}
 }
 
-// --- the durable pre-add intent journal and post-add compensation ---
-//
-// A join's member-add is followed by fallible state writes with no rollback: a
-// failure or a kill between them leaves a voting etcd member for a node that
-// never starts. The join therefore journals its intent durably BEFORE the
-// member-add — in the marker shape of internal/upgrade/resume.go:88-102
-// (atomic rename, 0600) — clears it only once the node state has been
-// persisted, and on a post-add failure compensates by removing the member by
-// ID, but only when the cluster provably still has quorum. When the removal is
-// refused or fails, the intent file survives as the recovery record and the
-// error says how recovery proceeds.
-
-// intentMemberID is the member ID the recorded member list answers with for
-// this join's node, and the one the intent file must end up recording.
 const intentMemberID = 1234
 
-// listedMembers is what the recorded clusterMembers effect answers: a
-// two-member cluster whose second member is this join's node — unstarted, so
-// it advertises the join's peer URL and no name yet. The cluster's member
-// list, not the intent file, is the truth about membership
-// (internal/ha/etcd.go:405-416).
+// A two-member cluster whose second member is this join's node, unstarted.
 func listedMembers() etcdMembership {
 	return etcdMembership{
 		ClusterID: 1, Responder: 2, Quorum: true,
@@ -1757,11 +1528,7 @@ func listedMembers() etcdMembership {
 	}
 }
 
-// joinIntentFile is the intent file's on-disk JSON contract: the member
-// identity a re-run needs to reconcile or remove this join's member, and the
-// resumable phase it resumes from. Pinned here as plain JSON because the file
-// outlives the process that wrote it — a re-run of `stratum up --join` reads
-// it, and so does an operator.
+// The intent file's JSON contract, as a re-run of `stratum up --join` and an operator read it.
 type joinIntentFile struct {
 	MemberName string `json:"memberName"`
 	PeerURL    string `json:"peerURL"`
@@ -1769,8 +1536,6 @@ type joinIntentFile struct {
 	Phase      string `json:"phase"`
 }
 
-// parseIntent parses an intent file snapshot, failing the test when the bytes
-// do not have the recorded shape.
 func parseIntent(t *testing.T, raw []byte) joinIntentFile {
 	t.Helper()
 	var f joinIntentFile
@@ -1780,10 +1545,7 @@ func parseIntent(t *testing.T, raw []byte) joinIntentFile {
 	return f
 }
 
-// snapshotIntent reports whether the intent file exists at the moment an
-// effect runs, with its bytes and permissions when it does, so the guards can
-// pin the journal's place in the join without depending on what the join did
-// to the file afterwards.
+// The intent file's existence, bytes and permissions at the moment an effect runs.
 func snapshotIntent() (bool, []byte, os.FileMode) {
 	fi, err := os.Stat(joinIntentPath)
 	if err != nil {
@@ -1796,18 +1558,10 @@ func snapshotIntent() (bool, []byte, os.FileMode) {
 	return true, raw, fi.Mode().Perm()
 }
 
-// TestControlPlaneJoinWritesTheIntentBeforeTheMemberAdd pins the journal's
-// place in the join. The intent file is on disk before the member-add runs,
-// still on disk when the node state is saved — clearing it any earlier would
-// leave a voting member with nothing to recover from — and gone once the join
-// has finished persisting its state. The pre-add file records the member name
-// and peer URL; after the add it also records the member ID the cluster's own
-// member list gives for this node's peer URL, and the phase says the member is
-// added.
+// The journal brackets the add: on disk before it and at the save, recording the member ID after.
 func TestControlPlaneJoinWritesTheIntentBeforeTheMemberAdd(t *testing.T) {
 	joinFixture(t)
-	// The journal's lifecycle is operator-visible: its decisions are printed,
-	// and a test captures the seam the same way TestSettleJoinKey does.
+	// The journal's decisions are printed; the test captures the seam.
 	savedOut := joinOut
 	var out bytes.Buffer
 	joinOut = &out
@@ -1851,10 +1605,7 @@ func TestControlPlaneJoinWritesTheIntentBeforeTheMemberAdd(t *testing.T) {
 	if post.Phase != "added" {
 		t.Errorf("post-add intent phase = %q, want \"added\"", post.Phase)
 	}
-	// The journal outlives the state save on purpose: etcd only starts later,
-	// and a crash before its first WAL would leave a published node.yaml that
-	// bare `stratum up` refuses and a re-run routes to the member restart.
-	// With the journal in place, that state resumes offline instead.
+	// The journal outlives the save: without it a crash before etcd's first WAL is unrecoverable.
 	kept, readErr := os.ReadFile(joinIntentPath)
 	if readErr != nil {
 		t.Fatalf("the journal did not survive a completed join: %v", readErr)
@@ -1869,13 +1620,7 @@ func TestControlPlaneJoinWritesTheIntentBeforeTheMemberAdd(t *testing.T) {
 	}
 }
 
-// TestWriteJoinIntentSyncsBeforeItReportsDone pins the journal's durability:
-// the staged file is fsynced and the staging directory is synced after the
-// rename, so a power loss inside the member-add window cannot lose the
-// journal's directory entry — the journal is the node's only record of the
-// member between the add and the node-state save, and a lost journal reads as
-// "no unfinished join". The staged file is a hidden, uniquely named sibling
-// at 0600, and a completed write leaves no staging file behind.
+// Fsync and dir sync pin: a power loss in the member-add window cannot lose the journal.
 func TestWriteJoinIntentSyncsBeforeItReportsDone(t *testing.T) {
 	joinFixture(t)
 	var synced []string
@@ -1926,9 +1671,7 @@ func TestWriteJoinIntentSyncsBeforeItReportsDone(t *testing.T) {
 	}
 }
 
-// TestWriteJoinIntentLeavesNoStagingFile: a rename that fails is cleaned up —
-// a failed write leaves the directory as it found it, not littered with
-// staging siblings.
+// A failed rename is cleaned up: the directory is left as it was found.
 func TestWriteJoinIntentLeavesNoStagingFile(t *testing.T) {
 	joinFixture(t)
 	if err := os.MkdirAll(filepath.Dir(joinIntentPath), 0o700); err != nil {
@@ -1955,10 +1698,7 @@ func TestWriteJoinIntentLeavesNoStagingFile(t *testing.T) {
 	}
 }
 
-// TestWriteJoinIntentRefusesWhenTheDirectoryCannotBeMadeDurable: the journal
-// is only as good as its durability, so a directory that cannot be synced is
-// a refusal with its cause, not a silent maybe — the join that follows the
-// write trusts the file to be there after a crash.
+// A directory that cannot be synced is a refusal with its cause, not a silent maybe.
 func TestWriteJoinIntentRefusesWhenTheDirectoryCannotBeMadeDurable(t *testing.T) {
 	joinFixture(t)
 	saved := syncJoinIntentDir
@@ -1971,16 +1711,7 @@ func TestWriteJoinIntentRefusesWhenTheDirectoryCannotBeMadeDurable(t *testing.T)
 	}
 }
 
-// TestControlPlaneJoinCompensatesForPostAddFailures drives a join that added
-// its member and then failed writing its node state — the one fallible write
-// that remains after the member-add, because the persisted state carries the
-// initial-cluster string the add returned (or the adopted membership's). The
-// join must attempt the member remove exactly once — by ID, once the quorum
-// gate has authorised it — report the member removed, clear the intent file,
-// and still fail with the cause. The peer-URL memberRemove is the member-add's
-// own concurrent-data rollback, not this compensation. A runtime-config write
-// that fails is a refusal before the add (it needs no add result), covered by
-// TestControlPlaneJoinRefusesBeforeTheMemberAdd.
+// The remove runs once, by ID, after the quorum gate; the peer-URL remove is the add's rollback.
 func TestControlPlaneJoinCompensatesForPostAddFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -2027,13 +1758,7 @@ func TestControlPlaneJoinCompensatesForPostAddFailures(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinKeepsTheIntentWhenCompensationIsRefused drives a join
-// whose member was added, whose state write failed, and whose removal is then
-// refused by the quorum gate or fails outright. Removing a member a cluster
-// may still need is worse than leaving one a re-run can reconcile, so the gate
-// fails closed (confirmQuorumLost's semantics, internal/ha/quorum.go:39-69):
-// the intent file with the member identity and resumable phase survives, and
-// the error names how recovery proceeds.
+// The gate fails closed, keeping the intent: removing a member the cluster may still need is worse.
 func TestControlPlaneJoinKeepsTheIntentWhenCompensationIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -2094,17 +1819,7 @@ func TestControlPlaneJoinKeepsTheIntentWhenCompensationIsRefused(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinCompensationWhenTheJournalNeverLearnedTheID drives the
-// compensation whose journal sits at phase "prepared": the post-add read of
-// the cluster's member list failed or did not yet show the member, so the
-// journal carries no member ID. The compensation must then learn the ID from
-// the cluster's own list — the list, not the file, is the truth about the
-// member — refuse the removal fail closed when the list cannot be read or
-// does not show the member, and never advise `member remove 0`, which names
-// no member: until the ID is known the remedy is to find this node's member
-// in the list by its peer URL, and once the list has answered, the remedy
-// names the ID it gave. The first read here is the journal read after the
-// member-add; the second is the compensation's own.
+// The compensation learns the ID from the member list and never advises member remove 0.
 func TestControlPlaneJoinCompensationWhenTheJournalNeverLearnedTheID(t *testing.T) {
 	neverAnswers := func() (etcdMembership, error) { return etcdMembership{}, errors.New("connection refused") }
 	answersOnSecondRead := func(m etcdMembership) func() (etcdMembership, error) {
@@ -2117,8 +1832,7 @@ func TestControlPlaneJoinCompensationWhenTheJournalNeverLearnedTheID(t *testing.
 			return m, nil
 		}
 	}
-	// A member list that does not list this join's node: what the
-	// compensation's re-read answers when the member it added is not there.
+	// What the compensation's re-read answers when the added member is not there.
 	withoutThisNode := etcdMembership{ClusterID: 1, Responder: 2, Quorum: true,
 		Members: []etcdMember{{ID: 11, Name: "cp1", PeerURLs: []string{"https://10.0.0.11:2380"}}}}
 	for _, tc := range []struct {
@@ -2199,8 +1913,7 @@ func TestControlPlaneJoinCompensationWhenTheJournalNeverLearnedTheID(t *testing.
 	}
 }
 
-// A committed second-voter add needs both voters for quorum. Until the
-// joiner starts, even a healthy first member cannot commit compensation.
+// A committed second-voter add needs both voters for quorum until the joiner starts.
 func TestControlPlaneJoinOneToTwoVoterCompensation(t *testing.T) {
 	joinFixture(t)
 	members := listedMembers()
@@ -2225,11 +1938,7 @@ func TestControlPlaneJoinOneToTwoVoterCompensation(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesAnUnreadableIntent pins the journal's fail-closed
-// read: an intent file that exists but cannot be used — not valid JSON, naming
-// no member, or not readable — refuses the join before the member-add.
-// Treating it as absent would run a second member-add over the very membership
-// the file exists to reconcile.
+// An unusable intent refuses the join: absence would run a second member-add over it.
 func TestControlPlaneJoinRefusesAnUnreadableIntent(t *testing.T) {
 	write := func(t *testing.T, raw []byte, perm os.FileMode) {
 		t.Helper()
@@ -2272,28 +1981,7 @@ func TestControlPlaneJoinRefusesAnUnreadableIntent(t *testing.T) {
 	}
 }
 
-// --- resume on re-run and the ambiguous member-add ---
-//
-// Before the journal was reconciled, a failed join wedged the node: with no
-// node.yaml a re-run of `stratum up --join` was treated as fresh, the
-// retained-member guard passed on the empty etcd directory, and the retried
-// member-add hit etcd's duplicate-peer-URL refusal, which left the stale
-// member in place and the node unjoinable. The join now consults the intent
-// journal against the cluster's own member list — the list, not the file, is
-// the truth about the member (memberByPeerURL, internal/ha/etcd.go:405-416):
-// an intent whose peer URL is still a member is adopted and the join finishes
-// without a second add; an intent whose member is gone is stale and is
-// replaced by a fresh one. The ambiguous in-run case is resolved the same way:
-// a member-add whose reply was lost is settled by re-reading the member list,
-// never guessed.
-
-// TestControlPlaneJoinResumesFromTheIntentFile drives the re-run of a join
-// that failed or was killed after its member-add: no node.yaml, an empty etcd
-// data directory, the intent journal still on disk. The re-run adopts the
-// recorded member from the cluster's list and finishes the join — one
-// member-add across both runs — whatever phase the journal was left in: the
-// state save was refused with the cluster's quorum unconfirmable, or the node
-// died before the list could be read a second time.
+// One member-add across both runs, whatever phase the journal was left in.
 func TestControlPlaneJoinResumesFromTheIntentFile(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -2314,9 +2002,7 @@ func TestControlPlaneJoinResumesFromTheIntentFile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			joinFixture(t)
 			etcdDir := t.TempDir()
-			// The wedge: the first run adds the member and fails before the
-			// node state is saved, leaving the journal as this node's recovery
-			// record.
+			// The first run adds the member and fails before the state save, leaving the journal.
 			r1 := &recordedJoin{}
 			tc.wedge(r1)
 			if _, err := prepareControlPlaneJoin(context.Background(), freshJoinOpts(), etcdDir, fakeJoinEffects(r1)); err == nil {
@@ -2333,8 +2019,7 @@ func TestControlPlaneJoinResumesFromTheIntentFile(t *testing.T) {
 				t.Errorf("the journal left by the failed join names %+v, want the added member %q at %q",
 					pre, r1.addName, r1.addPeer)
 			}
-			// The re-run: the cluster's member list answers, and the recorded
-			// member is still in it. The join adopts it and finishes.
+			// The re-run: the list answers, and the recorded member is still in it; adopt and finish.
 			savedOut := joinOut
 			var out bytes.Buffer
 			joinOut = &out
@@ -2358,9 +2043,7 @@ func TestControlPlaneJoinResumesFromTheIntentFile(t *testing.T) {
 			if r2.saved == nil || st == nil || st.EtcdState != "existing" {
 				t.Fatalf("the resumed join saved no node state: saved=%v returned=%v", r2.saved, st)
 			}
-			// The adopted membership is what etcd must boot with: the cluster's
-			// list, with this node's member under the peer URL the journal
-			// recorded.
+			// The adopted membership is what etcd must boot with.
 			if !strings.Contains(r2.saved.EtcdInitialCluster, "=https://192.0.2.9:2380") {
 				t.Errorf("saved initial cluster %q does not name the adopted member at its peer URL",
 					r2.saved.EtcdInitialCluster)
@@ -2374,9 +2057,7 @@ func TestControlPlaneJoinResumesFromTheIntentFile(t *testing.T) {
 				t.Errorf("the resumed join compensated although nothing failed: byID=%d quorum=%d remove=%v",
 					r2.removeByIDCalls, r2.quorumHeldCalls, r2.removeCalled)
 			}
-			// The journal outlives the resumed save too: it ends when a later
-			// start confirms this node's local etcd data, not when node.yaml
-			// lands.
+			// The journal outlives the resumed save too; a later start confirms local etcd data.
 			if _, statErr := os.Stat(joinIntentPath); statErr != nil {
 				t.Fatalf("the journal did not survive a resumed join that finished: %v", statErr)
 			}
@@ -2384,16 +2065,7 @@ func TestControlPlaneJoinResumesFromTheIntentFile(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress drives a re-run
-// whose journal records a member the cluster still lists, but whose node IP
-// this run resolves to another address — detection variance on a multi-NIC
-// host, or a different --node-ip after the failed run. Adopting the recorded
-// member would finish the join into a node state whose initial cluster names
-// the recorded address while the node advertises the resolved one, which etcd
-// refuses to start, and clearing the journal would destroy the recovery
-// record; the join refuses instead, names both addresses and the removal
-// remedy — the recorded ID when the journal learned one, never ID 0 — and
-// leaves the journal on disk.
+// Adoption at another address would finish into a node state etcd cannot start with.
 func TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -2417,9 +2089,7 @@ func TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			joinFixture(t)
 			etcdDir := t.TempDir()
-			// The wedge: the first run adds the member at 192.0.2.9 and fails
-			// before the node state is saved, leaving the journal as this
-			// node's recovery record.
+			// The first run adds the member at 192.0.2.9 and fails before the state save.
 			r1 := &recordedJoin{}
 			tc.wedge(r1)
 			if _, err := prepareControlPlaneJoin(context.Background(), freshJoinOpts(), etcdDir, fakeJoinEffects(r1)); err == nil {
@@ -2428,9 +2098,7 @@ func TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress(t *testing.T) {
 			if _, err := os.Stat(joinIntentPath); err != nil {
 				t.Fatalf("the intent journal did not survive the failed join: %v", err)
 			}
-			// The re-run resolves a different node IP: the cluster still lists
-			// the member at the recorded peer URL, but this run's own peer URL
-			// is another one.
+			// The re-run resolves another node IP; the cluster still lists the recorded peer URL.
 			r2 := &recordedJoin{listMembers: listedMembers(), detectIP: tc.detected}
 			_, err := prepareControlPlaneJoin(context.Background(), freshJoinOpts(), etcdDir, fakeJoinEffects(r2))
 			if err == nil {
@@ -2458,8 +2126,7 @@ func TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress(t *testing.T) {
 					t.Errorf("the refusal advises removing member ID 0, which names no member: %v", err)
 				}
 			}
-			// The journal is the recovery record: it survives the refusal with
-			// the identity the first run left.
+			// The journal survives the refusal with the identity the first run left.
 			raw, readErr := os.ReadFile(joinIntentPath)
 			if readErr != nil {
 				t.Fatalf("the intent journal did not survive the refusal: %v", readErr)
@@ -2467,7 +2134,6 @@ func TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress(t *testing.T) {
 			if kept := parseIntent(t, raw); kept.MemberID != tc.wedgedID || kept.PeerURL != "https://192.0.2.9:2380" {
 				t.Errorf("the kept journal records %+v, want the first run's member at ID %d", kept, tc.wedgedID)
 			}
-			// The refusal is the whole action: no second add, nothing removed.
 			if r2.addCalls != 0 {
 				t.Errorf("the refused re-run ran %d member-adds", r2.addCalls)
 			}
@@ -2479,17 +2145,10 @@ func TestControlPlaneJoinRefusesToAdoptAMemberAtAnotherAddress(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinReplacesAStaleIntent drives the re-run whose recorded
-// member is no longer in the cluster — an operator removed it by hand, per the
-// recovery advice. The journal is the recovery record, not the truth: the
-// cluster's member list is (memberByPeerURL, internal/ha/etcd.go:405-416), so
-// the stale intent is replaced by a fresh one for this run's member and the
-// join proceeds as a fresh add. Nothing removes the recorded member — it is
-// already gone.
+// The stale intent is replaced by a fresh one; the recorded member is already gone.
 func TestControlPlaneJoinReplacesAStaleIntent(t *testing.T) {
 	joinFixture(t)
-	// The stale journal is the failed join's only diagnostics: discarding it
-	// is said, with the identity it recorded.
+	// Discarding the stale journal is said, with the identity it recorded.
 	savedOut := joinOut
 	var out bytes.Buffer
 	joinOut = &out
@@ -2507,8 +2166,7 @@ func TestControlPlaneJoinReplacesAStaleIntent(t *testing.T) {
 		t.Fatalf("the re-run ran %d member-adds (peer %q), want one fresh add of this node's peer URL",
 			r.addCalls, r.addPeer)
 	}
-	// The stale intent was replaced before the add: at member-add time the
-	// journal already records THIS run's member, not the removed one.
+	// At member-add time the journal already records this run's member, not the removed one.
 	pre := parseIntent(t, r.intentAtAddRaw)
 	if pre.MemberName != r.addName || pre.PeerURL != r.addPeer || pre.MemberID != 0 || pre.Phase != "prepared" {
 		t.Errorf("the journal at member-add time records %+v, want a fresh intent for %q at %q",
@@ -2530,8 +2188,7 @@ func TestControlPlaneJoinReplacesAStaleIntent(t *testing.T) {
 	if r.saved == nil || st == nil || st.EtcdState != "existing" {
 		t.Fatalf("the fresh add saved no node state: saved=%v returned=%v", r.saved, st)
 	}
-	// The replacement journal outlives the save: it now records the fresh
-	// member, and ends only when a later start confirms local etcd data.
+	// The replacement journal outlives the save and ends when a later start confirms etcd.
 	fresh, readErr := os.ReadFile(joinIntentPath)
 	if readErr != nil {
 		t.Fatalf("the journal did not survive a completed join: %v", readErr)
@@ -2542,12 +2199,7 @@ func TestControlPlaneJoinReplacesAStaleIntent(t *testing.T) {
 	}
 }
 
-// TestMemberAddRefusedClassifiesEtcdsOutrightRefusals pins the split the
-// commit phase reconciles on: a refusal etcd answered outright — the request
-// was rejected before any proposal, so it cannot have committed and its reply
-// was not lost — versus a possibly-lost reply, where the proposal may have
-// landed and only the answer dropped. isPromoteNotYet classifies the same
-// split for MemberPromote.
+// A refusal etcd answered outright cannot have committed; a lost reply may have.
 func TestMemberAddRefusedClassifiesEtcdsOutrightRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -2579,13 +2231,7 @@ func TestMemberAddRefusedClassifiesEtcdsOutrightRefusals(t *testing.T) {
 	}
 }
 
-// TestControlPlaneJoinFailsADeterministicMemberAddRefusalDirectly drives a
-// member-add etcd refused outright: the request was rejected before any
-// proposal, so there is no lost reply to reconcile — the member list must not
-// be read, the add must not be retried, and etcd's own answer is the join's
-// error. The journal stays as the recovery record: for a peer-URL refusal it
-// records the member a prior add committed, and the re-run's reconciliation
-// — the one with the identity checks — adopts it.
+// No member-list read, no retry; etcd's own answer is the error, and the journal stays.
 func TestControlPlaneJoinFailsADeterministicMemberAddRefusalDirectly(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -2642,13 +2288,7 @@ func TestControlPlaneJoinFailsADeterministicMemberAddRefusalDirectly(t *testing.
 	}
 }
 
-// TestControlPlaneJoinReconcilesAnAmbiguousMemberAdd drives a member-add whose
-// reply was lost: the deadline fired with the request possibly committed. The
-// member list is re-read to decide, not guessed at: the member is in the
-// cluster and the join finishes on it without a second add and without
-// removing anything; it is not, and the add is retried once; the list cannot
-// answer, and the join refuses — one add, nothing removed, the journal kept as
-// the re-run's recovery record.
+// The member list re-read decides: adopt, retry once, or refuse — never a guess.
 func TestControlPlaneJoinReconcilesAnAmbiguousMemberAdd(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -2714,11 +2354,7 @@ func TestControlPlaneJoinReconcilesAnAmbiguousMemberAdd(t *testing.T) {
 	}
 }
 
-// TestAmbiguousMemberAddRetryRefusedByAnUnstartedMemberSaysToJoinOneAtATime:
-// the lost reply's one retry can meet another controller's member-add landing
-// in between, which etcd's strict reconfiguration check refuses until that
-// member starts. The refusal carries the concurrent-join hint; no other retry
-// failure does.
+// Only the retry's not-started refusals carry the concurrent-join hint.
 func TestAmbiguousMemberAddRetryRefusedByAnUnstartedMemberSaysToJoinOneAtATime(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -2749,36 +2385,10 @@ func TestAmbiguousMemberAddRetryRefusedByAnUnstartedMemberSaysToJoinOneAtATime(t
 	}
 }
 
-// --- preparation and membership commit are separate phases ---
-//
-// prepareControlPlaneJoin runs in two phases: a preparation phase that runs
-// every fallible effect which needs no member-add result — the runtime configs
-// included, on a node state whose EtcdInitialCluster may be derived from the
-// cluster's member list read before the add — and a membership-commit phase
-// that takes the opaque value the preparation returned, runs the member-add,
-// and then the writes that genuinely need the add's result: the node-state
-// save, whose EtcdInitialCluster is the string the member-add returned or the
-// adopted membership's, and the intent-clear, which ends the journal only
-// once that state is persisted. The prepared value's fields are unexported, so
-// a populated one cannot be constructed outside internal/ha — the pattern of
-// clusterinfo.Authenticated's unexported field
-// (internal/bootstrap/clusterinfo/clusterinfo.go:118-122); the zero value is
-// inert, and the commit phase rejects it like TrustBundle rejects an
-// unauthenticated Authenticated.
-
-// PrepareControlPlaneJoin is pkg/cli's dependency. The shared handler threads
-// the run's interrupt context through it: func(context.Context, JoinOptions)
-// (*nodestate.NodeState, error) — an internal-package signature, so pkg/cli's
-// exported API is untouched.
+// pkg/cli's dependency; the shared handler threads the run's interrupt context through it.
 var _ func(context.Context, JoinOptions) (*nodestate.NodeState, error) = PrepareControlPlaneJoin
 
-// TestJoinSplitsIntoPreparationAndMembershipCommit drives the two phases
-// directly. The preparation phase runs every fallible effect that needs no
-// member-add result and never touches membership; it returns the opaque
-// prepared value the membership-commit phase consumes. The commit phase runs
-// exactly the membership effects — the member-add, then the state save — and
-// the intent journal still brackets the add: on disk before it, gone once the
-// join has finished persisting its state.
+// Preparation touches no membership; the commit runs the member-add, then the state save.
 func TestJoinSplitsIntoPreparationAndMembershipCommit(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers()}
@@ -2803,9 +2413,7 @@ func TestJoinSplitsIntoPreparationAndMembershipCommit(t *testing.T) {
 	if reflect.ValueOf(prepared).IsZero() {
 		t.Fatal("preparation returned the zero value")
 	}
-	// Opaque: every field unexported, so a composite literal naming any of them
-	// does not compile outside internal/ha, and the preparation phase is the
-	// only thing that returns a populated one.
+	// Opaque: a composite literal naming an unexported field does not compile outside internal/ha.
 	typ := reflect.TypeOf(prepared)
 	if typ.NumField() == 0 {
 		t.Fatal("the prepared value carries no fields between the phases")
@@ -2815,8 +2423,7 @@ func TestJoinSplitsIntoPreparationAndMembershipCommit(t *testing.T) {
 			t.Errorf("the prepared value's field %q is exported: a populated value could be constructed outside internal/ha", f.Name)
 		}
 	}
-	// The zero value is inert: the commit phase refuses it rather than
-	// reconciling, adding, or saving on a guess.
+	// The zero value is inert: the commit refuses it rather than save on a guess.
 	if _, err := commitJoinMembership(context.Background(), preparedJoin{}); err == nil {
 		t.Fatal("the membership-commit phase accepted the zero prepared value")
 	}
@@ -2838,34 +2445,13 @@ func TestJoinSplitsIntoPreparationAndMembershipCommit(t *testing.T) {
 	if r.saved == nil || st == nil || st.EtcdState != "existing" {
 		t.Fatalf("the commit saved/returned no joined node state: saved=%v returned=%v", r.saved, st)
 	}
-	// The journal outlives the save: the crash window between the state save
-	// and etcd's first WAL keeps its recovery record until a later start
-	// confirms the local etcd data.
+	// The journal outlives the save until a later start confirms the local etcd data.
 	if _, statErr := os.Stat(joinIntentPath); statErr != nil {
 		t.Fatalf("the intent file did not survive a completed join: %v", statErr)
 	}
 }
 
-// --- the shared node assembly ---
-//
-// Controller bootstrap (cluster.PrepareController) and the HA join run the
-// same node steps — host directories, prerequisites, pod-CIDR trust, node-IP
-// resolution, leaf certificates, kubeconfigs, the profile step, and the
-// kubelet/containerd configs — through ONE assembly function, not two
-// parallel bodies. The caller-specific steps hang off the assembly at the
-// three points the two paths' pinned orders fix: ResolveNet between the
-// prerequisites and the pod-CIDR trust (the join's shared-cert download and
-// cluster gates; the controller's netconfig resolution), BeforeCerts between
-// the resolved node IP and the certificates (the controller's IP-move
-// refusal and node state), and BeforeRuntimeConfigs between the profile step and
-// the runtime configs (the join's retained-data re-check, etcd probe, and
-// intent reconciliation). The refusal invariants survive the shared
-// assembly: every fallible step returns before the join's member-add, and
-// the order the guards record holds.
-
-// assemblyRecord records what the shared node assembly ran, in order, and
-// the arguments the pinned steps received. failNet, failBeforeCerts, and
-// failBeforeRuntime inject the refusals the caller-owned hooks produce.
+// What the shared assembly ran, in order, with the refusal hooks' errors to inject.
 type assemblyRecord struct {
 	order []string
 
@@ -2890,9 +2476,7 @@ type assemblyRecord struct {
 	failBeforeRuntime error
 }
 
-// assemblyNetc is the netconfig the recorded ResolveNet answers with: the
-// built-in v4 CIDRs under a test domain, so the SAN and CIDR assertions have
-// fixed expected values.
+// The built-in v4 CIDRs under a test domain, so SAN and CIDR assertions have fixed values.
 func assemblyNetc() netcfg.Config {
 	netc, err := netcfg.Parse("10.245.0.0/16", "10.96.0.0/12")
 	if err != nil {
@@ -2902,9 +2486,7 @@ func assemblyNetc() netcfg.Config {
 	return netc
 }
 
-// recordingAssembly is a NodeAssembly that records each call instead of
-// touching the host, plus the request a caller hands AssembleNode: an IPv4
-// node with a VIP, every explicit input distinct so a mix-up is visible.
+// A NodeAssembly that records each call, plus a request with every input distinct.
 func recordingAssembly(r *assemblyRecord) (NodeAssembly, AssembleRequest) {
 	netc := assemblyNetc()
 	a := NodeAssembly{
@@ -2966,16 +2548,7 @@ func recordingAssembly(r *assemblyRecord) (NodeAssembly, AssembleRequest) {
 	return a, req
 }
 
-// TestNodeAssemblyRunsTheCommonStepsInThePinnedOrder drives the shared
-// assembly directly and pins its whole step order: host directories,
-// prerequisites, the caller's network resolution, trust pod CIDRs, resolve
-// node IP, the caller's before-certificates hook, issue certificates, write
-// kubeconfigs, the profile step (a node with a profile only), the caller's
-// before-runtime-configs hook, runtime configs. The caller's inputs reach
-// the steps that consume them — the IP precedence gets the flag, config, and
-// saved address, the certificates get the netconfig's SANs and domain, the
-// kubeconfigs get the caller's apiserver endpoint and VIP — and the caller's
-// node state is what the runtime configs render from.
+// The caller's inputs reach the steps that consume them, and the state renders the configs.
 func TestNodeAssemblyRunsTheCommonStepsInThePinnedOrder(t *testing.T) {
 	netc := assemblyNetc()
 	for _, tc := range []struct {
@@ -3044,11 +2617,7 @@ func TestNodeAssemblyRunsTheCommonStepsInThePinnedOrder(t *testing.T) {
 	}
 }
 
-// TestNodeAssemblyRefusesBeforeTheStepsThatFollow drives each caller-owned
-// hook into a refusal and requires the assembly to stop there: a hook that
-// refuses must return before the steps after it run, the same
-// refusal-before-the-next-side-effect property the join's member-add pin
-// holds. An error a hook returns is the error the assembly reports.
+// A hook's refusal stops the assembly, and its error is the error reported.
 func TestNodeAssemblyRefusesBeforeTheStepsThatFollow(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -3079,15 +2648,7 @@ func TestNodeAssemblyRefusesBeforeTheStepsThatFollow(t *testing.T) {
 	}
 }
 
-// TestPrepareJoinRunsItsCommonStepsThroughTheSharedAssembly pins the join
-// side of the shared assembly: prepareControlPlaneJoin routes its common
-// node steps through the shared assembly exactly once, handing it the
-// request its own options and state resolve to — the CIS profile, the
-// join's VIP, the endpoint bring-up's rule yields for that VIP (what the
-// join's kubeconfigs target, not loopback), no saved IP (a fresh join has
-// none), the join's flag and config node-IP inputs — and the node state the
-// runtime configs render from is the assembled one, carrying the resolved
-// node IP.
+// The join hands the assembly the request its own options resolve to, exactly once.
 func TestPrepareJoinRunsItsCommonStepsThroughTheSharedAssembly(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{carriedKey: true, listMembers: listedMembers()}
@@ -3133,19 +2694,7 @@ func TestPrepareJoinRunsItsCommonStepsThroughTheSharedAssembly(t *testing.T) {
 	}
 }
 
-// From here down: the signal handling tests for the join's safe boundaries.
-// Every join step must observe the context: a signal that goes unobserved
-// leaves the process to die by the default action, potentially with the
-// voting member already added and no node state saved.
-
-// TestJoinRefusesToStartWhenTheSignalArrivedBeforeIt is the entry-boundary
-// red: a join entered with an already-received signal refuses at its first
-// boundary — before staging, certificates, or the live member-add — surfacing
-// the signal's own stop (wrapping context.Canceled), the same contract
-// internal/certs' runInitiatorPhase gives a --cluster run
-// (internal/certs/cacluster.go:388-397). The live-context row is the guard
-// that keeps the refusal a signal check, not a blanket one: with no signal
-// received the join still starts its first real step.
+// A join entered after a signal refuses before touching anything; a live context still starts.
 func TestJoinRefusesToStartWhenTheSignalArrivedBeforeIt(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -3186,19 +2735,14 @@ func TestJoinRefusesToStartWhenTheSignalArrivedBeforeIt(t *testing.T) {
 		if err == nil || errors.Is(err, context.Canceled) {
 			t.Fatalf("a live context was mistaken for a stop: %v", err)
 		}
-		// The test binary carries no payload, so staging is where a live join
-		// lands — proof the refusal above fires only once the context is dead.
+		// The test binary carries no payload, so staging is where a live join lands.
 		if !strings.Contains(err.Error(), "staging payload") {
 			t.Fatalf("a live join did not reach its first real step: %v", err)
 		}
 	})
 }
 
-// observesContext reports whether the given source window consults the
-// context: an inline ctx.Err()/ctx.Done() check, or any call passing it —
-// the two shapes this repo uses (internal/certs/cacluster.go:389 for the
-// first, runInitiatorPhase at internal/certs/cacluster.go:401 for the
-// second).
+// Whether the given source window consults the context at all.
 func observesContext(window []byte) bool {
 	for _, shape := range []string{"ctx.Err(", "ctx.Done(", "(ctx"} {
 		if bytes.Contains(window, []byte(shape)) {
@@ -3208,16 +2752,7 @@ func observesContext(window []byte) bool {
 	return false
 }
 
-// TestJoinObservesTheContextBetweenTheDownloadAndTheMemberAdd pins the
-// boundary a MID-FLIGHT signal reaches. A check at entry alone is not enough:
-// preparation continues after the join starts (cert download, PKI
-// generation), and the live member-add is the one step a received signal must
-// never let happen — a check placed before the download step would already
-// have passed by the time a signal lands in the download itself. The pin is
-// source order, the house pattern for wiring an in-process test cannot drive
-// (TestJoinRefusesAKeylessBundleBeforeTheMemberAdd above does the same for
-// the encryption-key gate): some consult of the context must sit between the
-// shared-cert download step and the member-add call.
+// A context consult must sit between the download step and the member-add call.
 func TestJoinObservesTheContextBetweenTheDownloadAndTheMemberAdd(t *testing.T) {
 	src, err := os.ReadFile("join.go")
 	if err != nil {
@@ -3239,27 +2774,13 @@ func TestJoinObservesTheContextBetweenTheDownloadAndTheMemberAdd(t *testing.T) {
 	}
 }
 
-// TestJoinDefersTheFirstSignalAcrossTheMemberAddToStateSave pins the commit
-// window policy (the span from the live member-add to the persisted node
-// state): from
-// the live member-add to the persisted node state a kill orphans a voting
-// member, so the first signal received inside the window is DEFERRED — the
-// window consults nothing and runs to the end — and once the state is saved
-// the deferred signal stops the join, with a log line that says so. The
-// second signal needs no pin of its own: the window runs on the interrupt
-// context, whose handler restores the signals' default action before the
-// cancellation is visible (internal/interrupt/interrupt.go:93-95), so a
-// second signal kills exactly as it does everywhere else.
+// A kill inside the window would orphan the added member, so the first signal is deferred.
 func TestJoinDefersTheFirstSignalAcrossTheMemberAddToStateSave(t *testing.T) {
 	src, err := os.ReadFile("join.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The commit window lives in commitJoinMembership since the two-phase
-	// split: the member-add runs there (addMemberIfEtcdDataDirEmpty), and the
-	// state save is the joinEffects saveState seam. The assembly's runtime
-	// configs moved into preparation, so the tail the deferred signal
-	// surfaces into is the span from the save to the commit phase's return.
+	// The window spans addMemberIfEtcdDataDirEmpty, the saveState seam, and the commit's return.
 	add := bytes.LastIndex(src, []byte("addMemberIfEtcdDataDirEmpty("))
 	if add < 0 {
 		t.Fatal("the member-add call is gone from the join — re-express this pin")
@@ -3339,8 +2860,7 @@ func TestControlPlaneJoinTargetsTheControllerStartsServer(t *testing.T) {
 				t.Errorf("kubeconfigs written against %q (called %v), want the controller start's %q",
 					r.kcServer, r.kcCalled, tc.want)
 			}
-			// kube-vip's own kubeconfig is written, against the local apiserver,
-			// exactly when the node has a VIP to elect for.
+			// kube-vip's kubeconfig is written exactly when the node has a VIP to elect for.
 			if r.kcVIP != (tc.vip.Address != "") {
 				t.Errorf("kubeconfig write asked for kube-vip's kubeconfig = %v, want %v", r.kcVIP, tc.vip.Address != "")
 			}
@@ -3358,33 +2878,7 @@ func TestControlPlaneJoinTargetsTheControllerStartsServer(t *testing.T) {
 	}
 }
 
-// --- the maintenance fence around the member-add ---
-//
-// The join's live member-add is member admission, and a member admitted while
-// an upgrade, `rotate-ca --cluster` or `migrate-etcd-ca` run is mid-flight
-// races the very bundle and staged-key writes those runs own. So the join
-// holds the same cluster-wide maintenance fence those orchestrators hold —
-// maintlease.AcquireCompatible, both the stratum-cluster-maintenance and the
-// legacy stratum-cluster-upgrade lease — from just before the member-add to
-// the persisted node state (the join's member-add window), through the
-// takeMaintenanceFence effect. The take sits at the command-level seam: the
-// join command wires the real fence, and the internal/ha helpers the
-// orchestrators call mid-run (UploadCerts, NewCertKey, the downloads) never
-// consult it, or the orchestrators would self-refuse inside their own run.
-// The joiner's only working cluster credential in this window is its
-// bootstrap token, so the fence it takes can be held and renewed only if the
-// mint that published its grant also granted the control-plane bootstrap
-// group the Lease access pinned by
-// TestUploadCertsGrantsTheJoinerTheMaintenanceLeases below.
-
-// TestControlPlaneJoinTakesTheMaintenanceFenceAroundTheMemberAdd pins the
-// fence's place in the join. The take happens after every refusing step and
-// before the member-add — the latest point that still prevents the add — and
-// the release happens after the node state is saved, when the window is over.
-// A fence held by another run refuses the join before the add, so nothing is
-// added, saved, or compensated, and the intent journal stays as the recovery
-// record; the refusal names the holder, because the operator must be able to
-// tell whether to wait.
+// The take is the latest point that still prevents the add; the release comes after the save.
 func TestControlPlaneJoinTakesTheMaintenanceFenceAroundTheMemberAdd(t *testing.T) {
 	t.Run("taken before the member-add, released after the state save", func(t *testing.T) {
 		joinFixture(t)
@@ -3430,9 +2924,7 @@ func TestControlPlaneJoinTakesTheMaintenanceFenceAroundTheMemberAdd(t *testing.T
 			t.Errorf("the post-add compensation ran although nothing was added: byID=%d quorum=%d",
 				r.removeByIDCalls, r.quorumHeldCalls)
 		}
-		// The journal was written during preparation, before the fence could
-		// refuse the add: it stays as this node's recovery record, and a re-run
-		// of the join reconciles it against the cluster's own member list.
+		// The journal was written during preparation; it stays, and a re-run reconciles it.
 		if _, statErr := os.Stat(joinIntentPath); statErr != nil {
 			t.Fatalf("the intent journal did not survive the refused join: %v", statErr)
 		}
@@ -3455,23 +2947,12 @@ func TestControlPlaneJoinTakesTheMaintenanceFenceAroundTheMemberAdd(t *testing.T
 	})
 }
 
-// TestControlPlaneJoinRefusesAFenceItsTokenCannotTake: a join command minted
-// by a stratum that predates the member-add fence grant carries a bootstrap
-// token the stratum:certs-reader Role gives no Lease access, so the fence take
-// is forbidden — after the preparation has issued certificates, written the
-// kubeconfigs and recorded the intent journal. The join refuses before the
-// member-add, saying why and how to get a command that works: a mint on a
-// control plane running this release repairs the Role. Re-running with that
-// new command then finishes the join past the journal the refused run left:
-// the cluster's member list shows no member for it, so the re-run downloads
-// with the new token, replaces the journal, takes the fence with that token,
-// and adds the member exactly once.
+// The refusal repairs only with a new mint; the re-run with it finishes the join past the journal.
 func TestControlPlaneJoinRefusesAFenceItsTokenCannotTake(t *testing.T) {
 	joinFixture(t)
 	etcdDataDir := t.TempDir()
 	r := &recordedJoin{}
-	// The refused run added nothing, so the cluster lists only cp1 until a
-	// member-add lands.
+	// The refused run added nothing, so the cluster lists only cp1 until a member-add lands.
 	r.clusterMembersFn = func() (etcdMembership, error) {
 		if r.addCalls == 0 {
 			return etcdMembership{ClusterID: 1, Responder: 11, Quorum: true, Members: listedMembers().Members[:1]}, nil
@@ -3517,8 +2998,7 @@ func TestControlPlaneJoinRefusesAFenceItsTokenCannotTake(t *testing.T) {
 		t.Fatalf("the intent journal did not survive the refused join: %v", statErr)
 	}
 
-	// The re-run, with the command a control plane running this release
-	// minted: a new token and certificate-key for the same cluster.
+	// The re-run, with the new command's token and certificate-key for the same cluster.
 	opts := freshJoinOpts()
 	opts.Token, opts.CertKey = "new-bootstrap-token", "new-certificate-key"
 	tokenAtFence := ""
@@ -3546,8 +3026,7 @@ func TestControlPlaneJoinRefusesAFenceItsTokenCannotTake(t *testing.T) {
 	}
 }
 
-// TestUploadCertsGrantsTheJoinerTheMaintenanceLeases checks requests as
-// Kubernetes authorizes them: collection create has no resource name.
+// Checked as Kubernetes authorizes them: collection create has no resource name.
 func TestUploadCertsGrantsTheJoinerTheMaintenanceLeases(t *testing.T) {
 	cs := uploadFixture(t)
 	if err := UploadCerts(mustKey(t), tokenOwner("bootstrap-token-abc123", "uid-token-1"), nil); err != nil {
@@ -3574,47 +3053,14 @@ func TestUploadCertsGrantsTheJoinerTheMaintenanceLeases(t *testing.T) {
 	}
 }
 
-// --- authenticated bundle metadata ---
-//
-// The versioned envelope (see certs_upload_test.go) puts the bundle facts a
-// join consumes inside the ciphertext, and the download hands them over as
-// one bundleGrant: the etcd client endpoints the envelope authenticates
-// (moved out of the unauthenticated Secret annotation, which stays published
-// only for joiners running a released stratum), the cluster VIP the
-// publishing control plane recorded, the publication's generation, and
-// whether the bundle carried the at-rest key.
-//
-// The contract these tests pin:
-//
-//   - DownloadCerts returns the bundleGrant the envelope's authenticated
-//     metadata makes of the download, and the downloadGrant effect, wired to
-//     DownloadCerts in productionJoinEffects, is the join's one download
-//     effect: the recorders and the recovery sentinels override it, so they
-//     pin the path production runs.
-//
-//   - The join takes the cluster VIP from the grant's authenticated metadata,
-//     never from an annotation: a configured VIP that conflicts with it
-//     refuses the join before any certificate is issued or etcd is touched,
-//     naming both addresses; an unspecified VIP inherits the metadata's, into
-//     the node state and the kubeconfig endpoint rule alike; a grant with no
-//     metadata (a legacy bundle, or a cluster with no VIP) keeps the
-//     configured VIP and the no-VIP shapes this package already pins.
-
-// vipGrant is the downloadGrant effect the tests stand in: the grant the
-// envelope's authenticated metadata carried for this join, at a fixed
-// generation so the tests can tell metadata absence from metadata zero.
+// A downloadGrant stand-in with the metadata's endpoints, VIP and a fixed generation.
 func vipGrant(published []string, vip string) func(string, string, func(bundleProfile) error) (bundleGrant, error) {
 	return func(string, string, func(bundleProfile) error) (bundleGrant, error) {
 		return bundleGrant{Published: published, VIP: vip, Generation: 7}, nil
 	}
 }
 
-// TestControlPlaneJoinTakesTheAuthenticatedVIPMetadata pins the join side of
-// the versioned envelope: the VIP is a fact the cluster publishes about
-// itself, authenticated by the same ciphertext that carries the certificates
-// rather than taken unchecked from a joining control plane's own config, and
-// the etcd endpoints the join dials come from the grant the metadata
-// authenticates.
+// The VIP comes from the grant's authenticated metadata, never from an annotation.
 func TestControlPlaneJoinTakesTheAuthenticatedVIPMetadata(t *testing.T) {
 	t.Run("an unspecified VIP inherits the metadata's", func(t *testing.T) {
 		joinFixture(t)
@@ -3688,8 +3134,7 @@ func TestControlPlaneJoinTakesTheAuthenticatedVIPMetadata(t *testing.T) {
 	})
 
 	t.Run("a grant with no metadata keeps the configured VIP", func(t *testing.T) {
-		// The pre-envelope shape: the cluster published no VIP metadata, so
-		// the operator's configured VIP stands.
+		// The pre-envelope shape: no VIP metadata, so the configured VIP stands.
 		joinFixture(t)
 		r := &recordedJoin{listMembers: listedMembers()}
 		fx := fakeJoinEffects(r)
@@ -3734,8 +3179,7 @@ func TestControlPlaneJoinTakesTheAuthenticatedVIPMetadata(t *testing.T) {
 	})
 }
 
-// An inherited VIP needs the same live validation as an explicitly configured
-// one. Authentication of the grant does not prove the VIP is currently serving.
+// Authentication of the grant does not prove the VIP is currently serving.
 func TestInheritedVIPRunsLiveJoinValidation(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers()}
@@ -3755,9 +3199,7 @@ func TestInheritedVIPRunsLiveJoinValidation(t *testing.T) {
 	}
 }
 
-// A join refused before it wrote the bundle downloaded nothing, so a secret
-// on disk is an earlier attempt's: it is removed, and said to be one, even
-// when the refused bundle carries a secret of that name.
+// A secret on disk before the bundle is written is an earlier attempt's, removed and said.
 func TestSettleJoinSecretsBeforeTheBundleIsWritten(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, encryptionConfigEntry)
@@ -3777,9 +3219,7 @@ func TestSettleJoinSecretsBeforeTheBundleIsWritten(t *testing.T) {
 	}
 }
 
-// A control plane's spec.node rides its join: the state the join saves and
-// returns, which its runtime-config write and first run render from, carries
-// the labels, taints and runtime handlers, not only its first restart.
+// The state the join saves and returns carries the spec.node facts, not only its first restart.
 func TestControlPlaneJoinCarriesItsNodeFacts(t *testing.T) {
 	joinFixture(t)
 	r := &recordedJoin{listMembers: listedMembers()}

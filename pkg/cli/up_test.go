@@ -35,13 +35,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestProfileRequiresOperator pins the guard that stops a controller whose
-// profile needs the operator from starting with the operator disabled.
-//
-// The failure it prevents is silent, which is why it is worth a test: the cluster
-// comes up Ready, and only later does every `kubectl logs` and `kubectl exec`
-// fail, because the profile makes kubelet serving certs bootstrap-issued and the
-// approver that signs them lives in the operator.
+// The failure it prevents is silent: the cluster comes up Ready, then logs and exec fail.
 func TestProfileRequiresOperator(t *testing.T) {
 	on, off := true, false
 	needs := profile.Profile{Name: "cis", RequiresOperator: true}
@@ -74,8 +68,7 @@ func TestProfileRequiresOperator(t *testing.T) {
 			if !tc.wantErr {
 				return
 			}
-			// The message has to be actionable: an operator hitting this at 3am
-			// needs to know which two settings conflict and what to do.
+			// The message must be actionable: which two settings conflict, and what to do.
 			for _, want := range []string{"cis profile", "operator", "serving-certificate", "spec.operator: false"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("error does not mention %q, so it is not actionable:\n  %v", want, err)
@@ -85,10 +78,7 @@ func TestProfileRequiresOperator(t *testing.T) {
 	}
 }
 
-// TestProfileFromConfigFileIsGuardedToo is the case a flag-only guard would
-// miss: the profile can equally arrive from spec.profile (or the legacy
-// spec.cis) in the config file with no flag on the command line, so
-// controllerConfig reads the resolved config instead.
+// The profile can equally arrive from spec.profile, so the guard reads the resolved config.
 func TestProfileFromConfigFileIsGuardedToo(t *testing.T) {
 	registerCISForTest(t)
 	dir := t.TempDir()
@@ -106,9 +96,7 @@ func TestProfileFromConfigFileIsGuardedToo(t *testing.T) {
 	}
 }
 
-// TestControllerConfigAppliesTheGuard proves the guard is WIRED, not merely
-// defined. TestCISRequiresOperator above would keep passing if the call site were
-// deleted; this exercises the path runUp actually takes.
+// Proves the guard is wired: the definition test would pass even with the call site deleted.
 func TestControllerConfigAppliesTheGuard(t *testing.T) {
 	registerCISForTest(t)
 	dir := t.TempDir()
@@ -184,9 +172,7 @@ func TestControllerConfigAppliesTheGuard(t *testing.T) {
 	})
 }
 
-// TestRunningNodeError pins the preflight decision: refuse a start when a
-// supervisor is already live, or when an earlier `stratum up` left processes
-// running; proceed only when the node is genuinely clear.
+// Refuse when a supervisor is live or earlier processes remain; proceed only on a clear node.
 func TestRunningNodeError(t *testing.T) {
 	// A live supervisor: a plain double-start — refuse, pointing at the socket.
 	if err := runningNodeError(true, false); err == nil {
@@ -194,9 +180,7 @@ func TestRunningNodeError(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "already running") {
 		t.Errorf("supervisor-running message unclear: %v", err)
 	}
-	// Supervisor down but containerd still serving with no supervisor: an orphan
-	// from a kill -9 / crash. Refuse, and point at recovery so the operator isn't
-	// left decoding a kubelet crash-loop.
+	// An orphan from a kill -9 or crash: refuse, pointing at recovery.
 	err := runningNodeError(false, true)
 	if err == nil {
 		t.Fatal("did not refuse an orphaned containerd — a fresh start would crash-loop kubelet")
@@ -206,16 +190,13 @@ func TestRunningNodeError(t *testing.T) {
 			t.Errorf("orphan message missing %q: %v", want, err)
 		}
 	}
-	// Clear node (no supervisor, containerd down — the normal post-clean-stop
-	// state, control-plane containers surviving notwithstanding): proceed.
+	// A clear node: proceed.
 	if err := runningNodeError(false, false); err != nil {
 		t.Errorf("refused a clear node: %v", err)
 	}
 }
 
-// TestAlreadyJoinedDecision pins that `stratum up --join` on a node that
-// already has state must never re-run the join, because the join deletes the
-// etcd data dir. Same cluster → start as a member; anything else → refuse.
+// `up --join` on a node with state must never re-run the join: it deletes the etcd data dir.
 func TestAlreadyJoinedDecision(t *testing.T) {
 	const (
 		ours   = "sha256:" + "aa00000000000000000000000000000000000000000000000000000000000000"
@@ -225,8 +206,7 @@ func TestAlreadyJoinedDecision(t *testing.T) {
 	const members = "cp1=https://10.0.0.11:2380,cp2=https://10.0.0.12:2380"
 	ctrl := &cluster.NodeState{Role: "controller", EtcdName: "cp2", EtcdInitialCluster: members, EtcdState: "existing"}
 	boot := &cluster.NodeState{Role: "controller", EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380", EtcdState: "new"}
-	// A parseable node.yaml whose membership is
-	// incomplete would be restarted as a brand-new single-member etcd.
+	// Incomplete membership would restart as a brand-new single-member etcd.
 	noMembers := &cluster.NodeState{Role: "controller", EtcdName: "cp2", EtcdState: "existing"}
 	noName := &cluster.NodeState{Role: "controller", EtcdInitialCluster: members, EtcdState: "existing"}
 	notListed := &cluster.NodeState{Role: "controller", EtcdName: "cp3", EtcdInitialCluster: members, EtcdState: "existing"}
@@ -255,8 +235,7 @@ func TestAlreadyJoinedDecision(t *testing.T) {
 		{"different cluster: refuse", ctrl, nil, []string{ours}, theirs, false, []string{"different cluster", ours, theirs, "stratum uninstall"}},
 		{"no readable CA: cannot tell, refuse", ctrl, nil, nil, ours, false, []string{"no readable", "without --join", "stratum uninstall"}},
 		{"a worker: --join would convert it, refuse", worker, nil, []string{ours}, ours, false, []string{`"worker"`, "control plane", "stratum uninstall"}},
-		// State that exists but cannot be read is not
-		// "no state", and must not take the fresh-join path that wipes etcd.
+		// State that cannot be read is not no state: refuse, never the fresh-join path that wipes etcd.
 		{"unreadable state: refuse, do not treat as fresh", nil, unreadable, []string{ours}, ours, false, []string{"cannot read", "permission denied", "stratum uninstall"}},
 		{"malformed state: refuse, do not treat as fresh", nil, malformed, []string{ours}, ours, false, []string{"cannot read", "mapping values", "stratum uninstall"}},
 		// ...and a bad pin is a bad pin, not "a different cluster".
@@ -287,10 +266,7 @@ func TestAlreadyJoinedDecision(t *testing.T) {
 	}
 }
 
-// TestLocalCAPinsMatchTheJoinPin pins the other half of the comparison: the pins
-// alreadyJoinedDecision is handed are computed exactly as a joiner's pin is
-// (clusterinfo.PinFor, the value `stratum token create` prints), so a member of
-// the cluster being joined is recognised — and ca-new.crt counts while staged.
+// The pins must be computed exactly as a joiner's pin is, and ca-new counts while staged.
 func TestLocalCAPinsMatchTheJoinPin(t *testing.T) {
 	orig := version.PKIDir
 	version.PKIDir = t.TempDir()
@@ -378,10 +354,7 @@ func writeTestCA(t *testing.T, name string) *x509.Certificate {
 	return c
 }
 
-// TestResolveCertKey pins key sourcing: --certificate-key wins when
-// given, otherwise the key is read (trimmed) from --certificate-key-file so it
-// never has to travel on a command line; empty inputs are not an error (the join
-// path validates downstream), and an unreadable file is a clear error.
+// --certificate-key wins; empty inputs are not an error; an unreadable file is a clear error.
 func TestResolveCertKey(t *testing.T) {
 	if got, err := resolveCertKey("inline", "/nonexistent"); err != nil || got != "inline" {
 		t.Fatalf("--certificate-key should win: got %q err %v", got, err)
@@ -402,9 +375,7 @@ func TestResolveCertKey(t *testing.T) {
 	}
 }
 
-// TestUpFlagConflict: --worker beside a join flag would silently drop the
-// join flag, and on a controller it would rewrite node.yaml as a worker.
-// The combination is refused up front, before any lock, stage or state read.
+// --worker beside a join flag would silently drop it; refused before any lock or stage.
 func TestUpFlagConflict(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -431,9 +402,7 @@ func TestUpFlagConflict(t *testing.T) {
 	}
 }
 
-// writeEmptyConfig writes an empty cluster config into dir and returns its
-// path. runUp refuses a --config naming a file that does not exist, so a test
-// that wants the built-in defaults names an empty file that does.
+// runUp refuses a --config naming a missing file, so a test wanting defaults writes an empty one.
 func writeEmptyConfig(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "config.yaml")
@@ -443,10 +412,7 @@ func writeEmptyConfig(t *testing.T, dir string) string {
 	return path
 }
 
-// TestUpConfigPath: a --config naming a missing file must not start the
-// node on pure defaults and record the bad path in the unit. Only the
-// default path may be absent; a relative path is judged by, and resolved to,
-// the file it names.
+// A --config naming a missing file must not start the node on pure defaults.
 func TestUpConfigPath(t *testing.T) {
 	tmp := t.TempDir()
 	present := writeEmptyConfig(t, tmp)
@@ -482,21 +448,16 @@ func TestUpConfigPath(t *testing.T) {
 			}
 		})
 	}
-	// A worker's unit never carries --config, so its refusal does not claim
-	// that running `stratum up --config` records a path for later starts.
+	// A worker's unit never carries --config, so its refusal claims no rewrite.
 	_, err := upConfigPath("nope.yaml", true)
 	if err == nil || strings.Contains(err.Error(), "If the stratum unit runs this node") || !strings.Contains(err.Error(), "name the intended one") {
 		t.Errorf("worker refusal = %v, want the worker wording", err)
 	}
 }
 
-// TestUpRefusesAnExplicitEmptyConfig: `--config ""` (an unset "$CFG") read
-// no file at all, not even the default, and started on pure defaults with the
-// empty path recorded in the unit. Refused at the flag, before runUp.
+// `--config ""` read no file at all and recorded the empty path in the unit.
 func TestUpRefusesAnExplicitEmptyConfig(t *testing.T) {
-	// Stamped and redirected like a start the guard let through, so the
-	// refusal is not mistaken for the unstamped-build one, and a command that
-	// skipped it stops at the stubbed preparation instead of touching the host.
+	// Stamped and redirected like a start the guard let through, so the refusal is not mistaken.
 	tmp := t.TempDir()
 	for _, sw := range []struct {
 		p *string
@@ -525,8 +486,7 @@ func TestUpRefusesAnExplicitEmptyConfig(t *testing.T) {
 	root := NewRootCommand()
 	root.SetArgs([]string{"up", "--config", ""})
 	err := root.Execute()
-	// A unit an earlier build wrote may carry the empty --config, so the
-	// refusal says how to rewrite it.
+	// A unit an earlier build wrote may carry an empty --config, so the refusal says how to rewrite it.
 	if err == nil || !strings.Contains(err.Error(), "--config is empty") || !strings.Contains(err.Error(), "sudo systemctl start stratum") {
 		t.Fatalf("up --config \"\" = %v, want the empty-config refusal", err)
 	}
@@ -535,11 +495,7 @@ func TestUpRefusesAnExplicitEmptyConfig(t *testing.T) {
 	}
 }
 
-// TestRunUpRefusesAMissingConfigBeforeTouchingAnything drives both roles with a
-// --config that names a missing file: the control plane must not prepare the
-// node on defaults and install a unit carrying the missing path, and a
-// worker join must not go on to join without the file's node IP and SELinux
-// setting.
+// Both roles must refuse a --config naming a missing file before touching anything.
 func TestRunUpRefusesAMissingConfigBeforeTouchingAnything(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -554,8 +510,7 @@ func TestRunUpRefusesAMissingConfigBeforeTouchingAnything(t *testing.T) {
 		*sw.p = sw.v
 		t.Cleanup(func() { *sw.p = old })
 	}
-	// Stub every step past the refusal so that a runUp which skipped it still
-	// never touches the test machine.
+	// Stub every step past the refusal so a runUp that skipped it touches nothing.
 	oldInstall, oldRun, oldPrepare := installUnit, runControllerFn, prepareControllerFn
 	oldRunWorker, oldPrepareWorker := runWorkerFn, prepareWorkerFn
 	t.Cleanup(func() {
@@ -594,9 +549,7 @@ func TestRunUpRefusesAMissingConfigBeforeTouchingAnything(t *testing.T) {
 		if len(touched) != 0 {
 			t.Errorf("runUp(worker=%v) %v before refusing", o.worker, touched)
 		}
-		// The start lock is the first thing runUp creates (O_CREATE), ahead of
-		// the data lock and staging; DataDir alone proves nothing here, since
-		// a test binary has no payload to stage.
+		// The start lock is the first thing runUp creates, ahead of the data lock and staging.
 		for _, p := range []string{startLockPath, version.DataDir, version.EtcdDataDir} {
 			if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
 				t.Errorf("runUp(worker=%v) created %s before refusing (stat: %v)", o.worker, p, err)
@@ -605,16 +558,7 @@ func TestRunUpRefusesAMissingConfigBeforeTouchingAnything(t *testing.T) {
 	}
 }
 
-// TestUpNetworkFlagRefusalAdvisesByRole: the network flags without --worker
-// are refused with advice the user can follow. A control-plane join takes the
-// cluster's network, so the advice is to drop the flags: adding --worker to a
-// --join line is itself refused, and spec.network can only repeat the
-// cluster's values. A workload-only node is pointed at the worker line
-// `stratum token create` prints, never at this line with --worker swapped in:
-// a --join line's token can read the shared cluster CA material, and a worker
-// join keeps its token on disk. Any other start is pointed at spec.network,
-// read at the cluster's first boot. Every flag given is named in the one
-// refusal.
+// Refused with advice the user can follow; every flag given is named in the one refusal.
 func TestUpNetworkFlagRefusalAdvisesByRole(t *testing.T) {
 	all := runUpOptions{podCIDR: "10.50.0.0/16", serviceCIDR: "10.60.0.0/16", clusterDomain: "corp.example"}
 	join := all
@@ -655,9 +599,7 @@ func TestUpNetworkFlagRefusalAdvisesByRole(t *testing.T) {
 	}
 }
 
-// TestRunUpRefusesWorkerJoinBeforeTouchingAnything: the refusal is the first
-// thing runUp does, so it cannot be reached only after preflight, the start
-// lock or staging has run.
+// The refusal is the first thing runUp does, before preflight, lock or staging.
 func TestRunUpRefusesWorkerJoinBeforeTouchingAnything(t *testing.T) {
 	err := runUp(context.Background(), runUpOptions{worker: true, join: "https://10.0.0.11:6443", server: "https://10.0.0.11:6443"})
 	if err == nil || !strings.Contains(err.Error(), "--worker cannot be combined with --join") {
@@ -665,15 +607,7 @@ func TestRunUpRefusesWorkerJoinBeforeTouchingAnything(t *testing.T) {
 	}
 }
 
-// TestUpRefusesTheNetworkFlagsWithoutWorker: --pod-cidr, --service-cidr and
-// --cluster-domain are worker-join flags, and runUp reads them only in the
-// worker branch, so a control plane given one, at first boot or at --join,
-// would start on a network its operator did not ask for. Each is refused,
-// naming the flag and pointing at spec.network, before the start lock is
-// taken or any preparation runs; a worker join still takes all three. The
-// refusal must name the flag given, with its value and its own spec.network
-// field: its fixed text lists all three flags and fields, so a refusal that
-// named no flag would pass a check for those alone.
+// Worker-join flags on a control plane would start it on a network nobody asked for.
 func TestUpRefusesTheNetworkFlagsWithoutWorker(t *testing.T) {
 	const (
 		server  = "https://10.0.0.11:6443"
@@ -722,8 +656,7 @@ func TestUpRefusesTheNetworkFlagsWithoutWorker(t *testing.T) {
 				prepareWorkerFn, prepareControllerFn, prepareControlPlaneJoinFn = oldPrepareWorker, oldPrepareController, oldPrepareJoin
 				resolveJoinNodeIP = oldResolve
 			})
-			// The worker join's pre-stage node-IP check accepts every address,
-			// so this test does not depend on the runner's $NODE_IP or network.
+			// The pre-stage node-IP check accepts every address, so the test ignores the runner's $NODE_IP.
 			resolveJoinNodeIP = func(string, string, bool) (host.NodeIPChoice, error) {
 				return host.NodeIPChoice{IP: "192.0.2.1"}, nil
 			}
@@ -791,11 +724,7 @@ func TestUpRefusesTheNetworkFlagsWithoutWorker(t *testing.T) {
 	}
 }
 
-// TestUpJoinHandsSpecNetworkToTheJoin: a control plane's --join reads its
-// network from spec.network, and the join refuses ranges or a domain that
-// differ from the cluster's only when runUp passes them in. A field runUp
-// leaves out reaches the join as unset, so the join takes the cluster's value
-// and the operator's is dropped with no word until the node's first restart.
+// A network field runUp leaves out reaches the join as unset, and the operator's is dropped.
 func TestUpJoinHandsSpecNetworkToTheJoin(t *testing.T) {
 	const (
 		podCIDR = "10.50.0.0/16"
@@ -851,21 +780,7 @@ func TestUpJoinHandsSpecNetworkToTheJoin(t *testing.T) {
 	}
 }
 
-// TestRunUpInstallsTheSteadyStateUnitOnWorkerRestart closes a wiring
-// gap: neither the container check (no systemd there,
-// deliberately — see tools/inttest/check-reboot-persists.sh) nor
-// internal/host/systemd_test.go (which hands InstallUnit its own argv
-// directly) can tell you whether runUp still CALLS InstallUnit at all. FAILS
-// WITHOUT THE FIX: deleting the InstallUnit call from runUp's worker branch
-// leaves both of those green.
-//
-// Drives runUp's worker restart, with prepareWorkerFn stubbed to hand back the
-// persisted NodeState (no token needed), because it is the shortest path
-// through runUp that reaches InstallUnit — no host prereqs, PKI or bootstrap,
-// and no systemd: installUnit is stubbed, so host.SystemdAvailable() is never
-// consulted. PrepareWorker's own restart path is internal/cluster's to test. TestRunUpInstallsTheSteadyStateUnitOnControlPlaneRestart is the
-// sibling for the OTHER branch — this test alone leaves the
-// control-plane call site (up.go:265) unguarded.
+// No other test can tell whether runUp still calls InstallUnit at all.
 func TestRunUpInstallsTheSteadyStateUnitOnWorkerRestart(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -908,17 +823,7 @@ func TestRunUpInstallsTheSteadyStateUnitOnWorkerRestart(t *testing.T) {
 	}
 }
 
-// TestRunUpInstallsTheSteadyStateUnitOnControlPlaneRestart is the
-// control-plane sibling of TestRunUpInstallsTheSteadyStateUnitOnWorkerRestart:
-// deleting the control-plane InstallUnit call affects only the non-worker
-// branch, so the worker test stays green — this test is what turns that
-// deletion red.
-//
-// prepareControllerFn is stubbed because the real cluster.PrepareController
-// generates PKI and calls host.Prereqs, which runs modprobe/sysctl/swapoff
-// against the actual host — not something a unit test may do. No systemd
-// either: installUnit is stubbed, so host.SystemdAvailable() is never
-// consulted.
+// The control-plane sibling: prepareControllerFn is stubbed; the real one runs host prereqs.
 func TestRunUpInstallsTheSteadyStateUnitOnControlPlaneRestart(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -958,12 +863,7 @@ func TestRunUpInstallsTheSteadyStateUnitOnControlPlaneRestart(t *testing.T) {
 	}
 }
 
-// TestRunUpPersistsAnAbsoluteConfigPath is a regression test: a
-// relative --config reads correctly from the caller's cwd on THIS run, but a
-// system service starts with / as its cwd by default, so the same relative
-// string in the persisted unit would name a different file, or none, after
-// reboot. Fails when the persisted argv carries the relative string
-// verbatim.
+// A relative --config would name a different file after reboot: the service starts with / as cwd.
 func TestRunUpPersistsAnAbsoluteConfigPath(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -1010,14 +910,7 @@ func TestRunUpPersistsAnAbsoluteConfigPath(t *testing.T) {
 	}
 }
 
-// TestRunUpRefusesToStartAnEmptyEtcdOverRecordedMembership covers the
-// empty-datastore case: a controller whose saved state records membership of a
-// larger etcd cluster (state=existing, or several initial members), restored
-// without its datastore, must not be started on an empty data dir while its
-// peers may still hold quorum.
-// A single-member state=new record is the sole-controller replacement the docs
-// describe and still starts. Fails if the WAL guard runs only on the --join
-// path: every row below would start.
+// Restored without its datastore, it must not start on an empty dir while peers hold quorum.
 func TestRunUpRefusesToStartAnEmptyEtcdOverRecordedMembership(t *testing.T) {
 	const (
 		single = "cp1=https://10.0.0.1:2380"
@@ -1093,14 +986,7 @@ func TestRunUpRefusesToStartAnEmptyEtcdOverRecordedMembership(t *testing.T) {
 	}
 }
 
-// TestRunUpRefusesToBootstrapWhenAJoinIntentSurvives pins the bare-start side
-// of the join's resume. A failed `stratum up --join` can leave the join's
-// intent journal on disk with no node.yaml beside it — the state save never
-// ran. Bare `stratum up` on that node looks fresh: no saved state, an empty
-// etcd data directory — and would bootstrap a separate single-member cluster
-// while the joined cluster still lists this node as its member. The start
-// refuses and names the resume path instead; without an intent journal the
-// same bare start is the ordinary fresh bring-up and still works.
+// The journal can survive beside no node.yaml, so a bare start must refuse, naming the resume path.
 func TestRunUpRefusesToBootstrapWhenAJoinIntentSurvives(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1126,10 +1012,7 @@ func TestRunUpRefusesToBootstrapWhenAJoinIntentSurvives(t *testing.T) {
 				t.Cleanup(func() { *sw.p = old })
 			}
 			if tc.intent {
-				// The journal a failed join leaves beside where node.yaml would
-				// be: a member was added to the cluster, and this node never
-				// saved its state. Its shape is the on-disk contract pinned in
-				// internal/ha/join_test.go.
+				// The journal a failed join leaves; its on-disk shape is pinned in internal/ha/join_test.go.
 				intent := `{"memberName":"cp2","peerURL":"https://192.0.2.9:2380","memberID":1234,"phase":"added"}`
 				if err := os.MkdirAll(version.K8sConfDir, 0o700); err != nil {
 					t.Fatal(err)
@@ -1168,12 +1051,7 @@ func TestRunUpRefusesToBootstrapWhenAJoinIntentSurvives(t *testing.T) {
 	}
 }
 
-// TestRunUpEndsTheJoinJournalOnceLocalEtcdDataIsConfirmed pins when the join's
-// recovery journal ends. The join keeps the journal across its durable state
-// save, so the crash window between that save and etcd's first WAL — a state
-// bare `stratum up` refuses (requireLocalEtcdMember) — keeps its recovery
-// record. Once a start has confirmed the local member data, the journal has
-// done its job and ends; a start the gate refuses keeps it.
+// Once a start has confirmed the local member data, the journal has done its job and ends.
 func TestRunUpEndsTheJoinJournalOnceLocalEtcdDataIsConfirmed(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -1199,8 +1077,7 @@ func TestRunUpEndsTheJoinJournalOnceLocalEtcdDataIsConfirmed(t *testing.T) {
 				*sw.p = sw.v
 				t.Cleanup(func() { *sw.p = old })
 			}
-			// A node that finished its join and crashed before etcd first ran:
-			// published state, the join's recovery journal, no local etcd data.
+			// Finished join, crashed before etcd first ran: published state, journal, no local etcd data.
 			st := &cluster.NodeState{Role: "controller", Hostname: "cp2", EtcdName: "cp2",
 				EtcdState:          "existing",
 				EtcdInitialCluster: "cp1=https://192.0.2.1:2380,cp2=https://192.0.2.9:2380"}
@@ -1284,8 +1161,7 @@ func TestPublishedJoinStateWithIntentResumesOnlyBeforeEtcdStarts(t *testing.T) {
 	}
 }
 
-// writePayload writes a minimal self-extracting payload (a ZIP with one bin/
-// member) that assets.StageFrom accepts.
+// A minimal self-extracting payload (a ZIP with one bin/ member) that assets.StageFrom accepts.
 func writePayload(t *testing.T) string {
 	t.Helper()
 	exe := filepath.Join(t.TempDir(), "stratum")
@@ -1310,11 +1186,7 @@ func writePayload(t *testing.T) string {
 	return exe
 }
 
-// TestNodeUmaskReachesStageThenUp: a hardened caller umask (027, 077) must not
-// reach the directories `stratum stage` or `stratum up` create, or non-root
-// containers cannot traverse them. `umask 077; stratum stage;
-// stratum up` is the sequence that slipped past a pin placed only in runUp:
-// stage created the staging root 0700 and the later up inherited it.
+// A hardened caller umask must not reach the directories stage or up create.
 func TestNodeUmaskReachesStageThenUp(t *testing.T) {
 	root := NewRootCommand()
 	stage, _, err := root.Find([]string{"stage"})
@@ -1332,8 +1204,7 @@ func TestNodeUmaskReachesStageThenUp(t *testing.T) {
 			old := syscall.Umask(caller)
 			defer syscall.Umask(old)
 
-			// stage: the root and bin/ must come out 0755 under the real
-			// extraction code, through the real root pre-run.
+			// Through the real extraction code and the real root pre-run.
 			stateRoot := filepath.Join(t.TempDir(), "var", "lib", "stratum")
 			root.PersistentPreRun(stage, nil)
 			if _, err := assets.StageFrom(exe, stateRoot); err != nil {
@@ -1345,11 +1216,7 @@ func TestNodeUmaskReachesStageThenUp(t *testing.T) {
 				}
 			}
 
-			// up: a separate invocation, so it starts from the caller's umask
-			// again, not the 022 the stage hook left behind. Without the
-			// reset, `up` losing its annotation would still pass here.
-			// State it creates is 0755 too, and an explicit 0700 (PKI,
-			// secrets) is left alone.
+			// A separate invocation starts from the caller's umask again; explicit 0700 is left alone.
 			syscall.Umask(caller)
 			root.PersistentPreRun(up, nil)
 			kubelet := filepath.Join(stateRoot, "kubelet")
@@ -1370,9 +1237,7 @@ func TestNodeUmaskReachesStageThenUp(t *testing.T) {
 	}
 }
 
-// TestNodeUmaskNotAppliedRootWide: commands that do not own node state keep
-// the caller's umask — `snapshot restore` downloads a secret-bearing file with
-// os.Create (0666) and depends on it to come out 0600 under 077.
+// Commands that do not own node state keep the caller's umask.
 func TestNodeUmaskNotAppliedRootWide(t *testing.T) {
 	root := NewRootCommand()
 	for _, path := range [][]string{{"which"}, {"snapshot", "save"}, {"snapshot", "rejoin"}, {"upgrade"}, {"version"}} {
@@ -1398,9 +1263,7 @@ func statMode(t *testing.T, path string) os.FileMode {
 	return fi.Mode().Perm()
 }
 
-// TestNodeUmaskHookFiresOnExecute: the pre-run is wired into the real cobra
-// dispatch, not just callable. The test binary carries no payload, so stage
-// fails with ErrNoPayload — after the hook has run.
+// Wired into the real cobra dispatch: stage fails with ErrNoPayload after the hook has run.
 func TestNodeUmaskHookFiresOnExecute(t *testing.T) {
 	old := syscall.Umask(0o077)
 	defer syscall.Umask(old)
@@ -1415,21 +1278,7 @@ func TestNodeUmaskHookFiresOnExecute(t *testing.T) {
 	}
 }
 
-// From here down: the signal handling tests for runUp owning its signals from preflight
-// (the handlers must exist from before the first preflight, so a signal during
-// preparation stops at a step boundary rather than killing the process by the
-// default action — for an HA join, mid-join, possibly already
-// past the live etcd member-add).
-
-// TestRunUpOwnsSignalsFromPreflight pins the wiring: ONE
-// interrupt context created before the first preflight call, no NotifyContext
-// handler of runUp's own left in the file, and that same run's context handed
-// to both preparation paths (PrepareWorker and the HA join). A source pin
-// because the property is WHERE the handler exists relative to runUp's own
-// steps; the re-exec children below prove the behaviour that wiring produces.
-// The pattern is the house one for wiring a unit test cannot drive
-// (TestJoinRefusesAKeylessBundleBeforeTheMemberAdd,
-// internal/ha/join_test.go:238).
+// A source pin: the property is where the handler exists relative to runUp's own steps.
 func TestRunUpOwnsSignalsFromPreflight(t *testing.T) {
 	src, err := os.ReadFile("up.go")
 	if err != nil {
@@ -1455,9 +1304,7 @@ func TestRunUpOwnsSignalsFromPreflight(t *testing.T) {
 	if creation > preflight {
 		t.Fatal("the interrupt context is created after preflight: a signal arriving during preflight still meets no handler and kills the process")
 	}
-	// The context must reach the preparation paths: the HA join runs before
-	// the supervisor, and it is the one place a kill is worst (a voting member
-	// already added to etcd, no node state saved).
+	// The HA join runs before the supervisor and is where a kill is worst.
 	for _, call := range []string{"prepareWorkerFn(", "prepareControlPlaneJoinFn("} {
 		i := bytes.Index(src, []byte(call))
 		if i < 0 {
@@ -1473,15 +1320,7 @@ func TestRunUpOwnsSignalsFromPreflight(t *testing.T) {
 	}
 }
 
-// TestRunUpStopsWhenTheParentContextIsCancelled pins runUp's side of the
-// derivation contract the operator's, mcp's and dash's tests already pin:
-// the interrupt context is derived from the command's parent context, so a
-// host that runs the tree through ExecuteContext and cancels its own
-// context stops `stratum up` — here at the boundary before the run phase,
-// before the reboot-persistence unit is installed or the worker started —
-// instead of leaving the node running until a signal arrives. The parent's
-// cancellation surfaces as a plain context.Canceled, never the signal
-// stop error, so it keeps its own meaning and exit code.
+// A cancelled parent context must stop `stratum up` before the run phase, as context.Canceled.
 func TestRunUpStopsWhenTheParentContextIsCancelled(t *testing.T) {
 	tmp := t.TempDir()
 	for _, sw := range []struct {
@@ -1521,10 +1360,7 @@ func TestRunUpStopsWhenTheParentContextIsCancelled(t *testing.T) {
 	}
 }
 
-// upScratchHost points runUp's host writes, locks and node state at a scratch
-// tree, so a re-exec child can run the real runUp — worker or controller role
-// — without touching this machine. The redirections are the ones
-// TestRunUpInstallsTheSteadyStateUnitOnWorkerRestart uses.
+// Points runUp's host writes, locks and node state at a scratch tree for re-exec children.
 func upScratchHost(t *testing.T) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -1543,9 +1379,7 @@ func upScratchHost(t *testing.T) {
 	}
 }
 
-// waitForLine blocks until the child prints a stdout line containing substr —
-// the barrier that a given runUp phase has begun, so a signal cannot race
-// ahead of the phase it is meant to interrupt.
+// Blocks until the child prints a line containing substr, so a signal cannot race the phase.
 func (p *cliProc) waitForLine(t *testing.T, substr string) {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -1564,12 +1398,7 @@ func (p *cliProc) waitForLine(t *testing.T, substr string) {
 	}
 }
 
-// childLinesFrom blocks until the child's stdout closes, returning every line
-// printed from now on plus the exit code the child printed it mapped its
-// result to. Unlike cliProc.waitForExitCode (pkg/cli/operator_test.go), which
-// discards the lines it reads past, this keeps them: the lines a stopped run
-// prints BEFORE its verdict — "stratum: stopped", the phases it reached — are
-// exactly what these pins assert on.
+// Unlike cliProc.waitForExitCode, this keeps the lines a stopped run prints before its verdict.
 func childLinesFrom(t *testing.T, p *cliProc) (code int, lines []string) {
 	t.Helper()
 	code = -1
@@ -1595,9 +1424,7 @@ func childLinesFrom(t *testing.T, p *cliProc) (code int, lines []string) {
 	}
 }
 
-// waitChildExitsByItself waits for the child to end and fails unless it
-// terminated by itself — never killed by a signal. A stop at a step boundary
-// is an exit; a kill is the default action meeting an unowned run.
+// Fails unless the child terminated by itself; a stop at a boundary is an exit.
 func waitChildExitsByItself(t *testing.T, p *cliProc) int {
 	t.Helper()
 	select {
@@ -1620,9 +1447,7 @@ func waitChildExitsByItself(t *testing.T, p *cliProc) int {
 	return -1
 }
 
-// waitChildKilledBySignal waits for the child to end and fails unless a signal
-// killed it — what the second signal owes an operator whose first one is stuck
-// in a step that has not reached its boundary.
+// Fails unless a signal killed the child; a stuck first signal must be escapable.
 func waitChildKilledBySignal(t *testing.T, p *cliProc) {
 	t.Helper()
 	select {
@@ -1639,19 +1464,7 @@ func waitChildKilledBySignal(t *testing.T, p *cliProc) {
 	}
 }
 
-// TestRunUpWorkerJoinStopsAtTheBoundaryOnASignal is the worker-role red: the
-// interrupt context must exist before preparation, so a signal during the
-// join stops the run at its step boundary — the worker is never started and
-// the reboot-persistence unit is not installed — instead of killing the
-// process. The whole shared set
-// is covered: SIGINT, SIGTERM and SIGHUP.
-//
-// The child runs the real runUp with prepareWorkerFn stubbed as a preparation
-// step sitting at its boundary: it holds until the context is cancelled and
-// returns that stop — exactly what the threaded context is for. The stop
-// exits 0 (cleanStopOr): an operator who interrupts a join asked for a
-// stop, the same as one interrupting a running node, and a stop before
-// start must not surface as a failed run either.
+// The interrupt context must exist before preparation, so a signal stops at the boundary.
 func TestRunUpWorkerJoinStopsAtTheBoundaryOnASignal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1700,18 +1513,7 @@ func TestRunUpWorkerJoinStopsAtTheBoundaryOnASignal(t *testing.T) {
 	}
 }
 
-// TestRunUpWorkerJoinSurvivesTheFirstSignalAndDiesToTheSecond pins the
-// second-signal rule during preparation: the first signal only stops the run
-// (the shared interrupt context cancels and restores the signals' default
-// action, internal/interrupt/interrupt.go:93-95), and because a step can take
-// its time reaching its boundary, the second signal must kill. Fails if
-// the first signal kills instead: a handler installed only after the
-// worker setup would leave the run to die by the default action rather
-// than stopping at its boundary.
-//
-// The child's join step holds blindly for three seconds past the barrier — a
-// step mid-flight, like a real cert download — so the first signal cannot end
-// the run by itself and only the restored default action can.
+// The first signal only stops the run; the second must kill, or a stuck step strands the operator.
 func TestRunUpWorkerJoinSurvivesTheFirstSignalAndDiesToTheSecond(t *testing.T) {
 	if os.Getenv("STRATUM_UP_WJOIN_KILL_CHILD") == "1" {
 		upScratchHost(t)
@@ -1746,13 +1548,7 @@ func TestRunUpWorkerJoinSurvivesTheFirstSignalAndDiesToTheSecond(t *testing.T) {
 	waitChildKilledBySignal(t, p)
 }
 
-// TestRunUpControllerPreparationStopsOnASignalInsteadOfDying is the
-// controller-role red: the HA join and the controller preparation must run
-// under a handler, so a signal during preparation stops `stratum up` mid-join
-// — possibly past the live etcd member-add — instead of killing it. The
-// process survives the signal (the context exists from preflight) and
-// comes to a stop by itself. The prepare stub sleeps past the signal like
-// the real host preparation does, which takes no context.
+// The HA join and controller preparation must run under a handler, so a signal stops them.
 func TestRunUpControllerPreparationStopsOnASignalInsteadOfDying(t *testing.T) {
 	if os.Getenv("STRATUM_UP_CPREP_CHILD") == "1" {
 		upScratchHost(t)
@@ -1779,13 +1575,7 @@ func TestRunUpControllerPreparationStopsOnASignalInsteadOfDying(t *testing.T) {
 	waitChildExitsByItself(t, p)
 }
 
-// TestRunUpWorkerRunStopsCleanlyOnASignal guards the behaviour the move must
-// keep: once the worker is RUNNING, a signal in the shared set stops it as a
-// clean stop — "stratum: stopped", exit 0 — which the old late handler
-// already provided after the worker setup. Moving the context ahead of preflight
-// must not lose the filter that maps the stop to a clean exit, nor hand the
-// run phase a context the signals cannot reach (the stub waits on it; a
-// detached context hangs the child into the deadline).
+// Once the worker runs, a signal stops it as a clean stop; the run phase must stay reachable.
 func TestRunUpWorkerRunStopsCleanlyOnASignal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1839,11 +1629,7 @@ func TestRunUpWorkerRunStopsCleanlyOnASignal(t *testing.T) {
 	}
 }
 
-// assertStampRefusal checks an unstamped-build refusal says what happened,
-// which stamp is missing, and that the value is the unstamped default: the
-// binary carries no engine link-time stamps, the Kubernetes version stamp
-// among them, and it reads "unknown". An error that merely fails for another
-// reason (a missing kubeconfig, a cluster connection) is not the refusal.
+// Checks the refusal names the missing stamp and fails for no other reason.
 func assertStampRefusal(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
@@ -1857,18 +1643,7 @@ func assertStampRefusal(t *testing.T, err error) {
 	}
 }
 
-// TestUpAndUpgradeRefuseAnUnstampedBuild pins the stamp guard: a binary
-// linked without the engine's -X stamp list carries "unknown" stamps
-// (internal/version), and running a node from it renders unpullable :unknown
-// image references and would roll a cluster toward Kubernetes version
-// "unknown". `stratum up` and `stratum upgrade --cluster` must refuse with a
-// clear error naming the missing stamp BEFORE they touch the host or the
-// cluster, and the exported read-only accessor must hand out the stamped
-// values (its second case lives in root_test.go).
-//
-// Fails when neither command checks the stamp: `up` would run to completion
-// against the stubbed seams, and `upgrade --cluster` would fail only on
-// its missing --from, an error that nowhere mentions the stamp.
+// An unstamped binary renders unpullable :unknown images; both commands must refuse.
 func TestUpAndUpgradeRefuseAnUnstampedBuild(t *testing.T) {
 	old := version.K8sVersion
 	version.K8sVersion = "unknown"
@@ -1902,9 +1677,7 @@ func TestUpAndUpgradeRefuseAnUnstampedBuild(t *testing.T) {
 	})
 
 	t.Run("stratum upgrade --cluster refuses before it touches the cluster", func(t *testing.T) {
-		// Hermetic even while the refusal is missing: --from satisfies the
-		// orchestrator's first precondition, and the admin kubeconfig points
-		// into a temp dir, so the red path stops at the client build.
+		// --from satisfies the first precondition, and the admin kubeconfig points into a temp dir.
 		oldAdmin := version.AdminConf
 		version.AdminConf = filepath.Join(t.TempDir(), "admin.conf")
 		t.Cleanup(func() { version.AdminConf = oldAdmin })
@@ -1920,12 +1693,7 @@ func TestUpAndUpgradeRefuseAnUnstampedBuild(t *testing.T) {
 	})
 }
 
-// TestRunUpControllerRunStopsCleanlyOnASignal is the controller sibling of
-// TestRunUpWorkerRunStopsCleanlyOnASignal: the run-phase clean stop the old
-// late handler already gave must survive the move — one context, from
-// preflight, through preparation into RunController — on the whole shared
-// set, SIGHUP included: a dropped SSH session must not kill a running
-// control plane when one signal's worth of asking suffices.
+// The run-phase clean stop must hold on the controller path too, SIGHUP included.
 func TestRunUpControllerRunStopsCleanlyOnASignal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1979,11 +1747,7 @@ func TestRunUpControllerRunStopsCleanlyOnASignal(t *testing.T) {
 	}
 }
 
-// TestUpCISRefusesWithTheCisNoteWhenNoProfileIsRegistered: a cis
-// node's restart unit runs `up --cis` (cluster.UpArgv), so on a binary
-// that registers no profile the flag must still parse, and what the start
-// gets back is the profile refusal carrying the cis note, not cobra's
-// unknown-flag usage error, before anything on the host is touched.
+// A cis restart unit runs `up --cis`, so the flag must parse and refuse with the cis note.
 func TestUpCISRefusesWithTheCisNoteWhenNoProfileIsRegistered(t *testing.T) {
 	upScratchHost(t)
 	old := version.K8sVersion

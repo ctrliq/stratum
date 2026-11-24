@@ -16,17 +16,12 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// ExitRollbackUnsafe is the exit status of `rotate-ca --rollback --check` on a
-// node that cannot roll back, so the cluster-wide check tells a refusal from a
-// Job that failed to run.
+// the node CLI exits with this on refusal; the cluster-wide check tells a refusal from a failed Job
 const ExitRollbackUnsafe = 11
 
 const rollbackCheck = "rollback-check"
 
-// rollbackStatePrefix starts the line the node check prints first, which the
-// cluster-wide check reads from each node's Job log: whether the rotation was
-// forced, whether the node trusts the new CA, and, on a control plane, the
-// signers a rollback would leave live.
+// the cluster-wide check reads this line from each node's Job log.
 const rollbackStatePrefix = "rollback-state:"
 
 // rollbackState is one node's rollbackStatePrefix line.
@@ -50,8 +45,7 @@ func (s rollbackState) String() string {
 	return line
 }
 
-// parseRollbackState reads the rollbackStatePrefix line from a node check's
-// log; ok is false when the log has none.
+// ok is false when the log has no state line.
 func parseRollbackState(log string) (s rollbackState, ok bool) {
 	for _, l := range strings.Split(log, "\n") {
 		f := strings.Fields(strings.TrimSpace(l))
@@ -74,10 +68,7 @@ func parseRollbackState(log string) (s rollbackState, ok bool) {
 	return rollbackState{}, false
 }
 
-// trustsNewCA reports whether this node's trust carries old‖new, which
-// trust-new writes and finalize collapses: on a control plane its root bundle,
-// and on a worker every file worker sign-new requires widened, since a
-// refresh that stopped partway leaves the kubeconfigs on the old CA alone.
+// trust-new writes old+new, finalize collapses it; a refresh may stop partway, so check every file
 func trustsNewCA(worker bool) bool {
 	if worker {
 		return checkWorkerTrustWidened(workerTrustPaths()) == nil
@@ -86,12 +77,7 @@ func trustsNewCA(worker bool) bool {
 	return err == nil && n > 1
 }
 
-// workerRollbackCheck refuses a worker rollback that would not complete or
-// would strand the kubelet. The rollback is a trust refresh, so the local
-// inputs that refresh reads, its kubeconfigs included, must be usable. And once
-// sign-new renewed the kubelet client certificate under the new CA, the refresh
-// does not undo that, so once the control planes trust the old CA alone the
-// kubelet could not authenticate.
+// a rollback refreshes trust but does not undo a sign-new kubelet client reissue.
 func workerRollbackCheck() error {
 	p := workerTrustPaths()
 	_, err := refreshServer(p)
@@ -132,8 +118,6 @@ func workerRollbackCheck() error {
 		PhaseSignNew, pki.ErrRollbackUnsafe, forwardFromSignNew, rejoinWorker)
 }
 
-// cpRollbackCheck is a control plane's rollback check: pki.RollbackCheck, and
-// the certificate inputs rollbackCPMaterial reads before it restores anything.
 func cpRollbackCheck() error {
 	if err := pki.RollbackCheck(); err != nil {
 		return err
@@ -145,11 +129,7 @@ func cpRollbackCheck() error {
 	return nil
 }
 
-// CheckRollback reports whether THIS node can roll back, and changes nothing.
-// A control plane answers with cpRollbackCheck, the whole of RollbackCA's
-// refusal logic; a worker holds no CA and refreshes its trust from the control
-// planes, so it can unless workerRollbackCheck refuses. It first prints the
-// node's rollbackState.
+// prints the node's rollbackState, then reports whether this node can roll back; it changes nothing
 func CheckRollback(w io.Writer) error {
 	if isWorker() {
 		fmt.Fprintln(w, rollbackState{trustsNew: trustsNewCA(true)})
@@ -167,8 +147,7 @@ func CheckRollback(w io.Writer) error {
 	return nil
 }
 
-// rollbackCheckNodeArgv is the argv of a node's check Job; shell-free, as
-// caNodeArgv is.
+// shell-free, as caNodeArgv is.
 func rollbackCheckNodeArgv() []string {
 	return []string{
 		"nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--",
@@ -177,8 +156,7 @@ func rollbackCheckNodeArgv() []string {
 	}
 }
 
-// runRollbackCheckJob runs the node check on n and returns its exit status and
-// log. A seam, so the cluster check's verdict can be tested without a cluster.
+// a seam, so the cluster check's verdict is testable without a cluster.
 var runRollbackCheckJob = func(ctx context.Context, w io.Writer, cs kubernetes.Interface, n cnode) (int, string, error) {
 	spec := nodejob.Spec{
 		Output:         w,
@@ -195,17 +173,10 @@ var runRollbackCheckJob = func(ctx context.Context, w io.Writer, cs kubernetes.I
 	return runExitCodeLogs(ctx, cs, spec)
 }
 
-// runExitCodeLogs is nodejob.RunExitCodeLogs; a var so a test can answer for
-// a node's Job.
+// a var so a test can answer for a node's Job.
 var runExitCodeLogs = nodejob.RunExitCodeLogs
 
-// CheckRollbackCluster asks every node, control planes first, whether it can
-// roll back, and refuses if one cannot. It takes no lease and changes nothing
-// on any node: the point is to find a node that lost an old key before any
-// node rolls back, because the healthy nodes would return to the old root
-// while that one can only go forward, and the cluster would be split across
-// two roots. Run it from a control plane, before `--rollback --yes` on any
-// node.
+// takes no lease and changes nothing on any node; it finds a lost old key before rollback
 func CheckRollbackCluster(ctx context.Context, w io.Writer, buildClient ...clientBuilder) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("certs: rollback check not started: %w", err)
@@ -257,12 +228,7 @@ func CheckRollbackCluster(ctx context.Context, w io.Writer, buildClient ...clien
 		default:
 			untrustingWorkers = append(untrustingWorkers, n.Name)
 		}
-		// Every control plane's readable target counts, a refusing one's too:
-		// a control plane that finalized and one that lost an old key are
-		// each half of the one case no advice below can mend, and only
-		// together do they show that the cluster can no longer return to
-		// one root. A target with an unreadable half says nothing about
-		// where that node would land, so it joins no group.
+		// a finalized CP and one that lost a key are together the case no advice below can mend.
 		if n.IsCP && !strings.Contains(st.target, "unreadable") {
 			targets[st.target] = append(targets[st.target], n.Name)
 		}
@@ -311,12 +277,10 @@ func CheckRollbackCluster(ctx context.Context, w io.Writer, buildClient ...clien
 	return nil
 }
 
-// forwardFromSignNew is the forward path once every node trusts the new CA.
 const forwardFromSignNew = "run `stratum certs rotate-ca --phase=sign-new --yes` on each control plane and then each worker where it has not completed, " +
 	"then follow \"Finishing a rotation by hand\" in the certificate-rotation documentation"
 
-// lastLine is the last non-empty line of a Job log: the refusal, which the
-// node prints last.
+// the node prints its refusal last.
 func lastLine(log string) string {
 	lines := strings.Split(strings.TrimSpace(log), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -327,7 +291,4 @@ func lastLine(log string) string {
 	return "(no output)"
 }
 
-// IsRollbackUnsafe reports whether err is a refusal to roll back, from this
-// node's check or from the cluster-wide one, so a front end can exit with
-// ExitRollbackUnsafe.
 func IsRollbackUnsafe(err error) bool { return errors.Is(err, pki.ErrRollbackUnsafe) }

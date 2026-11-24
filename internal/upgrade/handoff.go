@@ -11,21 +11,17 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// handoffEnv marks a process that an installed binary exec'd into the staged
-// upgrade binary. A second hand-off would mean the staged binary did not
-// recognise itself as --from, and exec'ing again could loop; refuse instead.
+// Guards against an exec loop when the staged binary does not recognise itself as --from.
 const handoffEnv = "STRATUM_UPGRADE_HANDOFF"
 
-// Seams for tests: exec'ing for real would replace the test binary.
+// Seams: exec'ing for real would replace the test binary.
 var (
 	execBinary     = syscall.Exec
 	selfExecutable = os.Executable
 	selinuxMode    = selinux.CurrentMode
 )
 
-// requireRunningFrom protects callers that invoke UpgradeNode without the CLI
-// handoff (notably MCP). A different --from carries a different payload, but
-// this process would still render manifests from its own compiled-in pins.
+// Refuses a --from that is not the executing binary: manifests come from compiled-in pins.
 func requireRunningFrom(from string) error {
 	if from == "" {
 		return nil
@@ -48,28 +44,7 @@ func requireRunningFrom(from string) error {
 	return nil
 }
 
-// HandOff makes `stratum upgrade --from <new binary>` work when run by the
-// installed, older binary.
-//
-// UpgradeNode upgrades a node to the EXECUTING binary's version: the static
-// pod manifests, the image pins and the target check all come from its
-// compiled-in constants, not from the payload it installs. An old binary that
-// merely read the new payload would install new host binaries under old
-// control-plane manifests. So when --from names a different file than the one
-// running, the right thing is to become it: exec the staged binary with the
-// same arguments, exactly as the cluster orchestrator's Job already does on
-// every node (nodeUpgradeArgv). The staged binary then sees --from naming
-// itself and proceeds.
-//
-// Returns nil without doing anything when from is empty or is this binary. On
-// a successful hand-off it does not return. args is the command line after
-// argv[0], passed through unchanged, so a defaulted --target defaults to the
-// staged binary's version rather than this one's.
-//
-// Before the exec it gives the upgrade binary the installed binary's SELinux
-// label, so a systemd unit can execute it wherever it was staged and whatever
-// it is called. readOnly (--dry-run, --check) changes nothing on the node: it
-// skips the relabel and says so on a node where SELinux is not disabled.
+// Execs the staged binary and never returns on success; args is the command line after argv[0].
 func HandOff(w io.Writer, from string, args []string, readOnly bool) error {
 	if from == "" {
 		return nil

@@ -10,10 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// TestNodeMarkPolicyIsTheOneTheOperatorChecks: the operator deletes
-// a marked Node only while the policy and a denying binding named
-// k8sutil.NodeMarkPolicy exist, so the shipped manifest must use that name,
-// bind that policy, deny, and name the annotation the node writes.
+// The operator deletes a marked Node only while a denying policy of this name exists.
 func TestNodeMarkPolicyIsTheOneTheOperatorChecks(t *testing.T) {
 	docs := bytes.Split(RenderNodeMarkPolicy(), []byte("\n---\n"))
 	if len(docs) != 2 {

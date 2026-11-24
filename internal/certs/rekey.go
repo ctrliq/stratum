@@ -12,9 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// carotateKeyStaged is the guard's cluster-wide seam: whether the
-// stratum-carotate Secret or an unfinished rotation checkpoint is present. A package var so tests can stub
-// the apiserver read; production reads the live cluster.
+// A package var so tests can stub the apiserver read.
 var carotateKeyStaged = func() (bool, error) {
 	cs, err := k8sutil.AdminClientset()
 	if err != nil {
@@ -25,10 +23,7 @@ var carotateKeyStaged = func() (bool, error) {
 	return rekeyMaterialInFlight(ctx, cs)
 }
 
-// carotateKeyMigration is the guard's seam for which CA migration, if any,
-// staged the stratum-carotate Secret: its refusal then names that
-// migration's way out instead of the rotation's. A package var for the same
-// reason as carotateKeyStaged.
+// A package var for the same reason as carotateKeyStaged.
 var carotateKeyMigration = func() (string, error) {
 	cs, err := k8sutil.AdminClientset()
 	if err != nil {
@@ -39,9 +34,6 @@ var carotateKeyMigration = func() (string, error) {
 	return stagedKeyMigration(ctx, cs)
 }
 
-// stagedKeyMigration returns the operation recorded on the staged key Secret
-// when it is a CA migration's — any owner other than rotate-ca — and "" when
-// the Secret is absent, a rotation's, or records no owner.
 func stagedKeyMigration(ctx context.Context, cs kubernetes.Interface) (string, error) {
 	sec, err := cs.CoreV1().Secrets(caNamespace).Get(ctx, caRotateKeySecret, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -54,9 +46,7 @@ func stagedKeyMigration(ctx context.Context, cs kubernetes.Interface) (string, e
 	return op, nil
 }
 
-// A finalized initiator is locally idle and may already have removed its key,
-// while other nodes still need finalize. Its shared checkpoint keeps new grants
-// from admitting nodes outside that unfinished rotation's phase ordering.
+// A finalized initiator is idle with its key gone while other nodes still need finalize.
 func rekeyMaterialInFlight(ctx context.Context, cs kubernetes.Interface) (bool, error) {
 	_, err := cs.CoreV1().Secrets(caNamespace).Get(ctx, caRotateKeySecret, metav1.GetOptions{})
 	if err == nil {
@@ -68,7 +58,7 @@ func rekeyMaterialInFlight(ctx context.Context, cs kubernetes.Interface) (bool, 
 	return unfinishedCARotation(ctx, cs)
 }
 
-// unfinishedCARotation also catches a partially finalized run whose fetch key is gone.
+// Catches a partially finalized run whose staged key is already gone.
 func unfinishedCARotation(ctx context.Context, cs kubernetes.Interface) (bool, error) {
 	cm, err := cs.CoreV1().ConfigMaps(caNamespace).Get(ctx, caRotationStateName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -80,30 +70,10 @@ func unfinishedCARotation(ctx context.Context, cs kubernetes.Interface) (bool, e
 	return cm.Data["complete"] != "true", nil
 }
 
-// GuardRekey is the one re-key entry point for every path that mints a new
-// certificate-key and re-encrypts stratum-certs — `certs rotate
-// --rekey-shared`, `token create --control-plane` and the MCP token_create
-// tool. A re-key while a cluster CA rotation or etcd-CA migration is in flight
-// strands the key staged in stratum-carotate that the flow's follower control
-// planes decrypt stratum-certs with, so the mint must refuse.
-//
-// The guard answers from two signals, the cheap one first: this node's
-// rotation phase (local PKI files, which catch a rotation staged on THIS
-// node), and — because RotationPhase() reads "idle" on a follower the
-// initiator has not reached yet — the cluster-wide stratum-carotate Secret or
-// an unfinished stratum-ca-rotation record, visible from any control plane:
-// the record also covers a halted run whose key is gone, which no one is
-// waiting out, so that refusal names the resume and the record to clear after
-// a completed rollback. An unreadable staged-key check refuses the
-// mint rather than wave it through: an apiserver failure is not evidence that
-// nothing is staged.
-//
-// The orchestrators' own re-uploads (rotate-ca --cluster, migrate-etcd-ca) do
-// not consult this guard: they run under the shared maintenance lease, stage
-// the key themselves and re-encrypt deliberately.
+// Refuses a re-key while material is staged; rotate-ca --cluster and migrate-etcd-ca bypass it.
 func GuardRekey() error { return guardRekey(carotateKeyStaged, carotateKeyMigration) }
 
-// GuardRekeyWithClient uses the caller's credentials for cluster-wide checks.
+// GuardRekey with the caller's clientset.
 func GuardRekeyWithClient(cs kubernetes.Interface) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -127,8 +97,7 @@ func guardRekey(stagedMaterial func() (bool, error), migration func() (string, e
 		return fmt.Errorf("cannot confirm no cluster CA rotation / etcd-CA migration is staging shared material: %w", err)
 	}
 	if staged {
-		// The key's recorded owner picks the way out. One that cannot be read
-		// still refuses, with the text that names both kinds of operation.
+		// The staged key's owner picks the way out; an unreadable owner still refuses.
 		if op, err := migration(); err == nil && op != "" {
 			return migrationRekeyRefusal(op)
 		}
@@ -140,10 +109,7 @@ func guardRekey(stagedMaterial func() (bool, error), migration func() (string, e
 	return nil
 }
 
-// migrationRekeyRefusal is guardRekey's refusal for a key a CA migration
-// staged: rotate-ca --cluster refuses while another operation's key is
-// staged, so the way out is that migration's own resume, or — once it was
-// abandoned — removing its key.
+// rotate-ca refuses while another key is staged, so the refusal names that operation's resume.
 func migrationRekeyRefusal(op string) error {
 	resume := "stratum certs " + op + " --cluster --yes"
 	switch op {

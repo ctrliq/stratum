@@ -23,7 +23,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// expireLeaf replaces the kube-vip leaf with one that expired two days ago.
 func expireLeaf(t *testing.T) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -46,10 +45,6 @@ func expireLeaf(t *testing.T) {
 	}
 }
 
-// An expired leaf is what keeps the apiserver from answering, so the cluster
-// fence cannot be taken through it. Renewal then rotates under the node lock
-// alone instead of refusing forever; a fence another run holds still refuses,
-// and so does an unreachable API while nothing has expired.
 func TestLeafRenewalOfExpiredLeavesNeedsNoFence(t *testing.T) {
 	unauthorized := func(t *testing.T) {
 		cs := fakeAdminClientset(t)

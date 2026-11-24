@@ -5,11 +5,7 @@ import (
 	"strings"
 )
 
-// stillToDoItem is one thing left for the operator once the node's own data is
-// restored, whether by `stratum snapshot restore` or by an upgrade rollback that
-// restores etcd. body follows the item's number. otherControlPlanes marks the
-// items that only apply when there may be other control planes to rejoin: a
-// rollback restores a single-member cluster, so it has none.
+// otherControlPlanes marks items that apply only when others may rejoin; a rollback has none.
 type stillToDoItem struct {
 	otherControlPlanes bool
 	body               func(otherControlPlanes bool) string
@@ -40,8 +36,7 @@ var stillToDoItems = []stillToDoItem{
 	}},
 	{true, func(bool) string { return RestoreRestartSet().RepeatItem() }},
 	{false, func(otherControlPlanes bool) string {
-		// Only a restore that may have other control planes to rejoin has a window
-		// in which the VIP can lead to one that still holds the old data.
+		// Only a restore with others to rejoin has a window where the VIP leads to old data.
 		seed := "\n"
 		if otherControlPlanes {
 			seed = " Until the other control planes have\n     rejoined, run it on the seed with --server https://127.0.0.1:6443.\n"
@@ -55,15 +50,11 @@ var stillToDoItems = []stillToDoItem{
 	}},
 }
 
-// CommandLines is commands, one per line, indented as the guidance is.
 func CommandLines(commands []string) string {
 	return "       " + strings.Join(commands, "\n       ")
 }
 
-// RepeatItem is the guidance's item about repeating the restore's restarts once
-// every other control plane has rejoined, rendered from the set: the
-// components it names are the set's host-side watchers, and the two command
-// blocks are its per-control-plane and once-for-the-cluster commands.
+// RepeatItem renders the to-do about repeating the restarts once every control plane has rejoined.
 func (set RestartSet) RepeatItem() string {
 	watchers, _ := set.split()
 	return "If the cluster has other control planes: once EVERY one has rejoined, repeat\n" +
@@ -77,11 +68,7 @@ func (set RestartSet) RepeatItem() string {
 		CommandLines(set.RolloutRestartCommands("stratum kubectl")) + "\n"
 }
 
-// StillToDo is the list of what the operator still has to do on the other nodes
-// after the restore: the same list whether the restore restarted every watcher or
-// not, and for `stratum snapshot restore`, the MCP tool and an upgrade rollback
-// that restores etcd. otherControlPlanes is false for the rollback, whose
-// single-member cluster has none to rejoin, and drops the two items about them.
+// StillToDo lists the operator's remaining steps after a restore.
 func StillToDo(otherControlPlanes bool) string {
 	var b strings.Builder
 	b.WriteString("Still to do:\n")

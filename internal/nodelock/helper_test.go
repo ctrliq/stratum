@@ -14,19 +14,11 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// holdLockEnv makes the test binary a node-lock holder instead of a test run:
-// see TestHelperHoldNodeLock.
 const holdLockEnv = "STRATUM_TEST_HOLD_NODE_LOCK"
 
-// holdLockOpEnv names the operation the helper holds the lock for. It exists so
-// a test can hold the lock under one operation and refuse another; the default
-// is "upgrade", the operation every released binary takes the lock for.
 const holdLockOpEnv = "STRATUM_TEST_HOLD_NODE_LOCK_OP"
 
-// TestHelperHoldNodeLock is not a test. Re-executed with holdLockEnv set to a
-// lock path, it takes the node maintenance lock there, says so, and holds it
-// until killed or its parent dies — a second process on the same node, which
-// is what two maintenance operations running on one host are.
+// Helper process: holds the node lock as a second process, until killed or the parent dies.
 func TestHelperHoldNodeLock(t *testing.T) {
 	path := os.Getenv(holdLockEnv)
 	if path == "" {
@@ -42,21 +34,13 @@ func TestHelperHoldNodeLock(t *testing.T) {
 		fmt.Println("error:", err)
 		os.Exit(1)
 	}
-	// Deferred, so the closure — and the *os.File whose finalizer would
-	// otherwise close the descriptor and drop the lock — stays reachable for
-	// as long as this process holds it.
+	// Keeps the *os.File reachable, or its finalizer would close the fd and drop the lock.
 	defer release()
 	fmt.Println("held")
-	// Held until the parent closes stdin or dies, not parked on select {}:
-	// with every goroutine parked, a test binary without cgo — what macOS
-	// builds by default — dies of the runtime's deadlock detector milliseconds after
-	// saying "held", and the kernel drops the lock with it. A blocked read
-	// keeps a thread in a syscall, which that detector counts as running.
+	// Not select {}: a parked cgo-free binary hits the deadlock detector; a syscall counts as running.
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
-// holdNodeLockInChild starts a separate process holding the node maintenance
-// lock at the redirected path for op, and returns it once the lock is held.
 func holdNodeLockInChild(t *testing.T, op string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldNodeLock$")
@@ -65,8 +49,7 @@ func holdNodeLockInChild(t *testing.T, op string) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The holder holds until it is killed, or until this process dies and
-	// the pipe closes; cmd keeps the write end open until its Wait.
+	// cmd keeps the write end open until Wait, so the holder holds until killed or the parent dies.
 	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +64,9 @@ func holdNodeLockInChild(t *testing.T, op string) *exec.Cmd {
 	return cmd
 }
 
-// holdRawFlockEnv makes the test binary a raw lock holder instead of a test
-// run: see TestHelperHoldRawNodeLock.
 const holdRawFlockEnv = "STRATUM_TEST_HOLD_RAW_NODE_LOCK"
 
-// TestHelperHoldRawNodeLock is not a test. Re-executed with holdRawFlockEnv set
-// to a lock path, it takes a raw syscall.Flock there, records only its pid the
-// way a released binary's lockNode does, and holds until killed or its parent
-// dies — the legacy pid-only holder every released binary leaves behind.
+// Helper process: holds a raw flock, pid only, like a released binary, until killed or parent dies.
 func TestHelperHoldRawNodeLock(t *testing.T) {
 	path := os.Getenv(holdRawFlockEnv)
 	if path == "" {
@@ -109,17 +87,10 @@ func TestHelperHoldRawNodeLock(t *testing.T) {
 	}
 	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }()
 	fmt.Println("held")
-	// Held until the parent closes stdin or dies, not parked on select {}:
-	// with every goroutine parked, a test binary without cgo — what macOS
-	// builds by default — dies of the runtime's deadlock detector milliseconds after
-	// saying "held", and the kernel drops the lock with it. A blocked read
-	// keeps a thread in a syscall, which that detector counts as running.
+	// Not select {}: a parked cgo-free binary hits the deadlock detector; a syscall counts as running.
 	_, _ = io.Copy(io.Discard, os.Stdin)
 }
 
-// holdRawFlockInChild starts a separate process holding a raw flock at the
-// redirected node-lock path, leaving a pid-only file, and returns it once the
-// lock is held.
 func holdRawFlockInChild(t *testing.T) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperHoldRawNodeLock$")
@@ -128,8 +99,7 @@ func holdRawFlockInChild(t *testing.T) *exec.Cmd {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The holder holds until it is killed, or until this process dies and
-	// the pipe closes; cmd keeps the write end open until its Wait.
+	// cmd keeps the write end open until Wait, so the holder holds until killed or the parent dies.
 	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}

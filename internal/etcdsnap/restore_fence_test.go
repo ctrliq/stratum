@@ -13,16 +13,13 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// redirectNodeLock points the node maintenance lock at a fresh file, so these
-// tests never touch the production lock at /run/stratum-upgrade.lock.
+// redirectNodeLock points the node maintenance lock at a fresh file.
 func redirectNodeLock(t *testing.T) {
 	t.Helper()
 	swap(t, &version.NodeUpgradeLockPath, filepath.Join(t.TempDir(), "node.lock"))
 }
 
-// holdNodeLock holds the node maintenance lock for op until the test ends, the
-// way another maintenance operation — an upgrade, a rollback, a CA rotation —
-// holds it while a restore runs beside it.
+// holdNodeLock holds the node maintenance lock for op until the test ends.
 func holdNodeLock(t *testing.T, op string) {
 	t.Helper()
 	release, err := nodelock.Acquire(op)
@@ -32,8 +29,7 @@ func holdNodeLock(t *testing.T, op string) {
 	t.Cleanup(release)
 }
 
-// nodeLockHeld reports whether the node maintenance lock is held right now: a
-// probe Acquire refuses exactly while another holder has it.
+// nodeLockHeld reports whether the node maintenance lock is held right now.
 func nodeLockHeld() bool {
 	release, err := nodelock.Acquire("fence probe")
 	if err != nil {
@@ -43,11 +39,6 @@ func nodeLockHeld() bool {
 	return false
 }
 
-// TestRestoreRefusesWhileAMaintenanceOperationHoldsTheNodeLock is the fence:
-// a restore stops the control plane and rewrites the etcd data dir, so while
-// any other maintenance operation — an upgrade, a rollback, a CA rotation —
-// holds the node maintenance lock, Restore refuses, names the holder, and
-// touches nothing.
 func TestRestoreRefusesWhileAMaintenanceOperationHoldsTheNodeLock(t *testing.T) {
 	n := newFakeNode(t)
 	redirectNodeLock(t)
@@ -72,11 +63,6 @@ func TestRestoreRefusesWhileAMaintenanceOperationHoldsTheNodeLock(t *testing.T) 
 	}
 }
 
-// TestRestoreTakesTheNodeLockBeforeTheDataLock pins the order: the node
-// maintenance lock first, then the etcd data lock. The data lock alone fences
-// only other data-dir writers, and an upgrade or CA rotation takes no data
-// lock, so a restore that took it first would run beside them. The lock is
-// released again when the restore ends; the restore succeeds here.
 func TestRestoreTakesTheNodeLockBeforeTheDataLock(t *testing.T) {
 	n := newFakeNode(t)
 	redirectNodeLock(t)
@@ -98,9 +84,6 @@ func TestRestoreTakesTheNodeLockBeforeTheDataLock(t *testing.T) {
 	}
 }
 
-// TestRestoreReleasesTheNodeLockWhenTheRestoreFails: a restore that fails and
-// rolls back must still hand the node on unlocked, or the next maintenance
-// operation refuses for nothing.
 func TestRestoreReleasesTheNodeLockWhenTheRestoreFails(t *testing.T) {
 	n := newFakeNode(t)
 	redirectNodeLock(t)
@@ -124,11 +107,6 @@ func TestRestoreReleasesTheNodeLockWhenTheRestoreFails(t *testing.T) {
 	}
 }
 
-// TestRestoreSkipsTheNodeLockForARollbackThatHoldsIt: upgrade.RollbackNode
-// takes the node maintenance lock for the whole rollback and then restores etcd
-// through Restore. That nested call must run because the caller already holds
-// the lock, not refuse against it. The held-lock capability lifts only the
-// maintenance-lock acquire, never the data lock.
 func TestRestoreSkipsTheNodeLockForARollbackThatHoldsIt(t *testing.T) {
 	n := newFakeNode(t)
 	redirectNodeLock(t)
@@ -162,13 +140,9 @@ func TestRestoreSkipsTheNodeLockForARollbackThatHoldsIt(t *testing.T) {
 	}
 }
 
-// TestRestoreLocalSeedRefusesWhileAMaintenanceOperationHoldsTheNodeLock:
-// `stratum snapshot restore` is the operator-facing entry point, and it reaches
-// the fence through RestoreLocalSeed, not only through Restore.
 func TestRestoreLocalSeedRefusesWhileAMaintenanceOperationHoldsTheNodeLock(t *testing.T) {
 	n := newFakeNode(t)
-	// RestoreLocalSeed asks nodestate for this node's address; with no state
-	// file it falls back to $NODE_IP.
+	// RestoreLocalSeed falls back to $NODE_IP with no state file.
 	swap(t, &version.K8sConfDir, t.TempDir())
 	t.Setenv("NODE_IP", "10.0.0.11")
 	snap := filepath.Join(t.TempDir(), "snap.db")

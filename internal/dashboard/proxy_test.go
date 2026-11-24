@@ -22,12 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// rewriteRequest is tested directly as well as through the proxy because the
-// case-insensitive prefix scrub cannot be reached end to end: net/http
-// canonicalises header keys on the wire, so a non-canonically stored
-// "impersonate-uid" never survives an httptest round trip. It does survive a
-// handler that writes r.Header directly, which is exactly the shape this
-// guards against.
+// Tested directly: net/http canonicalises header keys on the wire, hiding a non-canonical key.
 func TestRewriteRequestScrubsNonCanonicalHeaderKeys(t *testing.T) {
 	out := httptest.NewRequest(http.MethodGet, "/k8s/api/v1/pods", nil)
 	out = out.WithContext(context.WithValue(context.Background(), ctxToken, "the-session-token"))
@@ -54,9 +49,7 @@ func TestRewriteRequestScrubsNonCanonicalHeaderKeys(t *testing.T) {
 	}
 }
 
-// With no session in the context there must be no Authorization at all: the
-// proxy transport carries no credentials either, so the apiserver answers 401
-// rather than the request running as whatever started the process.
+// With no session in the context there must be no Authorization at all.
 func TestRewriteRequestAddsNoAuthorizationWithoutASession(t *testing.T) {
 	out := httptest.NewRequest(http.MethodGet, "/k8s/api/v1/pods", nil)
 	out.Header.Set("Authorization", "Bearer someone-elses-token")
@@ -79,10 +72,6 @@ func TestIsStreaming(t *testing.T) {
 		{name: "a log follow", url: "/api/v1/namespaces/d/pods/p/log?follow=true", want: true},
 		{name: "a log follow, numeric", url: "/api/v1/namespaces/d/pods/p/log?follow=1", want: true},
 		{name: "an exec upgrade", url: "/api/v1/namespaces/d/pods/p/exec", upgrade: true, want: true},
-		// A caller must not be able to exempt itself from the deadline by
-		// decorating a write with a streaming marker. None of these is a
-		// shape the Kubernetes API streams on, so classifying them is the
-		// caller choosing whether the timeout applies to their own request.
 		{name: "a create wearing an Upgrade header", url: "/api/v1/namespaces/d/pods",
 			method: http.MethodPost, upgrade: true},
 		{name: "a create claiming to follow", url: "/api/v1/namespaces/d/pods?follow=true",
@@ -115,10 +104,7 @@ func TestIsStreaming(t *testing.T) {
 	}
 }
 
-// The proxy transport must carry no identity of its own. A request that
-// reaches it without a session has to be anonymous to the apiserver, not run
-// as whatever account started the process — which is what makes "the user's
-// own RBAC is the only authorization" true rather than aspirational.
+// A sessionless request must be anonymous to the apiserver, not the process's account.
 func TestProxyTransportCarriesNoProcessCredentials(t *testing.T) {
 	api := newFakeAPIServer(t)
 	const processToken = "the-process-own-serviceaccount-token"
@@ -128,8 +114,7 @@ func TestProxyTransportCarriesNoProcessCredentials(t *testing.T) {
 	}
 	p := newProxy(tgt, false, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
-	// Straight at the proxy, with no session in the context: the one call
-	// shape that would expose an ambient credential.
+	// Straight at the proxy, with no session in the context.
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, k8sPrefix+"/api/v1/pods", nil))
 	if rec.Code != http.StatusOK {
@@ -140,15 +125,7 @@ func TestProxyTransportCarriesNoProcessCredentials(t *testing.T) {
 	}
 }
 
-// The bearer half of "no ambient identity" is covered above, but a kubeconfig
-// can also authenticate by mTLS, and a client certificate is identity just as
-// much as a token is. rest.AnonymousClientConfig copies CAFile/CAData — which
-// verify the SERVER — and deliberately leaves CertFile/KeyFile/CertData/KeyData
-// behind, so the transport presents nothing. Nothing in localTarget says so out
-// loud, though, and the obvious-looking swap to rest.CopyConfig would carry the
-// certificate and silently make every sessionless request the dashboard's own
-// account. This pins it at the wire: the apiserver asks for a client cert and
-// must be handed none.
+// AnonymousClientConfig drops client certs; rest.CopyConfig would present the process certificate.
 func TestProxyTransportPresentsNoClientCertificate(t *testing.T) {
 	clientCert, clientPEM, clientKeyPEM := generateCert(t, "the-dashboard-process")
 
@@ -163,9 +140,7 @@ func TestProxyTransportPresentsNoClientCertificate(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"kind":"Pod","apiVersion":"v1"}`))
 	}))
-	// RequestClientCert, not RequireAnyClientCert: the point is to observe
-	// whether one is offered, and a server that rejected the handshake outright
-	// could not tell the two arms apart.
+	// Observes whether a cert is offered; rejecting the handshake cannot tell the arms apart.
 	api.TLS = &tls.Config{ClientAuth: tls.RequestClientCert}
 	api.StartTLS()
 	defer api.Close()
@@ -178,8 +153,7 @@ func TestProxyTransportPresentsNoClientCertificate(t *testing.T) {
 		}}
 	}
 
-	// Control arm. Without it this test passes just as happily on a fixture
-	// whose certificate never loaded, proving nothing about localTarget.
+	// Control arm: proves the fixture really authenticates by certificate.
 	rt, err := rest.TransportFor(cfg())
 	if err != nil {
 		t.Fatalf("control transport: %v", err)
@@ -195,7 +169,6 @@ func TestProxyTransportPresentsNoClientCertificate(t *testing.T) {
 		t.Fatalf("control arm presented %v, want the process certificate; the fixture is not exercising mTLS", control)
 	}
 
-	// The real path.
 	tgt, err := localTarget(cfg())
 	if err != nil {
 		t.Fatalf("localTarget: %v", err)
@@ -214,7 +187,6 @@ func TestProxyTransportPresentsNoClientCertificate(t *testing.T) {
 	}
 }
 
-// generateCert returns a self-signed client certificate and its PEM encoding.
 func generateCert(t *testing.T, cn string) (*x509.Certificate, []byte, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

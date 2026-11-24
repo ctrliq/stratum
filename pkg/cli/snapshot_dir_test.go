@@ -19,11 +19,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// spec.snapshots.dir applies to the scheduled loop; list and prune must
-// read the same resolved directory rather than a fixed /var/backups/etcd.
-// It also pins the snapshot config to a local-only one, so no test reads
-// the host's snapshot.conf or reaches its S3 target. The directory is part
-// of the resolved snapshot settings, so the config stub carries it too.
 func useSnapshotDir(t *testing.T) string {
 	t.Helper()
 	dir := realTempDir(t)
@@ -34,8 +29,7 @@ func useSnapshotDir(t *testing.T) string {
 	return dir
 }
 
-// realTempDir is t.TempDir with symlinks resolved: restore refuses a symlink at
-// any component, and macOS keeps TMPDIR under the /var symlink.
+// Restore refuses a symlink at any component, and macOS keeps TMPDIR under the /var symlink.
 func realTempDir(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())
@@ -45,12 +39,7 @@ func realTempDir(t *testing.T) string {
 	return dir
 }
 
-// captureStdout runs fn with the process's stdout swapped for a pipe and
-// returns what fn printed. The CLI commands under test print with fmt.Printf
-// to the process's own stdout, not to the cobra writer, so a pipe swap is the
-// only way to see their output; the reader goroutine keeps a full pipe from
-// deadlocking the writer. Copied from internal/uninstall/containers_test.go,
-// which needed it for the same reason.
+// Prints with fmt.Printf to process stdout; the reader goroutine avoids a full-pipe deadlock.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -136,25 +125,14 @@ func TestSnapshotPruneActsOnTheConfiguredDir(t *testing.T) {
 	}
 }
 
-// A prune of the local directory that fails is a warning, not a command
-// failure: a snapshot already succeeded, and the scheduled loop keeps the
-// node. PruneScheduled returns its failures instead of printing them, and
-// the command reports each one as a WARN line with exit status 0 — a printed
-// warning stays the only report a failed local prune gives. useSnapshotDir
-// also stubs loadSnapshotConfig, so the prune is local-only and no S3 target
-// is pruned.
 func TestSnapshotPrune_ReportsALocalFailureAsAWarning(t *testing.T) {
 	useSnapshotDir(t)
-	// A regular file where a directory is expected: ReadDir fails without the
-	// prune deleting anything.
 	file := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	snapshotDir = func() string { return file }
-	// The directory the prune acts on comes from the resolved snapshot
-	// settings, so the broken dir reaches the command through
-	// loadSnapshotConfig as well.
+	// The prune acts on the settings' dir, so the broken dir must reach loadSnapshotConfig too.
 	loadSnapshotConfig = func() (etcdsnap.Config, error) { return etcdsnap.Config{Retain: 5, Dir: file}, nil }
 
 	var err error
@@ -179,12 +157,6 @@ func TestSnapshotPrune_ReportsALocalFailureAsAWarning(t *testing.T) {
 	}
 }
 
-// The resolved snapshot settings carry the directory
-// (cluster.LoadSnapshotConfig returns it), and the CLI takes the directory from
-// the settings it already loads instead of a second resolver read. Each command
-// must follow the resolved dir even while the separate snapshotDir seam points
-// somewhere else: a save, list or prune that read their own directory would
-// disagree with the scheduled loop that owns the place.
 func TestSnapshotCommands_UseTheResolvedDir(t *testing.T) {
 	resolved := realTempDir(t)
 	unread := filepath.Join(resolved, "unread")
@@ -254,10 +226,6 @@ func TestSnapshotCommands_UseTheResolvedDir(t *testing.T) {
 	})
 }
 
-// The resolved snapshot settings carry the directory the cluster config asks
-// for, so every caller that reads the settings reads the same directory the
-// scheduled loop writes. The controller's recorded config path decides,
-// exactly as it already decides the retention.
 func TestLoadSnapshotConfigReturnsTheResolvedDir(t *testing.T) {
 	oldConf := version.K8sConfDir
 	version.K8sConfDir = t.TempDir()
@@ -280,7 +248,7 @@ func TestLoadSnapshotConfigReturnsTheResolvedDir(t *testing.T) {
 	}
 }
 
-// snapshot list prints bare names; restore must accept them.
+// Restore must accept the bare names `snapshot list` prints.
 func TestResolveSnapshotArg(t *testing.T) {
 	dir := useSnapshotDir(t)
 	wd, err := os.Getwd()
@@ -307,7 +275,6 @@ func TestResolveSnapshotArg(t *testing.T) {
 	}
 }
 
-// An s3:// restore downloads into spec.snapshots.dir, not /var/backups/etcd.
 func TestSnapshotRestoreS3DownloadsToTheConfiguredDir(t *testing.T) {
 	dir := filepath.Join(useSnapshotDir(t), "custom")
 	snapshotDir = func() string { return dir }
@@ -338,8 +305,6 @@ func TestSnapshotRestoreS3DownloadsToTheConfiguredDir(t *testing.T) {
 	}
 }
 
-// restoreS3Into runs `snapshot restore s3://b/x.db` with the snapshot dir set
-// to dir, and reports the error and whether anything was downloaded.
 func restoreS3Into(t *testing.T, dir string) (downloaded bool, err error) {
 	t.Helper()
 	useSnapshotDir(t)
@@ -359,9 +324,7 @@ func restoreS3Into(t *testing.T, dir string) (downloaded bool, err error) {
 	return downloaded, err
 }
 
-// An existing dir is checked, not chmodded: chmod follows a symlink and, as
-// root, would change whatever a misconfigured spec.snapshots.dir names. One
-// other users can write to is refused before the download.
+// Chmod would follow a symlink and, as root, change whatever a misconfigured dir names.
 func TestSnapshotRestoreS3ChecksAnExistingDir(t *testing.T) {
 	root := realTempDir(t)
 	mk := func(name string, mode os.FileMode) string {
@@ -405,8 +368,7 @@ func TestSnapshotRestoreS3ChecksAnExistingDir(t *testing.T) {
 		})
 	}
 
-	// A symlink above the last component must not pass the check, or MkdirAll
-	// and the download would follow it.
+	// A symlink above the last component would let MkdirAll and the download follow it.
 	t.Run("symlinked parent", func(t *testing.T) {
 		dir := filepath.Join(link, "etcd")
 		if err := os.Mkdir(filepath.Join(real, "etcd"), 0o700); err != nil {
@@ -461,9 +423,6 @@ func TestSnapshotRestoreS3ChecksAnExistingDir(t *testing.T) {
 	})
 }
 
-// Restore only has the configured target's credentials, so a URL naming
-// another bucket or prefix is refused before the dir is touched or anything is
-// downloaded, instead of fetching the configured target's object of that name.
 func TestSnapshotRestoreS3RefusesAnotherBucketOrPrefix(t *testing.T) {
 	for _, tc := range []struct {
 		name, src, prefix string
@@ -536,9 +495,7 @@ func TestSnapshotRestoreS3RefusesAnotherBucketOrPrefix(t *testing.T) {
 	}
 }
 
-// The dir that is checked is the dir that is written. After openSnapshotDir
-// returns, swapping the dir's path for a symlink to elsewhere redirects
-// nothing: the handle still names the checked directory.
+// After openSnapshotDir returns, the handle must keep naming the checked dir, not the swapped path.
 func TestOpenSnapshotDirHandleSurvivesASwap(t *testing.T) {
 	base := realTempDir(t)
 	dir := filepath.Join(base, "snaps")
@@ -572,8 +529,6 @@ func TestOpenSnapshotDirHandleSurvivesASwap(t *testing.T) {
 	}
 }
 
-// A restore removes the stale temp file a killed download left, and
-// nothing else in the snapshot dir.
 func TestSnapshotRestoreS3RemovesStaleDownloadTemps(t *testing.T) {
 	dir := filepath.Join(realTempDir(t), "snaps")
 	if err := os.Mkdir(dir, 0o700); err != nil {

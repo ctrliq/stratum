@@ -1,15 +1,4 @@
-// Package profile is the engine's notion of a node profile: a named set of
-// hardened settings an importer registers through pkg/cli.WithProfiles and a
-// node selects by name. The engine renders what a profile declares and
-// nothing more: apiserver flags, kubelet settings, config files written
-// before the apiserver, secrets minted once and carried in the HA join
-// bundle, sysctls, and a few booleans the start and the lifecycle read.
-//
-// The package is a leaf. The renderers (internal/staticpod, internal/runtime,
-// internal/host), the start (internal/cluster), the HA join and the upgrade
-// import it, so it imports no stratum package back. A profile never names a
-// path: a file is a name under a directory the engine owns, and a flag or a
-// setting that needs a path says which kind of file it means.
+// Package profile declares node profiles: named sets of hardened settings a node selects.
 package profile
 
 import (
@@ -24,26 +13,20 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// CISName is the name of the engine's own cis profile. The engine spells it
-// in the few places that treat that profile specially (its legacy flag and
-// state field, its sysctl drop-in) while it still ships one; they go with it.
+// CISName is the name of the engine's own cis profile.
 const CISName = "cis"
 
-// Source says where a flag's or a setting's value comes from. The zero value
-// is invalid on purpose: an entry that fails to say reads as undeclared.
+// Source says where a value comes from; the zero value deliberately reads as undeclared.
 type Source int
 
 const (
 	// Literal uses the entry's Value as written.
 	Literal Source = iota + 1
-	// ConfigFile resolves Value, the name of one of the profile's ConfigFiles
-	// or SharedSecrets, to the path the engine wrote it at.
+	// ConfigFile resolves Value, a declared file name, to the path it was written at.
 	ConfigFile
-	// LogFile resolves Value, a file name, to a path under the engine's log
-	// directory.
+	// LogFile resolves Value, a file name, to a path under the log directory.
 	LogFile
-	// PKIFile resolves Value, a file name, to a path under the engine's PKI
-	// directory.
+	// PKIFile resolves Value, a file name, to a path under the PKI directory.
 	PKIFile
 )
 
@@ -53,22 +36,18 @@ type FileKind int
 const (
 	// PlainFile is written and may be named by a ConfigFile flag.
 	PlainFile FileKind = iota + 1
-	// AdmissionConfiguration is an apiserver AdmissionConfiguration the engine
-	// merges its own admission plugins into. The engine names the merged file
-	// on the apiserver's argv itself; the profile does not.
+	// AdmissionConfiguration: the engine names the merged file on the apiserver's argv.
 	AdmissionConfiguration
 )
 
 // Context is what a profile may read when it renders a file.
 type Context struct {
-	// KubernetesVersion is the version the binary runs, as vMAJOR.MINOR.PATCH
-	// with any pre-release suffix the stamp carries.
+	// KubernetesVersion is the binary's version, with any pre-release suffix.
 	KubernetesVersion string
 }
 
 // Flag is one apiserver flag, rendered on control planes.
 type Flag struct {
-	// Name is the flag with its leading --.
 	Name string
 	// Value is the literal, or what From resolves.
 	Value string
@@ -77,31 +56,22 @@ type Flag struct {
 
 // Setting is one kubelet.conf line, rendered on every node.
 type Setting struct {
-	// Key is the kubelet.conf key.
 	Key string
 	// Value is the literal, or what From resolves.
 	Value string
 	From  Source
 }
 
-// File is a config file the engine writes under its config directory on a
-// control plane before the apiserver renders, backs up across an upgrade and
-// restores first on a rollback.
+// File is a config file written on control planes and carried across upgrades.
 type File struct {
-	// Name is the file name; no directory.
 	Name string
 	Kind FileKind
 	// Render returns the file's bytes.
 	Render func(Context) ([]byte, error)
 }
 
-// Secret is a file the engine mints once, on a cluster's first control
-// plane, and carries to every later control plane in the HA join bundle. It
-// is written 0600 under the engine's PKI directory and never regenerated: a
-// node that already holds it keeps it, and a join whose bundle lacks it while
-// the cluster's profile declares it is refused.
+// Secret is minted once on the first control plane and carried in the HA join bundle.
 type Secret struct {
-	// Name is the file name; no directory.
 	Name string
 	// Mint returns the bytes a new cluster starts with.
 	Mint func() ([]byte, error)
@@ -115,23 +85,17 @@ type Profile struct {
 	APIServerFlags []Flag
 	// KubeletSettings are rendered into kubelet.conf, in order.
 	KubeletSettings []Setting
-	// ConfigFiles are written on control planes.
-	ConfigFiles []File
-	// SharedSecrets are minted on the first control plane and shared.
-	SharedSecrets []Secret
-	// Sysctls are key=value lines the engine writes as a sysctl drop-in on
-	// every node. A node that cannot apply them does not start.
+	ConfigFiles     []File
+	SharedSecrets   []Secret
+	// Sysctls are a sysctl drop-in; a node that cannot apply them does not start.
 	Sysctls []string
 	// RequiresOperator refuses a control plane that turned the operator off.
 	RequiresOperator bool
-	// RequiresSELinux refuses spec.selinux: false and treats a missing SELinux
-	// policy as fatal.
+	// RequiresSELinux refuses spec.selinux: false and a missing SELinux policy.
 	RequiresSELinux bool
-	// KubeletServerTLSBootstrap makes every node, control planes included,
-	// bootstrap its kubelet serving certificate through the CSR flow.
+	// KubeletServerTLSBootstrap bootstraps kubelet serving certs via the CSR flow.
 	KubeletServerTLSBootstrap bool
-	// DisableNodeShell turns the dashboard's privileged node shell off by
-	// default.
+	// DisableNodeShell turns the dashboard's privileged node shell off by default.
 	DisableNodeShell bool
 }
 
@@ -229,8 +193,7 @@ func (p Profile) Validate() error {
 	return nil
 }
 
-// engineConfigNames are the files and directories the engine keeps in the
-// directory a profile's config files are written to.
+// engineConfigNames are the files the engine keeps in the profile config-file directory.
 var engineConfigNames = map[string]bool{
 	"admin.conf":                true,
 	"admission-webhook.yaml":    true,
@@ -258,12 +221,7 @@ var engineConfigNames = map[string]bool{
 	"webhook-client.kubeconfig": true,
 }
 
-// engineAPIServerFlags are the apiserver flags the engine renders itself on
-// every control plane. kube-apiserver takes the last value of a flag given
-// twice, and a profile's flags follow the engine's, so a profile declaring
-// one of these would replace the engine's value: --admission-control-config-file
-// names the merged admission file that carries the engine's webhook client
-// configuration, and a profile naming its own file there would drop it.
+// engineAPIServerFlags: the last repeated flag wins, so a profile's would replace it.
 var engineAPIServerFlags = map[string]bool{
 	"--admission-control-config-file":      true,
 	"--advertise-address":                  true,
@@ -302,13 +260,10 @@ var engineAPIServerFlags = map[string]bool{
 	"--tls-private-key-file":               true,
 }
 
-// EngineOwnsAPIServerFlag reports whether name is an apiserver flag the
-// engine renders itself, which a profile may not declare.
+// EngineOwnsAPIServerFlag reports whether a profile may not declare that flag.
 func EngineOwnsAPIServerFlag(name string) bool { return engineAPIServerFlags[name] }
 
-// engineKubeletKeys are the top-level kubelet.conf keys the engine writes
-// itself. A profile setting of one of them would put the key in the file
-// twice.
+// engineKubeletKeys are the kubelet.conf keys the engine writes; a profile's would duplicate it.
 var engineKubeletKeys = map[string]bool{
 	"apiVersion":                             true,
 	"authentication":                         true,
@@ -334,13 +289,10 @@ var engineKubeletKeys = map[string]bool{
 	"tlsPrivateKeyFile":                      true,
 }
 
-// EngineOwnsKubeletKey reports whether key is a top-level kubelet.conf key
-// the engine writes itself, which a profile may not set.
+// EngineOwnsKubeletKey reports whether a profile may not set that kubelet.conf key.
 func EngineOwnsKubeletKey(key string) bool { return engineKubeletKeys[key] }
 
-// engineSysctls are the keys the engine sets in its own sysctl drop-in,
-// 99-stratum.conf. A profile's drop-in sorts before it, so the engine's value
-// would win over the profile's.
+// engineSysctls: the engine's drop-in sorts after a profile's, so the engine's value would win.
 var engineSysctls = map[string]bool{
 	"fs.inotify.max_user_instances":       true,
 	"fs.inotify.max_user_watches":         true,
@@ -350,64 +302,35 @@ var engineSysctls = map[string]bool{
 	"net.ipv6.conf.all.forwarding":        true,
 }
 
-// EngineOwnsSysctl reports whether key, in dotted or slashed form and with or
-// without sysctl.d's leading "-" (apply, ignoring a failure), is one the
-// engine sets in its own sysctl drop-in.
+// EngineOwnsSysctl accepts dotted or slashed keys with an optional sysctl.d leading "-".
 func EngineOwnsSysctl(key string) bool {
 	key = strings.TrimPrefix(strings.TrimSpace(key), "-")
 	return engineSysctls[strings.ReplaceAll(strings.TrimSpace(key), "/", ".")]
 }
 
-// EngineOwnsConfigName reports whether name is a file or directory the
-// engine keeps in its config directory, which a profile's config file of
-// that name would replace: one of engineConfigNames, or a payload import
-// marker (<archive>.imported).
+// EngineOwnsConfigName: an engine file or a payload import marker (<archive>.imported).
 func EngineOwnsConfigName(name string) bool {
 	return engineConfigNames[name] || strings.HasSuffix(name, ".imported")
 }
 
-// pkiExtensions are the extensions of the files the engine keeps in its PKI
-// directory, where a shared secret is written. A secret with one of them could
-// take the name of a certificate or key the engine issues or shares.
+// pkiExtensions are the extensions of files the engine keeps in its PKI directory.
 var pkiExtensions = map[string]bool{".crt": true, ".key": true, ".pub": true, ".csr": true, ".pem": true}
 
-// ReservedSecretPrefix starts the name of every CA-rotation state file the
-// engine keeps in its PKI directory (carotate-forced, carotate-promoted and
-// the rest). Those files are the rotation's state, read by their presence
-// and removed by its cleanup, so a shared secret may not take one of their
-// names.
+// ReservedSecretPrefix starts the CA-rotation state files, which are read by presence.
 const ReservedSecretPrefix = "carotate-"
 
-// CISEncryptionConfigName is the cis profile's at-rest encryption config, the
-// one shared secret the engine reads by name: the join bundle derives a proof
-// of its key from the secretbox layout the cis profile writes, and the join
-// refuses a bundle without it on a cis cluster. Another profile's secret of
-// that name would be minted and then fail every upload, so only the cis
-// profile may declare it.
+// CISEncryptionConfigName is the one shared secret the engine reads by name; only cis declares it.
 const CISEncryptionConfigName = "encryption-config.yaml"
 
-// engineBundleNames are the join bundle's own entries that are not
-// certificates or keys: the cluster network config and the Cilium settings,
-// which the engine writes into the PKI directory on its own, before a
-// profile's secrets are minted and whatever a profile declares.
+// engineBundleNames are the join bundle's own non-certificate entries.
 var engineBundleNames = map[string]bool{"netconfig": true, "cilium.json": true}
 
-// ReservedSecretName reports whether a shared secret may not be named name:
-// it is one of the join bundle's own non-certificate entries, or "version" in
-// any case. The legacy flat-map bundle is decoded first for a "version" field
-// to tell it from the v1 envelope, and Go's JSON decoder matches a field name
-// whatever its case, so a secret of that name would make the bundle
-// undecodable.
+// ReservedSecretName: "version" in any case would make the bundle undecodable.
 func ReservedSecretName(name string) bool {
 	return engineBundleNames[name] || strings.EqualFold(name, "version")
 }
 
-// PlainFileName reports why name is not a plain file name a profile may
-// declare: it must be a bare name, UTF-8, with no control character, newline
-// or backslash. The engine records the names of a profile's files one per
-// line (the upgrade's backup record), reads them back as path elements, and
-// a name a record cannot round-trip would make a rollback restore or remove
-// the wrong file.
+// PlainFileName: a profile's file names are recorded one per line, so a name must round-trip.
 func PlainFileName(name string) error {
 	switch {
 	case name == "" || path.Base(name) != name || name == "." || name == "..":
@@ -456,17 +379,13 @@ var ErrUnregistered = errors.New("profile is not registered in this binary")
 
 var registered []Profile
 
-// registrationErr is why the binary's profiles could not be registered, when
-// they could not; ForNode returns it for any profile a node names.
+// registrationErr is set when profile registration failed; ForNode refuses with it.
 var registrationErr error
 
-// SetRegistrationError records that registering the binary's profiles
-// failed, so a renderer that later needs a node's profile reports why
-// instead of rendering the node without it. Nil clears it.
+// SetRegistrationError records a profile-registration failure; nil clears it.
 func SetRegistrationError(err error) { registrationErr = err }
 
-// SetRegistered replaces the binary's registered profiles after validating
-// each and refusing a name declared twice.
+// SetRegistered validates each profile and refuses a name declared twice.
 func SetRegistered(ps []Profile) error {
 	names := map[string]bool{}
 	for _, p := range ps {
@@ -505,24 +424,14 @@ func Lookup(name string) (Profile, bool) {
 	return Profile{}, false
 }
 
-// ProDocsURL is the Stratum PRO documentation page, which lists what the
-// commercial edition adds. Every message that sends an operator there uses
-// this constant, so the address is written once.
+// ProDocsURL is the Stratum PRO documentation page; the address is written once.
 const ProDocsURL = "https://docs.ciq.com/stratum/pro/"
 
-// CISUnregisteredNote is appended to the ErrUnregistered error Select
-// returns for the cis profile, which this engine does not carry: the note
-// says the profile is part of Stratum PRO and gives the two ways forward,
-// both through flags of this binary. Tests and wrappers match this constant,
-// never a copy of its text.
+// CISUnregisteredNote is appended to the cis refusal; tests match the constant, not its text.
 const CISUnregisteredNote = "The cis profile is part of Stratum PRO; on a node that does not already run cis, remove --profile cis and any cis selection from the config; " +
 	"for a node already running cis, move it onto a Stratum PRO binary with `stratum upgrade --from <binary>` (see " + ProDocsURL + ")"
 
-// Select returns the profile a node runs: none for an empty name, the
-// registered one for a known name, and an error wrapping ErrUnregistered
-// that names both the profile and the binary's registered ones otherwise.
-// For the cis profile, which this engine does not carry, the error also
-// carries CISUnregisteredNote.
+// Select returns the profile a node runs or an error wrapping ErrUnregistered.
 func Select(name string) (Profile, error) {
 	if name == "" {
 		return Profile{}, nil
@@ -541,10 +450,7 @@ func Select(name string) (Profile, error) {
 	return Profile{}, fmt.Errorf("profile %q: %w (registered: %s)", name, ErrUnregistered, have)
 }
 
-// ForNode returns the profile a node's state names, for a renderer: none for
-// an empty name, and an error for a name that is not registered or when
-// registering the binary's profiles failed. A renderer that cannot resolve
-// the profile stops; it never renders the node without it.
+// ForNode returns the profile a node's state names, refusing one it cannot resolve.
 func ForNode(name string) (Profile, error) {
 	if name == "" {
 		return Profile{}, nil
@@ -565,9 +471,7 @@ func (p Profile) SecretNames() []string {
 	return names
 }
 
-// SharedSecretNames returns the names of every registered profile's shared
-// secrets, sorted and without repeats: the profile entries an HA join bundle
-// may carry.
+// SharedSecretNames returns every registered profile's secret names, without repeats.
 func SharedSecretNames() []string {
 	seen := map[string]bool{}
 	var names []string
@@ -586,9 +490,7 @@ func SharedSecretNames() []string {
 // None reports whether p is the absence of a profile.
 func (p Profile) None() bool { return p.Name == "" }
 
-// Locations resolves the file names a profile's flags and settings name to
-// the paths the engine writes them at. The engine supplies it; the profile
-// never names a path.
+// Locations resolves the names a profile's flags and settings use to engine paths.
 type Locations struct {
 	Config func(name string) string
 	Secret func(name string) string
@@ -614,8 +516,7 @@ func (p Profile) resolve(from Source, value string, at Locations) string {
 	return value
 }
 
-// APIServerArgs is the profile's apiserver flags as argv entries, in order,
-// with their values resolved.
+// APIServerArgs is the profile's apiserver flags as argv entries, values resolved.
 func (p Profile) APIServerArgs(at Locations) []string {
 	out := make([]string, 0, len(p.APIServerFlags))
 	for _, f := range p.APIServerFlags {
@@ -624,8 +525,7 @@ func (p Profile) APIServerArgs(at Locations) []string {
 	return out
 }
 
-// KubeletLines is the profile's kubelet settings as kubelet.conf lines, in
-// order, with their values resolved.
+// KubeletLines is the profile's kubelet settings as kubelet.conf lines.
 func (p Profile) KubeletLines(at Locations) string {
 	var b strings.Builder
 	for _, s := range p.KubeletSettings {
@@ -634,8 +534,7 @@ func (p Profile) KubeletLines(at Locations) string {
 	return b.String()
 }
 
-// AdmissionFile returns the profile's AdmissionConfiguration file, if it
-// declares one.
+// AdmissionFile returns the profile's AdmissionConfiguration file, if declared.
 func (p Profile) AdmissionFile() (File, bool) {
 	for _, f := range p.ConfigFiles {
 		if f.Kind == AdmissionConfiguration {

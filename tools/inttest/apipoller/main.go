@@ -1,12 +1,4 @@
-// Command apipoller is the in-cluster API client check-ha-rotate-ca.sh runs
-// through a CA rotation. It calls the API once a second with its
-// ServiceAccount token and logs one line per call: ok, x509 for a certificate
-// verification failure, 401 for a token the API server rejects, error for
-// anything else.
-//
-// It reads the cluster CA once, at start, as a client that pins its trust then
-// does. client-go would otherwise re-read ca.crt on rotation and hide the
-// x509 failure this check exists to catch.
+// Command apipoller is the in-cluster API probe check-ha-rotate-ca.sh runs through a CA rotation.
 package main
 
 import (
@@ -34,6 +26,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Pinned CA: client-go re-reading ca.crt on rotation would hide the x509 failure.
 	ca, err := os.ReadFile(cfg.TLSClientConfig.CAFile)
 	if err != nil {
 		return err

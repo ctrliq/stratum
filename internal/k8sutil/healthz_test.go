@@ -12,8 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// A credential the API server refuses ends the wait at once, naming the rule
-// it lacks, instead of spending the whole window on a /healthz it cannot read.
 func TestWaitHealthzStopsOnARefusedCredential(t *testing.T) {
 	for name, refusal := range map[string]error{
 		"forbidden":    apierrors.NewForbidden(schema.GroupResource{}, "/healthz", errors.New("no rule")),
@@ -36,11 +34,6 @@ func TestWaitHealthzStopsOnARefusedCredential(t *testing.T) {
 	}
 }
 
-// One probe that accepts the connection and never answers must cost one
-// attempt, not the window: its per-attempt bound frees the wait to try again,
-// and the next probe — here, the first one after the hang — still gets its
-// shot at an ok. Both times are fake (testing/synctest): a 10s attempt bound
-// inside a 40s window, with the 2s poll sleeps, all elapse instantly.
 func TestWaitHealthzHungProbeCostsOneAttempt(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -63,9 +56,6 @@ func TestWaitHealthzHungProbeCostsOneAttempt(t *testing.T) {
 	})
 }
 
-// When every probe hangs, the last error names the per-attempt bound, so a
-// failed gate says the probes got no answer in time rather than a bare
-// "context deadline exceeded". Same fake clock as above.
 func TestWaitHealthzNamesTheAttemptTimeoutWhenEveryProbeHangs(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
@@ -80,7 +70,6 @@ func TestWaitHealthzNamesTheAttemptTimeoutWhenEveryProbeHangs(t *testing.T) {
 	})
 }
 
-// When the window runs out, the error says what the last check answered.
 func TestWaitHealthzNamesTheLastAnswer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

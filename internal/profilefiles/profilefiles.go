@@ -1,5 +1,4 @@
-// Package profilefiles writes a node profile's config files where the
-// renderers read them.
+// Package profilefiles writes a node profile's config files where the renderers read them.
 package profilefiles
 
 import (
@@ -10,10 +9,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Write writes p's config files at version.ProfileConfigFile, 0644 (none
-// holds a secret). Every file renders before any is written, so a profile
-// that cannot render one changes nothing, and each write is atomic, so a
-// write that fails part way leaves the file already at the path.
+// Write renders every file before any is written, so a render failure changes nothing.
 func Write(p profile.Profile) error {
 	ctx := profile.Context{KubernetesVersion: version.K8sVersion}
 	bodies := make([][]byte, len(p.ConfigFiles))

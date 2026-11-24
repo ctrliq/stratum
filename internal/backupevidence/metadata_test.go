@@ -58,8 +58,7 @@ func TestReaderRejectsUnsafeMetadata(t *testing.T) {
 				case res = <-done:
 				case <-time.After(500 * time.Millisecond):
 					t.Error("metadata read blocked past the evidence deadline")
-					// Release the old blocking implementation so a failing test
-					// leaves no reader behind.
+					// Release the blocked open so a failing test leaves no reader parked.
 					if kind == "fifo" {
 						f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NONBLOCK, 0)
 						if err != nil {

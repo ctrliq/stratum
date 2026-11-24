@@ -14,8 +14,6 @@ import (
 
 // Protocol-boundary tests for the Stratum read toolset.
 
-// stratumToolset is the eight tools of the Stratum read toolset, version_get
-// included.
 var stratumToolset = []string{
 	"certs_check",
 	"cluster_status",
@@ -27,8 +25,6 @@ var stratumToolset = []string{
 	"version_get",
 }
 
-// newHostSession is a session with no cluster configured at all: these
-// tools do not use one.
 func newHostSession(t *testing.T) *sdk.ClientSession {
 	t.Helper()
 
@@ -49,7 +45,6 @@ func newHostSession(t *testing.T) *sdk.ClientSession {
 	return cs
 }
 
-// All nine present with no flags.
 func TestStratumToolsetIsPresentAtEveryTier(t *testing.T) {
 	for _, tc := range []struct {
 		name               string
@@ -91,7 +86,6 @@ func TestStratumToolsetIsPresentAtEveryTier(t *testing.T) {
 	}
 }
 
-// A protocol-boundary call for each of the nine.
 func TestStratumToolsExplainThemselvesOffANode(t *testing.T) {
 	cs := newHostSession(t)
 
@@ -116,9 +110,7 @@ func TestStratumToolsExplainThemselvesOffANode(t *testing.T) {
 			}
 
 			if !res.IsError {
-				// Only reachable if the test machine really is a Stratum
-				// node, in which case the tool answered for real and there
-				// is nothing wrong.
+				// this machine may really be a Stratum node; then the tool answered for real.
 				raw, _ := json.Marshal(res.StructuredContent)
 				t.Skipf("%s answered, so this machine looks like a Stratum node: %s", name, raw)
 			}
@@ -140,8 +132,7 @@ func TestStratumToolsExplainThemselvesOffANode(t *testing.T) {
 	}
 }
 
-// Every Stratum tool must be read-only annotated, or the registry drops it
-// from every tier including read.
+// the registry drops a tool without the read-only hint from every tier.
 func TestStratumToolsAreAnnotatedReadOnly(t *testing.T) {
 	res, err := newHostSession(t).ListTools(t.Context(), nil)
 	if err != nil {
@@ -160,8 +151,6 @@ func TestStratumToolsAreAnnotatedReadOnly(t *testing.T) {
 	}
 }
 
-// upgrade_plan's target is required, and the failure has to say so rather
-// than reporting a plan for the empty string.
 func TestUpgradePlanRequiresATarget(t *testing.T) {
 	cs := newHostSession(t)
 	res, err := cs.CallTool(t.Context(), &sdk.CallToolParams{Name: "upgrade_plan"})
@@ -173,13 +162,7 @@ func TestUpgradePlanRequiresATarget(t *testing.T) {
 	}
 }
 
-// TestSnapshotScheduleAdvertisesNoDestination.
-//
-// A schema-level assertion, because this is the half that matters: a model
-// only attempts what the advertised input offers. An etcd snapshot is the
-// whole cluster, and the endpoint additionally carries the operator's
-// object-store credentials to whatever host it names, so neither is
-// reachable from a tool call.
+// an etcd snapshot is the whole cluster; an endpoint would carry the object-store credentials.
 func TestSnapshotScheduleAdvertisesNoDestination(t *testing.T) {
 	tool, ok := advertised(t, tierSession(t, true, false))["snapshot_schedule"]
 	if !ok {
@@ -200,10 +183,7 @@ func TestSnapshotScheduleAdvertisesNoDestination(t *testing.T) {
 	}
 }
 
-// TestTokenCreateAdvertisesNoServerURL. The schema is the half that matters:
-// a model only attempts what the advertised input offers. The join URL is
-// published in cluster-info and is where a joiner sends its bootstrap
-// credential, so it is derived from the node rather than accepted from a call.
+// the join URL, where a joiner sends its bootstrap credential, is published in cluster-info.
 func TestTokenCreateAdvertisesNoServerURL(t *testing.T) {
 	tool, ok := advertised(t, tierSession(t, true, false))["token_create"]
 	if !ok {

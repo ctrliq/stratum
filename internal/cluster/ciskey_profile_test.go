@@ -16,10 +16,6 @@ func otherProfile() profile.Profile {
 	}}
 }
 
-// cisOnly are the words of the cis profile's refusals that mean nothing for
-// another profile: its flag and config spellings, its documentation pointer
-// and the re-encryption it names, which distributes no secret of another
-// profile.
 var cisOnly = []string{"--profile cis", "spec.profile: cis", "--cis", "spec.cis", "re-encrypts", "Stratum PRO", profile.ProDocsURL, "Turn CIS on", "at-rest encryption key"}
 
 func wantProfileRefusal(t *testing.T, what string, err error, wants ...string) {
@@ -39,10 +35,6 @@ func wantProfileRefusal(t *testing.T, what string, err error, wants ...string) {
 	}
 }
 
-// The gate and the second look refuse another profile's shared secret in that
-// profile's terms: the profile and the secret by name, --profile and
-// spec.profile as the thing to select or deselect, and the secret put on every
-// control plane by hand as the way to select it on a running cluster.
 func TestSharedSecretRefusalsNameTheProfileAndItsSecrets(t *testing.T) {
 	dir := t.TempDir()
 	at := func(name string) string { return filepath.Join(dir, name) }

@@ -42,8 +42,6 @@ func TestReconcileRefreshesLaggingRequesterVerifier(t *testing.T) {
 				hc = admitObject(t, hc, nil, "alice", fast.current())
 				var overlays []*unstructured.Unstructured
 				if operation == "overlay" {
-					// The chart itself verifies under the captured snapshot, but
-					// a later overlay was stamped by the already-refreshed webhook.
 					hc = admitObject(t, hc, nil, "alice", old)
 					hcc := newFlowHCC(tenantNS, "app", map[string]interface{}{"valuesContent": "replicas: 2"})
 					overlays = append(overlays, admitObject(t, hcc, nil, "alice", fast.current()))

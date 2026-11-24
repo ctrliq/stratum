@@ -7,8 +7,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// The node's taints reach kubelet.conf as registerWithTaints, read back the
-// way the kubelet reads it: each key, value and effect in its own field.
 func TestRegisterWithTaintsLine(t *testing.T) {
 	if got, err := registerWithTaintsLine(nil); got != "" || err != nil {
 		t.Errorf("no taints rendered %q, %v; want nothing", got, err)
@@ -55,9 +53,7 @@ func TestSplitTaint(t *testing.T) {
 	}
 }
 
-// A worker restart renders the taints node.yaml carries without the join's
-// validation, so a taint the kubelet could not read is refused by name
-// instead of rendered.
+// A worker restart renders taints without the join's validation, so a bad one is refused by name.
 func TestRegisterWithTaintsLineRefusesATaintTheKubeletCannotRead(t *testing.T) {
 	for _, taint := range []string{"dedicated", "dedicated:Sometimes", "bad key:NoSchedule", "k=bad value:NoSchedule", "a:NoSchedule:extra"} {
 		line, err := registerWithTaintsLine([]string{"dedicated:NoExecute", taint})

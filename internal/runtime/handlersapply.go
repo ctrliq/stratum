@@ -20,13 +20,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// ApplyHandlersResult is ApplyHandlers' outcome. Changed means the drop-in
-// changed on disk; Written means the drop-in on disk now declares the
-// handlers, even when the restart after it failed; Restarted is true only
-// when this call restarted a running containerd, so a caller reports the
-// restart from Restarted, never Changed. Unloaded means the running
-// containerd started before the drop-in's latest change, by this call or an
-// earlier one that did not restart it.
+// ApplyHandlersResult: a caller reports the restart from Restarted, never Changed.
 type ApplyHandlersResult struct {
 	Changed   bool
 	Written   bool
@@ -34,13 +28,7 @@ type ApplyHandlersResult struct {
 	Unloaded  bool
 }
 
-// ApplyHandlers writes the runtime-handler drop-in for handlers and, with
-// restart, restarts a running containerd when the drop-in changed, or when an
-// earlier apply left it running without the drop-in on disk. A drop-in that
-// changed on disk but could not be made durable is still recorded as
-// unloaded, so a retry restarts containerd. Its caller runs
-// RequireHandlersImport first, before anything it saves: a config rendered
-// before runtime handlers existed would never read the file.
+// ApplyHandlers writes the drop-in; a caller runs RequireHandlersImport first or it is never read.
 func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (ApplyHandlersResult, error) {
 	var out ApplyHandlersResult
 	behind := loadedHandlerNames()
@@ -81,20 +69,15 @@ func ApplyHandlers(w io.Writer, handlers map[string]string, restart bool) (Apply
 	return out, nil
 }
 
-// unloadedPath records which runtime handlers the running containerd loaded
-// when the drop-in changed without restarting it: that containerd's PID and
-// processStart, then one handler name per line. containerd imports only *.toml from the
-// drop-in's directory, so it never reads the record as config.
+// containerd imports only *.toml here, so it never reads the record as config.
 func unloadedPath() string { return version.ContainerdRuntimeConfD + ".unloaded" }
 
-// loadedHandlers is the runtime handlers a running containerd loaded. A zero
-// pid means it loaded the drop-in on disk, or that no containerd runs.
+// loadedHandlers: a zero pid means the drop-in on disk, or no containerd runs.
 type loadedHandlers struct {
 	pid   int
 	names []string
 }
 
-// containerdPID is the PID of the containerd the supervisor runs, or 0.
 func containerdPID() int {
 	st, err := comps.Status()
 	if err != nil {
@@ -106,10 +89,7 @@ func containerdPID() int {
 	return 0
 }
 
-// processStart tells one run of a process from another that reuses its PID:
-// the boot it ran in and its start time since that boot, from /proc. A reboot
-// or a container restart can hand a new containerd the PID the record names;
-// it never hands it the same start. Empty when /proc cannot be read.
+// processStart: a reboot can reuse the PID the record names, never the start.
 var processStart = func(pid int) string {
 	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 	if err != nil {
@@ -127,10 +107,7 @@ var processStart = func(pid int) string {
 	return strings.TrimSpace(string(boot)) + "/" + fields[19]
 }
 
-// loadedHandlerNames reads the unloaded record. It counts only while the
-// containerd it names still runs: any restart since, by `stratum runtime
-// restart`, `stratum registry apply`, an upgrade, the supervisor or a reboot,
-// loaded the drop-in on disk.
+// loadedHandlerNames counts only while the named containerd still runs.
 func loadedHandlerNames() loadedHandlers {
 	b, err := os.ReadFile(unloadedPath())
 	if err != nil {
@@ -145,7 +122,6 @@ func loadedHandlerNames() loadedHandlers {
 	return loadedHandlers{pid: pid, names: slices.DeleteFunc(lines[1:], func(n string) bool { return n == "" })}
 }
 
-// dropInHandlerNames is the runtime handlers the drop-in on disk declares.
 func dropInHandlerNames() []string {
 	var c sharedConfD
 	if _, err := toml.DecodeFile(version.ContainerdRuntimeConfD, &c); err != nil {
@@ -159,9 +135,7 @@ func dropInHandlerNames() []string {
 	return slices.Compact(names)
 }
 
-// recordUnloaded notes that the running containerd has not loaded the drop-in
-// on disk, only the runtime handlers in names. A record it cannot write leaves
-// the node labelled for every declared handler, so it says so on w.
+// A record it cannot write leaves the node labelled for every handler, so it says so.
 func recordUnloaded(w io.Writer, names []string) {
 	pid := containerdPID()
 	if pid == 0 {
@@ -173,18 +147,14 @@ func recordUnloaded(w io.Writer, names []string) {
 	}
 }
 
-// clearUnloaded removes the record once a restart has loaded the drop-in. A
-// record it cannot remove names the containerd the restart replaced, so
-// loadedHandlerNames already ignores it.
+// clearUnloaded: a record it cannot remove names the replaced containerd, already ignored.
 func clearUnloaded(w io.Writer) {
 	if err := os.Remove(unloadedPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		fmt.Fprintf(w, "WARN: could not remove %s (%v); it names the containerd this restart replaced, so it is already ignored\n", unloadedPath(), err)
 	}
 }
 
-// LoadedHandlers narrows names to the runtime handlers the running containerd
-// has loaded, so a node is labelled for a handler only once its containerd
-// can run it.
+// LoadedHandlers: a node is labelled for a handler only once its containerd can run it.
 func LoadedHandlers(names []string) []string {
 	loaded := loadedHandlerNames()
 	if loaded.pid == 0 {
@@ -193,15 +163,9 @@ func LoadedHandlers(names []string) []string {
 	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return !slices.Contains(loaded.names, n) })
 }
 
-// errNoHandlersImport is RequireHandlersImport's report of a containerd
-// config that parses but does not import the runtime-handler drop-in: one
-// rendered before runtime handlers existed. Only that is harmless on a node
-// that declares none; a config that cannot be read or parsed stops
-// containerd whatever it declares.
+// errNoHandlersImport: only a missing import is harmless on a node that declares none.
 var errNoHandlersImport = errors.New("does not import the runtime-handler drop-in")
 
-// RequireHandlersImport reports whether containerd's config imports the
-// runtime-handler drop-in's directory after the shared conf.d.
 func RequireHandlersImport() error {
 	cfg, err := os.ReadFile(version.ContainerdConfig)
 	if err != nil {
@@ -217,9 +181,7 @@ func RequireHandlersImport() error {
 	return nil
 }
 
-// RestartContainerd restarts the supervisor's containerd and waits for it to
-// report active again. Running containers keep running: their shims outlive
-// containerd.
+// RestartContainerd: running containers keep running, since their shims outlive containerd.
 func RestartContainerd(w io.Writer) error {
 	if !Active() {
 		return errors.New("containerd is not running under the stratum supervisor; start the node with `stratum up`")
@@ -261,13 +223,7 @@ func (r *HandlerReport) add(s Severity, format string, args ...any) {
 	r.Findings = append(r.Findings, HandlerFinding{Severity: s, Message: fmt.Sprintf(format, args...)})
 }
 
-// CheckHandlers reports whether containerd will run the handlers this node
-// saved: the drop-in matches them, each binary is executable, containerd's
-// config imports the drop-in, CDI has specs to resolve, and which other
-// conf.d files define the same runtime names. The shared conf.d is checked
-// with no handlers declared too: a file there that does not parse stops
-// containerd, and one that changes its default runtime changes every pod's.
-// It changes nothing.
+// The shared conf.d is checked even with no handlers declared: a bad file there stops containerd.
 func CheckHandlers(saved map[string]string) HandlerReport {
 	r := HandlerReport{Handlers: saved}
 	checkDropIn(&r, saved)
@@ -299,8 +255,6 @@ func CheckHandlers(saved map[string]string) HandlerReport {
 	return r
 }
 
-// checkDropIn compares the drop-in on disk with what ApplyHandlers would write
-// for saved.
 func checkDropIn(r *HandlerReport, saved map[string]string) {
 	path := version.ContainerdRuntimeConfD
 	got, err := os.ReadFile(path)
@@ -322,11 +276,9 @@ func checkDropIn(r *HandlerReport, saved map[string]string) {
 	}
 }
 
-// cdiSpecExts are the file extensions containerd reads CDI specs from.
 var cdiSpecExts = []string{".json", ".yaml", ".yml"}
 
-// checkCDISpecs counts the CDI specs in the drop-in's spec directories. None
-// is a warning, not an error: a node can run handlers that need no devices.
+// checkCDISpecs: none is a warning; a node can run handlers that need no devices.
 func checkCDISpecs(r *HandlerReport) {
 	count := 0
 	for _, dir := range cdiSpecDirs {
@@ -348,9 +300,7 @@ func checkCDISpecs(r *HandlerReport) {
 	r.add(SeverityOK, "CDI is enabled with %d spec(s) in %s", count, strings.Join(cdiSpecDirs, " and "))
 }
 
-// sharedConfD is the slice of a conf.d drop-in that can contend with
-// stratum's: the runtimes it defines and the default it sets, under both the
-// CRI plugin containerd 2 reads and the one containerd 1 used.
+// sharedConfD is the slice of a conf.d drop-in that can contend with stratum's.
 type sharedConfD struct {
 	Plugins map[string]struct {
 		Containerd struct {
@@ -360,10 +310,7 @@ type sharedConfD struct {
 	} `toml:"plugins"`
 }
 
-// RequireSharedConfDParses reports the first file in the shared conf.d that
-// does not parse. containerd imports every one, so a runtime apply or restart
-// that restarted it with one there would stop a working containerd for one
-// that cannot start.
+// RequireSharedConfDParses: restarting with one bad conf.d file stops a working containerd.
 func RequireSharedConfDParses() error {
 	if err := sharedConfDParseError(); err != nil {
 		return fmt.Errorf("%w, so nothing was changed. Fix or remove it and run again", err)
@@ -371,8 +318,6 @@ func RequireSharedConfDParses() error {
 	return nil
 }
 
-// sharedConfDParseError is the first file in the shared conf.d that does not
-// parse, as an error naming it, or nil.
 func sharedConfDParseError() error {
 	for _, f := range readSharedConfD() {
 		if f.err != nil {
@@ -382,19 +327,14 @@ func sharedConfDParseError() error {
 	return nil
 }
 
-// sharedConfDFile is one file in the shared conf.d as stratum reads it: the
-// slice of its config that can contend with stratum's, or the error it does
-// not parse with.
+// sharedConfDFile: the part of a conf.d file that can contend with stratum's, or its parse error.
 type sharedConfDFile struct {
 	path string
 	conf sharedConfD
 	err  error
 }
 
-// readSharedConfD decodes every file in the shared conf.d, all of which
-// containerd imports, in name order. RequireSharedConfDParses and
-// checkSharedConfD both read it, so runtime apply and runtime check agree on
-// which files do not parse.
+// readSharedConfD is the one reader, so apply and check agree on what does not parse.
 func readSharedConfD() []sharedConfDFile {
 	paths, _ := filepath.Glob(filepath.Join(filepath.Dir(version.ContainerdConfD), "*.toml"))
 	files := make([]sharedConfDFile, 0, len(paths))
@@ -406,13 +346,7 @@ func readSharedConfD() []sharedConfDFile {
 	return files
 }
 
-// checkSharedConfD warns about every file in the shared conf.d that defines
-// one of saved's runtime names, which `nvidia-ctk runtime configure` does, or
-// changes containerd's default runtime. stratum's drop-in is imported after
-// conf.d, so its definition of a name wins, but a changed default runs every
-// pod without a runtimeClassName under that runtime. Every file there must
-// parse, stratum's registry drop-in included, since containerd imports them
-// all; the registry drop-in is stratum's own, so it is spared the warnings.
+// stratum's drop-in wins on names; a changed default runs every pod without a runtimeClassName.
 func checkSharedConfD(r *HandlerReport, saved map[string]string) {
 	for _, f := range readSharedConfD() {
 		if f.err != nil {

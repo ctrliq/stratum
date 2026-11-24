@@ -19,10 +19,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// TestRefreshControlPlaneCertsReportsAReissue: the upgrade runs the PKI pass
-// with this node's SANs, VIP included, so an upgraded custom-CIDR control plane
-// does not keep an apiserver.crt without its Service IP, and it reports
-// whether apiserver.crt changed so the apiserver can be restarted onto it.
+// The PKI pass runs with the VIP included, so a custom-CIDR control plane keeps its Service IP SAN.
 func TestRefreshControlPlaneCertsReportsAReissue(t *testing.T) {
 	oldPKI, oldNet, oldGen := version.PKIDir, version.NetConfigPath, generateCerts
 	version.PKIDir = t.TempDir()
@@ -41,7 +38,6 @@ func TestRefreshControlPlaneCertsReportsAReissue(t *testing.T) {
 		gotIP, gotExtras, gotDomain = nodeIP, sans.IPs, sans.Domain
 		return os.WriteFile(crt, []byte("reissued"), 0o644)
 	}
-	// The reissue carries the cluster domain recorded in netconfig.
 	if err := os.WriteFile(version.NetConfigPath, []byte(netdefault.PodCIDR+"\n"+netdefault.ServiceCIDR+"\nfuzz.internal\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +59,7 @@ func TestRefreshControlPlaneCertsReportsAReissue(t *testing.T) {
 	}
 }
 
-// TestUpgradeCertInputsMatchNodeState: the upgrade's PKI pass issues for the
-// same addresses renewal does — the recorded KubeletNodeIP and the full
-// APIServerSANs list (Service IPs, and ::1 under dual-stack, then the VIP) —
-// with the netconfig's domain. An upgrade that derives a different list would
-// hand the next renewal a certificate it must reissue again.
+// The PKI pass must issue for the same addresses renewal does, or the next renewal reissues again.
 func TestUpgradeCertInputsMatchNodeState(t *testing.T) {
 	oldPKI, oldNet, oldGen := version.PKIDir, version.NetConfigPath, generateCerts
 	version.PKIDir = t.TempDir()
@@ -111,17 +103,7 @@ func TestUpgradeCertInputsMatchNodeState(t *testing.T) {
 	}
 }
 
-// TestUpgradeRefusesADualStackNodeWithoutARecordedPair pins the rule: the
-// upgrade's PKI pass issues for the same node address renewal does, and
-// refuses where renewal refuses. With the recorded v4,v6 pair it must hand
-// pki the certificate inputs bring-up hands it for the same node — the
-// recorded pair and the full APIServerSANs list (the Service IPs, ::1, then
-// the VIP) under the netconfig's domain, compared through LeafSpecs so a
-// reordered or displaced Service IP fails here too. With the pair missing
-// it must return renewal's refusal and never call generateCerts: falling
-// back from KubeletNodeIP to NodeIP would reissue an apiserver certificate
-// without the node's IPv6 address — a certificate the next renewal, which
-// refuses this node, would reissue again.
+// Falling back to NodeIP would reissue an apiserver certificate without the node's IPv6 address.
 func TestUpgradeRefusesADualStackNodeWithoutARecordedPair(t *testing.T) {
 	oldPKI, oldNet, oldGen := version.PKIDir, version.NetConfigPath, generateCerts
 	version.PKIDir = t.TempDir()
@@ -161,9 +143,7 @@ func TestUpgradeRefusesADualStackNodeWithoutARecordedPair(t *testing.T) {
 		if gotSANs == nil {
 			t.Fatal("PKI pass got no SANs")
 		}
-		// The upgrade must hand pki the same certificate inputs bring-up hands
-		// it for the same node, so the SAN purposes are compared through
-		// LeafSpecs rather than as a raw list.
+		// Compared through LeafSpecs, so a reordered or displaced Service IP fails too.
 		got := pki.LeafSpecs(gotHost, gotIP, gotSANs)
 		want := pki.LeafSpecs("cp1", pair, &pki.APISANs{IPs: netc.APIServerSANs(vip), Domain: netc.ClusterDomain})
 		if len(got) != len(want) {
@@ -200,11 +180,7 @@ func TestUpgradeRefusesADualStackNodeWithoutARecordedPair(t *testing.T) {
 	})
 }
 
-// TestApiserverRestartsOnceForAReissuedCert: on a normal
-// upgrade Start changes the manifest's image, so kubelet already recreates the
-// apiserver on the reissued cert, and an explicit restart on top was a second
-// outage. The explicit restart is only for a resumed upgrade, where the
-// manifest is re-rendered unchanged.
+// Start already recreates the apiserver on the reissued cert; a second restart is an extra outage.
 func TestApiserverRestartsOnceForAReissuedCert(t *testing.T) {
 	oldConf, oldStart := version.K8sConfDir, startStaticPod
 	version.K8sConfDir = t.TempDir()
@@ -239,9 +215,6 @@ func TestApiserverRestartsOnceForAReissuedCert(t *testing.T) {
 	}
 }
 
-// With netconfig lost and node state on fuzz.internal, the upgrade
-// refresh reissues apiserver.crt with the fuzz.internal SAN rather than leaving
-// it on cluster.local, the domain Load alone gives here.
 func TestRefreshControlPlaneCertsKeepsTheClusterDomainWithoutNetConfig(t *testing.T) {
 	oldPKI, oldNet, oldConf, oldGen := version.PKIDir, version.NetConfigPath, version.K8sConfDir, generateCerts
 	version.PKIDir, version.K8sConfDir = t.TempDir(), t.TempDir()

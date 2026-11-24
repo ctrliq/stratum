@@ -10,8 +10,7 @@ import (
 	"time"
 )
 
-// fake answers each kubectl call by its verb and object ("get ds/cilium",
-// "restart deploy/coredns", "status ds/cilium"), and records them.
+// fake answers each kubectl call by its verb and object, and records them.
 type fake struct {
 	mu     sync.Mutex
 	calls  []string

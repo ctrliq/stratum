@@ -18,17 +18,13 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// KubeletServingCurrent is the kubelet's bootstrap-issued serving pair, kept by
-// its certificate manager as one cert-and-key file in the kubelet's cert dir.
+// The kubelet's bootstrap-issued serving pair, one cert-and-key file in its cert dir.
 const KubeletServingCurrent = "kubelet-server-current.pem"
 
-// kubeletDefaultCertDir is the kubelet's --cert-dir default. It is a fixed
-// path, not derived from --root-dir.
+// The kubelet's --cert-dir default; a fixed path, not derived from --root-dir.
 const kubeletDefaultCertDir = "/var/lib/kubelet/pki"
 
-// KubeletCertDir is the cert dir a kubelet launched with args keeps its
-// certificate manager's pairs in: --cert-dir, else the kubelet's default. A
-// repeated flag resolves to its last value, as the kubelet's flag parser does.
+// --cert-dir from args, else the default; a repeated flag resolves to its last value.
 func KubeletCertDir(args []string) string {
 	certDir := kubeletDefaultCertDir
 	for i, a := range args {
@@ -41,14 +37,12 @@ func KubeletCertDir(args []string) string {
 	return certDir
 }
 
-// KubeletServingRoots is the trust the apiserver verifies kubelet serving certs
-// against (--kubelet-certificate-authority): this node's ca-bundle.crt.
+// What the apiserver verifies kubelet serving certs against: this node's ca-bundle.crt.
 func KubeletServingRoots() ([]*x509.Certificate, error) {
 	return bundleCerts(bundleCrtPath("ca"))
 }
 
-// ReadKubeletServingLeaf reads the certificate of the serving pair at path. An
-// absent file is reported as os.ErrNotExist.
+// Reads the serving pair's certificate; an absent file is os.ErrNotExist.
 func ReadKubeletServingLeaf(path string) (*x509.Certificate, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -61,8 +55,7 @@ func ReadKubeletServingLeaf(path string) (*x509.Certificate, error) {
 	return leaf, nil
 }
 
-// FirstCertificate parses the first CERTIFICATE block in b, skipping any other
-// PEM block before it, such as the private key of a cert-and-key file.
+// Parses the first CERTIFICATE block in b, skipping earlier PEM blocks such as a private key.
 func FirstCertificate(b []byte) (*x509.Certificate, error) {
 	for {
 		var blk *pem.Block
@@ -85,12 +78,7 @@ func SignedByAny(leaf *x509.Certificate, cas []*x509.Certificate) bool {
 	return false
 }
 
-// HealKubeletServingCert moves a bootstrap-issued kubelet serving cert that no
-// CA in roots signed out of the kubelet's way, so the kubelet requests a new
-// one from the current signer when it next starts. The apiserver would refuse
-// that cert anyway, so moving it loses nothing. Anything it cannot judge, an
-// absent or unparseable cert or no roots, is left alone. It returns where the
-// cert went, or "" when it moved nothing.
+// Moves aside a cert no root signed (the apiserver refuses it); no roots or unreadable: no move.
 func HealKubeletServingCert(certDir string, roots []*x509.Certificate) (string, error) {
 	if len(roots) == 0 {
 		return "", nil
@@ -110,15 +98,10 @@ func HealKubeletServingCert(certDir string, roots []*x509.Certificate) (string, 
 	return aside, nil
 }
 
-// ErrKubeletServingUntrusted marks a kubelet that answered with a serving
-// certificate no CA in the roots signed, as opposed to one that did not answer
-// or whose certificate failed verification for another reason.
+// Marks a kubelet that answered with a serving cert none of the roots signed.
 var ErrKubeletServingUntrusted = errors.New("the kubelet serves a certificate none of the trusted CAs signed")
 
-// ProbeKubeletServing TLS-dials the kubelet serving endpoint at addr (host:port)
-// and verifies the certificate it presents against roots for that host, as the
-// apiserver does under --kubelet-certificate-authority. It presents no client
-// certificate and sends nothing past the handshake.
+// TLS-dials the kubelet serving endpoint and verifies its cert, as the apiserver does.
 func ProbeKubeletServing(ctx context.Context, addr string, roots []*x509.Certificate) error {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -151,17 +134,13 @@ type KubeletTarget struct {
 // ErrNoKubeletAddress marks a node that reports no address to probe its kubelet at.
 var ErrNoKubeletAddress = errors.New("the node reports no InternalIP to reach its kubelet at")
 
-// kubeletProbeTimeout bounds one probe; ProbeKubelets runs kubeletProbeWidth at once.
+// Bounds one probe; ProbeKubelets runs kubeletProbeWidth at once.
 const (
 	kubeletProbeTimeout = 5 * time.Second
 	kubeletProbeWidth   = 16
 )
 
-// ProbeKubelets probes each target's kubelet at IP:KubeletPort against roots
-// and returns one result per target, in order: nil when the kubelet serves a
-// cert roots verify for that IP, an error wrapping ErrKubeletServingUntrusted
-// when none of roots signed it, ErrNoKubeletAddress for a target with no IP,
-// and any other error for a kubelet it could not verify.
+// Probes each target's kubelet at IP:KubeletPort: nil when roots verify it, else the error.
 func ProbeKubelets(ctx context.Context, targets []KubeletTarget, roots []*x509.Certificate, probe KubeletProbe) []error {
 	results := make([]error, len(targets))
 	sem := make(chan struct{}, kubeletProbeWidth)

@@ -13,9 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/staticpod"
 )
 
-// recordLabels stands in for the SELinux labeller and returns the destinations
-// it labelled, checking that each was labelled through its temp file before
-// the rename.
+// Checks each label went through its temp file before the rename.
 func recordLabels(t *testing.T) *[]string {
 	t.Helper()
 	var dsts []string
@@ -31,9 +29,7 @@ func recordLabels(t *testing.T) *[]string {
 	return &dsts
 }
 
-// An upgrade labels the backup and the new binary: the new stratum must run
-// in the runtime's domain after a reboot, and the backup is what a rollback
-// copies back.
+// The new binary must run confined after a reboot; the backup is what a rollback copies back.
 func TestBackupAndInstallLabelsBackupAndBinary(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "stratum"), filepath.Join(dir, "next")
@@ -50,8 +46,7 @@ func TestBackupAndInstallLabelsBackupAndBinary(t *testing.T) {
 	}
 }
 
-// A rollback restores each binary through the same write, so the restored
-// binary is labelled too.
+// The restored binary is labelled through the same write.
 func TestRestoreLabelsTheRestoredBinary(t *testing.T) {
 	dir := t.TempDir()
 	dst := filepath.Join(dir, "kubelet")
@@ -68,8 +63,7 @@ func TestRestoreLabelsTheRestoredBinary(t *testing.T) {
 	}
 }
 
-// A binary that cannot be labelled is not installed: the live one stays, so an
-// enforcing node is never left with a binary that runs unconfined.
+// Never leave an enforcing node with a binary that runs unconfined.
 func TestInstallStopsOnALabelFailure(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "stratum"), filepath.Join(dir, "next")
@@ -91,9 +85,7 @@ func TestInstallStopsOnALabelFailure(t *testing.T) {
 	}
 }
 
-// A rollback to manifests that predate spc_t turns containerd's SELinux
-// labelling off, so the restored control plane is not confined out of its own
-// data; manifests that run as spc_t leave it alone.
+// Pre-spc_t manifests leave the control plane unconfined out of its own data.
 func TestUnconfineForOldManifests(t *testing.T) {
 	old := disableSELinux
 	t.Cleanup(func() { disableSELinux = old })
@@ -126,11 +118,7 @@ func TestUnconfineForOldManifests(t *testing.T) {
 	}
 }
 
-// A rollback to manifests that predate running as spc_t turns containerd's
-// SELinux labelling off first. If that fails, the old manifests stay where
-// they are: restored under labelling, the control plane would run as
-// container_t and lose its certificates and etcd's data. The rollback reports
-// itself incomplete instead.
+// Restored under labelling, the control plane would run as container_t and lose its data.
 func TestRollbackKeepsTheManifestsWhenConfinementStaysOn(t *testing.T) {
 	newEtcdDowngradeFixture(t, ha.EtcdStorage{StorageVersion: "3.6.0", Members: 1})
 	resumeFixture(t)

@@ -20,26 +20,15 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 )
 
-// The generic Kubernetes read toolset.
-
-// Result bounds. A tool's answer lands in a model's context window, so these
-// are sized for that rather than for what the apiserver could serve.
+// A tool's answer lands in a model's context window, so these bounds are sized for that.
 const (
-	// DefaultListLimit is how many items a list tool returns when the caller
-	// does not ask for a specific number.
 	DefaultListLimit = 100
-	// MaxListLimit is the most any list tool will return, whatever was asked
-	// for. A caller wanting more pages through Continue.
-	MaxListLimit = 500
+	MaxListLimit     = 500
 
-	// DefaultLogLines and MaxLogBytes bound pod_logs. Logs are the one read
-	// here with no natural item count, so they are capped twice.
 	DefaultLogLines = 200
 	MaxLogBytes     = 256 << 10
 )
 
-// ListMeta is the envelope every list tool returns, and the shape the other
-// list tools copy.
 type ListMeta struct {
 	Count     int    `json:"count" jsonschema:"how many items this response contains"`
 	Limit     int    `json:"limit" jsonschema:"the maximum this call would have returned"`
@@ -48,7 +37,6 @@ type ListMeta struct {
 	Note      string `json:"note,omitempty" jsonschema:"what to do about a truncated result"`
 }
 
-// newListMeta builds the envelope from what a list call returned.
 func newListMeta(count, limit int, continueToken string) ListMeta {
 	m := ListMeta{Count: count, Limit: limit, Continue: continueToken}
 	if continueToken != "" {
@@ -59,7 +47,6 @@ func newListMeta(count, limit int, continueToken string) ListMeta {
 	return m
 }
 
-// ListOptions is the input every list tool embeds.
 type ListOptions struct {
 	Context       string `json:"context,omitempty" jsonschema:"kubeconfig context to address; omit for the current one"`
 	Namespace     string `json:"namespace,omitempty" jsonschema:"namespace to search; omit with all_namespaces for every namespace"`
@@ -70,7 +57,6 @@ type ListOptions struct {
 	ContinueToken string `json:"continue_token,omitempty" jsonschema:"token from a previous truncated response"`
 }
 
-// limit clamps a requested limit into the allowed range.
 func (o ListOptions) limit() int {
 	switch {
 	case o.Limit <= 0:
@@ -98,14 +84,12 @@ func (o ListOptions) meta() metav1.ListOptions {
 	}
 }
 
-// ObjectRef is the common shape of "which single object".
 type ObjectRef struct {
 	Context   string `json:"context,omitempty" jsonschema:"kubeconfig context to address; omit for the current one"`
 	Name      string `json:"name" jsonschema:"the object's name"`
 	Namespace string `json:"namespace,omitempty" jsonschema:"the object's namespace; omit for cluster-scoped objects"`
 }
 
-// ObjectSummary is the per-item shape of a generic list.
 type ObjectSummary struct {
 	Name       string            `json:"name"`
 	Namespace  string            `json:"namespace,omitempty"`
@@ -131,8 +115,7 @@ func summarize(item *unstructured.Unstructured) ObjectSummary {
 	return s
 }
 
-// age renders a duration the way kubectl does, because that is the form
-// every operator already reads without thinking.
+// Renders a duration the way kubectl does, the form operators already read.
 func age(t time.Time) string {
 	d := time.Since(t)
 	switch {
@@ -147,7 +130,6 @@ func age(t time.Time) string {
 	}
 }
 
-// cluster resolves the context argument to a connected cluster.
 func cluster(conn *kube.Connector, name string) (*kube.Cluster, error) {
 	cl, err := conn.Cluster(name)
 	if err != nil {
@@ -156,38 +138,23 @@ func cluster(conn *kube.Connector, name string) (*kube.Cluster, error) {
 	return cl, nil
 }
 
-// ---------------------------------------------------------------- resources
-
 // ResourceListIn is resource_list's input.
 type ResourceListIn struct {
 	ListOptions
 	Resource string `json:"resource" jsonschema:"resource to list: a plural name (pods), singular (pod), short name (po), Kind (Pod), or group-qualified (deployments.apps)"`
 }
 
-// ResourceListOut is resource_list's result.
 type ResourceListOut struct {
 	ListMeta
 	Resource string          `json:"resource" jsonschema:"the fully qualified resource that was listed"`
 	Items    []ObjectSummary `json:"items"`
 }
 
-// deniedReads are resources this server will not return at any tier.
-//
-// The write side already refuses Secrets as "credentials"; the read side
-// needs the same answer for a stronger reason. A Secret's contents in a
-// model's context window is the worst read this server can perform, and it
-// cannot be taken back once it is there.
-//
-// This does not rely on RBAC, deliberately. The on-node fallback is
-// admin.conf, which is cluster-admin, so a default `stratum mcp` has the
-// rights to read every Secret in the cluster. The docs recommend a narrow
-// ServiceAccount for exactly that reason, but the default has to be safe
-// on its own rather than only when configured well.
+// Fixed policy, not RBAC: the on-node fallback is admin.conf, which is cluster-admin.
 var deniedReads = map[schema.GroupResource]string{
 	{Group: "", Resource: "secrets"}: "a Secret's contents cannot be taken back out of a model's context",
 }
 
-// checkReadable reports why reading gvr is refused, or nil.
 func checkReadable(gvr schema.GroupVersionResource) error {
 	gr := schema.GroupResource{Group: gvr.Group, Resource: gvr.Resource}
 	if reason, denied := deniedReads[gr]; denied {
@@ -198,7 +165,6 @@ func checkReadable(gvr schema.GroupVersionResource) error {
 	return nil
 }
 
-// ResourceListHandler lists any resource the cluster serves, including CRDs.
 func ResourceListHandler(conn *kube.Connector) sdk.ToolHandlerFor[ResourceListIn, ResourceListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in ResourceListIn) (*sdk.CallToolResult, ResourceListOut, error) {
 		cl, err := cluster(conn, in.Context)
@@ -236,8 +202,7 @@ func ResourceListHandler(conn *kube.Connector) sdk.ToolHandlerFor[ResourceListIn
 	}
 }
 
-// listError adds the advice a size failure needs. Without this the caller
-// sees a transport error and has no idea a narrower query would succeed.
+// Without this the caller sees a transport error with no hint a narrower query would succeed.
 func listError(err error, what string) error {
 	if kube.IsResponseTooLarge(err) {
 		return fmt.Errorf("listing %s returned more data than the response limit allows; "+
@@ -246,19 +211,16 @@ func listError(err error, what string) error {
 	return err
 }
 
-// ResourceGetIn is resource_get's input.
 type ResourceGetIn struct {
 	ObjectRef
 	Resource string `json:"resource" jsonschema:"resource to read: a plural name (pods), singular (pod), short name (po), Kind (Pod), or group-qualified (deployments.apps)"`
 }
 
-// ResourceGetOut is resource_get's result.
 type ResourceGetOut struct {
 	Resource string         `json:"resource" jsonschema:"the fully qualified resource that was read"`
 	Object   map[string]any `json:"object" jsonschema:"the object as the API server returned it"`
 }
 
-// ResourceGetHandler reads one object in full.
 func ResourceGetHandler(conn *kube.Connector) sdk.ToolHandlerFor[ResourceGetIn, ResourceGetOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in ResourceGetIn) (*sdk.CallToolResult, ResourceGetOut, error) {
 		if in.Name == "" {
@@ -294,8 +256,6 @@ func ResourceGetHandler(conn *kube.Connector) sdk.ToolHandlerFor[ResourceGetIn, 
 	}
 }
 
-// -------------------------------------------------------------------- pods
-
 // PodSummary is one pod as an operator reads it in `kubectl get pods`.
 type PodSummary struct {
 	Name      string `json:"name"`
@@ -309,18 +269,15 @@ type PodSummary struct {
 	Reason    string `json:"reason,omitempty" jsonschema:"why a pod is not running, when the API server says"`
 }
 
-// PodListIn is pod_list's input.
 type PodListIn struct {
 	ListOptions
 }
 
-// PodListOut is pod_list's result.
 type PodListOut struct {
 	ListMeta
 	Items []PodSummary `json:"items"`
 }
 
-// PodListHandler lists pods.
 func PodListHandler(conn *kube.Connector) sdk.ToolHandlerFor[PodListIn, PodListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in PodListIn) (*sdk.CallToolResult, PodListOut, error) {
 		cl, err := cluster(conn, in.Context)
@@ -362,9 +319,7 @@ func summarizePod(p *corev1.Pod) PodSummary {
 			ready++
 		}
 		s.Restarts += cs.RestartCount
-		// A waiting container's reason (CrashLoopBackOff, ImagePullBackOff)
-		// is the single most useful field on a broken pod, and the pod-level
-		// Reason is usually empty when it is set.
+		// The pod-level Reason is usually empty when a waiting reason (CrashLoopBackOff) is set.
 		if s.Reason == "" && cs.State.Waiting != nil {
 			s.Reason = cs.State.Waiting.Reason
 		}
@@ -373,12 +328,10 @@ func summarizePod(p *corev1.Pod) PodSummary {
 	return s
 }
 
-// PodGetIn is pod_get's input.
 type PodGetIn struct {
 	ObjectRef
 }
 
-// PodGetOut is pod_get's result.
 type PodGetOut struct {
 	Summary    PodSummary     `json:"summary" jsonschema:"the same columns pod_list reports"`
 	Containers []ContainerRow `json:"containers"`
@@ -386,7 +339,6 @@ type PodGetOut struct {
 	Object     map[string]any `json:"object,omitempty" jsonschema:"omitted; call resource_get with resource=pods for the raw object"`
 }
 
-// ContainerRow is one container's state.
 type ContainerRow struct {
 	Name     string `json:"name"`
 	Image    string `json:"image"`
@@ -397,7 +349,6 @@ type ContainerRow struct {
 	Message  string `json:"message,omitempty"`
 }
 
-// ConditionRow is one pod condition.
 type ConditionRow struct {
 	Type    string `json:"type"`
 	Status  string `json:"status"`
@@ -405,7 +356,6 @@ type ConditionRow struct {
 	Message string `json:"message,omitempty"`
 }
 
-// PodGetHandler reads one pod, resolved into the fields a diagnosis needs.
 func PodGetHandler(conn *kube.Connector) sdk.ToolHandlerFor[PodGetIn, PodGetOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in PodGetIn) (*sdk.CallToolResult, PodGetOut, error) {
 		if in.Name == "" {
@@ -448,7 +398,6 @@ func PodGetHandler(conn *kube.Connector) sdk.ToolHandlerFor[PodGetIn, PodGetOut]
 	}
 }
 
-// PodLogsIn is pod_logs' input.
 type PodLogsIn struct {
 	ObjectRef
 	Container    string `json:"container,omitempty" jsonschema:"container to read; required only when the pod has more than one"`
@@ -457,7 +406,6 @@ type PodLogsIn struct {
 	SinceSeconds int64  `json:"since_seconds,omitempty" jsonschema:"only lines newer than this many seconds"`
 }
 
-// PodLogsOut is pod_logs' result.
 type PodLogsOut struct {
 	Container string `json:"container" jsonschema:"the container actually read"`
 	Logs      string `json:"logs"`
@@ -466,7 +414,6 @@ type PodLogsOut struct {
 	Note      string `json:"note,omitempty"`
 }
 
-// PodLogsHandler reads a container's logs, bounded.
 func PodLogsHandler(conn *kube.Connector) sdk.ToolHandlerFor[PodLogsIn, PodLogsOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in PodLogsIn) (*sdk.CallToolResult, PodLogsOut, error) {
 		if in.Name == "" {
@@ -481,11 +428,7 @@ func PodLogsHandler(conn *kube.Connector) sdk.ToolHandlerFor[PodLogsIn, PodLogsO
 			ns = metav1.NamespaceDefault
 		}
 
-		// With no container named the API server reads the only one, so the
-		// result has to say which that was -- the output field is documented
-		// as "the container actually read", and echoing the empty input back
-		// makes it useless on exactly the single-container pods where the
-		// argument is most often omitted.
+		// With no container named the API reads the only one, so the result must say which that was.
 		container := in.Container
 		if container == "" {
 			pod, perr := cl.Typed.CoreV1().Pods(ns).Get(ctx, in.Name, metav1.GetOptions{})
@@ -525,9 +468,7 @@ func PodLogsHandler(conn *kube.Connector) sdk.ToolHandlerFor[PodLogsIn, PodLogsO
 	}
 }
 
-// readLogTail reads a log stream and returns its last MaxLogBytes. A
-// container log streams oldest-first, so the tail is what Truncated's
-// schema promises the caller.
+// A container log streams oldest-first, so the tail keeps what Truncated promises the caller.
 func readLogTail(r io.Reader) (PodLogsOut, error) {
 	// One byte past the cap, so exactly MaxLogBytes is not truncated.
 	const keep = MaxLogBytes + 1
@@ -551,7 +492,6 @@ func readLogTail(r io.Reader) (PodLogsOut, error) {
 	return trimLog(buf), nil
 }
 
-// trimLog caps a log at MaxLogBytes, keeping the END.
 func trimLog(buf []byte) PodLogsOut {
 	var out PodLogsOut
 	truncated := false
@@ -577,14 +517,11 @@ func trimLog(buf []byte) PodLogsOut {
 		return out
 	}
 
-	// An empty log is ambiguous: a container that has not started and one that
-	// simply has not written anything are indistinguishable from "".
+	// An empty log is ambiguous: not started and written nothing are indistinguishable.
 	out.Note = "The container produced no output. It may not have started yet — " +
 		"check pod_get for its state, or pass previous=true if it has already crashed."
 	return out
 }
-
-// ------------------------------------------------------------------ events
 
 // EventRow is one event.
 type EventRow struct {
@@ -597,19 +534,16 @@ type EventRow struct {
 	Last      string `json:"last,omitempty" jsonschema:"when it last occurred"`
 }
 
-// EventListIn is event_list's input.
 type EventListIn struct {
 	ListOptions
 	WarningsOnly bool `json:"warnings_only,omitempty" jsonschema:"return only Warning events, which is usually what a diagnosis wants"`
 }
 
-// EventListOut is event_list's result.
 type EventListOut struct {
 	ListMeta
 	Items []EventRow `json:"items"`
 }
 
-// EventListHandler lists events, most recent first.
 func EventListHandler(conn *kube.Connector) sdk.ToolHandlerFor[EventListIn, EventListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in EventListIn) (*sdk.CallToolResult, EventListOut, error) {
 		cl, err := cluster(conn, in.Context)
@@ -652,12 +586,9 @@ func EventListHandler(conn *kube.Connector) sdk.ToolHandlerFor[EventListIn, Even
 			out.Items = append(out.Items, row)
 		}
 
-		// The API server returns events in an unhelpful order, and a model reading
-		// the first ten of an unsorted list draws conclusions from whichever ten it
-		// got.
+		// A model reading the first ten of an unsorted list draws conclusions from whichever ten it got.
 		sort.SliceStable(out.Items, func(i, j int) bool { return out.Items[i].Last > out.Items[j].Last })
-		// The apiserver has no server-side sort, so this orders the page,
-		// not the cluster.
+		// The apiserver has no server-side sort, so this orders the page, not the cluster.
 		if out.Truncated {
 			out.Note += " These are sorted newest-first WITHIN this page only; the newest events " +
 				"in the cluster may not be in it. Narrow with namespace or field_selector rather than paging."
@@ -666,8 +597,7 @@ func EventListHandler(conn *kube.Connector) sdk.ToolHandlerFor[EventListIn, Even
 	}
 }
 
-// eventTime picks the most meaningful timestamp an event carries. LastTimestamp
-// is empty on events from the newer events API, where EventTime carries it.
+// LastTimestamp is empty on events from the newer events API; EventTime carries it.
 func eventTime(e *corev1.Event) time.Time {
 	switch {
 	case !e.LastTimestamp.IsZero():
@@ -679,8 +609,6 @@ func eventTime(e *corev1.Event) time.Time {
 	}
 }
 
-// -------------------------------------------------------- namespaces, nodes
-
 // NamespaceRow is one namespace.
 type NamespaceRow struct {
 	Name   string `json:"name"`
@@ -688,7 +616,6 @@ type NamespaceRow struct {
 	Age    string `json:"age,omitempty"`
 }
 
-// NamespaceListIn is namespace_list's input.
 type NamespaceListIn struct {
 	Context       string `json:"context,omitempty" jsonschema:"kubeconfig context to address; omit for the current one"`
 	LabelSelector string `json:"label_selector,omitempty" jsonschema:"label selector"`
@@ -696,13 +623,11 @@ type NamespaceListIn struct {
 	ContinueToken string `json:"continue_token,omitempty" jsonschema:"token from a previous truncated response"`
 }
 
-// NamespaceListOut is namespace_list's result.
 type NamespaceListOut struct {
 	ListMeta
 	Items []NamespaceRow `json:"items"`
 }
 
-// NamespaceListHandler lists namespaces.
 func NamespaceListHandler(conn *kube.Connector) sdk.ToolHandlerFor[NamespaceListIn, NamespaceListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in NamespaceListIn) (*sdk.CallToolResult, NamespaceListOut, error) {
 		cl, err := cluster(conn, in.Context)
@@ -735,7 +660,6 @@ func NamespaceListHandler(conn *kube.Connector) sdk.ToolHandlerFor[NamespaceList
 	}
 }
 
-// NodeRow is one node as `kubectl get nodes` shows it.
 type NodeRow struct {
 	Name             string   `json:"name"`
 	Ready            string   `json:"ready" jsonschema:"True, False or Unknown, from the Ready condition"`
@@ -748,7 +672,6 @@ type NodeRow struct {
 	Age              string   `json:"age,omitempty"`
 }
 
-// NodeListIn is node_list's input.
 type NodeListIn struct {
 	Context       string `json:"context,omitempty" jsonschema:"kubeconfig context to address; omit for the current one"`
 	LabelSelector string `json:"label_selector,omitempty" jsonschema:"label selector"`
@@ -756,13 +679,11 @@ type NodeListIn struct {
 	ContinueToken string `json:"continue_token,omitempty" jsonschema:"token from a previous truncated response"`
 }
 
-// NodeListOut is node_list's result.
 type NodeListOut struct {
 	ListMeta
 	Items []NodeRow `json:"items"`
 }
 
-// NodeListHandler lists nodes.
 func NodeListHandler(conn *kube.Connector) sdk.ToolHandlerFor[NodeListIn, NodeListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, in NodeListIn) (*sdk.CallToolResult, NodeListOut, error) {
 		cl, err := cluster(conn, in.Context)
@@ -809,8 +730,7 @@ func summarizeNode(n *corev1.Node) NodeRow {
 			row.InternalIP = a.Address
 		}
 	}
-	// Roles are encoded as labels, which is a convention rather than an API,
-	// so both spellings in use are read.
+	// Roles are a label convention, not an API field.
 	for k := range n.Labels {
 		if role, ok := strings.CutPrefix(k, "node-role.kubernetes.io/"); ok && role != "" {
 			row.Roles = append(row.Roles, role)
@@ -823,9 +743,6 @@ func summarizeNode(n *corev1.Node) NodeRow {
 	return row
 }
 
-// ---------------------------------------------------------------- contexts
-
-// ContextListIn is context_list's (empty) input.
 type ContextListIn struct{}
 
 // ContextListOut is context_list's result.
@@ -835,7 +752,6 @@ type ContextListOut struct {
 	Note   string             `json:"note,omitempty"`
 }
 
-// ContextListHandler lists the clusters this server can address.
 func ContextListHandler(conn *kube.Connector) sdk.ToolHandlerFor[ContextListIn, ContextListOut] {
 	return func(ctx context.Context, _ *sdk.CallToolRequest, _ ContextListIn) (*sdk.CallToolResult, ContextListOut, error) {
 		items, err := conn.Contexts()

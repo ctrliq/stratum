@@ -54,13 +54,7 @@ func TestStopPreventsPendingStart(t *testing.T) {
 	}
 }
 
-// TestRestartCancelsPendingStart pins the reload-vs-runOnce logic-race fix:
-// when a restart lands while a start is still in its
-// dependency gate — before it has published st.cur — restart() must cancel that
-// in-flight attempt, not merely buffer a kick. Otherwise the gated start would
-// go on to exec the OLD argv (a reload swaps st.proc but the gated attempt
-// already snapshotted the old value) and run until it exits — the exact stale-
-// args window reload closes. The started child must never appear.
+// A restart during a gated start must cancel the in-flight attempt, not just buffer a kick.
 func TestRestartCancelsPendingStart(t *testing.T) {
 	entered := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -98,10 +92,7 @@ func TestRestartCancelsPendingStart(t *testing.T) {
 	}
 }
 
-// TestReloadUpdatesArgsAndRestarts pins the reload op: it replaces a
-// component's exec definition with the caller's new one (so an in-place upgrade's
-// changed argv/config path takes effect) and kicks a restart, and it clears any
-// ArgsFn re-render hook since explicit args were supplied.
+// Reload replaces the exec definition, clears ArgsFn, and kicks a restart.
 func TestReloadUpdatesArgsAndRestarts(t *testing.T) {
 	st := &state{
 		wanted: false, // deliberately stopped: restart must wake it via kick
@@ -151,10 +142,7 @@ func TestReloadUpdatesArgsAndRestarts(t *testing.T) {
 	}
 }
 
-// TestForeignSocketOwnerIsFlagged pins that a component that exits while
-// its socket is still served by another process (an orphan from an earlier
-// run) is reported Foreign so the node is not declared healthy; a plain crash
-// with a dead socket is not; and the flag clears once a child stays up.
+// A socket served by an orphan reports Foreign; the flag clears once a child stays up.
 func TestForeignSocketOwnerIsFlagged(t *testing.T) {
 	dir, err := os.MkdirTemp("", "foreign-")
 	if err != nil {
@@ -183,7 +171,6 @@ func TestForeignSocketOwnerIsFlagged(t *testing.T) {
 		t.Fatalf("statuses = %+v; want Foreign", got)
 	}
 
-	// The owner goes away and a child now stays up: the flag clears.
 	ln.Close()
 	old := foreignSettle
 	foreignSettle = 50 * time.Millisecond
@@ -203,9 +190,7 @@ func TestForeignSocketOwnerIsFlagged(t *testing.T) {
 	<-done
 }
 
-// TestForeignSocketMessageDoesNotSuggestUninstall: `stratum uninstall` deletes
-// node state (etcd data, PKI, binaries); the recovery for an orphan is to stop
-// the process that owns the socket, and only that.
+// Uninstall deletes node state; the orphan remedy is stopping the socket's owner only.
 func TestForeignSocketMessageDoesNotSuggestUninstall(t *testing.T) {
 	m := foreignSocketMessage("containerd", "/run/stratum/containerd/containerd.sock")
 	if strings.Contains(m, "uninstall") {

@@ -79,10 +79,6 @@ func TestEnsureClusterAdminsBinding(t *testing.T) {
 	}
 }
 
-// TestEnsureClusterAdminsBindingStaleReadCannotRestore replays a controller
-// that read no marker, stalled while another created the binding and an
-// administrator revoked it, then resumed: its claim must fail on the marker
-// and the binding stay revoked.
 func TestEnsureClusterAdminsBindingStaleReadCannotRestore(t *testing.T) {
 	ctx := context.Background()
 	cs := fake.NewClientset()
@@ -133,8 +129,6 @@ func checkClusterAdmins(t *testing.T, cs *fake.Clientset, wantBinding *rbacv1.Cl
 	}
 }
 
-// TestClusterAdminsBindingNamesTheAdminLeafsGroup pins the binding's subject
-// to the group pki issues the admin leaf with, and that leaf to no other.
 func TestClusterAdminsBindingNamesTheAdminLeafsGroup(t *testing.T) {
 	want := wantClusterAdminsBinding()
 	for _, sp := range pki.LeafSpecs("cp1", "10.0.0.1", nil) {
@@ -149,8 +143,6 @@ func TestClusterAdminsBindingNamesTheAdminLeafsGroup(t *testing.T) {
 	t.Fatal("pki issues no admin leaf")
 }
 
-// TestInternalAdminConfPrefersSuperAdmin pins that Stratum's own clients use
-// super-admin.conf, and admin.conf only on a node that has none yet.
 func TestInternalAdminConfPrefersSuperAdmin(t *testing.T) {
 	oldDir, oldAdmin := version.KubeconfigDir, version.AdminConf
 	t.Cleanup(func() { version.KubeconfigDir, version.AdminConf = oldDir, oldAdmin })
@@ -167,16 +159,6 @@ func TestInternalAdminConfPrefersSuperAdmin(t *testing.T) {
 	}
 }
 
-// TestEnsureClusterAdminsBindingSerializesOneHolder replays two concurrent
-// calls under the same holder, as the cluster-admins task and the leaf-subject
-// migration make: the second starts once the first, having claimed the marker,
-// is held before its binding create, which waits until the second has read
-// the marker, and the second's binding create is held until
-// the first has marked the marker bound. Unserialized, the second creates the
-// binding after the marker says bound, which recreates a binding an
-// administrator revoked in between. Serialized, the second only starts once
-// the first is done, reads bound, and creates nothing. The holds sit outside
-// the fake clientset, whose reactors run under one lock.
 func TestEnsureClusterAdminsBindingSerializesOneHolder(t *testing.T) {
 	ctx := context.Background()
 	fc := fake.NewClientset()
@@ -251,9 +233,7 @@ func TestEnsureClusterAdminsBindingSerializesOneHolder(t *testing.T) {
 	}
 }
 
-// holdingClientset runs beforeBindingCreate ahead of each ClusterRoleBinding
-// create, and afterMarkerUpdate after each ConfigMap update, outside the fake
-// clientset's reactor lock.
+// Holds land outside the fake clientset's reactor lock.
 type holdingClientset struct {
 	kubernetes.Interface
 	beforeBindingCreate, afterMarkerUpdate func()

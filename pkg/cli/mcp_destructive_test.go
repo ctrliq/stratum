@@ -15,7 +15,6 @@ import (
 
 // Protocol-boundary tests for the Stratum destructive toolset.
 
-// tierSession returns a live session at the given tiers.
 func tierSession(t *testing.T, allowWrite, allowDestructive bool) *sdk.ClientSession {
 	t.Helper()
 
@@ -49,8 +48,7 @@ func advertised(t *testing.T, cs *sdk.ClientSession) map[string]*sdk.Tool {
 	return out
 }
 
-// Asserted per tool, at both lower tiers —
-// --allow-write must NOT be enough to reach any of these.
+// Asserted per tool, at both lower tiers: --allow-write must not reach any.
 func TestDestructiveToolsAreAbsentBelowTheirTier(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -107,8 +105,7 @@ func TestDestructiveToolsCarryTheHint(t *testing.T) {
 	}
 }
 
-// Each tool's description states the blast radius in the first sentence,
-// because that description is what a model reads before deciding.
+// The description is what a model reads before deciding; it must state the blast radius.
 func TestDestructiveDescriptionsLeadWithBlastRadius(t *testing.T) {
 	tools := advertised(t, tierSession(t, true, true))
 
@@ -166,8 +163,7 @@ func TestForbiddenToolsAreNotRegistered(t *testing.T) {
 	}
 }
 
-// Arguments whose absence would make a destructive call ambiguous are
-// required rather than defaulted.
+// Arguments whose absence would make a destructive call ambiguous are required.
 func TestDestructiveToolsRequireTheirDecisiveArgument(t *testing.T) {
 	cs := tierSession(t, true, true)
 
@@ -203,13 +199,7 @@ func TestDestructiveToolsRequireTheirDecisiveArgument(t *testing.T) {
 	}
 }
 
-// TestUninstallTakesNoConfirmationArgument.
-//
-// uninstall.Run(false) prints a preview and removes nothing, so exposing the
-// caller's own force flag made the tool a no-op that still reported "Stratum
-// is gone from this node". Starting the server with --allow-destructive is
-// the confirmation, and uninstall_preview is the dry run, so the tool takes
-// no arguments at all.
+// The tier flag is the confirmation and uninstall_preview the dry run: no arguments at all.
 func TestUninstallTakesNoConfirmationArgument(t *testing.T) {
 	tool, ok := advertised(t, tierSession(t, true, true))["uninstall"]
 	if !ok {
@@ -226,18 +216,7 @@ func TestUninstallTakesNoConfirmationArgument(t *testing.T) {
 	}
 }
 
-// TestDestructiveToolInputsArePinned.
-//
-// TestShippedSurfaceIsExactlyPinned (mcp_surface_test.go) fails when a tool is
-// added or removed, but checks names only: it cannot see an input renamed or
-// dropped, which breaks every AI client that sends it. This pin holds each
-// destructive tool's input schema to the exact property set AI clients already
-// code against, and which of them are required.
-//
-// certs_rotate_ca's set includes the cluster-rotation inputs
-// restart_workloads, skip_workload_check and skip_token_check (CertsRotateCAIn).
-// The pin asserts the full current set, so a later rename or removal of any
-// input fails here.
+// Holds each tool's input schema to the exact property set AI clients code against.
 func TestDestructiveToolInputsArePinned(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

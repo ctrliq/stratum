@@ -13,9 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// A kubelet with --hostname-override registers its Node under the flag's
-// name, not the OS hostname: a successful upgrade's backstop must address
-// that same Node, as its gates and stamp do.
+// With --hostname-override the kubelet registers its Node under the flag name, not the OS hostname.
 func TestBackstopUsesRegisteredNodeName(t *testing.T) {
 	const registered, target = "cp-1.registered", "v1.37.9"
 	osName, err := host.Hostname()

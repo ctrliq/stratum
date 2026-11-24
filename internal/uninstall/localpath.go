@@ -9,35 +9,18 @@ import (
 	"syscall"
 )
 
-// The local-path provisioner's volume directory (selinux.LocalPathDir, the
-// run's localPathDir) is the one directory outside the delete targets that an
-// uninstall still owns: `stratum up` creates it on SELinux hosts so it can be
-// labelled, and elsewhere the provisioner creates it on the first volume. What
-// it can hold is users' local-path volume data, which an uninstall must not
-// delete, so it is removed only when it is empty and kept, said so, when not.
+// the one directory outside the targets the uninstall owns; stratum up or the provisioner makes it.
 
-// localPathPreviewDetail is the preview's one explanation of the directory,
-// shared by the CLI dry run and the MCP tool: the preview names what the run
-// would decide, without reading the node.
+// one explanation shared by the CLI dry run and the MCP tool.
 const localPathPreviewDetail = "the local-path provisioner's volume directory; removed only when it is empty, and kept, with the reason, when it holds anything (it can hold volume data), is a mount point, or is not a plain directory"
 
-// The reasons the run gives for keeping the directory, one copy each.
 const (
 	localPathKeptReason   = "the local-path provisioner keeps its volume data here, which uninstall does not delete"
 	localPathMountReason  = "it is a mount point, so uninstall leaves it and what is mounted there alone"
 	localPathNotDirReason = "it is a symlink or not a plain directory, so uninstall does not touch it"
 )
 
-// removeLocalPathDir removes the local-path provisioner's volume directory
-// when it is an empty plain directory, and otherwise keeps it and says why
-// through w. It never follows a symlink, never touches a mount point, and
-// removes only with removeEmptyDir, rmdir, which refuses a directory that is
-// not empty and anything that is not a directory: what arrives or replaces
-// the directory after the check is kept, never deleted. A missing directory
-// is silent, as is a run whose layout names none. A directory that cannot be
-// read is not proven empty, so it is kept too. A removal that fails for any
-// other reason is returned, with the path, a failure like any other
-// target's.
+// rmdir refuses a non-empty or non-directory path, so what arrives or replaces it is kept.
 func removeLocalPathDir(w io.Writer, fx *hostEffects) error {
 	dir := fx.localPathDir
 	if dir == "" {

@@ -16,21 +16,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Controller bootstrap must run its common node steps through the ONE shared
-// assembly the HA join uses (ha.AssembleNode), not a second inline copy of
-// the sequence: a change to one path's node rendering must reach the other.
-// Stubbing the assembly behind its seam short-circuits every common step —
-// host dirs, prerequisites, PKI, kubeconfigs, CIS configs, runtime configs —
-// so what stays observable is the wiring: the request PrepareController
-// derives from the cluster config and saved state, the caller-owned hooks
-// the assembly invokes, and the assembled node state flowing out to
-// SaveState and the caller. The join side of the same contract is pinned in
-// internal/ha/join_test.go against the recording join effects.
-
-// assemblyFixture points the state paths PrepareController reads and writes
-// before the assembly runs at temporary ones, and stands in for the hostname
-// and the etcd join-state read the CIS key gate makes. The assembly itself
-// is stubbed per test, so the host-touching effects never run here.
+// Points the state paths at temporary ones; stub the assembly per test, or its host effects run.
 func assemblyFixture(t *testing.T) {
 	t.Helper()
 	origConf, origPKI := version.K8sConfDir, version.PKIDir
@@ -53,10 +39,7 @@ func assemblyFixture(t *testing.T) {
 	readEtcdJoinState = func() (etcdJoinState, error) { return etcdJoinState{Members: 1}, nil }
 }
 
-// runThroughRecordingAssembly replaces the assembly seam with one that
-// records the call, runs the caller-owned ResolveNet and BeforeCerts hooks
-// the way the real assembly would, and answers with a fixed detected node
-// IP. The returned accessors report what the assembly received.
+// Answers the assembly seam with a fixed node IP choice and records what it received.
 func runThroughRecordingAssembly(t *testing.T, choice host.NodeIPChoice, assembleErr error) (
 	calls func() int, request func() ha.AssembleRequest, effects func() ha.NodeAssembly,
 ) {
@@ -89,20 +72,11 @@ func runThroughRecordingAssembly(t *testing.T, choice host.NodeIPChoice, assembl
 	return func() int { return n }, func() ha.AssembleRequest { return gotReq }, func() ha.NodeAssembly { return gotFX }
 }
 
-// assemblyFieldSet reports whether the named exported func field of the
-// assembly is wired. reflect keeps the wiring check name-by-name without
-// fourteen nil comparisons.
 func assemblyFieldSet(a ha.NodeAssembly, name string) bool {
 	v := reflect.ValueOf(a).FieldByName(name)
 	return v.IsValid() && !v.IsNil()
 }
 
-// TestPrepareControllerRunsTheSharedNodeAssembly pins the bootstrap side of
-// the shared assembly, case by case: the assembly runs exactly once per
-// prepare, with the request the config and saved state resolve to, and the
-// node state it hands back — carrying the node IP the caller's
-// before-certificates hook filled from the resolved choice — is what gets
-// persisted and returned.
 func TestPrepareControllerRunsTheSharedNodeAssembly(t *testing.T) {
 	restart := &NodeState{Role: "controller", Hostname: "cp1", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11",
 		EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380,cp2=https://10.0.0.12:2380",
@@ -182,8 +156,6 @@ func TestPrepareControllerRunsTheSharedNodeAssembly(t *testing.T) {
 			if req.State == nil || req.State.Role != "controller" || req.State.Hostname != "cp1" {
 				t.Errorf("the assembly got node state %+v, want a controller state for cp1", req.State)
 			}
-			// The caller's own hooks ride in the assembly, beside the common
-			// effects: none of the fields may be left unwired.
 			fx := effects()
 			for _, name := range []string{"HostDirs", "Prereqs", "ResolveNet", "TrustPodCIDRs",
 				"ResolveNodeIP", "DetectNodeIPs", "BeforeCerts", "IssueCerts", "WriteKubeconfigs",
@@ -269,11 +241,6 @@ func TestPrepareControllerKeepsAnInheritedVIPAcrossRestarts(t *testing.T) {
 	}
 }
 
-// TestPrepareControllerRefusesThroughTheSharedAssembly pins the two refusal
-// paths the shared assembly must keep: an assembly that fails fails the
-// prepare, and the caller's before-certificates hook — the IP-move refusal —
-// runs at the assembly's hook point and refuses a restart on a moved
-// address. A refused or failed prepare saves no node state.
 func TestPrepareControllerRefusesThroughTheSharedAssembly(t *testing.T) {
 	prev := &NodeState{Role: "controller", Hostname: "cp1", NodeIP: "10.0.0.11", KubeletNodeIP: "10.0.0.11",
 		EtcdName: "cp1", EtcdInitialCluster: "cp1=https://10.0.0.11:2380",

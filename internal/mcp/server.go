@@ -48,8 +48,7 @@ func (o Options) NewLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
 
-// NewServer builds the Stratum MCP server. Every tool result it returns is
-// fenced as untrusted data (see Fence).
+// NewServer builds the Stratum MCP server; every tool result is fenced as untrusted data.
 func NewServer(o Options) *sdk.Server {
 	srv := sdk.NewServer(&sdk.Implementation{
 		Name:    "stratum",
@@ -66,9 +65,7 @@ func Serve(ctx context.Context, srv *sdk.Server, o Options) error {
 	case "", "stdio":
 		log.Info("serving MCP over stdio",
 			"write", o.AllowWrite, "destructive", o.AllowDestructive)
-		// Signal and parent cancellation both report context.Canceled.
-		// Both are expected session shutdowns, matching the HTTP path's
-		// nil after shutdown; a transport failure keeps its error.
+		// Signal and parent cancellation both report context.Canceled: expected shutdowns, not failures.
 		if err := srv.Run(ctx, &sdk.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 			return err
 		}
@@ -79,8 +76,7 @@ func Serve(ctx context.Context, srv *sdk.Server, o Options) error {
 		if addr == "" {
 			addr = DefaultAddr
 		}
-		// Loopback is no boundary: every local user and every hostNetwork
-		// pod can reach it, and the tools run as root.
+		// Loopback is no boundary: local users and hostNetwork pods reach it, and the tools run as root.
 		token, err := readToken(o.TokenFile)
 		if err != nil {
 			return err
@@ -89,14 +85,12 @@ func Serve(ctx context.Context, srv *sdk.Server, o Options) error {
 		sdkHandler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return srv }, nil)
 		h := refuseWhileStopping(&stopping, requireBearer(token, sdkHandler))
 
-		// Bind first, then decide.
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("listen for MCP over HTTP on %s: %w", addr, err)
 		}
 		bound := ln.Addr()
 
-		// DefaultAddr's rationale is only a rationale until something acts on it.
 		if !addrIsLoopback(bound) && !o.InsecureListen {
 			_ = ln.Close()
 			return fmt.Errorf("refusing to serve MCP on %s: the HTTP transport has no TLS, "+
@@ -163,8 +157,7 @@ func Serve(ctx context.Context, srv *sdk.Server, o Options) error {
 	}
 }
 
-// addrIsLoopback reports whether a bound listener is reachable only from
-// this host.
+// addrIsLoopback reports whether a bound listener is reachable only from this host.
 func addrIsLoopback(a net.Addr) bool {
 	tcp, ok := a.(*net.TCPAddr)
 	if !ok || tcp.IP == nil {
@@ -196,23 +189,19 @@ func VersionHandler(display string) sdk.ToolHandlerFor[VersionIn, VersionOut] {
 
 const sessionSweepInterval = 50 * time.Millisecond
 
-// httpShutdownGrace is how long Serve lets the HTTP server drain before
-// forcing its connections closed.
+// httpShutdownGrace is how long Serve drains the HTTP server before forcing connections closed.
 const httpShutdownGrace = 5 * time.Second
 
-// minTokenLen is the shortest bearer token readToken accepts: 32 hex
-// characters, 128 bits.
+// minTokenLen is the shortest bearer token readToken accepts: 32 hex chars, 128 bits.
 const minTokenLen = 32
 
-// readToken loads the HTTP transport's bearer token. The file must be private
-// to its owner: a token other local users can read authenticates no one.
+// readToken loads the HTTP bearer token; a token other local users can read authenticates no one.
 func readToken(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("--transport=http needs --token-file: a file, mode 0600, holding the bearer token " +
 			"clients must send (create one with: install -m 0600 /dev/null FILE && openssl rand -hex 32 > FILE)")
 	}
-	// O_NONBLOCK so a FIFO with no writer fails the regular-file check
-	// instead of hanging the open.
+	// O_NONBLOCK so a FIFO with no writer fails the regular-file check instead of hanging the open.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("read MCP token file: %w", err)
@@ -247,9 +236,7 @@ func readToken(path string) (string, error) {
 // geteuid is os.Geteuid, indirected for tests.
 var geteuid = func() uint32 { return uint32(os.Geteuid()) }
 
-// requireBearer refuses any request whose Authorization header is not
-// "Bearer <token>", before it reaches the SDK and any tool. The scheme is
-// case-insensitive (RFC 9110 11.1); the token is not.
+// requireBearer refuses requests without a Bearer token, before the SDK and any tool run.
 func requireBearer(token string, next http.Handler) http.Handler {
 	want := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

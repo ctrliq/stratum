@@ -41,12 +41,7 @@ func TestEtcdPeerURL(t *testing.T) {
 	}
 }
 
-// TestEtcdClientURL pins the client-URL builder beside the peer-URL one: the
-// URL etcd advertises (static-pod args) and the one the HA machinery dials
-// must come from one builder, so member lookups and health checks cannot
-// drift from what the member serves. An IPv6 host must be bracketed here
-// exactly as in the peer URL — concatenating reads the port as another
-// hextet of the address.
+// The URL etcd advertises and the one the HA machinery dials must come from one builder.
 func TestEtcdClientURL(t *testing.T) {
 	for _, tc := range []struct{ ip, want string }{
 		{"192.0.2.9", "https://192.0.2.9:2379"},
@@ -69,8 +64,7 @@ func TestEtcdClientURL(t *testing.T) {
 	}
 }
 
-// TestEtcdHasPeersIsOmittedUntilSet: the field is a bool recorded once, so an
-// unset one must not appear in every node.yaml (omitzero, per modern-go).
+// TestEtcdHasPeersIsOmittedUntilSet: the field is a bool recorded once.
 func TestEtcdHasPeersIsOmittedUntilSet(t *testing.T) {
 	b, err := yaml.Marshal(&NodeState{Role: "controller"})
 	if err != nil {
@@ -88,8 +82,7 @@ func TestEtcdHasPeersIsOmittedUntilSet(t *testing.T) {
 	}
 }
 
-// The node facts round-trip through node.yaml and are omitted when unset, so
-// a node that declares none writes the file it always did.
+// The node facts round-trip through node.yaml and are omitted when unset.
 func TestNodeFactsRoundTrip(t *testing.T) {
 	withStateAndLockPaths(t)
 	b, err := yaml.Marshal(&NodeState{Role: "worker"})
@@ -117,19 +110,7 @@ func TestNodeFactsRoundTrip(t *testing.T) {
 	}
 }
 
-// From here down: the one mutation owner for node.yaml.
-// Every node.yaml writer records its change by load-modify-save on the one
-// shared file, so a writer that applies its change to a copy it loaded
-// earlier — or to a fresh struct — loses whatever another writer recorded in
-// between. The owner is the single place that re-reads the state and writes
-// it back, and it does so under the etcd data lock, which every node.yaml
-// writer (bring-up, rejoin, restore, `stratum up`, the growth recorder)
-// already holds while it changes the file.
-
-// withStateAndLockPaths points node.yaml and the etcd data lock at one temp
-// tree: the owner takes the lock on the data dir, so the test must redirect
-// both it and the state's directory or the lock file lands in
-// /var/lib/stratum.
+// Points node.yaml and the etcd data lock at one temp tree, leaving /var/lib alone.
 func withStateAndLockPaths(t *testing.T) {
 	t.Helper()
 	oldConf, oldData, oldEtcd := version.K8sConfDir, version.DataDir, version.EtcdDataDir
@@ -142,10 +123,6 @@ func withStateAndLockPaths(t *testing.T) {
 	})
 }
 
-// TestMutateAppliesTheChangeToTheStateOnDisk pins the owner's merge: the
-// mutation is applied to the state freshly read from disk, so what the writer
-// did not set is kept — a save of the caller's own copy would drop it — and
-// the write itself is SaveState's durable write at mode 0600.
 func TestMutateAppliesTheChangeToTheStateOnDisk(t *testing.T) {
 	withStateAndLockPaths(t)
 	base := &NodeState{
@@ -186,9 +163,6 @@ func TestMutateAppliesTheChangeToTheStateOnDisk(t *testing.T) {
 		withStateAndLockPaths(t)
 		var saw *NodeState
 		if err := Mutate(func(st *NodeState) error {
-			// Capture the state the mutation is handed before setting any
-			// field: saw must hold what the owner read, not what this
-			// callback then wrote into it.
 			cur := *st
 			saw = &cur
 			st.Role, st.Hostname = "worker", "w1"
@@ -219,11 +193,6 @@ func TestMutateAppliesTheChangeToTheStateOnDisk(t *testing.T) {
 	})
 }
 
-// TestMutateRefusesWhileTheDataLockIsHeld pins the standalone lock contract:
-// the owner takes the etcd data lock itself, so while a rejoin, a restore or
-// an `up` holds it the mutation refuses instead of writing between that
-// operation's read and write. Callers retry on the next pass or start, the
-// way the growth recorder's poll does.
 func TestMutateRefusesWhileTheDataLockIsHeld(t *testing.T) {
 	withStateAndLockPaths(t)
 	base := &NodeState{Role: "controller", Hostname: "cp1", EtcdState: "new"}
@@ -244,11 +213,6 @@ func TestMutateRefusesWhileTheDataLockIsHeld(t *testing.T) {
 	}
 }
 
-// TestMutateHeldWritesUnderTheHeldLock pins the under-lock variant: a caller
-// already holding the data lock — a join mid-join, a restore, the growth
-// recorder — hands the capability its etcddata.Lock returned and the owner
-// writes without acquiring again, which would refuse: the flock is held by
-// the caller's own descriptor.
 func TestMutateHeldWritesUnderTheHeldLock(t *testing.T) {
 	withStateAndLockPaths(t)
 	base := &NodeState{Role: "controller", Hostname: "cp1", EtcdState: "new",
@@ -283,10 +247,6 @@ func TestMutateHeldWritesUnderTheHeldLock(t *testing.T) {
 	}
 }
 
-// TestMutateHeldRefusesWithoutTheCapability pins the other side of the
-// under-lock contract: a caller with no capability is not holding the flock,
-// and writing anyway is exactly the unlocked write the owner exists to
-// remove. The refusal is expected input, not a panic or a silent write.
 func TestMutateHeldRefusesWithoutTheCapability(t *testing.T) {
 	withStateAndLockPaths(t)
 	base := &NodeState{Role: "controller", Hostname: "cp1", EtcdState: "new"}
@@ -301,13 +261,7 @@ func TestMutateHeldRefusesWithoutTheCapability(t *testing.T) {
 	}
 }
 
-// TestMutateWritesNothingWhenTheMutationChangedNothing pins the no-change
-// contract: a mutate that reports ErrUnchanged — the growth recorder's poll
-// finding nothing to record on a seed whose etcd has not grown — is a success
-// the owner answers without saving, so a poll pass must not rewrite node.yaml
-// with the bytes it just read. The file's mtime is forced into the past first,
-// so no save can hide behind timestamp granularity: any write moves it
-// forward.
+// The file's mtime is pinned into the past first, so any write moves it forward.
 func TestMutateWritesNothingWhenTheMutationChangedNothing(t *testing.T) {
 	withStateAndLockPaths(t)
 	base := &NodeState{Role: "controller", Hostname: "cp1", EtcdState: "new"}
@@ -332,8 +286,7 @@ func TestMutateWritesNothingWhenTheMutationChangedNothing(t *testing.T) {
 		t.Error(err)
 	}
 
-	// The standalone owner, with a save seam that counts writes — airtight
-	// where an mtime is only strong evidence.
+	// The standalone owner, with a save seam that counts writes.
 	saves := 0
 	if err := MutateSave(func(*NodeState) error { return ErrUnchanged },
 		func(*NodeState) error { saves++; return nil }); err != nil {
@@ -346,8 +299,7 @@ func TestMutateWritesNothingWhenTheMutationChangedNothing(t *testing.T) {
 		t.Error(err)
 	}
 
-	// The control: a real change still writes — ErrUnchanged is the mutate's
-	// report, not a blanket write skip.
+	// The control: a real change still writes.
 	release2, err := etcddata.Lock(version.EtcdDataDir)
 	if err != nil {
 		t.Fatal(err)
@@ -361,9 +313,7 @@ func TestMutateWritesNothingWhenTheMutationChangedNothing(t *testing.T) {
 	}
 }
 
-// unchangedOnDisk reports whether node.yaml still holds want and still has
-// the mtime the test pinned into the past: a write since then moved it
-// forward.
+// unchangedOnDisk fails when node.yaml no longer equals want or its mtime moved forward.
 func unchangedOnDisk(t *testing.T, want *NodeState) error {
 	t.Helper()
 	fi, err := os.Stat(StatePath())
@@ -383,11 +333,7 @@ func unchangedOnDisk(t *testing.T, want *NodeState) error {
 	return nil
 }
 
-// TestConcurrentMutationsLoseNoField is the concurrent-update proof: eight
-// goroutines, each recording one field, none holding the lock itself. Every
-// mutation re-reads under the lock the previous goroutine's field, so all
-// eight land; a save of a pre-loaded copy would keep only the last writer's
-// field and lose the rest.
+// Every mutation re-reads under the lock the previous goroutine's field, so all eight land.
 func TestConcurrentMutationsLoseNoField(t *testing.T) {
 	withStateAndLockPaths(t)
 	if err := SaveState(&NodeState{Role: "worker", Hostname: "w1"}); err != nil {
@@ -414,8 +360,6 @@ func TestConcurrentMutationsLoseNoField(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Content on the lock refuses rather than blocks (LOCK_NB);
-			// retry the way the growth recorder's poll does.
 			for try := 0; ; try++ {
 				if err := Mutate(func(st *NodeState) error { w.set(st); return nil }); err == nil {
 					return
@@ -447,10 +391,6 @@ func TestConcurrentMutationsLoseNoField(t *testing.T) {
 	}
 }
 
-// TestSaveStateMatchesAtomicfileWriteFile pins the owner's write backend to
-// the shared atomic writer's contract: same bytes, same explicit 0600 mode,
-// and the directory left holding the written file alone — no stray temp name
-// for a reader to trip over.
 func TestSaveStateMatchesAtomicfileWriteFile(t *testing.T) {
 	st := &NodeState{Role: "controller", Hostname: "cp1", EtcdState: "new"}
 	saveDir, atomicDir := t.TempDir(), t.TempDir()
@@ -497,10 +437,6 @@ func TestSaveStateMatchesAtomicfileWriteFile(t *testing.T) {
 	}
 }
 
-// TestSaveStateReplacesTheFileWhole pins the property the durable write exists
-// for: a state that shrinks is replaced by rename, never truncated in place —
-// a crash mid-write of a truncating writer would leave a half file a reader
-// cannot parse.
 func TestSaveStateReplacesTheFileWhole(t *testing.T) {
 	withStateAndLockPaths(t)
 	long := &NodeState{Role: "controller", Hostname: "a-very-long-hostname-that-dwarfs-the-replacement", EtcdState: "new",
@@ -521,7 +457,6 @@ func TestSaveStateReplacesTheFileWhole(t *testing.T) {
 	}
 }
 
-// A failed lock acquisition cannot authorize either half of a mutation.
 func TestMutateRefusesUnavailableLock(t *testing.T) {
 	withStateAndLockPaths(t)
 	if err := SaveState(&NodeState{Role: "controller", Hostname: "original"}); err != nil {

@@ -14,26 +14,18 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// RestoreCopy is an etcd data dir that a restore kept beside the live one: the
-// data from before a restore (pre-restore), or what a failed restore wrote
-// (failed-restore). Each is a full copy of etcd's data, and nothing removes it
-// but RemoveRestoreCopies.
+// A full etcd data-dir copy a restore kept aside; only RemoveRestoreCopies removes one.
 type RestoreCopy struct {
 	Path string
 	Kind string // "pre-restore" or "failed-restore"
-	// Modified is the newest modification time anywhere in the copy, the
-	// directory itself and everything under it: a change deep inside
-	// (member/snap/db) does not touch the top directory's own time.
+	// Modified is the newest mtime in the copy; a deep change does not touch the top dir's own.
 	Modified time.Time
 	Bytes    int64
 }
 
-// restoreCopyKinds are the suffixes Restore gives the dirs it keeps.
 var restoreCopyKinds = []string{"pre-restore", "failed-restore"}
 
-// RestoreCopies lists the restore copies beside the etcd data dir, oldest
-// first, with their sizes. Only real directories named the way Restore names
-// them are listed: not the live data dir, not its lock, and not a symlink.
+// RestoreCopies lists the restore copies beside the etcd data dir, oldest first, with sizes.
 func RestoreCopies() ([]RestoreCopy, error) {
 	return restoreCopies(version.EtcdDataDir)
 }
@@ -55,9 +47,7 @@ func restoreCopies(dataDir string) ([]RestoreCopy, error) {
 	return copies, nil
 }
 
-// RestoreCopyPaths lists the restore copies with only Path and Kind set, in
-// path order, without walking into any of them: cheap enough to page over
-// before sizing just one page.
+// RestoreCopyPaths lists copies with only Path and Kind set, without walking into any of them.
 func RestoreCopyPaths() ([]RestoreCopy, error) {
 	return restoreCopyPaths(version.EtcdDataDir)
 }
@@ -79,7 +69,7 @@ func restoreCopyPaths(dataDir string) ([]RestoreCopy, error) {
 		}
 		copies = append(copies, RestoreCopy{Path: filepath.Join(parent, e.Name()), Kind: kind})
 	}
-	return copies, nil // os.ReadDir returns entries sorted by name
+	return copies, nil
 }
 
 // StatRestoreCopy fills in c's size and newest modification time.
@@ -92,9 +82,7 @@ func StatRestoreCopy(c RestoreCopy) (RestoreCopy, error) {
 	return c, nil
 }
 
-// IsRestoreCopyPath reports whether path names a restore copy: a clean path
-// beside the etcd data dir, named the way Restore names the copies it keeps.
-// It says nothing about whether the copy exists.
+// IsRestoreCopyPath says whether path names a restore copy, not whether it exists.
 func IsRestoreCopyPath(path string) bool {
 	if path == "" || filepath.Clean(path) != path {
 		return false
@@ -105,7 +93,6 @@ func IsRestoreCopyPath(path string) bool {
 	return restoreCopyKind(filepath.Base(version.EtcdDataDir), filepath.Base(path)) != ""
 }
 
-// restoreCopyKind is the kind a dir named name is, or "" if it is not one.
 func restoreCopyKind(base, name string) string {
 	for _, kind := range restoreCopyKinds {
 		if strings.HasPrefix(name, base+"."+kind+"-") {
@@ -115,10 +102,7 @@ func restoreCopyKind(base, name string) string {
 	return ""
 }
 
-// treeStat is the total size of the regular files under dir, and the newest
-// modification time of dir or anything under it. A file written or added
-// changes its own time and a file removed changes its directory's, so any
-// change to the copy moves the newest time.
+// treeStat sums the regular files under dir; any change inside moves the newest mtime.
 func treeStat(dir string) (total int64, newest time.Time, err error) {
 	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -139,17 +123,7 @@ func treeStat(dir string) (total int64, newest time.Time, err error) {
 	return total, newest, err
 }
 
-// RemoveRestoreCopies removes the restore copies in shown, the ones the
-// operator was shown, and returns those it removed. It holds the etcd data lock,
-// so it cannot race a restore that is moving the data dir aside or putting it
-// back, and it removes only a shown copy that is still there unchanged (same
-// path, still a directory, same newest modification time anywhere in it): a
-// copy a restore created or touched after the listing is one nobody has
-// verified, so it stays. On an error it stops, having removed only what it returns.
-//
-// It is the one place a production effects value for the removal is built: one
-// per call, the data lock and the removal wired inline, and the run itself
-// consults nothing else.
+// RemoveRestoreCopies removes only a shown, still-unchanged copy, under the etcd data lock.
 func RemoveRestoreCopies(shown []RestoreCopy) ([]RestoreCopy, error) {
 	fx := &restoreEffects{
 		etcdDataDir:      version.EtcdDataDir,
@@ -160,10 +134,7 @@ func RemoveRestoreCopies(shown []RestoreCopy) ([]RestoreCopy, error) {
 	return removeRestoreCopies(shown, fx)
 }
 
-// removeRestoreCopies is the removal sequence RemoveRestoreCopies hands its
-// effects value to. An effect that is not set stops the run with the
-// unset-effect sentinel before its host call is made, so a zero value removes
-// nothing.
+// An effect that is not set stops the run with the unset-effect sentinel.
 func removeRestoreCopies(shown []RestoreCopy, fx *restoreEffects) ([]RestoreCopy, error) {
 	release, err := fx.acquireDataLock()
 	if err != nil {

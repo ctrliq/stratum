@@ -10,10 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Registered reports whether RemoveContexts would delete anything on this
-// node, so uninstall can say it will: a context or equivalence Stratum
-// registered, by its record or, without one, by what it would register. A
-// policy it cannot list counts as yes, so the preview errs toward saying so.
+// reports whether RemoveContexts would delete anything; a policy it cannot list counts as yes.
 func Registered() bool {
 	rs, es, err := removable()
 	if errors.Is(err, errNotInstalled) {
@@ -22,15 +19,7 @@ func Registered() bool {
 	return err != nil || len(rs)+len(es) > 0
 }
 
-// RemoveContexts deletes the file contexts and equivalences Stratum registered,
-// as recorded in managedPath, or, without a record, the set it would register
-// on this policy. An entry is deleted only while the policy still holds it
-// exactly as Stratum registered it, so a context the operator set for the same
-// path is left alone, and one already gone is skipped. Rules go first: semanage
-// refuses to delete an equivalence with rules beneath its target. The stratum
-// binary, which uninstall keeps, is then relabelled to the policy's default.
-//
-// A host without semanage, as one without SELinux, has nothing to remove.
+// deletes each entry only while still exactly as registered; rules first, as semanage requires.
 func RemoveContexts() error { return RemoveContextsWithWriter(os.Stdout) }
 
 // RemoveContextsWithWriter removes owned contexts and reports progress to w.
@@ -63,9 +52,7 @@ func RemoveContextsWithWriter(w io.Writer) error {
 	return errors.Join(errs...)
 }
 
-// removable lists what RemoveContexts deletes: Stratum's contexts and
-// equivalences that the local policy still holds exactly as Stratum
-// registered them. A missing semanage matches errNotInstalled.
+// lists what RemoveContexts deletes; a missing semanage matches errNotInstalled.
 func removable() ([]rule, []equivalence, error) {
 	all, err := tool("policycoreutils-python-utils", "semanage", "fcontext", "-l")
 	if err != nil {
@@ -97,8 +84,7 @@ func removable() ([]rule, []equivalence, error) {
 	return rs, es, nil
 }
 
-// managed is what RemoveContexts removes: the recorded contexts, or, without a
-// record, those Stratum would register on this policy.
+// the recorded contexts, or, without a record, those Stratum would register.
 func managed(policy listing) ([]rule, []equivalence) {
 	b, err := os.ReadFile(managedPath())
 	if err != nil {

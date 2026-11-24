@@ -13,10 +13,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// A fresh worker join refuses spec.selinux: false from the selected profile's
-// own declaration, not from its name, and before it touches the host: the
-// refusal comes ahead of the hostname, address and directory steps, so this
-// test needs no host stubs.
+// The refusal comes before the hostname, address and directory steps, so no host stubs are needed.
 func TestWorkerJoinRefusesAnOptOutTheProfileForbids(t *testing.T) {
 	registerProfilesForTest(t,
 		profile.Profile{Name: "cis", RequiresOperator: true, RequiresSELinux: true},

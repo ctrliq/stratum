@@ -9,11 +9,9 @@ import (
 	"testing"
 )
 
-// payloadSize stands in for the ~660MB stratum binary: large enough that
-// buffering it even once blows the budget below.
+// Stand-in for the ~660MB stratum binary; buffering it once blows the budget below.
 const payloadSize = 128 << 20
 
-// heapBudget is what a streaming copy may allocate in total: buffers, not files.
 const heapBudget = 8 << 20
 
 func bigFile(t *testing.T, p string, fill byte) {
@@ -31,7 +29,6 @@ func bigFile(t *testing.T, p string, fill byte) {
 	}
 }
 
-// allocated reports the bytes fn allocates on the heap.
 func allocated(fn func()) uint64 {
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -41,9 +38,6 @@ func allocated(fn func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
-// TestInstallDoesNotBufferThePayload: installing the stratum binary, backing up
-// the one it replaces, and restoring it must stream. Holding the whole file
-// (several times over) OOM-killed a failed upgrade's rollback on a 3GiB worker.
 func TestInstallDoesNotBufferThePayload(t *testing.T) {
 	dir := t.TempDir()
 	dst, src := filepath.Join(dir, "stratum"), filepath.Join(dir, "next")
@@ -60,13 +54,12 @@ func TestInstallDoesNotBufferThePayload(t *testing.T) {
 		t.Errorf("backupAndInstall allocated %dMB for a %dMB binary; want a stream", n>>20, payloadSize>>20)
 	}
 	if n := allocated(func() {
-		if err := atomicInstall(io.Discard, bak, dst); err != nil { // the rollback
+		if err := atomicInstall(io.Discard, bak, dst); err != nil {
 			t.Fatal(err)
 		}
 	}); n > heapBudget {
 		t.Errorf("rollback install allocated %dMB for a %dMB binary; want a stream", n>>20, payloadSize>>20)
 	}
-	// Unchanged content: the compare must not read the files whole either.
 	if n := allocated(func() {
 		if err := atomicInstall(io.Discard, bak, dst); err != nil {
 			t.Fatal(err)

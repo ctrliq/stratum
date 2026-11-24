@@ -17,11 +17,10 @@ import (
 	"github.com/ctrliq/stratum/internal/host"
 )
 
-// KubeletMigrateCommand migrates an existing cluster to KubeletClientCAName.
+// Migrates an existing cluster to KubeletClientCAName.
 const KubeletMigrateCommand = "stratum certs migrate-kubelet-client-ca"
 
-// Kubelet client-CA migration phases. The first three move a cluster onto
-// KubeletClientCAName; the last three take it back to the cluster root.
+// The first three phases move onto KubeletClientCAName, the last three back to the root.
 const (
 	KubeletPhaseTrustBoth   = "trust-both"
 	KubeletPhaseIssueNew    = "issue-new"
@@ -31,7 +30,7 @@ const (
 	KubeletPhaseRemoveCA    = "remove-ca"
 )
 
-// Kubelet client-trust states reported by KubeletClientTrust.State.
+// Client-trust states reported by KubeletClientTrust.State.
 const (
 	KubeletStateNotMigrated = "not-migrated"
 	KubeletStateTrustBoth   = "trust-both"
@@ -41,16 +40,13 @@ const (
 
 // KubeletClientTrust is this node's kubelet client trust.
 type KubeletClientTrust struct {
-	// Anchors are the certificates in kubelet-client-ca-bundle.crt that
-	// ca-bundle.crt does not hold and whose subject is a kubelet-client CA's.
+	// In the kubelet bundle: Anchors are kubelet-client CAs absent from ca-bundle.crt; Roots shared.
 	Anchors []*x509.Certificate
-	// Roots are the certificates it shares with ca-bundle.crt.
-	Roots []*x509.Certificate
-	// Other are the certificates that are neither.
-	Other []*x509.Certificate
-	// HasCA reports kubelet-client-ca.crt on disk; only a control plane holds it.
+	Roots   []*x509.Certificate
+	Other   []*x509.Certificate
+	// Only a control plane holds kubelet-client-ca.crt.
 	HasCA bool
-	// LeafOnCA reports apiserver-kubelet-client signed by kubelet-client-ca.crt.
+	// apiserver-kubelet-client signed by kubelet-client-ca.crt.
 	LeafOnCA bool
 }
 
@@ -79,8 +75,7 @@ func ReadKubeletClientTrust() (KubeletClientTrust, error) {
 	return t, nil
 }
 
-// KubeletClientMigratingPEM reports whether kubeletBundle trusts both a
-// kubelet-client CA and a CA from the root trust already read from rootSource.
+// Reports whether kubeletBundle trusts both a kubelet-client CA and a CA from rootSource.
 func KubeletClientMigratingPEM(kubeletBundle string, rootPEM []byte, rootSource string) (bool, error) {
 	if _, err := os.Stat(kubeletBundle); errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -115,7 +110,6 @@ func isKubeletClientCA(c *x509.Certificate) bool {
 	return c.IsCA && c.Subject.CommonName == kubeletClientCACommonName
 }
 
-// State names where this node is in the migration.
 func (t KubeletClientTrust) State() string {
 	switch {
 	case len(t.Roots) == 0 && (len(t.Anchors) > 0 || t.HasCA):
@@ -128,15 +122,13 @@ func (t KubeletClientTrust) State() string {
 	return KubeletStateTrustBoth
 }
 
-// Migrating reports a node whose kubelet trusts both a kubelet-client CA and
-// the cluster root.
+// A node whose kubelet trusts both a kubelet-client CA and the cluster root.
 func (t KubeletClientTrust) Migrating() bool {
 	s := t.State()
 	return s == KubeletStateTrustBoth || s == KubeletStateIssueNew
 }
 
-// KubeletClientMigrating reports whether this node is part way through the
-// migration, which a CA rotation must not interleave with.
+// True part way through the migration, which a CA rotation must not interleave with.
 func KubeletClientMigrating() (bool, error) {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -145,8 +137,7 @@ func KubeletClientMigrating() (bool, error) {
 	return t.Migrating(), nil
 }
 
-// KubeletClientCAInUse reports whether this node's kubelet trusts a
-// kubelet-client CA, on a split or a migrating node.
+// True whether this node's kubelet trusts a kubelet-client CA, split or migrating.
 func KubeletClientCAInUse() (bool, error) {
 	split, err := KubeletClientSplit()
 	if err != nil || split {
@@ -155,9 +146,7 @@ func KubeletClientCAInUse() (bool, error) {
 	return KubeletClientMigrating()
 }
 
-// refuseWhileKubeletMigrating refuses what while this node is part way
-// through the migration. Without KubeletClientCAName an unreadable bundle is
-// left for the caller to repair, as KubeletClientSplit leaves it.
+// Refuses mid-migration; without KubeletClientCAName an unreadable bundle is left to the caller.
 func refuseWhileKubeletMigrating(what string) error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil && !t.HasCA {
@@ -173,9 +162,7 @@ func refuseWhileKubeletMigrating(what string) error {
 	return nil
 }
 
-// KubeletClientTrustBoth makes this control plane's kubelet trust
-// KubeletClientCAName beside the cluster root. Only the node that starts the
-// migration may mint the CA; the others must have fetched it.
+// Trusts KubeletClientCAName beside the root; only the initiating node may mint the CA.
 func KubeletClientTrustBoth(allowMint bool) error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -208,8 +195,7 @@ func KubeletClientTrustBoth(allowMint bool) error {
 	return writeKubeletBundle(append([]*x509.Certificate{ca}, roots...))
 }
 
-// KubeletClientIssueNew reissues apiserver-kubelet-client under
-// KubeletClientCAName. Every kubelet in the cluster must already trust it.
+// Reissues apiserver-kubelet-client under KubeletClientCAName; every kubelet must trust it.
 func KubeletClientIssueNew(host, nodeIP string, sans *APISANs) error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -225,9 +211,7 @@ func KubeletClientIssueNew(host, nodeIP string, sans *APISANs) error {
 	return ca.Reissue(kubeletClientLeafSpec(host, nodeIP, sans))
 }
 
-// KubeletClientDropRoot makes this node's kubelet trust the kubelet-client CAs
-// it holds and nothing else. On a control plane, apiserver-kubelet-client must
-// already be signed by KubeletClientCAName.
+// Trusts the held kubelet-client CAs alone; the leaf must already be signed by KubeletClientCAName.
 func KubeletClientDropRoot() error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -254,8 +238,7 @@ func KubeletClientDropRoot() error {
 	return writeKubeletBundle(t.Anchors)
 }
 
-// KubeletClientReAddRoot puts the cluster root back beside the kubelet-client
-// CAs this node's kubelet trusts. A node that never migrated is left alone.
+// Puts the root back beside the kubelet-client CAs; a node that never migrated is left alone.
 func KubeletClientReAddRoot() error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -271,8 +254,7 @@ func KubeletClientReAddRoot() error {
 	return writeKubeletBundle(append(slices.Clone(t.Anchors), roots...))
 }
 
-// KubeletClientReissueRoot reissues apiserver-kubelet-client under the cluster
-// root. Every kubelet in the cluster must trust the root again first.
+// Reissues apiserver-kubelet-client under the root; every kubelet must trust it again first.
 func KubeletClientReissueRoot(host, nodeIP string, sans *APISANs) error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -288,9 +270,7 @@ func KubeletClientReissueRoot(host, nodeIP string, sans *APISANs) error {
 	return ca.Reissue(kubeletClientLeafSpec(host, nodeIP, sans))
 }
 
-// KubeletClientRemoveCA makes this node's kubelet trust ca-bundle.crt again
-// and removes KubeletClientCAName. On a control plane, apiserver-kubelet-client
-// must already be signed by the root.
+// Trusts ca-bundle.crt again and removes KubeletClientCAName; the leaf must be root-signed.
 func KubeletClientRemoveCA() error {
 	t, err := ReadKubeletClientTrust()
 	if err != nil {
@@ -317,8 +297,7 @@ func KubeletClientRemoveCA() error {
 	return nil
 }
 
-// AddKubeletClientAnchor makes this node's kubelet trust ca beside what it
-// trusts now. ca must be a kubelet-client CA.
+// Trusts ca beside what this kubelet trusts now; ca must be a kubelet-client CA.
 func AddKubeletClientAnchor(ca *x509.Certificate) error {
 	if !isKubeletClientCA(ca) {
 		return fmt.Errorf("pki: %s is not a kubelet-client CA", ca.Subject)
@@ -355,14 +334,12 @@ func writeKubeletBundle(certs []*x509.Certificate) error {
 	return nil
 }
 
-// LeafKeyPair loads the {name}.crt/.key pair from this node's PKI directory.
+// Loads the {name}.crt/.key pair from this node's PKI directory.
 func LeafKeyPair(name string) (tls.Certificate, error) {
 	return tls.LoadX509KeyPair(path(name, "crt"), path(name, "key"))
 }
 
-// ProbeKubeletClientAuth sends GET /healthz to the kubelet at addr as client,
-// verifying its serving certificate against roots, and returns the status. A
-// kubelet answers 401 to a client certificate it does not trust.
+// GET /healthz at addr as client, verifying its serving cert against roots; 401 means untrusted.
 func ProbeKubeletClientAuth(ctx context.Context, addr string, roots []*x509.Certificate, client tls.Certificate) (int, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {

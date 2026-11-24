@@ -1,19 +1,6 @@
 package operator
 
-// webhook.go — the mutating admission webhook that stamps the requester onto
-// HelmChart / HelmChartConfig CRs at admission.
-//
-// The reconciler runs asynchronously, long after the CR was admitted, so the
-// requester's identity has to be captured AT admission and persisted on the
-// object — the API object records no creator of its own. This webhook reads the
-// authenticated identity from AdmissionRequest.userInfo and overwrites the
-// requester annotations with it on every CREATE and UPDATE, so a client cannot
-// forge a different requester (a client-supplied value is always replaced by the
-// real one) and the annotation always reflects who last wrote the desired state.
-//
-// Admission fails closed to prevent replaying an old valid stamp on a recreated
-// resource while stamping is unavailable. The configured privileged namespaces
-// (Options.PrivilegedNamespaces, see webhook_policy.go) are exempt.
+// The reconciler runs long after admission, so identity must be captured then.
 
 import (
 	"context"
@@ -37,40 +24,25 @@ import (
 )
 
 const (
-	// webhookPort is the HTTPS port the operator serves admission on. The operator
-	// runs hostNetwork, so this is a node port; the Service/EndpointSlice
-	// (webhookdeploy.go) route the apiserver here.
+	// hostNetwork operator: this is a node port the Service routes to.
 	webhookPort = 9448
-	// webhookPath is the single admission endpoint. Both resources post here.
 	webhookPath = "/mutate-helmchart"
-	// webhookHealthPath is a TLS-authenticated liveness probe (no admission body).
+	// A TLS-authenticated liveness probe, no admission body.
 	webhookHealthPath = "/healthz"
 )
 
-// patchOp is one RFC 6902 JSON Patch operation. Emitted as the AdmissionResponse
-// patch so the apiserver applies the requester annotations to the incoming object.
 type patchOp struct {
 	Op    string      `json:"op"`
 	Path  string      `json:"path"`
 	Value interface{} `json:"value,omitempty"`
 }
 
-// jsonPatchEscape escapes a JSON Pointer reference token per RFC 6901: "~" -> "~0"
-// and "/" -> "~1". The annotation keys contain both ("stratum.ciq.com/requester"),
-// so an unescaped path would point at the wrong (nonexistent) location and the
-// patch would either no-op or fail.
+// Annotation keys contain '~' and '/', so an unescaped pointer token mis-targets.
 func jsonPatchEscape(token string) string {
 	return strings.NewReplacer("~", "~0", "/", "~1").Replace(token)
 }
 
-// requesterPatchOps builds the JSON Patch that stamps info + its signature onto an
-// object whose current annotations are `existing`. When the object has no
-// annotations yet, the map must be created first (a lone `add
-// /metadata/annotations/<key>` fails: its parent object does not exist); when it
-// does, each key is added individually so the other annotations are preserved.
-// `add` on an existing key replaces it, so the same op both creates and overwrites
-// — which is exactly the anti-forgery behavior (a client-supplied requester value,
-// signature included, is overwritten with the real one).
+// add on an existing key replaces it, overwriting any client-supplied requester value.
 func requesterPatchOps(existing map[string]string, info requesterInfo, sig string) ([]patchOp, error) {
 	groupsJSON, err := json.Marshal(info.Groups)
 	if err != nil {
@@ -83,10 +55,9 @@ func requesterPatchOps(existing map[string]string, info requesterInfo, sig strin
 		annRequesterSig:    sig,
 	}
 	if len(existing) == 0 {
-		// Create the whole annotations map in one op with all keys set.
 		return []patchOp{{Op: "add", Path: "/metadata/annotations", Value: want}}, nil
 	}
-	// Deterministic op order so the emitted patch (and its tests) are stable.
+	// Deterministic op order keeps the emitted patch stable.
 	keys := []string{annRequester, annRequesterUID, annRequesterGroups, annRequesterSig}
 	ops := make([]patchOp, 0, len(keys))
 	for _, k := range keys {
@@ -99,7 +70,6 @@ func requesterPatchOps(existing map[string]string, info requesterInfo, sig strin
 	return ops, nil
 }
 
-// admissionErrorf denies a request whose identity cannot be safely stamped.
 func admissionErrorf(uid string, format string, args ...interface{}) *admissionv1.AdmissionResponse {
 	msg := fmt.Sprintf(format, args...)
 	log.Printf("admission webhook: %s", msg)
@@ -111,13 +81,7 @@ func admissionErrorf(uid string, format string, args ...interface{}) *admissionv
 	}
 }
 
-// buildAdmissionResponse computes the stamping patch for one AdmissionRequest.
-// Split from the HTTP handler so the stamping logic is unit-testable without a
-// server. Stamping failures deny the request (see admissionErrorf).
-//
-// Spec changes are stamped with the authenticated writer. Metadata-only
-// updates preserve the old stamp, so the controller cannot become the requester
-// when it updates finalizers. Client-supplied annotation changes are overwritten.
+// Metadata-only updates preserve the old stamp, so the controller cannot become the requester.
 func buildAdmissionResponse(req *admissionv1.AdmissionRequest, signer *requesterSigner) *admissionv1.AdmissionResponse {
 	if req == nil {
 		return &admissionv1.AdmissionResponse{Allowed: false}
@@ -136,7 +100,6 @@ func buildAdmissionResponse(req *admissionv1.AdmissionRequest, signer *requester
 			return admissionErrorf(uid, "decode old object: %v", err)
 		}
 		if reflect.DeepEqual(old.Object["spec"], obj.Object["spec"]) {
-			// A finalizer-only or metadata update cannot replace the captured principal.
 			ann := obj.GetAnnotations()
 			if ann == nil {
 				ann = map[string]string{}
@@ -162,16 +125,12 @@ func buildAdmissionResponse(req *admissionv1.AdmissionRequest, signer *requester
 		UID:      req.UserInfo.UID,
 		Groups:   req.UserInfo.Groups,
 	}
-	// An unauthenticated or identity-less request should not be stamped with an
-	// empty username — that would produce a stamp the backstop treats as present
-	// but which impersonates nobody. Leave it unstamped; the backstop refuses it.
+	// An empty username would produce a stamp that impersonates nobody but looks present.
 	if info.Username == "" {
 		return admissionErrorf(uid, "%s %s/%s: admission request carried no user identity; refusing admission",
 			req.Kind.Kind, req.Namespace, req.Name)
 	}
-	// Without a signer the stamp cannot be made authentic, and an unsigned stamp is
-	// worse than none (it looks present but fails verification cluster-wide). Leave
-	// it unstamped and warn; the backstop refuses the install until the key loads.
+	// An unsigned stamp looks present but fails verification cluster-wide.
 	if signer == nil {
 		return admissionErrorf(uid, "%s %s/%s: requester-signing key unavailable; refusing admission",
 			req.Kind.Kind, req.Namespace, req.Name)
@@ -183,8 +142,6 @@ func buildAdmissionResponse(req *admissionv1.AdmissionRequest, signer *requester
 	if err != nil {
 		return admissionErrorf(uid, "%s %s/%s: build patch: %v", req.Kind.Kind, req.Namespace, req.Name, err)
 	}
-	// Readers are deployed before the administrator enables new signing through
-	// the shared Secret. Legacy signatures remain alongside v2 after activation.
 	if signer.bindingVersion == stampBindingV2 {
 		policy := requesterFieldPolicy(obj)
 		signingObject := obj.DeepCopy()
@@ -226,11 +183,6 @@ func buildAdmissionResponse(req *admissionv1.AdmissionRequest, signer *requester
 	}
 }
 
-// admissionHandler returns the HTTP handler for the admission endpoint, closing
-// over the signer source: decode the AdmissionReview, compute the response, echo
-// it back wrapped in a review of the same apiVersion/kind. The snapshot is read
-// per admission, so a signer the Secret owner publishes is used by the next
-// request without a restart.
 func admissionHandler(signers signerSnapshot) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 3<<20)) // 3 MiB cap: a CR is small
@@ -245,7 +197,7 @@ func admissionHandler(signers signerSnapshot) http.HandlerFunc {
 		}
 		resp := buildAdmissionResponse(review.Request, signers.current())
 		out := admissionv1.AdmissionReview{
-			TypeMeta: review.TypeMeta, // echo the request's apiVersion/kind
+			TypeMeta: review.TypeMeta,
 			Response: resp,
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -255,11 +207,7 @@ func admissionHandler(signers signerSnapshot) http.HandlerFunc {
 	}
 }
 
-// runWebhookServer serves the admission endpoint over HTTPS until ctx is
-// cancelled, using getCert to fetch the current serving certificate on every
-// handshake (so a CA/cert rotation is picked up without a restart) and signers
-// for the per-admission requester-signing snapshot. It returns when the server
-// stops; a non-context error is returned to the caller.
+// Fetches the serving certificate on every handshake so a rotation needs no restart.
 func runWebhookServer(ctx context.Context, listener net.Listener, getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), signers *requesterSignerHolder) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(webhookPath, admissionHandler(signers))
@@ -270,8 +218,7 @@ func runWebhookServer(ctx context.Context, listener net.Listener, getCert func(*
 	return serveWebhook(ctx, listener, webhookClientTLS(getCert, func() ([]byte, error) { return pki.ReadCABundle("front-proxy-ca") }), mux)
 }
 
-// Verify the apiserver's existing front-proxy certificate, not a tenant client
-// certificate issued by the general cluster CA. Reload trust on each handshake.
+// Verifies the apiserver's front-proxy certificate, not a general cluster CA client cert.
 func webhookClientTLS(getCert func(*tls.ClientHelloInfo) (*tls.Certificate, error), bundle func() ([]byte, error)) *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, GetCertificate: getCert, ClientAuth: tls.RequireAnyClientCert,
 		VerifyConnection: func(state tls.ConnectionState) error {

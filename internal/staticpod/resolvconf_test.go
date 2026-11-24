@@ -2,11 +2,7 @@ package staticpod
 
 import "testing"
 
-// TestStaticPodsKeepTheKubeletsResolver: the control plane resolves through
-// the node's own resolv.conf, as the kubelet hands it to host-network pods.
-// Only CoreDNS forwards through a chosen upstream, so no static pod
-// mounts one over /etc/resolv.conf or carries a digest that would recreate
-// it.
+// host-network pods resolve through the node's own resolv.conf; only CoreDNS picks an upstream.
 func TestStaticPodsKeepTheKubeletsResolver(t *testing.T) {
 	st := testNode(t)
 	st.VIP.Address = "192.0.2.100"

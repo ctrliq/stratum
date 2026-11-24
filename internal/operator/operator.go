@@ -1,15 +1,4 @@
-// Package operator is the in-binary SKE operator: the HelmChart /
-// HelmChartConfig controller, the manifest deployer — leader-elected so a
-// multi-controller cluster runs one active reconciler — and the kubelet CSR
-// approvers, which run on every controller.
-//
-// It runs as a SUPERVISED HOST PROCESS (`stratum operator`, a child of `stratum
-// up`), not as an in-cluster Deployment: no operator image to pull keeps the
-// airgap story one-artifact.
-//
-// Rolling node upgrades are NOT here: `stratum upgrade --cluster`
-// (internal/upgrade) is the one implementation, driven from a control-plane
-// node rather than from a CR.
+// Package operator is the in-binary SKE operator, run as a supervised host process.
 package operator
 
 import (
@@ -34,21 +23,12 @@ import (
 )
 
 const (
-	// group is the domain of the operator's annotations and labels
-	// (requester stamps, managed-by, stack names). That it coincides with the
-	// HelmChart API group is spelled through the alias: the group/version pair
-	// is declared once in internal/k8sutil (HelmChartGroup/HelmChartVersion),
-	// and every GVR/GVK construction reads it from there.
 	group        = k8sutil.HelmChartGroup
 	fieldManager = "stratum-operator"
 
-	// perIterationTimeout bounds the API calls made during a single reconcile
-	// pass so a stuck apiserver call can't wedge the loop.
+	// bounds one reconcile pass so a stuck apiserver call cannot wedge the loop.
 	perIterationTimeout = 30 * time.Second
 
-	// inventorySyncInterval spaces the per-instance prune-inventory sync: a
-	// cheap ConfigMap read-modify-write that unions the local .applied.json
-	// into cluster state and retires the file once the migration closes.
 	inventorySyncInterval = 30 * time.Second
 )
 
@@ -59,30 +39,16 @@ type Options struct {
 	HelmCache    string
 	LeaderElect  bool
 	Interval     time.Duration
-	// PrivilegedNamespaces are the namespaces whose HelmCharts may install into a
-	// DIFFERENT targetNamespace. A HelmChart in any other namespace is confined to
-	// its own namespace, so a namespaced tenant CR cannot use the operator's
-	// cluster-admin install creds to reach across namespaces.
+	// namespaces whose HelmCharts may target another namespace; others are confined to their own.
 	PrivilegedNamespaces []string
-	// AllowInsecureHelmRepos permits a HelmChart's spec.insecureSkipTLSVerify to be
-	// honored. Default false: a tenant CR cannot disable repo TLS verification on
-	// its own.
+	// permits a HelmChart's spec.insecureSkipTLSVerify to be honored. Default false.
 	AllowInsecureHelmRepos bool
-	// NodeIP is this control-plane node's address, used as the admission webhook's
-	// EndpointSlice endpoint so the apiserver can reach the (hostNetwork) webhook
-	// server. Empty disables the webhook on this instance — the reconcile
-	// backstop still refuses unstamped non-privileged installs, so this fails
-	// closed rather than silently dropping requester scoping.
-	NodeIP string
-	// APIServerVIP is the cluster VIP, when there is one. With it, the deployer
-	// points Cilium at the VIP; without it, at every control plane.
-	APIServerVIP string
-	// ClusterDomain is the cluster's DNS domain, for the dashboard's and the
-	// admission webhook's Service names.
+	// empty disables the webhook; the reconcile backstop refuses unstamped non-privileged installs.
+	NodeIP        string
+	APIServerVIP  string
 	ClusterDomain string
 }
 
-// ParseFlags builds Options from `stratum operator` args.
 func ParseFlags(args []string) (Options, error) {
 	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
 	o := Options{}
@@ -108,8 +74,6 @@ func ParseFlags(args []string) (Options, error) {
 	return o, nil
 }
 
-// splitNamespaces parses a comma-separated namespace list, trimming spaces and
-// dropping empties.
 func splitNamespaces(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -122,11 +86,7 @@ func splitNamespaces(s string) []string {
 
 // Run reconciles until ctx is cancelled.
 func Run(ctx context.Context, o Options) error {
-	// One normalization for both consumers of the privileged set:
-	// the webhook's exemption selector and install authorization must read the
-	// same value, so Run normalizes here rather than trusting either consumer
-	// to do it — an Options built outside ParseFlags would otherwise mean two
-	// things in one process. Idempotent over the flag-parsed set.
+	// one normalization so the webhook exemption and install authorization read the same value.
 	o.PrivilegedNamespaces = normalizePrivilegedNamespaces(o.PrivilegedNamespaces)
 	cfg, err := buildConfig(o.Kubeconfig)
 	if err != nil {
@@ -140,10 +100,7 @@ func Run(ctx context.Context, o Options) error {
 	if err != nil {
 		return err
 	}
-	// The manifest deployer and the CoreDNS spreader are values, not package
-	// state: one of each per Run, owned by the leader-loop steps below, so
-	// their apply state and cooldown are theirs alone and a restart starts
-	// clean.
+	// per-Run values, not package state: a restart starts clean.
 	deployer, err := newManifestDeployer(cfg, o.ManifestsDir)
 	if err != nil {
 		return err
@@ -156,12 +113,7 @@ func Run(ctx context.Context, o Options) error {
 	log.Printf("stratum-operator: reconciling HelmCharts + manifests every %s (leader-elect=%t)",
 		o.Interval, o.LeaderElect)
 
-	// The CSR approver and the admission webhook both run on every candidate (not
-	// leader-gated): kubelet serving certs must renew even during a leadership gap,
-	// and requester stamping is stateless, so serving it from every control-plane
-	// operator makes admission HA without leader coupling. Their lifetime belongs
-	// to this invocation, including a return caused by leadership loss while the
-	// caller's context remains active — so both are joined before Run returns.
+	// not leader-gated: serving certs must renew even during a leadership gap.
 	ctx, cancel := context.WithCancel(ctx)
 	var done []chan struct{}
 	defer func() {
@@ -188,18 +140,7 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}()
 
-	// The prune-inventory sync runs on every instance, leader or not, on its
-	// own interval beside the CSR approvers: each instance unions its local
-	// .applied.json into its node's entry in the stratum-addon-inventory
-	// ConfigMap and retires the file once the migration to the cluster
-	// inventory closes. Leader-gating it would stall the migration on any
-	// cluster whose leadership never rotates across all control planes — the
-	// leader's manifest pass can publish only its own node's entry, so the
-	// followers' contributions have nowhere else to come from. An instance
-	// with no manifests directory makes no claim: syncInventory contributes
-	// nothing for it, and its node stays an expected contributor the
-	// migration waits on (or the recovery entry closes the migration by
-	// hand).
+	// not leader-gated: follower contributions have nowhere else to come from.
 	if o.ManifestsDir != "" {
 		nodeName := deployer.node
 		inventoryDone := make(chan struct{})
@@ -223,17 +164,7 @@ func Run(ctx context.Context, o Options) error {
 		}()
 	}
 
-	// Start CSR protection before waiting for the webhook's signer key. That
-	// lookup may retry while an older unrestricted approval binding still exists.
-	// The signer is used only by the webhook and manifest reconciler.
-	//
-	// The key is loaded once up front (six attempts against a transient
-	// apiserver), then kept under observation for the process lifetime: the
-	// owner below polls the signing Secret, republishes a replaced Secret's key
-	// without a restart, retains the previous verifier set for stamps already
-	// stored, and keeps retrying in the background so the operator is never left
-	// keyless-and-silent. The webhook and the reconciler read a snapshot from
-	// the holder per admission and per reconcile pass.
+	// the signer-key lookup may retry while an older unrestricted approval binding exists.
 	signerHolder := newRequesterSignerHolder()
 	if signer := loadRequesterSignerWithRetry(ctx, cs); signer != nil {
 		signerHolder.publish(signer)
@@ -247,9 +178,6 @@ func Run(ctx context.Context, o Options) error {
 		maintainRequesterSigner(ctx, cs, signerHolder, requesterKeyWatchInterval)
 	}()
 
-	// Admission webhook: stamps the requester onto HelmChart CRs so the
-	// reconciler can install with the requester's authority. Skipped when --node-ip
-	// is unset (the backstop still refuses unstamped non-privileged installs).
 	if o.NodeIP != "" {
 		nodeName, _ := os.Hostname()
 		webhookDone := make(chan struct{})
@@ -265,8 +193,7 @@ func Run(ctx context.Context, o Options) error {
 		reconcileHelmCharts(loopCtx, dyn, o.Kubeconfig, helmPolicy{
 			privilegedNamespaces: o.PrivilegedNamespaces,
 			allowInsecureRepos:   o.AllowInsecureHelmRepos,
-			// Successful verification uses this immutable snapshot. A stamp from
-			// a faster-refreshing webhook gets one trusted refresh before refusal.
+			// a stamp from a faster-refreshing webhook gets one trusted refresh before refusal.
 			signer: signerHolder.current(),
 			refreshSigner: func(refreshCtx context.Context) *requesterSigner {
 				if !refreshed {
@@ -299,17 +226,8 @@ func Run(ctx context.Context, o Options) error {
 	return ctx.Err()
 }
 
-// leaderStep is one step of the leader's reconcile work. It receives the
-// context it must run under: the loop's context for HelmChart work, which
-// each chart's own spec.timeout bounds, or a per-iteration deadline for a
-// cluster controller.
 type leaderStep func(ctx context.Context)
 
-// cleanupStepFor binds the pass's cleanup step — the cluster work that runs on
-// every pass regardless of manifests or leadership — to cs: removing departed
-// workers' Nodes, and pruning the stratum-certs grant entries whose bootstrap
-// token is gone, so the multi-entry Secret every mint appends to does not grow
-// one bundle-sized entry per expired or revoked token.
 func cleanupStepFor(cs kubernetes.Interface) leaderStep {
 	return func(cleanupCtx context.Context) {
 		reconcileDepartedWorkers(cleanupCtx, cs, time.Now())
@@ -317,31 +235,7 @@ func cleanupStepFor(cs kubernetes.Interface) leaderStep {
 	}
 }
 
-// runLeaderLoop drives the leader's reconcile work as two loops on the same
-// interval, each running a first pass immediately — a new leader applies the
-// bundled add-ons without waiting a tick — and then on every tick of
-// interval, until ctx is cancelled.
-//
-// HelmChart reconciliation runs on its own goroutine and ticker: an install
-// is bounded by its chart's spec.timeout rather than the iteration window, so
-// a slow chart pass must not hold the cluster controllers behind it, and the
-// loop starts the next chart pass only after the previous one returns, so no
-// chart is reconciled twice at once. The shared pass runs the manifests
-// deployer, when a manifests directory is set, under a deadline that starts
-// when the deployer itself starts, so a slow HelmChart pass cannot spend its
-// budget; CoreDNS spreading, when one is set and leader election is on — so
-// two operators never both evict a replica — and departed-worker cleanup,
-// which runs on the leader only, each with a fresh deadline of their own,
-// which a slow manifest pass cannot exhaust. A panic in any step is
-// recovered, so one broken step stops neither the later steps nor the loops.
-//
-// runLeaderLoop returns only after the helm loop has returned: the leader
-// callback must not return while HelmChart work is still running, so the
-// elector — which joins the callback before reporting leadership loss — never
-// reports loss while this process is still installing charts.
 func runLeaderLoop(ctx context.Context, interval time.Duration, manifestsSet, leaderElected bool, helmStep, deployerStep, spreadStep, cleanupStep leaderStep) {
-	// The helm loop, on its own goroutine and ticker, joined before this
-	// returns — the pattern of the webhook goroutine in Run.
 	helmDone := make(chan struct{})
 	go func() {
 		defer close(helmDone)
@@ -360,10 +254,7 @@ func runLeaderLoop(ctx context.Context, interval time.Duration, manifestsSet, le
 	defer t.Stop()
 	for {
 		func() {
-			// Its own deadline, created when the deployer starts: HelmChart
-			// work is not bounded by the iteration window, so a deadline
-			// anchored to the pass's start would be spent before the
-			// deployer ran at all.
+			// a deadline anchored to the pass's start would be spent before the deployer ran.
 			if manifestsSet {
 				safe(func() {
 					deployerCtx, cancel := context.WithTimeout(ctx, perIterationTimeout)
@@ -371,8 +262,7 @@ func runLeaderLoop(ctx context.Context, interval time.Duration, manifestsSet, le
 					deployerStep(deployerCtx)
 				})
 			}
-			// Its own deadline, not the deployer's, which a slow manifest
-			// pass can exhaust.
+			// not the deployer's deadline, which a slow manifest pass can exhaust.
 			if manifestsSet && leaderElected {
 				safe(func() {
 					spreadCtx, cancel := context.WithTimeout(ctx, perIterationTimeout)
@@ -380,7 +270,7 @@ func runLeaderLoop(ctx context.Context, interval time.Duration, manifestsSet, le
 					spreadStep(spreadCtx)
 				})
 			}
-			// A delete another operator already made is NotFound.
+			// a delete another operator already made is NotFound.
 			safe(func() {
 				nodesCtx, cancel := context.WithTimeout(ctx, perIterationTimeout)
 				defer cancel()
@@ -389,8 +279,7 @@ func runLeaderLoop(ctx context.Context, interval time.Duration, manifestsSet, le
 		}()
 		select {
 		case <-ctx.Done():
-			// Join the helm loop before returning: the leader callback must
-			// not end while HelmChart work is still running.
+			// the leader callback must not end while HelmChart work is still running.
 			<-helmDone
 			return
 		case <-t.C:
@@ -440,8 +329,6 @@ func safe(f func()) {
 	f()
 }
 
-// buildConfig uses the kubeconfig file if present, else in-cluster config (so the
-// operator runs both as a host process and as an in-cluster Deployment + SA).
 func buildConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
 		if _, err := os.Stat(kubeconfig); err == nil {

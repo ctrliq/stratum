@@ -15,7 +15,7 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// testToken is long enough to pass readToken's length floor.
+// Long enough to pass readToken's length floor.
 const testToken = "0123456789abcdef0123456789abcdef"
 
 // tokenFile writes tok to a private file and returns its path.
@@ -31,7 +31,6 @@ func tokenFile(t *testing.T, tok string, mode os.FileMode) string {
 	return p
 }
 
-// bearer adds an Authorization header to every request.
 type bearer struct{ token string }
 
 func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -40,10 +39,7 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-// TestHTTPRefusesCallsWithoutTheToken: loopback is reachable by every local
-// user and every hostNetwork pod, so a tools/call without the bearer token
-// is refused before the tool runs — even one that rides a session a
-// legitimate client opened.
+// Loopback is reachable by every local user and hostNetwork pod; the gate runs before the tool.
 func TestHTTPRefusesCallsWithoutTheToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -82,7 +78,6 @@ func TestHTTPRefusesCallsWithoutTheToken(t *testing.T) {
 	}
 	defer func() { _ = cs.Close() }()
 
-	// A raw tools/call on the authenticated session, minus the token.
 	body := `{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"canary","arguments":{}}}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -111,8 +106,6 @@ func TestHTTPRefusesCallsWithoutTheToken(t *testing.T) {
 	}
 }
 
-// TestHTTPRefusesToStartWithoutAPrivateToken: a token file other users can
-// read, or a token short enough to guess, authenticates no one.
 func TestHTTPRefusesToStartWithoutAPrivateToken(t *testing.T) {
 	for name, tc := range map[string]struct {
 		path string
@@ -140,9 +133,7 @@ func TestHTTPRefusesToStartWithoutAPrivateToken(t *testing.T) {
 	}
 }
 
-// TestHTTPRefusesATokenFileOwnedBySomeoneElse: whoever owns the file can
-// read it whatever its mode, so a file another user owns hands them the
-// server's root.
+// Whoever owns the file can read it whatever its mode.
 func TestHTTPRefusesATokenFileOwnedBySomeoneElse(t *testing.T) {
 	old := geteuid
 	t.Cleanup(func() { geteuid = old })
@@ -159,7 +150,6 @@ func TestHTTPRefusesATokenFileOwnedBySomeoneElse(t *testing.T) {
 	}
 }
 
-// privateDir returns a 0700 directory: private, but not a file.
 func privateDir(t *testing.T) string {
 	t.Helper()
 	d := filepath.Join(t.TempDir(), "dir")
@@ -169,7 +159,7 @@ func privateDir(t *testing.T) string {
 	return d
 }
 
-// fifo returns a 0600 FIFO with no writer, which would block a plain open.
+// A FIFO with no writer would block a plain open.
 func fifo(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "fifo")
@@ -179,8 +169,7 @@ func fifo(t *testing.T) string {
 	return p
 }
 
-// TestRequireBearerScheme: the auth scheme is case-insensitive (RFC 9110
-// 11.1); the token is not.
+// The auth scheme is case-insensitive; the token is not.
 func TestRequireBearerScheme(t *testing.T) {
 	h := requireBearer(testToken, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

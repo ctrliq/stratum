@@ -12,13 +12,7 @@ import (
 	"testing"
 )
 
-// The tests drive the checker through run, which is the whole command minus
-// os.Exit: run(args, stdout, stderr) returns the exit code main exits with.
-// Both streams share one buffer, so a test never depends on which stream a
-// line goes to. Each finding is one line that starts with FAIL or WARN (or
-// ::error / ::warning under GITHUB_ACTIONS=true) and names both the package
-// and the license it is about.
-
+// Findings are one line starting with FAIL or WARN (or ::error/::warning in CI).
 const (
 	failLine      = "FAIL"
 	warnLine      = "WARN"
@@ -49,8 +43,7 @@ type result struct {
 	out  string
 }
 
-// check runs the checker with GITHUB_ACTIONS unset, so findings print as
-// plain FAIL and WARN lines even when the test itself runs in CI.
+// GITHUB_ACTIONS unset, so findings print plain even when the test runs in CI.
 func check(t *testing.T, args ...string) result {
 	t.Helper()
 	unsetenv(t, "GITHUB_ACTIONS")
@@ -74,7 +67,6 @@ func unsetenv(t *testing.T, key string) {
 	}
 }
 
-// lines returns the output lines that start with prefix.
 func (r result) lines(prefix string) []string {
 	var got []string
 	for _, line := range strings.Split(r.out, "\n") {
@@ -85,7 +77,6 @@ func (r result) lines(prefix string) []string {
 	return got
 }
 
-// naming returns the lines that start with prefix and name name.
 func (r result) naming(prefix, name string) []string {
 	var got []string
 	for _, line := range r.lines(prefix) {
@@ -96,9 +87,7 @@ func (r result) naming(prefix, name string) []string {
 	return got
 }
 
-// mentions reports whether line names s as a whole token, so that
-// example.com/a never matches example.com/a/b and MIT never matches
-// MIT-0.
+// Whole-token match: example.com/a never matches example.com/a/b, MIT not MIT-0.
 func mentions(line, s string) bool {
 	re := regexp.MustCompile(`(?:^|[^\w./@-])` + regexp.QuoteMeta(s) + `(?:$|[^\w./-]|\.(?:$|\s))`)
 	return re.MatchString(line)
@@ -111,8 +100,6 @@ func wantExit(t *testing.T, r result, code int) {
 	}
 }
 
-// wantFail asserts that a FAIL line names pkg together with at least one of
-// licenses.
 func wantFail(t *testing.T, r result, prefix, pkg string, licenses ...string) {
 	t.Helper()
 	lines := r.naming(prefix, pkg)
@@ -127,7 +114,6 @@ func wantFail(t *testing.T, r result, prefix, pkg string, licenses ...string) {
 		prefix, pkg, strings.Join(licenses, " or "), prefix, lines, r.out)
 }
 
-// wantWarn asserts that a WARN line, and no FAIL line, names pkg.
 func wantWarn(t *testing.T, r result, pkg string) {
 	t.Helper()
 	if len(r.naming(warnLine, pkg)) == 0 {
@@ -138,7 +124,6 @@ func wantWarn(t *testing.T, r result, pkg string) {
 	}
 }
 
-// wantPass asserts that no FAIL or WARN line names pkg.
 func wantPass(t *testing.T, r result, pkg string) {
 	t.Helper()
 	for _, prefix := range []string{failLine, warnLine} {
@@ -148,9 +133,7 @@ func wantPass(t *testing.T, r result, pkg string) {
 	}
 }
 
-// wantOnly asserts that every line starting with prefix names one of names,
-// so nothing else (a standard-library or first-party package, or a package
-// the build does not link) is reported.
+// Every prefix line must name one of names: nothing else is reported.
 func wantOnly(t *testing.T, r result, prefix string, names ...string) {
 	t.Helper()
 	for _, line := range r.lines(prefix) {
@@ -164,14 +147,7 @@ func wantOnly(t *testing.T, r result, prefix string, names ...string) {
 	}
 }
 
-// licenseText returns a verbatim license file from testdata/licenses, each
-// copied from a module in the Go module cache: MIT from
-// github.com/stretchr/testify v1.11.1, ISC from github.com/davecgh/go-spew
-// v1.1.1, BSD-2-Clause from github.com/pkg/errors v0.9.1, BSD-3-Clause from
-// golang.org/x/sys v0.26.0, Apache-2.0 from
-// github.com/google/licenseclassifier/v2 v2.0.0, MPL-2.0 from
-// github.com/hashicorp/go-multierror v1.1.1 and CC-BY-SA-4.0 from
-// github.com/opencontainers/go-digest v1.0.0 (its LICENSE.docs).
+// A verbatim license file from testdata/licenses, copied from real modules.
 func licenseText(t *testing.T, id string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "licenses", id+".txt"))
@@ -186,7 +162,6 @@ const unknownText = `Permission is granted to anyone who asks the author nicely,
 and to nobody else, on alternate Tuesdays only.
 `
 
-// writeTree writes files, keyed by slash-separated paths, under root.
 func writeTree(t *testing.T, root string, files map[string]string) {
 	t.Helper()
 	for name, contents := range files {
@@ -202,17 +177,14 @@ func writeTree(t *testing.T, root string, files map[string]string) {
 
 // module is one dependency module of a fixture.
 type module struct {
-	path     string            // module path
-	dir      string            // slash-separated directory under the fixture root
+	path     string
+	dir      string
 	requires []string          // module paths its go.mod requires, at v0.0.0
 	files    map[string]string // every file but go.mod, relative to dir
 	copyFrom string            // a testdata tree to copy instead, with its own go.mod
 }
 
-// fixture lays out the main module example.com/app in root/app with the
-// files in app (its go.mod is generated), and each dependency in its own
-// directory under root, replaced by directory from the main module. It
-// returns the main module's directory.
+// Lays out the main module in root/app, each dependency replaced by directory.
 func fixture(t *testing.T, app map[string]string, deps ...module) string {
 	t.Helper()
 	root := t.TempDir()
@@ -252,9 +224,7 @@ func fixture(t *testing.T, app map[string]string, deps ...module) string {
 	return appDir
 }
 
-// goMod returns a go.mod for module path that requires every module in
-// requires and in replace at v0.0.0, and replaces each module in replace
-// with its directory.
+// A go.mod requiring every module in requires and replace at v0.0.0.
 func goMod(path string, requires []string, replace map[string]string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "module %s\n\ngo 1.22\n", path)
@@ -282,12 +252,8 @@ func goMod(path string, requires []string, replace map[string]string) string {
 	return b.String()
 }
 
-// spdx returns an SPDX license header line.
 func spdx(expr string) string { return "// SPDX-License-Identifier: " + expr }
 
-// src returns a Go file for package name that starts with the comment lines
-// in header (an SPDX header, a build constraint, or nothing) and blank-imports
-// imports.
 func src(header, name string, imports ...string) string {
 	var b strings.Builder
 	if header != "" {
@@ -300,13 +266,11 @@ func src(header, name string, imports ...string) string {
 	return b.String()
 }
 
-// mainFile returns the main package's main.go, blank-importing imports.
 func mainFile(imports ...string) string {
 	return src("", "main", imports...) + "\nfunc main() {}\n"
 }
 
-// goTarget is the shipped build's first target, passed explicitly so no
-// test depends on the flags' defaults.
+// The shipped build's first target, passed explicitly so no test depends on defaults.
 var goTarget = []string{"-goos", "linux", "-goarch", "amd64"}
 
 func goArgs(dir string, extra ...string) []string {
@@ -314,8 +278,7 @@ func goArgs(dir string, extra ...string) []string {
 	return append(args, extra...)
 }
 
-// A tool error is never a pass or an ordinary failure: the build could not
-// be checked, so the result means nothing. Each must exit 2.
+// A tool error is never a pass or an ordinary failure: the result means nothing.
 func TestToolErrorsExit2(t *testing.T) {
 	scratch := t.TempDir()
 	missing := filepath.Join(scratch, "absent")
@@ -338,9 +301,7 @@ func TestToolErrorsExit2(t *testing.T) {
 	}
 }
 
-// Under GitHub Actions each finding is a workflow command, so the run's
-// summary shows it as an annotation; elsewhere it is a plain FAIL or WARN
-// line.
+// Each finding becomes a workflow command, shown as an annotation in CI.
 func TestGitHubActionsAnnotations(t *testing.T) {
 	list := writeNpmList(t, `[
   {"name": "mpl-thing", "version": "0.1.0", "license": "MPL-2.0"},

@@ -12,24 +12,6 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 )
 
-// The engine's tool catalog, pinned as data beside the handlers.
-//
-// Catalog returns one descriptor per tool the engine ships: the name and
-// description the client sees in tools/list, the tier that decides whether
-// the tool registers at all, and Add, which adds the tool's typed handler
-// once the host registrar has admitted the descriptor. pkg/cli's registerAll
-// walks the catalog through an unexported registrar method that applies the
-// same tier and duplicate-name checks AddTool applies to contributed sets:
-// the checks stay with the registrar, the rows live beside the handlers.
-//
-// These tests restate the shipped tool names because internal/mcp cannot
-// import pkg/cli to reuse its pinned lists — pkg/cli imports this package.
-// pkg/cli/mcp_surface_test.go stays the integration check: registering the
-// catalog must advertise exactly the shipped surface, unchanged.
-
-// catalogReadTools is every read-tier descriptor the catalog carries: the
-// engine's own tools plus the generic Kubernetes read toolset. Restated in
-// today's registration order; the comparisons sort.
 var catalogReadTools = []string{
 	"version_get",
 	"cluster_status",
@@ -53,8 +35,6 @@ var catalogReadTools = []string{
 	"node_list",
 }
 
-// catalogWriteTools is every write-tier descriptor: mutating but
-// recoverable, so absent without --allow-write.
 var catalogWriteTools = []string{
 	"resource_apply",
 	"resource_scale",
@@ -67,8 +47,6 @@ var catalogWriteTools = []string{
 	"runtime_apply",
 }
 
-// catalogDestructiveTools is every destructive-tier descriptor: absent
-// unless --allow-destructive.
 var catalogDestructiveTools = []string{
 	"upgrade_apply",
 	"rollback",
@@ -83,19 +61,10 @@ var catalogDestructiveTools = []string{
 	"uninstall",
 }
 
-// testCatalog builds the catalog the way a server startup does: a version
-// for version_get to report, the connector the Kubernetes-facing handlers
-// talk through, the node connector on admin.conf the node-local handlers
-// (token_list) talk through, and the write policy the generic Kubernetes
-// write tools enforce.
 func testCatalog() []Tool {
 	return Catalog("v0-test", kube.NewConnector(kube.Options{}), kube.NewConnector(kube.Options{}), WritePolicy{})
 }
 
-// TestCatalogShipsEveryEngineTool pins the catalog's rows: every shipped
-// tool, at the tier it ships at, no name twice, and every row complete —
-// a description travels to the client, and a row without a handler-adder
-// would silently ship a tool that never registers.
 func TestCatalogShipsEveryEngineTool(t *testing.T) {
 	cat := testCatalog()
 
@@ -145,14 +114,6 @@ func TestCatalogShipsEveryEngineTool(t *testing.T) {
 	}
 }
 
-// TestCatalogToolsRegisterOverTheWire stands in for the registrar: it
-// annotates each descriptor the way pkg/cli's ReadTool, WriteTool and
-// DestructiveTool build a tool from a tier (pkg/cli cannot be imported here
-// for them), adds every typed handler through Add, and lists the result over
-// the real protocol. Every descriptor must register a working tool under its
-// own name and description, annotated as its tier says. version_get is the
-// one descriptor carrying a runtime parameter, so calling it also proves Add
-// threads the version the catalog was built with into its handler.
 func TestCatalogToolsRegisterOverTheWire(t *testing.T) {
 	const version = "v0-test"
 	cat := Catalog(version, kube.NewConnector(kube.Options{}), kube.NewConnector(kube.Options{}), WritePolicy{})
@@ -244,14 +205,6 @@ func TestCatalogToolsRegisterOverTheWire(t *testing.T) {
 	}
 }
 
-// TestCatalogTokenCreateSaysTheNetworkFlagsGoOnAWorkerJoinLineOnly pins what
-// a client reads about token_create's join flags: the description tools/list
-// serves and the joinFlags field descriptions in its served output schema, not
-// the Go comments beside them. --pod-cidr, --service-cidr and --cluster-domain
-// go on a worker join line only: a control plane gets its network from the
-// cluster it joins, and `stratum up` refuses those flags without --worker, so
-// a client told nothing builds a control-plane join line that fails. --profile
-// goes on every join line, so its description must not say worker-only.
 func TestCatalogTokenCreateSaysTheNetworkFlagsGoOnAWorkerJoinLineOnly(t *testing.T) {
 	const workerOnly = "worker join line only"
 
@@ -287,11 +240,6 @@ func TestCatalogTokenCreateSaysTheNetworkFlagsGoOnAWorkerJoinLineOnly(t *testing
 			t.Errorf("served token_create description does not say %q: %q", want, tool.Description)
 		}
 	}
-	// Each substring above can appear while the description says the
-	// opposite: the network flags on every join line and --profile on a
-	// worker's only. So the phrase must bind the three flags to the worker
-	// line, --profile must go on every join line, and no sentence that names
-	// --profile may call it worker-only.
 	for _, want := range []string{
 		"--pod-cidr, --service-cidr and --cluster-domain on a " + workerOnly,
 		"--profile goes on every join line",
@@ -352,9 +300,6 @@ func TestCatalogTokenCreateSaysTheNetworkFlagsGoOnAWorkerJoinLineOnly(t *testing
 	}
 }
 
-// catalogTool builds the annotated tool the CLI registrar builds from a
-// descriptor's tier, mirroring ReadTool, WriteTool and DestructiveTool.
-// These annotations are what pkg/cli's checkTier holds a registration to.
 func catalogTool(name, description string, tier Tier) *sdk.Tool {
 	switch tier {
 	case TierRead:

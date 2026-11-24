@@ -31,10 +31,6 @@ const (
 	noVIPThird = "192.168.99.14"
 )
 
-// noVIPControlPlane is kubeVIPNode's control plane as `up` leaves one built
-// without a VIP: every kubeconfig names the local apiserver. The local admin
-// client, which the rotation takes its lease on, publishes apiservers as the
-// kubernetes Service's endpoints.
 func noVIPControlPlane(t *testing.T, apiservers ...string) *fake.Clientset {
 	t.Helper()
 	kubeVIPNode(t)
@@ -46,16 +42,13 @@ func noVIPControlPlane(t *testing.T, apiservers ...string) *fake.Clientset {
 	if err := kubeconfig.GenerateAll("cp1", "https://127.0.0.1:6443", false); err != nil {
 		t.Fatal(err)
 	}
-	// A release through an apiserver that no longer answers would otherwise
-	// retry for its whole budget before the test can finish.
+	// A release to a dead apiserver would retry out its whole budget and stall the test.
 	old := maintlease.ReleaseRetryBudget
 	maintlease.ReleaseRetryBudget = 0
 	t.Cleanup(func() { maintlease.ReleaseRetryBudget = old })
 	return fakeAdminClientset(t, apiserverEndpoints(apiservers...))
 }
 
-// apiserverEndpoints is the EndpointSlice the apiservers keep for the
-// kubernetes Service, one ready endpoint per address.
 func apiserverEndpoints(ips ...string) *discoveryv1.EndpointSlice {
 	name, port := "https", int32(6443)
 	s := &discoveryv1.EndpointSlice{
@@ -72,22 +65,16 @@ func apiserverEndpoints(ips ...string) *discoveryv1.EndpointSlice {
 	return s
 }
 
-// sameCluster is another apiserver of cs's cluster: it serves the same
-// objects, and cs's reactors do not apply to it.
+// Serves cs's objects; cs's own reactors do not apply to it.
 func sameCluster(cs *fake.Clientset) *fake.Clientset {
 	other := &fake.Clientset{}
 	other.AddReactor("*", "*", clienttesting.ObjectReaction(cs.Tracker()))
 	return other
 }
 
-// errNoAnswer is what a lease call gets from an apiserver whose etcd is
-// restarting: it accepts the connection and never answers.
 var errNoAnswer = fmt.Errorf("Get \"https://127.0.0.1:6443/apis/coordination.k8s.io/v1/namespaces/kube-system/leases\": %w",
 	context.DeadlineExceeded)
 
-// leasesStopAnsweringAfterTake makes cs stop answering lease calls once the
-// rotation has taken the maintenance lease through it, as the local apiserver
-// does once its control plane starts restarting.
 func leasesStopAnsweringAfterTake(cs *fake.Clientset) {
 	var down atomic.Bool
 	cs.PrependReactor("*", "leases", func(a clienttesting.Action) (bool, runtime.Object, error) {
@@ -103,7 +90,6 @@ func leasesStopAnsweringAfterTake(cs *fake.Clientset) {
 	})
 }
 
-// silentAPIServer is an apiserver of cs's cluster that answers no lease call.
 func silentAPIServer(cs *fake.Clientset) *fake.Clientset {
 	s := sameCluster(cs)
 	s.PrependReactor("*", "leases", func(clienttesting.Action) (bool, runtime.Object, error) {
@@ -112,8 +98,6 @@ func silentAPIServer(cs *fake.Clientset) *fake.Clientset {
 	return s
 }
 
-// usePeers points the peer client seam at clients, keyed by apiserver URL, and
-// returns the URLs the run asked for, in order.
 func usePeers(t *testing.T, clients map[string]kubernetes.Interface) *[]string {
 	t.Helper()
 	var asked []string
@@ -132,7 +116,6 @@ func usePeers(t *testing.T, clients map[string]kubernetes.Interface) *[]string {
 
 func apiserverURL(ip string) string { return "https://" + ip + ":6443" }
 
-// assertNoLeaseLeft checks that the run released both maintenance leases.
 func assertNoLeaseLeft(t *testing.T, cs kubernetes.Interface) {
 	t.Helper()
 	leases, err := cs.CoordinationV1().Leases(fenceTestMaintenanceNS).List(context.Background(), metav1.ListOptions{})
@@ -144,11 +127,6 @@ func assertNoLeaseLeft(t *testing.T, cs kubernetes.Interface) {
 	}
 }
 
-// TestLeafRotationWithoutVIPRenewsTheLeaseThroughAnotherAPIServer: without a
-// VIP the local apiserver is the only one a control plane's kubeconfigs name,
-// and it stops answering while the rotation restarts it. The lease must ride
-// another control plane's apiserver for the run, or it lapses mid-restart and
-// the next control plane restarts beside this one.
 func TestLeafRotationWithoutVIPRenewsTheLeaseThroughAnotherAPIServer(t *testing.T) {
 	local := noVIPControlPlane(t, noVIPSelf, noVIPPeer)
 	leasesStopAnsweringAfterTake(local)
@@ -167,12 +145,6 @@ func TestLeafRotationWithoutVIPRenewsTheLeaseThroughAnotherAPIServer(t *testing.
 	assertNoLeaseLeft(t, peer)
 }
 
-// TestLeaseRidesThePeerThroughALocalOutageLongerThanTheLease: once the lease
-// rides another apiserver, the background renewal alone, with no Confirm,
-// keeps both maintenance leases renewed through it while the local apiserver
-// stays down for longer than the lease, and another run still cannot take
-// them. The clock is fake and the renewal fast, so the outage is two lease
-// durations long and the test takes milliseconds.
 func TestLeaseRidesThePeerThroughALocalOutageLongerThanTheLease(t *testing.T) {
 	local := fake.NewSimpleClientset(apiserverEndpoints(noVIPSelf, noVIPPeer))
 	leasesStopAnsweringAfterTake(local)
@@ -232,9 +204,6 @@ func TestLeaseRidesThePeerThroughALocalOutageLongerThanTheLease(t *testing.T) {
 	}
 }
 
-// TestLeafRotationOnTheOnlyControlPlaneKeepsItsOwnAPIServer: the only control
-// plane has no other apiserver, and no other control plane can take the lease
-// while its own is down.
 func TestLeafRotationOnTheOnlyControlPlaneKeepsItsOwnAPIServer(t *testing.T) {
 	local := noVIPControlPlane(t, noVIPSelf)
 	asked := usePeers(t, nil)
@@ -252,8 +221,6 @@ func TestLeafRotationOnTheOnlyControlPlaneKeepsItsOwnAPIServer(t *testing.T) {
 	assertNoLeaseLeft(t, local)
 }
 
-// TestLeafRotationWithoutVIPSkipsAnAPIServerThatDoesNotRenew: an apiserver
-// that does not renew the lease is passed over for the next one listed.
 func TestLeafRotationWithoutVIPSkipsAnAPIServerThatDoesNotRenew(t *testing.T) {
 	local := noVIPControlPlane(t, noVIPSelf, noVIPPeer, noVIPThird)
 	leasesStopAnsweringAfterTake(local)
@@ -274,9 +241,6 @@ func TestLeafRotationWithoutVIPSkipsAnAPIServerThatDoesNotRenew(t *testing.T) {
 	assertNoLeaseLeft(t, third)
 }
 
-// TestLeafRotationWithoutVIPWarnsWhenNoOtherAPIServerRenews: with no other
-// apiserver renewing, the run keeps its own, as it did before it looked, and
-// says the lease may lapse while it restarts.
 func TestLeafRotationWithoutVIPWarnsWhenNoOtherAPIServerRenews(t *testing.T) {
 	local := noVIPControlPlane(t, noVIPSelf, noVIPPeer)
 	usePeers(t, map[string]kubernetes.Interface{apiserverURL(noVIPPeer): silentAPIServer(local)})
@@ -291,9 +255,6 @@ func TestLeafRotationWithoutVIPWarnsWhenNoOtherAPIServerRenews(t *testing.T) {
 	assertNoLeaseLeft(t, local)
 }
 
-// TestLeafRotationWithoutVIPWarnsWhenTheAPIServersCannotBeListed: apiservers
-// that cannot be listed leave the lease on the local one, with the same single
-// warning.
 func TestLeafRotationWithoutVIPWarnsWhenTheAPIServersCannotBeListed(t *testing.T) {
 	local := noVIPControlPlane(t, noVIPSelf, noVIPPeer)
 	if err := local.Tracker().Delete(discoveryv1.SchemeGroupVersion.WithResource("endpointslices"), metav1.NamespaceDefault, "kubernetes"); err != nil {
@@ -314,8 +275,6 @@ func TestLeafRotationWithoutVIPWarnsWhenTheAPIServersCannotBeListed(t *testing.T
 	assertNoLeaseLeft(t, local)
 }
 
-// TestPeerAPIServersExcludesThisNodeHoweverItsAddressIsWritten: node state may
-// spell an IPv6 address differently from the apiserver's endpoint.
 func TestPeerAPIServersExcludesThisNodeHoweverItsAddressIsWritten(t *testing.T) {
 	cs := fake.NewSimpleClientset(apiserverEndpoints("fd00::12", "fd00::13"))
 	got, err := peerAPIServers(context.Background(), cs, []string{"192.168.99.12", "fd00:0:0::12"})
@@ -327,9 +286,6 @@ func TestPeerAPIServersExcludesThisNodeHoweverItsAddressIsWritten(t *testing.T) 
 	}
 }
 
-// TestLeafRotationWithoutVIPStopsOnALeaseTakenMeanwhile: a lease another run
-// took while this one chose an apiserver is lost, not a reason to fall back to
-// the local one.
 func TestLeafRotationWithoutVIPStopsOnALeaseTakenMeanwhile(t *testing.T) {
 	local := noVIPControlPlane(t, noVIPSelf, noVIPPeer)
 	peer := sameCluster(local)
@@ -351,9 +307,6 @@ func TestLeafRotationWithoutVIPStopsOnALeaseTakenMeanwhile(t *testing.T) {
 	}
 }
 
-// TestLeafRotationWithVIPDoesNotLookForAnotherAPIServer: a VIP renews the
-// lease through whichever apiserver holds it, so a VIP node never looks for
-// another.
 func TestLeafRotationWithVIPDoesNotLookForAnotherAPIServer(t *testing.T) {
 	kubeVIPNode(t)
 	asked := usePeers(t, nil)

@@ -14,9 +14,7 @@ import (
 )
 
 func TestTokenCreateStopsAfterLosingMaintenanceLease(t *testing.T) {
-	// A worker mint holds the fence too (every mint republishes cluster-info
-	// from local PKI), so its fence Confirm is checked at the same seams —
-	// minus the certificate phase, which only a control-plane mint runs.
+	// A worker mint holds the fence too, so its fence Confirm is checked at the same seams.
 	for _, cp := range []bool{false, true} {
 		losePoints := []string{"mint", "guard"}
 		if cp {
@@ -54,7 +52,7 @@ func TestTokenCreateStopsAfterLosingMaintenanceLease(t *testing.T) {
 				_, out, err := tokenCreateWith(deps)(context.Background(), nil, TokenCreateIn{ControlPlane: cp})
 				wantRevoked := "abcdef.0123456789abcdef"
 				if loseAt == "guard" {
-					wantRevoked = "" // guard and its lease confirmation precede publication
+					wantRevoked = ""
 				}
 				if !errors.Is(err, maintlease.ErrTaken) || uploaded || revoked != wantRevoked || minted != (loseAt != "guard") || out.Token != "" || !released {
 					t.Fatalf("lease loss: err=%v minted=%v uploaded=%v revoked=%q token=%q released=%v", err, minted, uploaded, revoked, out.Token, released)

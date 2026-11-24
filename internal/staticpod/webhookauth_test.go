@@ -77,8 +77,7 @@ func TestWebhookAdmissionConfigPreservesCISPolicy(t *testing.T) {
 	}
 }
 
-// webhookAuthFixture points the render's config directory at a fresh temp dir
-// (writeWebhookAuth creates it) and restores the vars it redirects at cleanup.
+// points the render's config directory at a fresh temp dir and restores the vars.
 func webhookAuthFixture(t *testing.T) string {
 	t.Helper()
 	oldDir, oldAdmission := version.K8sConfDir, version.AdmissionConfigPath
@@ -88,26 +87,7 @@ func webhookAuthFixture(t *testing.T) string {
 	return version.K8sConfDir
 }
 
-// The webhook render's two files — admission-webhook.yaml and the
-// webhook-client.kubeconfig its webhook plugin names — are read by the
-// apiserver on start and on every webhook call, so the render writes them
-// through the shared durable writer (internal/atomicfile): staged under a
-// hidden unique temp name in the file's own directory, fsynced at its final
-// mode, renamed into place, and the config directory fsynced so the rename
-// survives a power loss. The writer's filesystem side effects are this
-// package's own seams (syncFile and syncDir, declared beside the render in
-// webhookauth.go and handed to the writer on every call — the pattern
-// internal/host/systemd.go established for the same reason), so the tests
-// below pin the durability contract through the delegation. The render's old
-// raw CreateTemp-and-rename writer never fsynced and never calls the seams,
-// so these tests fail on the missing syncs and errors.
-
-// TestWriteWebhookAuthSyncsEachFileAtItsFinalModeThenTheDirectory: each of the
-// two files is fsynced at its final mode before the rename — a mode changed
-// after the fsync is not covered by it — and the config directory is fsynced
-// once per written file, after the rename put that file in place: until that
-// sync a power loss can bring the old file back under an apiserver that
-// already started with the new one. The files keep the 0600 they carry today.
+// the render's durability contract is pinned through its syncFile and syncDir seams.
 func TestWriteWebhookAuthSyncsEachFileAtItsFinalModeThenTheDirectory(t *testing.T) {
 	confDir := webhookAuthFixture(t)
 	oldSyncFile, oldSyncDir := syncFile, syncDir
@@ -119,7 +99,7 @@ func TestWriteWebhookAuthSyncsEachFileAtItsFinalModeThenTheDirectory(t *testing.
 	}
 	var syncedModes []os.FileMode
 	var syncedDirs []string
-	var inPlace []int // how many of the two files each directory sync saw
+	var inPlace []int
 	syncFile = func(f *os.File) error {
 		fi, err := f.Stat()
 		if err != nil {
@@ -171,13 +151,7 @@ func TestWriteWebhookAuthSyncsEachFileAtItsFinalModeThenTheDirectory(t *testing.
 	}
 }
 
-// TestWriteWebhookAuthKeepsTheOldPairWhenTheSyncFails: the failure injection
-// the sync seam makes possible, and the whole point of the durable writer: a
-// render whose file cannot be made durable must fail the render and leave the
-// file the running apiserver reads byte for byte, with no staging copy left
-// behind — a torn admission webhook where a working one was is the incident
-// this writer exists to prevent. The render's old raw writer never fsynced,
-// never calls the seam, and fails this test on the missing error.
+// a file that cannot be made durable must fail the render and leave the old pair untouched.
 func TestWriteWebhookAuthKeepsTheOldPairWhenTheSyncFails(t *testing.T) {
 	confDir := webhookAuthFixture(t)
 	oldSyncFile, oldSyncDir := syncFile, syncDir
@@ -186,7 +160,7 @@ func TestWriteWebhookAuthKeepsTheOldPairWhenTheSyncFails(t *testing.T) {
 	syncFile = func(*os.File) error { return boom }
 	syncDir = oldSyncDir
 
-	// The pair as the running apiserver already reads it.
+	// the pair as the running apiserver already reads it.
 	old := map[string]string{
 		"admission-webhook.yaml":    "old admission-webhook",
 		"webhook-client.kubeconfig": "old webhook-client",
@@ -210,11 +184,7 @@ func TestWriteWebhookAuthKeepsTheOldPairWhenTheSyncFails(t *testing.T) {
 	}
 }
 
-// TestWriteWebhookAuthReportsAnUnsyncedRename: the rename is durable only once
-// the directory holding it is synced, so a failed directory sync is a failed
-// render reported as the writer's ErrNotDurable — the renamed file is already
-// in place, and the caller must learn that a power loss could still bring the
-// old one back.
+// the rename is durable only once the directory holding it is synced.
 func TestWriteWebhookAuthReportsAnUnsyncedRename(t *testing.T) {
 	confDir := webhookAuthFixture(t)
 	oldSyncFile, oldSyncDir := syncFile, syncDir
@@ -226,9 +196,7 @@ func TestWriteWebhookAuthReportsAnUnsyncedRename(t *testing.T) {
 	if err := writeWebhookAuth(profile.Profile{}); !errors.Is(err, boom) || !errors.Is(err, atomicfile.ErrNotDurable) {
 		t.Fatalf("writeWebhookAuth = %v, want the directory sync's error marked atomicfile.ErrNotDurable", err)
 	}
-	// The first write's rename landed before its directory sync failed; the
-	// render stops there, so exactly one of the pair is new and no staging
-	// copy is left behind.
+	// the first write's rename landed before its directory sync failed.
 	entries, _ := os.ReadDir(confDir)
 	if len(entries) != 1 {
 		t.Errorf("the config dir holds %d entries after the failed sync, want the one renamed file", len(entries))

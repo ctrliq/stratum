@@ -10,9 +10,6 @@ import (
 	"github.com/ctrliq/stratum/internal/objstore"
 )
 
-// An unreadable snapshot.conf makes the load fail with the defaults alongside
-// the error. `schedule` must refuse and write nothing rather than
-// write the defaults over the operator's file.
 func TestSnapshotScheduleRefusesToOverwriteAnUnreadableConfig(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -34,9 +31,6 @@ func TestSnapshotScheduleRefusesToOverwriteAnUnreadableConfig(t *testing.T) {
 	}
 }
 
-// The --snapshots flag does not disable anything: false only swaps the
-// confirmation for the disable note, and the config is saved either way. The
-// help must say so, or operators will think =false stops scheduled snapshots.
 func TestSnapshotScheduleSnapshotsFlagHelp(t *testing.T) {
 	const wantUsage = "false prints how to disable scheduled snapshots instead of the update confirmation; it does not disable them, and the config is saved either way"
 
@@ -55,8 +49,6 @@ func TestSnapshotScheduleSnapshotsFlagHelp(t *testing.T) {
 	}
 }
 
-// --snapshots=false must not skip the save either: the help says the config is
-// saved whether the flag is set or not.
 func TestSnapshotScheduleSavesWhenSnapshotsDisabled(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -99,16 +91,12 @@ func TestSnapshotScheduleSavesWhenTheConfigLoads(t *testing.T) {
 	}
 }
 
-// The configured S3 target the tests below seed the command from.
 func configuredS3() etcdsnap.Config {
 	return etcdsnap.Config{S3: objstore.Target{
 		Bucket: "backups", Endpoint: "http://minio:9000", Region: "us-east-1", Prefix: "stratum", PathStyle: true,
 	}}
 }
 
-// A --s3-* flag passed alone over an already-configured bucket must update its
-// one field and leave the rest of the configured target alone: the flag exists
-// precisely so an operator can change the region without restating everything.
 func TestSnapshotScheduleS3RegionAloneUpdatesOnlyTheRegion(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -134,9 +122,6 @@ func TestSnapshotScheduleS3RegionAloneUpdatesOnlyTheRegion(t *testing.T) {
 	}
 }
 
-// Passing --s3-bucket alone must not wipe the configured endpoint/region/
-// prefix/path-style back to the flag defaults: unset flags are "not stated",
-// not "set to empty".
 func TestSnapshotScheduleBucketAloneKeepsTheConfiguredS3Fields(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -162,9 +147,6 @@ func TestSnapshotScheduleBucketAloneKeepsTheConfiguredS3Fields(t *testing.T) {
 	}
 }
 
-// An S3 detail flag with no bucket anywhere is refused before anything is
-// saved: an endpoint or region without a bucket configures nothing, and the
-// silent no-op made operators believe the setting took.
 func TestSnapshotScheduleS3FlagWithoutAnyBucketIsRefused(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -188,8 +170,6 @@ func TestSnapshotScheduleS3FlagWithoutAnyBucketIsRefused(t *testing.T) {
 	}
 }
 
-// Changed, not value, decides: an explicit --s3-path-style=false over a
-// configured true must save false, though the flag's default is also false.
 func TestSnapshotScheduleExplicitPathStyleFalseWins(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -211,11 +191,6 @@ func TestSnapshotScheduleExplicitPathStyleFalseWins(t *testing.T) {
 	}
 }
 
-// An explicitly empty --s3-bucket is refused, even over an already-configured
-// bucket: saving it would clear the bucket and with it the omitted S3 details
-// (SaveConfig serializes them only while a bucket is set), and a lone
-// --s3-region us-west-2 alongside it would then configure nothing. The way to
-// stop S3 uploads is to drop the S3 target from /etc/stratum/snapshot.conf.
 func TestSnapshotScheduleEmptyBucketOverConfiguredBucketIsRefused(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -242,9 +217,6 @@ func TestSnapshotScheduleEmptyBucketOverConfiguredBucketIsRefused(t *testing.T) 
 	}
 }
 
-// A lone empty --s3-bucket is refused by the same rule: it would clear the
-// configured bucket and lose the configured endpoint/region/prefix/path-style
-// from disk.
 func TestSnapshotScheduleLoneEmptyBucketIsRefused(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -268,8 +240,6 @@ func TestSnapshotScheduleLoneEmptyBucketIsRefused(t *testing.T) {
 	}
 }
 
-// Whitespace is not a bucket either: --s3-bucket="  " is refused like an
-// empty value.
 func TestSnapshotScheduleWhitespaceBucketIsRefused(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })
@@ -293,8 +263,6 @@ func TestSnapshotScheduleWhitespaceBucketIsRefused(t *testing.T) {
 	}
 }
 
-// The base behaviour the fix keeps: every flag passed together sets every
-// field.
 func TestSnapshotScheduleAllS3FlagsTogetherSetEveryField(t *testing.T) {
 	oldLoad, oldSave := scheduleLoadConfig, scheduleSaveConfig
 	t.Cleanup(func() { scheduleLoadConfig, scheduleSaveConfig = oldLoad, oldSave })

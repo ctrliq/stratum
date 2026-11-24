@@ -1,13 +1,4 @@
-// Package nodejob runs a privileged, node-pinned Job that nsenters PID 1 and
-// execs the on-host stratum binary, then gates on the Job result. It is the one
-// implementation of a mechanism that internal/upgrade (rolling upgrades) and
-// internal/certs (cluster CA rotation) both drive, so the two drivers cannot
-// diverge. Every change to the privileged-Job runner — stale-Job
-// guard, image pin, security-context tightening — lives here once.
-//
-// The Job pod is deliberately hostPID/hostNetwork + privileged and runs a
-// shell-free argv (nsenter execs the binary directly; no /bin/bash -c), so no
-// interpreter ever re-parses a caller value.
+// Package nodejob runs a privileged, shell-free Job that nsenters PID 1 and execs argv verbatim.
 package nodejob
 
 import (
@@ -32,18 +23,13 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// pollInterval is how often Run/WaitReady re-check. A var, not a const, so tests
-// can zero it; production never reassigns it.
+// A var so tests can zero it; production never reassigns it.
 var pollInterval = 5 * time.Second
 
-// getCallTimeout bounds each poll read, so a request the API server accepts
-// and never answers (its restart) costs one poll, not the run.
+// Bounds each poll read: an unanswered read costs one poll, not the run.
 var getCallTimeout = 10 * time.Second
 
-// readTimeout is a poll read's bound: getCallTimeout, but never longer than
-// pollInterval. A poll sleeps only what is left of its interval after the
-// read, so a read held to the interval keeps every poll at pollInterval and the
-// whole loop at PollAttempts * pollInterval, the Job's own deadline.
+// Kept at pollInterval so a poll sleeps the remainder and the loop keeps its deadline.
 func readTimeout() time.Duration {
 	if pollInterval > 0 && pollInterval < getCallTimeout {
 		return pollInterval
@@ -51,29 +37,22 @@ func readTimeout() time.Duration {
 	return getCallTimeout
 }
 
-// maxNameLen is the Kubernetes object-name limit; TruncName fits Job names to it.
 const maxNameLen = 63
 
-// Spec describes one privileged node Job. Namespace/Name/Node/LabelKey/Container/
-// Argv define the pod; ActiveDeadline and PollAttempts bound it; Kind names it
-// in the error messages so each caller keeps its own wording.
+// Spec describes one privileged node Job; fit Name to 63 characters with TruncName.
 type Spec struct {
-	// Output receives cleanup warnings. Nil preserves stdout for standalone
-	// callers; operations serving MCP supply their own progress writer.
+	// Nil keeps stdout: standalone callers print there; MCP callers supply their own.
 	Output         io.Writer
 	Namespace      string
-	Name           string   // Job name; use TruncName to respect the 63-char limit
-	Node           string   // pod NodeName, and the value of the LabelKey label
-	LabelKey       string   // label whose value is Node (e.g. stratum.ciq.com/upgrade)
-	Container      string   // container name
-	Argv           []string // full shell-free command: nsenter … -- <binary> …
+	Name           string
+	Node           string
+	LabelKey       string
+	Container      string
+	Argv           []string
 	ActiveDeadline time.Duration
-	PollAttempts   int    // completion polls, one every pollInterval
-	Kind           string // noun for error messages, e.g. "per-node upgrade" / "carotate"
-	// Critical admits the pod as system-node-critical, as the static pods are:
-	// under node pressure the kubelet refuses every other new pod. It is also
-	// allowed to evict workload pods to make room, past every PDB, so only a
-	// Job on a node that has already been drained should set it.
+	PollAttempts   int
+	Kind           string // noun for error messages
+	// Admitted under node pressure, may evict past PDBs; only a Job on a drained node should set it.
 	Critical bool
 }
 
@@ -84,16 +63,10 @@ func (s Spec) output() io.Writer {
 	return os.Stdout
 }
 
-// NodeAnnotation carries the target node's name verbatim.
-//
-// The label cannot: a node name is a DNS subdomain and may be 253 characters,
-// while a label value may be 63. Build therefore puts a hash in the label when
-// the name does not fit, and the full name here, where there is no limit.
+// The label cannot hold a node name over 63 characters; the annotation is unlimited.
 const NodeAnnotation = "stratum.ciq.com/node"
 
-// NodeLabelValue returns node when it is a usable label value, or a stable
-// hash of it when it is not. Selecting on LabelKey=NodeLabelValue(node) finds
-// every Job targeting that node, whatever scheme named them.
+// NodeLabelValue returns node when it fits a label value, else a stable hash of it.
 func NodeLabelValue(node string) string {
 	if len(validation.IsValidLabelValue(node)) == 0 {
 		return node
@@ -102,9 +75,6 @@ func NodeLabelValue(node string) string {
 	return fmt.Sprintf("node-%x", sum[:16])
 }
 
-// JobNode returns the node a Job targets. Jobs written before NodeAnnotation
-// existed carry the name in the label, which was possible only because a node
-// whose name did not fit could not have a Job at all.
 func JobNode(j *batchv1.Job, labelKey string) string {
 	if v, ok := j.Annotations[NodeAnnotation]; ok {
 		return v
@@ -112,10 +82,6 @@ func JobNode(j *batchv1.Job, labelKey string) string {
 	return j.Labels[labelKey]
 }
 
-// TruncName returns name when it fits the 63-character object-name limit.
-// A longer name keeps its first 46 characters, less any trailing '-' or '.',
-// and gains a hash of the whole name, so the result is a valid name and two
-// long names sharing a prefix still differ.
 func TruncName(name string) string {
 	if len(name) <= maxNameLen {
 		return name
@@ -124,8 +90,6 @@ func TruncName(name string) string {
 	return strings.TrimRight(name[:46], ".-") + fmt.Sprintf("-%x", sum[:8])
 }
 
-// Build renders the Job object for s. Pure — split out so the pod spec is
-// unit-testable without a cluster.
 func Build(s Spec) *batchv1.Job {
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -148,9 +112,7 @@ func Build(s Spec) *batchv1.Job {
 					Tolerations:                   []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
 					Containers: []corev1.Container{{
 						Name: s.Container,
-						// Never pull: the image ships in the airgap payload, and an
-						// upgrade or CA rotation is exactly when a node may have no
-						// registry reachable.
+						// The image ships in the airgap payload; a node mid-change may have no registry reachable.
 						Image:           version.NsenterImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: &corev1.SecurityContext{Privileged: ptr.To(true)},
@@ -162,8 +124,6 @@ func Build(s Spec) *batchv1.Job {
 	}
 }
 
-// create creates the Job, replacing a finished one this node owns from a
-// previous run so its stale status cannot answer for this one.
 func create(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -174,27 +134,13 @@ func create(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create %s job: %w", s.Kind, err)
 		}
-		// A leftover Job from a previous run would short-circuit the poll below with
-		// its STALE status (a stale Succeeded would falsely pass this node). Replace
-		// it, but only if it has finished. A Job that is still
-		// running, or being deleted with its Pod still up, belongs to a run that is
-		// either alive or crashed mid-change on this node, and deleting it would
-		// interrupt that change on the host. No lease or preflight check can make
-		// "check, then replace" atomic against a stale process resuming, so the
-		// replace itself refuses: two runs racing for one node leave one Job
-		// running and the other run failing loudly. An abandoned Job still ends at
-		// its ActiveDeadline and becomes replaceable.
+		// Replace only a finished Job: a stale Succeeded would falsely pass this node's poll.
 		existing, err := jobs.Get(ctx, s.Name, metav1.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("inspect existing %s Job %s: %w", s.Kind, s.Name, err)
 		}
 		if err == nil {
-			// Whose Job this is, before deciding anything about it. Two
-			// nodes can arrive at one Job name -- through truncation, or
-			// because a departed node's Job was named for a name a current
-			// node now hashes to -- and replacing a Job this node does not
-			// own is the deletion the naming exists to prevent. An owner
-			// that cannot be established at all counts as someone else's.
+			// Two nodes can reach one Job name; replacing another node's is the deletion naming prevents.
 			if owner := JobNode(existing, s.LabelKey); owner != s.Node {
 				return fmt.Errorf("the existing %s Job %s belongs to node %q, not %q; refusing to replace it. "+
 					"If that node is gone, remove the Job (kubectl -n %s delete job %s) and retry",
@@ -215,30 +161,16 @@ func create(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 	return nil
 }
 
-// RunExitCode runs a Job whose answer is its exit status rather than its
-// success, and returns the container's exit code: 0 when the Job succeeded,
-// the code it failed with otherwise. A failed Job is left in place for
-// inspection, and the next Run or RunExitCode on it replaces it. An error
-// means no exit status could be established (the Job timed out, or failed
-// without its container terminating).
 func RunExitCode(ctx context.Context, cs kubernetes.Interface, s Spec) (int, error) {
 	code, _, err := runExitCode(ctx, cs, s, false)
 	return code, err
 }
 
-// RunExitCodeLogs is RunExitCode that also returns the log of the Job's Pod,
-// for a Job that answers in its output as well as its exit status. The log of
-// a succeeded Job is read before the Job is deleted, since Logs finds the Pod
-// through the Job. An error also means the log could not be read; one that
-// wraps ErrLogUnread had an exit status all the same, and returns it.
 func RunExitCodeLogs(ctx context.Context, cs kubernetes.Interface, s Spec) (int, string, error) {
 	return runExitCode(ctx, cs, s, true)
 }
 
-// ErrLogUnread marks a RunExitCodeLogs error whose Job did end with an exit
-// status, returned beside it, but whose Pod's log could not be read: the
-// apiserver reads it from the node's kubelet, which can be unreachable or
-// untrusted while the Job's status still says how it ended.
+// The Job's status is valid; the apiserver reads the log from a kubelet that may not answer.
 var ErrLogUnread = errors.New("its log could not be read")
 
 func runExitCode(ctx context.Context, cs kubernetes.Interface, s Spec, withLog bool) (int, string, error) {
@@ -301,15 +233,10 @@ func runExitCode(ctx context.Context, cs kubernetes.Interface, s Spec, withLog b
 	return 0, "", timedOut(s, lastErr)
 }
 
-// controllerUIDLabel is the label the Job controller puts on every Pod it
-// creates, naming that one Job by UID.
+// The label the Job controller puts on every Pod it creates.
 const controllerUIDLabel = "batch.kubernetes.io/controller-uid"
 
-// containerExitCode reads the exit code of s.Container in the Pod of the Job
-// with jobUID. By UID, not by name: every check on a node reuses one Job name,
-// and a finished check's Job is deleted in the background, so its Pod can
-// outlive it and answer for the next one -- an old exit 0 read for a new 10
-// would skip an upgrade the node needs.
+// By UID: a previous Job's Pod can outlive its background deletion and answer for this one.
 func containerExitCode(ctx context.Context, cs kubernetes.Interface, s Spec, jobUID string) (int, error) {
 	if jobUID == "" {
 		return 0, fmt.Errorf("the Job has no UID to find its Pod by")
@@ -325,8 +252,7 @@ func containerExitCode(ctx context.Context, cs kubernetes.Interface, s Spec, job
 				return int(c.State.Terminated.ExitCode), nil
 			}
 		}
-		// A Pod the kubelet refused -- evicted at admission under node
-		// pressure -- never ran its container; its own reason is the answer.
+		// An evicted Pod never ran its container; its own reason is the answer.
 		if p.Status.Reason != "" || p.Status.Message != "" {
 			why = fmt.Sprintf(" (Pod %s %s: %s %s)", p.Name, p.Status.Phase, p.Status.Reason, p.Status.Message)
 		}
@@ -334,9 +260,7 @@ func containerExitCode(ctx context.Context, cs kubernetes.Interface, s Spec, job
 	return 0, fmt.Errorf("no terminated %s container found%s", s.Container, why)
 }
 
-// Logs returns the log of s.Container in the Pod of the Job named s.Name, as
-// RunExitCode reads its exit code: by the Job's UID, so an earlier Job's Pod
-// cannot answer.
+// By the Job's UID, so an earlier Job's Pod cannot answer.
 func Logs(ctx context.Context, cs kubernetes.Interface, s Spec) (string, error) {
 	j, err := getJob(ctx, cs.BatchV1().Jobs(s.Namespace), s.Name)
 	if err != nil {
@@ -345,13 +269,9 @@ func Logs(ctx context.Context, cs kubernetes.Interface, s Spec) (string, error) 
 	return podLog(ctx, cs, s, string(j.UID))
 }
 
-// logReadTimeout bounds podLog. The apiserver relays a Pod's log from the
-// node's kubelet, and one that accepts the request and never answers would
-// otherwise hold the caller after the Job has already ended: ActiveDeadline
-// and PollAttempts bound the Job, not this read.
+// A stalled kubelet log read must not hold the caller past the Job's end.
 var logReadTimeout = 30 * time.Second
 
-// podLog is the log of s.Container in the Pod of the Job with jobUID.
 func podLog(ctx context.Context, cs kubernetes.Interface, s Spec, jobUID string) (string, error) {
 	if jobUID == "" {
 		return "", fmt.Errorf("the Job has no UID to find its Pod by")
@@ -369,9 +289,6 @@ func podLog(ctx context.Context, cs kubernetes.Interface, s Spec, jobUID string)
 	return string(b), err
 }
 
-// Run creates the Job (replacing a stale one from a prior run so its stale status
-// cannot short-circuit the poll), waits for it to complete, deletes it on success,
-// and returns an error on failure or timeout.
 func Run(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 	if err := create(ctx, cs, s); err != nil {
 		return err
@@ -402,7 +319,7 @@ func Run(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 			return nil
 		}
 		if j.Status.Failed >= 1 {
-			// The failed Job is left in place for inspection; a re-run replaces it.
+			// Left in place for inspection; a re-run replaces it.
 			return fmt.Errorf("%s Job %s failed (logs: kubectl -n %s logs job/%s)", s.Kind, s.Name, s.Namespace, s.Name)
 		}
 		if err := wait(ctx, pollInterval-time.Since(started)); err != nil {
@@ -412,17 +329,13 @@ func Run(ctx context.Context, cs kubernetes.Interface, s Spec) error {
 	return timedOut(s, lastErr)
 }
 
-// getJob is one poll read. An error from it that is not NotFound is the API
-// server being unreachable, as while it restarts under a single-node cluster's
-// own upgrade: the callers keep polling through it rather than give up on a
-// Job that is still changing the host.
+// Not-NotFound errors are an unreachable API server mid-upgrade; the poll rides them out.
 func getJob(ctx context.Context, jobs batchtyped.JobInterface, name string) (*batchv1.Job, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout())
 	defer cancel()
 	return jobs.Get(ctx, name, metav1.GetOptions{})
 }
 
-// timedOut is the poll's give-up error, naming the last read that failed.
 func timedOut(s Spec, lastErr error) error {
 	if lastErr != nil {
 		return fmt.Errorf("%s Job %s did not complete in time (last error reading it: %w)", s.Kind, s.Name, lastErr)
@@ -430,9 +343,7 @@ func timedOut(s Spec, lastErr error) error {
 	return fmt.Errorf("%s Job %s did not complete in time", s.Kind, s.Name)
 }
 
-// Finished reports whether a Job has run to an end: it succeeded or failed, by
-// its counters or its conditions. A Job being deleted is not finished until its
-// Pod is: a deletion timestamp alone says nothing about the host.
+// A deletion timestamp alone says nothing about the host.
 func Finished(j *batchv1.Job) bool {
 	if j.Status.Succeeded >= 1 || j.Status.Failed >= 1 {
 		return true
@@ -445,10 +356,7 @@ func Finished(j *batchv1.Job) bool {
 	return false
 }
 
-// DeleteExactAndWait deletes exactly the Job object it was given, with its UID
-// and resourceVersion as preconditions, so a Job recreated or changed since it
-// was inspected (another run's, now running) is never the one removed. Then it
-// waits for it to be gone.
+// Preconditions keep a Job recreated or changed since it was inspected from being removed.
 func DeleteExactAndWait(ctx context.Context, cs kubernetes.Interface, j *batchv1.Job) error {
 	jobs := cs.BatchV1().Jobs(j.Namespace)
 	pp := metav1.DeletePropagationForeground
@@ -473,7 +381,6 @@ func DeleteExactAndWait(ctx context.Context, cs kubernetes.Interface, j *batchv1
 	return fmt.Errorf("job did not finish deleting")
 }
 
-// Ready reports whether a node's Ready condition is True.
 func Ready(n *corev1.Node) bool {
 	for _, c := range n.Status.Conditions {
 		if c.Type == corev1.NodeReady {
@@ -483,8 +390,6 @@ func Ready(n *corev1.Node) bool {
 	return false
 }
 
-// WaitReady polls until the named node is Ready or attempts run out (one every
-// pollInterval).
 func WaitReady(ctx context.Context, cs kubernetes.Interface, name string, attempts int) error {
 	for i := 0; i < attempts; i++ {
 		started := time.Now()
@@ -504,7 +409,6 @@ func WaitReady(ctx context.Context, cs kubernetes.Interface, name string, attemp
 	return fmt.Errorf("node %s did not become Ready in time", name)
 }
 
-// wait interrupts the polling delay when the caller cancels the operation.
 func wait(ctx context.Context, interval time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return err

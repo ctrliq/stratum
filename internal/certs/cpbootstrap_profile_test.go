@@ -10,9 +10,7 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// The finalize preflight skips control planes by what the cluster's profile
-// declares, not by its name: an importer's profile that bootstraps serving
-// certs is skipped like cis, and one that does not is probed like none.
+// Skip by what the cluster's profile declares, not by its name.
 func TestControlPlanesBootstrapServingReadsTheProfile(t *testing.T) {
 	prev, prevConf := profile.All(), version.K8sConfDir
 	t.Cleanup(func() {

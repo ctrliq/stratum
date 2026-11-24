@@ -116,26 +116,11 @@ func TestTokenListPagingAndBounds(t *testing.T) {
 	}
 }
 
-// TestCredentialInvalidation_DestructiveToolsStillInvalidate pins the
-// invalidation wiring: certs_rotate, certs_rotate_ca and ha_repoint can
-// rewrite the credentials and endpoints cached by the server's configurable
-// and node connectors,
-// and such an operation ends three ways — success, partial failure, or
-// cancellation mid-run. However it ends, the handler must leave both caches
-// invalidated, so the next tool call re-resolves the kubeconfigs as they now
-// stand instead of reusing a client built from the pre-rotation files. The
-// kubeconfigs here never change while a subtest runs, so the connector's
-// content fingerprints alone would hand the captured cluster straight back:
-// only the invalidation the operation runs can make the second Cluster call
-// rebuild. Invalidation changes what is handed out next; a cluster handed out
-// before the operation keeps serving requests already in flight.
+// However the operation ends, both connector caches must be invalidated for the next tool call.
 func TestCredentialInvalidation_DestructiveToolsStillInvalidate(t *testing.T) {
-	// capturedCluster builds a connector on a kubeconfig that stays put for
-	// the whole subtest and returns the cluster it caches.
 	capturedCluster := func(t *testing.T) (*kube.Connector, *kube.Cluster) {
 		t.Helper()
-		// TEST-NET-1 is unreachable by design: building a cluster contacts
-		// nothing, and anything that dialed would fail instead of hang.
+		// TEST-NET-1 is unreachable by design: building a cluster contacts nothing.
 		path := kubetest.Kubeconfig(t, &rest.Config{Host: "https://192.0.2.1:6443"})
 		conn := kube.NewConnector(kube.Options{Kubeconfig: path})
 		cl, err := conn.Cluster("")
@@ -144,8 +129,6 @@ func TestCredentialInvalidation_DestructiveToolsStillInvalidate(t *testing.T) {
 		}
 		return conn, cl
 	}
-	// requireInvalidated fails the subtest when the connector still serves
-	// the cluster captured before the operation ran.
 	requireInvalidated := func(t *testing.T, conn *kube.Connector, before *kube.Cluster) {
 		t.Helper()
 		after, err := conn.Cluster("")
@@ -160,8 +143,7 @@ func TestCredentialInvalidation_DestructiveToolsStillInvalidate(t *testing.T) {
 
 	t.Run("ha_repoint invalidates after a failed repoint", func(t *testing.T) {
 		fakeStratumHost(t)
-		// The repoint fails at its first step, the VIP check, which is a
-		// var so a test can stand in for a VIP that does not answer.
+		// The VIP check is a var, so a test can stand in for a VIP that does not answer.
 		oldCheck := ha.VIPServes
 		ha.VIPServes = func(string) error { return errors.New("the VIP does not answer") }
 		t.Cleanup(func() { ha.VIPServes = oldCheck })
@@ -181,9 +163,7 @@ func TestCredentialInvalidation_DestructiveToolsStillInvalidate(t *testing.T) {
 
 	t.Run("ha_repoint invalidates after a cancelled Cilium repoint", func(t *testing.T) {
 		fakeStratumHost(t)
-		// clusterOfThisNode reads this node's admin.conf beside the
-		// connector's credential; point it at a real kubeconfig whose API is
-		// never reached, so the only failure is the dead request context.
+		// admin.conf points at a kubeconfig whose API is never reached; the only failure is the context.
 		oldConf := version.AdminConf
 		version.AdminConf = kubetest.Kubeconfig(t, &rest.Config{Host: "https://192.0.2.1:6443"})
 		t.Cleanup(func() { version.AdminConf = oldConf })
@@ -223,9 +203,7 @@ func TestCredentialInvalidation_DestructiveToolsStillInvalidate(t *testing.T) {
 
 	t.Run("certs_rotate_ca invalidates after a cancelled phase", func(t *testing.T) {
 		fakeStratumHost(t)
-		// Point admin.conf at a path that cannot exist, as the cancellation
-		// pin for these tools does: a phase that read credentials before
-		// honoring the context would fail with the missing file instead.
+		// A phase that read credentials before honoring the context would fail with this file instead.
 		oldConf := version.AdminConf
 		version.AdminConf = filepath.Join(t.TempDir(), "missing-admin.conf")
 		t.Cleanup(func() { version.AdminConf = oldConf })
@@ -246,20 +224,11 @@ func TestCredentialInvalidation_DestructiveToolsStillInvalidate(t *testing.T) {
 	})
 }
 
-// TestTokenList_RidesTheNodeConnectorsTimeout is the internal/mcp companion
-// to pkg/cli's TestNodeConnector_CarriesTheServersRequestTimeout. The
-// registered token_list must build on the node connector the server passes
-// the catalog — one carrying the server's --request-timeout — not on a
-// private admin.conf connector with the 30-second default. pkg/cli cannot
-// make that call:
-// token_list's Stratum host check fails off a node, so the behavioural half
-// of the guard lives here, where fakeStratumHost can satisfy it.
+// token_list must build on the node connector the server passes, not a private connector.
 func TestTokenList_RidesTheNodeConnectorsTimeout(t *testing.T) {
 	fakeStratumHost(t)
 
-	// The API server behind admin.conf answers token_list's secrets list
-	// after 2s: which connector served the call decides whether the call
-	// fails fast or succeeds late.
+	// The API server behind admin.conf answers after 2s: which connector served decides fast or late.
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.Header().Set("Content-Type", "application/json")
@@ -272,9 +241,7 @@ func TestTokenList_RidesTheNodeConnectorsTimeout(t *testing.T) {
 	t.Cleanup(func() { version.AdminConf = oldConf })
 
 	t.Run("TokenListHandler applies the connector's request timeout", func(t *testing.T) {
-		// The seam the registered tool rides, checked directly against the
-		// guard's pairing: a 100ms connector against a server that answers
-		// after 2s must fail the call well before the server answers.
+		// A 100ms connector against a server answering after 2s must fail well before the answer.
 		conn := kube.NewConnector(kube.Options{Kubeconfig: version.AdminConf, Timeout: 100 * time.Millisecond})
 		start := time.Now()
 		_, _, err := TokenListHandler(conn)(t.Context(), nil, TokenListIn{})
@@ -287,11 +254,7 @@ func TestTokenList_RidesTheNodeConnectorsTimeout(t *testing.T) {
 	})
 
 	t.Run("the registered token_list rides the node connector", func(t *testing.T) {
-		// Registered exactly as pkg/cli registers it: the catalog's token_list
-		// row builds its handler on the node connector it is given, so a
-		// 100ms node connector must bound the call. A row that goes back to a
-		// private connector lets the call answer at 2s instead — the drift
-		// this pin fails on.
+		// The catalog row must build on the node connector it is given; a private connector answers at 2s.
 		nodeConn := kube.NewConnector(kube.Options{Kubeconfig: version.AdminConf, Timeout: 100 * time.Millisecond})
 		cat := Catalog("v0-test", kube.NewConnector(kube.Options{}), nodeConn, WritePolicy{})
 		var row *Tool
@@ -326,13 +289,9 @@ func TestTokenList_RidesTheNodeConnectorsTimeout(t *testing.T) {
 	})
 }
 
-// TestNodeCredentialOperations_RideTheNodeConnectorsTimeout checks that the
-// reload-capable builder preserves its connector's request timeout. Registered
-// handler isolation is covered by TestCatalogNodeCredentialsStayWithTheirServer.
+// The reload-capable builder preserves its connector's request timeout.
 func TestNodeCredentialOperations_RideTheNodeConnectorsTimeout(t *testing.T) {
-	// The API server behind admin.conf answers a secrets list after 2s:
-	// which builder served the call decides whether it fails fast or
-	// succeeds late.
+	// The API server behind admin.conf answers after 2s: which builder served decides fast or late.
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.Header().Set("Content-Type", "application/json")

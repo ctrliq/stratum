@@ -16,21 +16,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// From here: the node-owned backup-evidence publisher. It is a run-group
-// task postStart starts beside the snapshot loop — started by `stratum up`,
-// parked on the group's context, joined at shutdown, backoff-restarted by
-// the group — and it samples the engine's assembled backup-evidence reader
-// through the seam wired from above (pkg/cli passes the reader as a
-// function, because its package imports this one), refreshing the durable
-// record under the node's config area on the contract cadence. It needs no
-// operator and no apiserver, so it runs on an operator-off controller like
-// every other task, and it shares the snapshot loop's spec.snapshots
-// disabled gate.
-
-// stubPublisherSeam points the publisher's sampler and cadence seams at the
-// given sampler ticking on the given cadence, restoring both on cleanup:
-// the publisher reads both through package seams, so a test drives it with
-// a stub and a shrunk interval the way the loop tests drive snapshotSave.
 func stubPublisherSeam(t *testing.T, interval time.Duration, sample EvidenceSampler) {
 	t.Helper()
 	oldSampler, oldInterval := evidenceSampler, evidencePublishInterval
@@ -38,9 +23,7 @@ func stubPublisherSeam(t *testing.T, interval time.Duration, sample EvidenceSamp
 	evidenceSampler, evidencePublishInterval = sample, interval
 }
 
-// recordedPublisherEvidence is the publisher's durable record as these
-// tests read it back from disk, json tags and all — the restart-persistence
-// proof: nothing carries a sample across processes but through the file.
+// Nothing carries a sample across processes but through the record file.
 type recordedPublisherEvidence struct {
 	SchemaVersion  int       `json:"schemaVersion"`
 	SampledAt      time.Time `json:"sampledAt"`
@@ -54,13 +37,10 @@ type recordedPublisherEvidence struct {
 	Warnings       []string  `json:"warnings"`
 }
 
-// publisherRecordPath is where the publisher's record persists, the same
-// place the production writer and the wiring test's supervisor stub look.
 func publisherRecordPath() string {
 	return filepath.Join(version.K8sConfDir, "backup-evidence.yaml")
 }
 
-// readPublisherRecord reads the durable record fresh from disk.
 func readPublisherRecord(t *testing.T) recordedPublisherEvidence {
 	t.Helper()
 	b, err := os.ReadFile(publisherRecordPath())
@@ -74,17 +54,7 @@ func readPublisherRecord(t *testing.T) recordedPublisherEvidence {
 	return rec
 }
 
-// TestPublisherRecordIsOwnedAndReservedFromProfiles pins the record's
-// repo-gate obligations, asserted on the record's own path because the
-// coverage tests only iterate files already in the record: the path is in
-// internal/version's owning-package record with this package as its owner —
-// the node-file write guard derives the files and packages it covers from
-// that record, so without the entry the publisher's writes stand outside the
-// guard — and its name is one the engine keeps in its config directory
-// (internal/profile's reserved names), so no node profile may declare a
-// config file of that name: one that could would fight the publisher's
-// every-cadence refresh of the same path, each silently destroying the
-// other's file.
+// The write guard covers the record only via the owning-package record; no profile may shadow it.
 func TestPublisherRecordIsOwnedAndReservedFromProfiles(t *testing.T) {
 	if got, ok := version.NodeFileOwners[publisherRecordPath()]; !ok || got != "internal/cluster" {
 		t.Errorf("the owning-package record has %q for the publisher's record %s, want internal/cluster: the node-file write guard covers a node file only through that record", got, publisherRecordPath())
@@ -94,11 +64,7 @@ func TestPublisherRecordIsOwnedAndReservedFromProfiles(t *testing.T) {
 	}
 }
 
-// TestPublisherSamplesAndRecordsDurably pins the publisher's core contract:
-// the task postStart starts samples at once and then on its cadence, and
-// every sample reaches the durable record under the config area — the
-// latest sample whole, never an append — written atomically at 0600 the
-// way every node record is.
+// Samples at once and then on its cadence; every sample replaces the record whole.
 func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 	fakeHostKubectl(t)
 	stubLoops(t, time.Hour)
@@ -106,9 +72,7 @@ func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 	joined := seedState()
 	joined.EtcdState = "existing"
 
-	// The first sample describes two exact backups, every later one three
-	// with an unknown total: the record must end at the latest sample, not
-	// stay at the first.
+	// The record must end at the latest sample, not the first.
 	var samples atomic.Int32
 	stubPublisherSeam(t, 10*time.Millisecond, func(context.Context) (EvidenceSample, bool) {
 		s := EvidenceSample{
@@ -127,9 +91,6 @@ func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 		return s, true
 	})
 
-	// The bubble only orchestrates — start, wait out the cadence, stop, join
-	// — and every assertion runs after it, so a failure leaves no parked
-	// goroutine behind.
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		g := newRunGroup(ctx)
@@ -177,20 +138,10 @@ func TestPublisherSamplesAndRecordsDurably(t *testing.T) {
 	}
 }
 
-// TestPublisherRecordsIntoAMissingConfigArea pins the record's durability
-// precondition: every node-record writer creates its directory before the
-// atomic write — the snapshot evidence record, the renewal record, the
-// node state — so a publisher whose config area is missing (wiped under a
-// running controller, a state save that failed at start) records into it
-// on its next tick instead of warning forever that the write found no
-// directory, the one condition the loop it shares a gate with heals by
-// itself.
+// Every node-record writer creates its directory before the atomic write.
 func TestPublisherRecordsIntoAMissingConfigArea(t *testing.T) {
 	fakeHostKubectl(t)
 	stubLoops(t, time.Hour)
-	// A config area that does not exist: redirectStateArea's temp dir is
-	// there, so point the record's directory one level deeper, at a path
-	// nothing has created.
 	missing := filepath.Join(t.TempDir(), "config")
 	oldConf := version.K8sConfDir
 	version.K8sConfDir = missing
@@ -217,11 +168,7 @@ func TestPublisherRecordsIntoAMissingConfigArea(t *testing.T) {
 	}
 }
 
-// TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample pins the
-// shutdown half: the publisher is a run-group task, not a stray goroutine,
-// so a sample in flight when the controller stops finishes — the group's
-// wait holds until it does — and the task then parks nowhere else, ending
-// on the cancelled group context like every other task.
+// A sample in flight at shutdown finishes before the group's wait returns.
 func TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample(t *testing.T) {
 	fakeHostKubectl(t)
 	stubLoops(t, time.Hour)
@@ -229,10 +176,7 @@ func TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample(t *testing.T) 
 	joined := seedState()
 	joined.EtcdState = "existing"
 
-	// The sample parks until released: the parked sample is the in-flight
-	// work the join watches. The channel is created inside the bubble — a
-	// task parked on a channel created outside it is never durably blocked,
-	// and synctest.Wait would hang.
+	// The channel is created inside the bubble; synctest.Wait would hang otherwise.
 	var release chan struct{}
 	var parked, returned atomic.Int32
 	stubPublisherSeam(t, time.Minute, func(context.Context) (EvidenceSample, bool) {
@@ -251,8 +195,6 @@ func TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample(t *testing.T) 
 		time.Sleep(10 * time.Millisecond)
 		synctest.Wait()
 		if parked.Load() < 1 {
-			// Nothing sampled: stop the group cleanly and let the
-			// assertion after the bubble say it.
 			cancel()
 			g.wait()
 			return
@@ -267,8 +209,6 @@ func TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample(t *testing.T) 
 		default:
 		}
 		if joinedWhileInFlight {
-			// The join already returned with the sample parked; stop the
-			// group and report after the bubble.
 			cancel()
 			close(release)
 			<-waitDone
@@ -277,9 +217,6 @@ func TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample(t *testing.T) 
 
 		cancel()
 		close(release)
-		// A fake minute is far past any backoff floor and far more than
-		// the task needs to notice the cancelled context; a task that
-		// never stops must fail, not hang the test.
 		select {
 		case <-waitDone:
 		case <-time.After(time.Minute):
@@ -297,13 +234,6 @@ func TestPublisherStopsOnTheGroupContextAndJoinsItsInFlightSample(t *testing.T) 
 	}
 }
 
-// TestPublisherIsOnTheRosterWithTheOperatorOff pins the operator
-// independence of the publisher's lifecycle: postStart starts it with
-// spec.operator off exactly as with it on — the publisher needs no operator
-// process and no operator API — and only spec.snapshots.disabled drops it,
-// the same gate that drops the snapshot loop. The context ends before the
-// start, so the group starts none of the tasks and the roster is all this
-// test reads.
 func TestPublisherIsOnTheRosterWithTheOperatorOff(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -330,10 +260,6 @@ func TestPublisherIsOnTheRosterWithTheOperatorOff(t *testing.T) {
 	}
 }
 
-// TestPublisherIsGatedLikeTheSnapshotLoop pins the gate the publisher
-// shares with the snapshot loop: with spec.snapshots.disabled the publisher
-// samples nothing — no record is written, no sampler runs — while the
-// config's other loops keep their own gates.
 func TestPublisherIsGatedLikeTheSnapshotLoop(t *testing.T) {
 	fakeHostKubectl(t)
 	renewals, snapshots := stubLoops(t, time.Millisecond)
@@ -367,19 +293,11 @@ func TestPublisherIsGatedLikeTheSnapshotLoop(t *testing.T) {
 	}
 }
 
-// TestPublisherSamplerParameterIsWiredByRunController pins the seam's
-// wiring: the evidence sampler RunController takes — the only way the
-// engine's assembled reader, whose package imports this one, can reach the
-// publisher — lands on the sample seam and the publisher's first sample is
-// taken and recorded durably before the controller's run ends. The
-// supervisor stands in for itself returning at once after the record
-// lands; everything before it — the renders, the roster, postStart — is the
-// real start path.
+// The stub returns once the record lands; the renders, roster and postStart before it are real.
 func TestPublisherSamplerParameterIsWiredByRunController(t *testing.T) {
 	fakeHostKubectl(t)
 	redirectStateArea(t)
-	// The renders before the supervisor write into these roots; point them
-	// at temp trees so the start touches nothing of the host.
+	// The renders before the supervisor write into these roots.
 	for _, sw := range []struct{ p *string }{
 		{&version.ManifestsDir},
 		{&version.CoreDNSUpstreamDir},
@@ -414,11 +332,6 @@ func TestPublisherSamplerParameterIsWiredByRunController(t *testing.T) {
 
 	oldRun := runSupervisor
 	t.Cleanup(func() { runSupervisor = oldRun })
-	// The stub stands where the supervisor stands — after every render,
-	// after postStart — and returns once the publisher's first sample has
-	// landed in the durable record, so the wiring the test pins is the
-	// whole real path up to the one call it must not make (a real
-	// supervisor starts host processes).
 	runSupervisor = func(context.Context, []supervisor.Process, supervisor.Options) error {
 		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 			if _, err := os.Stat(publisherRecordPath()); err == nil {
@@ -446,18 +359,11 @@ func TestPublisherSamplerParameterIsWiredByRunController(t *testing.T) {
 	}
 }
 
-// TestPublisherKeepsSamplingWhenTheRecordCannotBeWritten pins the write's
-// error path: a record write that fails — a config area that cannot be
-// written — is a warning in the daemon's log, never the end of the task.
-// The publisher keeps sampling on its cadence: the run group's backoff
-// restart exists for panics and early returns, and a failed write must not
-// become one, or a node whose config area heals would stop publishing
-// until a restart.
+// A failed write must not end the task, or a healed config area stops publishing.
 func TestPublisherKeepsSamplingWhenTheRecordCannotBeWritten(t *testing.T) {
 	fakeHostKubectl(t)
 	stubLoops(t, time.Hour)
-	// A regular file where the config directory belongs: every record write
-	// into it fails, while the sampler keeps answering.
+	// A regular file where the config directory belongs makes every write fail.
 	blocker := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -493,15 +399,6 @@ func TestPublisherKeepsSamplingWhenTheRecordCannotBeWritten(t *testing.T) {
 	}
 }
 
-// TestRunControllerResetsTheSamplerSeamWhenNoSamplerIsPassed pins the
-// seam's reset: the sample seam is a package global, so a RunController
-// call that wires no sampler must leave the seam at its no-op default —
-// not keep the sampler a previous call left behind — exactly as the
-// parameter's doc promises ("Absent, the sample seam keeps its no-op
-// default and the publisher records nothing"). The supervisor stands in
-// for itself returning at once, the same stand-in the wiring test uses;
-// the assignment is the start's own first step, so the whole real start
-// path is what resets it.
 func TestRunControllerResetsTheSamplerSeamWhenNoSamplerIsPassed(t *testing.T) {
 	fakeHostKubectl(t)
 	redirectStateArea(t)
@@ -524,9 +421,7 @@ func TestRunControllerResetsTheSamplerSeamWhenNoSamplerIsPassed(t *testing.T) {
 	stubNodeTask(t, time.Millisecond, time.Hour, st.Hostname,
 		func(context.Context, string) bool { return true })
 
-	// A sampler a previous RunController call left behind: the seam must
-	// not keep it. It answers ok=true so a left-behind seam is tellable
-	// from the reset no-op default.
+	// Answers ok=true so a left-behind seam is tellable from the reset no-op default.
 	evidenceSampler = func(context.Context) (EvidenceSample, bool) {
 		return EvidenceSample{}, true
 	}

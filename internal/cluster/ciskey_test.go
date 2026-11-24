@@ -32,7 +32,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// joinState answers a fixed etcd state and records that it was asked.
 func joinState(n int, bundle bool, err error, asked *bool) func() (etcdJoinState, error) {
 	return func() (etcdJoinState, error) {
 		*asked = true
@@ -40,11 +39,6 @@ func joinState(n int, bundle bool, err error, asked *bool) func() (etcdJoinState
 	}
 }
 
-// TestSharedSecretGate: enabling CIS on a control plane of a live HA
-// cluster minted a key only that apiserver held, so Secrets written through it
-// could not be read through the others. A key is minted only on a sole control
-// plane with no outstanding join bundle; a key already on disk is never
-// second-guessed.
 func TestSharedSecretGate(t *testing.T) {
 	dir := t.TempDir()
 	present := filepath.Join(dir, "encryption-config.yaml")
@@ -52,8 +46,7 @@ func TestSharedSecretGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	absent := filepath.Join(dir, "missing.yaml")
-	// A symlink that points at itself: Stat fails with ELOOP, which is neither
-	// "there" nor "not there".
+	// A symlink that points at itself: Stat fails with ELOOP, neither "there" nor "not there".
 	loop := filepath.Join(dir, "loop.yaml")
 	if err := os.Symlink(loop, loop); err != nil {
 		t.Fatal(err)
@@ -94,9 +87,6 @@ func TestSharedSecretGate(t *testing.T) {
 			if (err != nil) != (tc.refusal != "") {
 				t.Fatalf("err = %v, want refusal %q", err, tc.refusal)
 			}
-			// The gate's answer is the one PrepareController acts on, so
-			// it says "mint" exactly when CIS is on, there is no key, and etcd
-			// allows it -- never on a refusal, never over a key on disk.
 			if wantMint := tc.cis && tc.keyPath == absent && tc.refusal == ""; mint != wantMint {
 				t.Errorf("mint = %v, want %v", mint, wantMint)
 			}
@@ -109,7 +99,6 @@ func TestSharedSecretGate(t *testing.T) {
 			if !strings.Contains(err.Error(), "at-rest encryption key") {
 				t.Errorf("refusal does not name the at-rest encryption key: %v", err)
 			}
-			// The operator has to learn why and what to do instead.
 			var wants, order []string
 			switch tc.refusal {
 			case unread:
@@ -129,8 +118,7 @@ func TestSharedSecretGate(t *testing.T) {
 					"before any other joins",
 					profile.ProDocsURL,
 				}
-				// The remedy gives the install-time way first, then
-				// sends a running cluster to the documentation.
+				// The remedy gives the install-time way first, then the running-cluster way.
 				order = []string{"Enable CIS at install time instead", "To enable it on this running cluster"}
 			case statErr:
 				wants = []string{"cannot tell whether an at-rest encryption key exists", loop}
@@ -142,9 +130,7 @@ func TestSharedSecretGate(t *testing.T) {
 					"stratum token create --control-plane",
 					"remove spec.profile: cis and spec.cis: true",
 				}
-				// Deleting the Secret needs an apiserver, which a
-				// refused start does not bring up, so the remedy starts one
-				// without the profile first.
+				// Deleting the Secret needs an apiserver, which a refused start does not bring up.
 				order = []string{"start this control plane without --profile cis or --cis", "delete secret stratum-certs",
 					"stop it", "start it again with --profile cis", "stratum token create --control-plane"}
 			}
@@ -172,32 +158,6 @@ func assertInOrder(t *testing.T, msg string, steps []string) {
 	}
 }
 
-// --- the gate asks the bundle owner ----------------------------------------
-//
-// The contract these tests pin:
-//
-//   - etcdJoinState carries CarriesKey: whether the published stratum-certs
-//     Secret holds an entry whose ciphertext authenticates THIS node's at-rest
-//     key — provenance from an AES-GCM open of the encryption-key-proof entry
-//     the bundle owner publishes (ha), never from an annotation.
-//   - liveEtcdJoinState is the live answer's etcd side: members, and etcd's own
-//     bundle answer, which remains the fallback for when the Secret API cannot
-//     be reached.
-//   - publishedBundleCarriesKey is the bundle owner's answer over the Secret
-//     API, with this node's at-rest key (version.EncryptionConfigPath's bytes,
-//     nil when there is none yet) matched against the published entries.
-//   - liveJoinState composes them: members from etcd; the bundle answer from
-//     the Secret when the API answers — whether the Secret is published, and
-//     whether it carries the key — and etcd's own answer, unkeyed, when it does
-//     not. The offline read (etcd stopped) never consults the API and never
-//     claims a key.
-//
-// When the Secret API answers, the gate does not answer "is a bundle
-// published" by opening etcd's backend and looking up the apiserver's storage
-// key (backendHasKey on ha.JoinBundleEtcdKey): that couples the gate to the
-// apiserver's etcd layout, so etcd's answer is only the fallback.
-
-// stubGateVars saves and restores the three live-leg seams a test stubs.
 func stubGateVars(t *testing.T, etcd func() (etcdJoinState, error), api func() (bool, bool, error)) {
 	t.Helper()
 	savedEtcd, savedAPI := liveEtcdJoinState, publishedBundleCarriesKey
@@ -207,9 +167,6 @@ func stubGateVars(t *testing.T, etcd func() (etcdJoinState, error), api func() (
 
 func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 	absent := filepath.Join(t.TempDir(), "encryption-config.yaml") // no key on disk
-	// The refusal TestEncryptionKeyGate pins, verbatim in kind: the gate
-	// must answer "a bundle is published" from the Secret the same way, with
-	// the same words, whatever source answered it.
 	bundleWants := []string{
 		"kube-system/stratum-certs",
 		"uploaded before this key existed",
@@ -218,11 +175,7 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 		"remove spec.profile: cis and spec.cis: true",
 	}
 
-	// The gate reaches the bundle owner's answer through the live leg, so a
-	// wiring regression here silences everything below. Read from source,
-	// because reaching the live leg's body in a test means running an etcd and
-	// an apiserver. The same reading TestPrepareControllerMintsThroughTheSecondLook
-	// takes for the write it pins.
+	// Read from source: reaching the live leg's body in a test means running an etcd and an apiserver.
 	t.Run("the live leg asks the bundle owner, not etcd's storage key", func(t *testing.T) {
 		src, err := os.ReadFile("ciskey.go")
 		if err != nil {
@@ -238,10 +191,6 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 	})
 
 	t.Run("with etcd running, the Secret's answer decides, whatever etcd's raw storage holds", func(t *testing.T) {
-		// etcd's own answer (and its backend: the key bucket holds no bundle
-		// key here) says nothing is published; the Secret over the API says a
-		// bundle is. The live leg must believe the Secret, not etcd's storage
-		// key.
 		stubGateVars(t,
 			func() (etcdJoinState, error) { return etcdJoinState{Members: 1}, nil },
 			func() (bool, bool, error) { return true, false, nil })
@@ -257,10 +206,6 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 	})
 
 	t.Run("a bundle deleted while etcd's backend still shows it does not refuse", func(t *testing.T) {
-		// The reverse ranking, and the reason the gate reads the Secret: etcd's
-		// backend can trail what the Secret API answers (an unclean stop, a
-		// deleted Secret), and the live Secret is what a join will actually
-		// download.
 		stubGateVars(t,
 			func() (etcdJoinState, error) { return etcdJoinState{Members: 1, JoinBundle: true}, nil },
 			func() (bool, bool, error) { return false, false, nil })
@@ -271,10 +216,6 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 	})
 
 	t.Run("a keyed bundle is refused by the first gate exactly as a keyless one is", func(t *testing.T) {
-		// TestEncryptionKeyGate's rule, preserved: any published bundle
-		// refuses a key mint on a sole control plane. The gate never mints
-		// because a bundle is keyed — the keyed answer exists for the second
-		// look, which must spare the key it wrote, not for the first gate.
 		stubGateVars(t,
 			func() (etcdJoinState, error) { return etcdJoinState{Members: 1}, nil },
 			func() (bool, bool, error) { return true, true, nil })
@@ -295,9 +236,6 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 			etcd     etcdJoinState
 			wantMint bool
 		}{
-			// The apiserver answers nothing (a first boot, a stopped
-			// apiserver), etcd is up: the gate refuses on what etcd says, and
-			// no key it cannot verify is ever read as present.
 			{"etcd sees no bundle: the mint goes ahead", etcdJoinState{Members: 1}, true},
 			{"etcd sees a bundle: the refusal stands", etcdJoinState{Members: 1, JoinBundle: true}, false},
 		} {
@@ -329,10 +267,6 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The offline read can say a bundle is published but can never say it
-		// is keyed: the proof is a decryption only the Secret API's owner can
-		// run. The second look treats an offline answer as unkeyed and keeps
-		// today's rollback.
 		want := etcdJoinState{Members: 1, JoinBundle: true}
 		if st != want {
 			t.Fatalf("got %+v, want %+v", st, want)
@@ -340,12 +274,6 @@ func TestKeyGateAsksTheBundleSecret(t *testing.T) {
 	})
 }
 
-// TestSecondLookSparesAKeyedBundle: the second look's refusal does not take
-// the key back when the published bundle authenticates it, because deleting
-// just moves the problem — the bundle hands the key out, so a joiner already
-// holds exactly the key the rollback would remove, and the next start would
-// mint a second, different one. The key stays, and the refusal says so
-// instead of claiming a removal that did not happen.
 func TestSecondLookSparesAKeyedBundle(t *testing.T) {
 	savedSync := syncKeyDir
 	t.Cleanup(func() { syncKeyDir = savedSync })
@@ -387,10 +315,6 @@ func TestSecondLookSparesAKeyedBundle(t *testing.T) {
 	}
 }
 
-// --- the bundle owner's answer, and what authenticates it ---
-
-// sealProof seals plaintext under the raw 32 bytes a base64 at-rest key
-// encodes, as the bundle owner's proof entry is sealed.
 func sealProof(t *testing.T, keyB64 string, plaintext []byte) []byte {
 	t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(keyB64)
@@ -412,8 +336,6 @@ func sealProof(t *testing.T, keyB64 string, plaintext []byte) []byte {
 	return gcm.Seal(nonce, nonce, plaintext, nil)
 }
 
-// keyedSecret is a stratum-certs Secret carrying the given data entries, as
-// the bundle owner publishes it.
 func keyedSecret(data map[string][]byte, annotations map[string]string) *corev1.Secret {
 	if annotations == nil {
 		annotations = map[string]string{}
@@ -428,12 +350,6 @@ func keyedSecret(data map[string][]byte, annotations map[string]string) *corev1.
 	}
 }
 
-// TestPublishedBundleCarriesKeyAuthenticatesByCiphertext: the owner answers
-// whether a published bundle carries an at-rest key from the proof entry's
-// ciphertext — an AES-GCM open under that exact key — and from nothing else.
-// An annotation is writable by anyone who can write the Secret, so it
-// authenticates nothing: provenance must not rest on an unauthenticated
-// marker.
 func TestPublishedBundleCarriesKeyAuthenticatesByCiphertext(t *testing.T) {
 	keyB64 := testEncryptionKey(t)
 	otherB64 := testEncryptionKey(t)
@@ -475,8 +391,6 @@ func TestPublishedBundleCarriesKeyAuthenticatesByCiphertext(t *testing.T) {
 		}
 	})
 	t.Run("no key on disk answers published and unkeyed", func(t *testing.T) {
-		// The first gate runs before any key exists: it can ask whether a
-		// bundle is published, and has nothing to match the proof against.
 		cs := fake.NewSimpleClientset(keyedSecret(
 			map[string][]byte{"certs": []byte("x"), "encryption-key-proof": proof}, nil))
 		published, carries, err := ha.PublishedBundleCarriesKey(cs, nil)
@@ -497,9 +411,6 @@ func TestPublishedBundleCarriesKeyAuthenticatesByCiphertext(t *testing.T) {
 	})
 }
 
-// TestPrepareControllerRefusesASplitKey pins the gate to PrepareController, ahead
-// of any host change: without it a live HA cluster's controller goes on to mint
-// its own key.
 func TestPrepareControllerRefusesASplitKey(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("as root PrepareController would change this host if the gate were missing")
@@ -519,14 +430,11 @@ func TestPrepareControllerRefusesASplitKey(t *testing.T) {
 	}
 }
 
-// rev is one revision in etcd's "key" bucket.
 type rev struct {
 	key       string
 	tombstone bool
 }
 
-// backend describes an etcd-shaped database to write: the "members" bucket's
-// values, and the "key" bucket's history, one revision per entry in order.
 type backend struct {
 	members   []string
 	revs      []rev
@@ -534,7 +442,6 @@ type backend struct {
 	noKeys    bool // leave out the key bucket
 }
 
-// writeBackend creates the database the way etcd lays it out.
 func writeBackend(t *testing.T, dataDir string, b backend) {
 	t.Helper()
 	snap := filepath.Join(dataDir, "member", "snap")
@@ -624,9 +531,7 @@ func TestLocalEtcdJoinState(t *testing.T) {
 			t.Fatalf("got %+v, %v; want nothing, nil", st, err)
 		}
 	})
-	// Saved node state without etcd data is a controller that
-	// lost its etcd directory, not a fresh install, and unreadable state cannot
-	// be ruled out as one.
+	// Saved state without etcd data is a controller that lost its etcd directory.
 	for _, tc := range []struct {
 		name, want string
 		load       func() (*NodeState, error)
@@ -648,8 +553,7 @@ func TestLocalEtcdJoinState(t *testing.T) {
 			}
 		})
 	}
-	// Only an absent or empty data directory is fresh. Etcd
-	// history without its database is a node whose membership cannot be read.
+	// Etcd history without its database is a node whose membership cannot be read.
 	t.Run("a WAL without its database is an error, not a fresh install", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(dir, "member", "wal"), 0o700); err != nil {
@@ -708,8 +612,6 @@ func TestLocalEtcdJoinState(t *testing.T) {
 			t.Fatalf("got %+v, %v; want the live answer %+v, nil", st, err, want)
 		}
 	})
-	// A failed live read says the database was there but locked, and
-	// which endpoint was tried instead.
 	t.Run("a failed live read names the lock and the endpoint", func(t *testing.T) {
 		dir := t.TempDir()
 		writeBackend(t, dir, backend{members: []string{member("cp1")}})
@@ -729,8 +631,7 @@ func TestLocalEtcdJoinState(t *testing.T) {
 			}
 		}
 	})
-	// Every one of these is the layout changing under this code, and each one
-	// has to be an error: a zero would read as "only member, nothing published".
+	// A zero would read as "only member, nothing published"; each is an error instead.
 	for _, tc := range []struct {
 		name string
 		b    backend
@@ -753,8 +654,7 @@ func TestLocalEtcdJoinState(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 17 bytes, the right length for a live revision, with 'x' where
-		// etcd puts '_'.
+		// 17 bytes, the right length for a live revision, with 'x' where etcd puts '_'.
 		k := binary.BigEndian.AppendUint64(nil, 9)
 		k = append(k, 'x')
 		k = binary.BigEndian.AppendUint64(k, 0)
@@ -789,13 +689,6 @@ func TestLocalEtcdJoinState(t *testing.T) {
 	})
 }
 
-// TestPublishedCheckCountsTheBundleWhateverItsEntries: the offline published
-// check answers from the stratum-certs storage key alone, never from the
-// Secret's contents. The Secret carries one ciphertext entry per live grant
-// beside the legacy certs entry, and every such state is a published bundle;
-// a check that opened the stored value — the apiserver's own encoding, opaque
-// here — would read the degenerate empty value below as "nothing published"
-// and misanswer the gate.
 func TestPublishedCheckCountsTheBundleWhateverItsEntries(t *testing.T) {
 	saved := loadNodeState
 	t.Cleanup(func() { loadNodeState = saved })
@@ -831,11 +724,6 @@ func TestPublishedCheckCountsTheBundleWhateverItsEntries(t *testing.T) {
 	}
 }
 
-// TestMintEncryptionKeyLooksAgainAfterTheWrite: the first check
-// runs before host prerequisites and PKI, so a bundle published or a member
-// added meanwhile is missed. The second look, after the key is on disk, takes
-// the key back off when the answer changed -- only the key this start wrote
-// and durably.
 func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 	savedSync := syncKeyDir
 	t.Cleanup(func() { syncKeyDir = savedSync })
@@ -882,9 +770,6 @@ func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 			if tc.refuse && !strings.Contains(err.Error(), "at-rest encryption key") {
 				t.Errorf("refusal does not name the at-rest encryption key: %v", err)
 			}
-			// The second look's refusal names its phase and says the
-			// key it rolled back is gone, rather than repeating the first
-			// gate's words as if nothing had been written.
 			if tc.refuse {
 				for _, want := range []string{"a second check of etcd, made after the at-rest key was written",
 					"the key was removed from " + path} {
@@ -892,8 +777,7 @@ func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 						t.Errorf("refusal is missing %q: %v", want, err)
 					}
 				}
-				// The removal is synced, or a power loss can
-				// bring the refused key back.
+				// The removal is synced, or a power loss can bring the refused key back.
 				if len(synced) != 1 || synced[0] != filepath.Dir(path) {
 					t.Errorf("rollback synced %v, want exactly %s", synced, filepath.Dir(path))
 				}
@@ -913,8 +797,6 @@ func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 			t.Fatalf("err = %v, want the write error and that no key was written", err)
 		}
 	})
-	// A write that leaves a partial file and then fails must not
-	// leave it there, or the next start takes it for a key and skips the gate.
 	t.Run("a write that fails after creating a partial file leaves no file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "encryption-config.yaml")
 		boom := errors.New("short write")
@@ -940,8 +822,6 @@ func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 			t.Fatalf("a partial key file is left at %s (%v)", path, err)
 		}
 	})
-	// A key that appeared at the path after the gate looked is
-	// not replaced by the create-only write, and not removed by the rollback.
 	t.Run("a key that appeared meanwhile is left in place", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "encryption-config.yaml")
 		if err := os.WriteFile(path, []byte("theirs"), 0o600); err != nil {
@@ -1001,11 +881,7 @@ func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			// Someone replaces the file before the second look. The
-			// replacement exists before the original goes, as with a rename
-			// over it, so it cannot reuse the original's inode number (Linux
-			// reuses a freed one at once, which made a remove-then-create
-			// replacement look like the same file).
+			// The replacement exists before the original goes, so it cannot reuse its inode.
 			theirs := path + ".theirs"
 			if err := os.WriteFile(theirs, []byte("theirs"), 0o600); err != nil {
 				return nil, err
@@ -1092,11 +968,6 @@ func TestMintEncryptionKeyLooksAgainAfterTheWrite(t *testing.T) {
 	})
 }
 
-// TestPrepareControllerMintsThroughTheSecondLook pins PrepareController's
-// shared-secret writes to mintSharedSecrets, whose one write is inside
-// mintSharedSecret's: a direct write would mint without the second look. Read
-// from source, because reaching that line in a test means running the host
-// preparation before it.
 func TestPrepareControllerMintsThroughTheSecondLook(t *testing.T) {
 	src, err := os.ReadFile("prepare.go")
 	if err != nil {
@@ -1108,8 +979,7 @@ func TestPrepareControllerMintsThroughTheSecondLook(t *testing.T) {
 	if strings.Contains(string(src), "CreateFileExclusively(") || strings.Contains(string(src), ".Mint()") {
 		t.Fatal("prepare.go mints a shared secret directly, bypassing the second look")
 	}
-	// Whether to mint is the gate's answer, not a second look at the
-	// file with different error handling.
+	// Whether to mint is the gate's answer, not a second look at the file.
 	if strings.Contains(string(src), "os.Stat(version.ProfileSecretFile") || strings.Contains(string(src), "os.Stat(version.EncryptionConfigPath") {
 		t.Fatal("prepare.go checks a secret file again instead of acting on the gate's mint answer")
 	}
@@ -1125,10 +995,6 @@ func TestPrepareControllerMintsThroughTheSecondLook(t *testing.T) {
 	}
 }
 
-// mintSharedSecrets writes each secret 0600 and create-only: the gate asks
-// only whether the file exists, so a write must never replace a secret that
-// appeared since the gate looked. A secret refused after another was minted
-// takes the earlier one back.
 func TestMintSharedSecretsCreatesOnlyAndTakesBackTheEarlierOnes(t *testing.T) {
 	dir := t.TempDir()
 	at := func(name string) string { return filepath.Join(dir, name) }
@@ -1200,14 +1066,6 @@ func TestLocalEtcdJoinStateOnRealEtcdDatabases(t *testing.T) {
 	}
 }
 
-// TestRealEtcdDatabasesAreFromThePinnedEtcd fails a bump of the etcd image to a
-// new minor version until the fixtures are regenerated, so
-// TestLocalEtcdJoinStateOnRealEtcdDatabases reads databases written by the
-// etcd minor the cluster runs. It reads the pin generate.sh writes the fixtures
-// with: the registry.k8s.io/etcd image in build/images.txt, not etcd_version in
-// build/versions.mk, which pins only the host etcdctl and etcdutl. etcd records
-// a storage version of major.minor.0, so a patch bump is not caught, and needs
-// no new fixtures.
 func TestRealEtcdDatabasesAreFromThePinnedEtcd(t *testing.T) {
 	images, err := os.ReadFile(filepath.Join("..", "..", "build", "images.txt"))
 	if err != nil {
@@ -1260,8 +1118,6 @@ func majorMinor(v string) string {
 	return parts[0] + "." + parts[1]
 }
 
-// cisGateMints is sharedSecretGate for the cis profile with its key at path,
-// answered as whether it mints.
 func cisGateMints(path string, read func() (etcdJoinState, error)) (bool, error) {
 	minted, err := sharedSecretGate(profiletest.Profile(), func(string) string { return path }, read)
 	return len(minted) > 0, err
@@ -1269,10 +1125,6 @@ func cisGateMints(path string, read func() (etcdJoinState, error)) (bool, error)
 
 func noConfirm() error { return nil }
 
-// The keyed-bundle answer proves the at-rest key alone: its proof opens under
-// that key. A profile's other shared secret is taken back on the second
-// look's refusal even when the bundle is keyed, because nothing shows the
-// bundle carries its bytes.
 func TestSecondLookSparesOnlyTheKeyTheProofAuthenticates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "a.yaml")
 	err := mintSharedSecret(path, func() (os.FileInfo, error) {
@@ -1291,8 +1143,6 @@ func TestSecondLookSparesOnlyTheKeyTheProofAuthenticates(t *testing.T) {
 	}
 }
 
-// A batch that fails on a later secret keeps an at-rest key it minted earlier
-// once the published bundle is proven to carry it, and takes back the rest.
 func TestMintSharedSecretsKeepsAnEarlierKeyTheBundleCarries(t *testing.T) {
 	dir := t.TempDir()
 	at := func(name string) string { return filepath.Join(dir, name) }

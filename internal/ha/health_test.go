@@ -6,12 +6,6 @@ import (
 	"testing"
 )
 
-// EtcdClusterHealthy gates the one phase of the etcd-CA migration that cannot
-// be walked back node-by-node, so every way it can say "healthy" is worth
-// pinning. The branch that matters most is the split brain: per-member health
-// is satisfied by one, because each partition has a leader and each is locally
-// convinced it is fine.
-
 func member(ip string, leader uint64, errs []string, err error) EtcdMemberHealth {
 	return EtcdMemberHealth{Leader: leader, Errors: errs, Err: err}
 }
@@ -33,8 +27,6 @@ func TestEtcdClusterHealthy(t *testing.T) {
 			members: map[string]EtcdMemberHealth{"a": member("a", 7, nil, nil), "b": member("b", 7, nil, nil), "c": member("c", 7, nil, nil)},
 		},
 		{
-			// The whole point of the function. Both partitions look healthy
-			// member-by-member; only comparing leaders across them shows it.
 			name:    "split brain is not healthy",
 			ips:     []string{"a", "b", "c"},
 			members: map[string]EtcdMemberHealth{"a": member("a", 7, nil, nil), "b": member("b", 7, nil, nil), "c": member("c", 9, nil, nil)},
@@ -47,7 +39,6 @@ func TestEtcdClusterHealthy(t *testing.T) {
 			wantErr: "dial timeout",
 		},
 		{
-			// Up and answering, but not in a working quorum. Reported, not hidden.
 			name:    "a member with no leader",
 			ips:     []string{"a", "b"},
 			members: map[string]EtcdMemberHealth{"a": member("a", 7, nil, nil), "b": member("b", 0, nil, nil)},
@@ -60,8 +51,6 @@ func TestEtcdClusterHealthy(t *testing.T) {
 			wantErr: "NOSPACE",
 		},
 		{
-			// Fail closed: "nothing to check" must never read as "all clear" on
-			// the gate for an irreversible step.
 			name:    "no addresses at all",
 			ips:     nil,
 			wantErr: "no control-plane addresses",
@@ -83,8 +72,7 @@ func TestEtcdClusterHealthy(t *testing.T) {
 	}
 }
 
-// The refusal has to name which members disagreed, or an operator staring at a
-// halted migration has nothing to act on.
+// The refusal must name the disagreeing members or an operator has nothing to act on.
 func TestSplitBrainNamesBothPartitions(t *testing.T) {
 	err := etcdClusterHealthyWith([]string{"a", "b", "c"}, healthyFrom(map[string]EtcdMemberHealth{
 		"a": member("a", 7, nil, nil), "b": member("b", 9, nil, nil), "c": member("c", 9, nil, nil),
@@ -118,11 +106,7 @@ func TestMemberHealthy(t *testing.T) {
 	}
 }
 
-// TestEtcdEndpointBracketsIPv6. A bare IPv6 address concatenated with ":port"
-// reads as another hextet, so every member lookup, the quorum check and the
-// migration's closing verification would dial an address that does not exist —
-// on a cluster this project supports (nodestate.DualStack; kubelet's node IP is
-// "v4[,v6]").
+// A bare IPv6 address plus ":port" reads as another hextet, so the host must be bracketed.
 func TestEtcdEndpointBracketsIPv6(t *testing.T) {
 	for _, tc := range []struct{ ip, want string }{
 		{"10.0.0.1", "https://10.0.0.1:2379"},

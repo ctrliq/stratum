@@ -28,12 +28,6 @@ func seedState() *NodeState {
 		PodCIDR: "10.42.0.0/16", ServiceCIDR: "10.43.0.0/16"}
 }
 
-// TestWithPeers covers the seed's half of HA growth: HA joins write membership
-// only on the joining node, so the seed's saved state kept state=new with itself
-// as the only member for the life of the cluster. A replacement started from a
-// backup of that file looks like a sole controller and bootstraps an empty etcd
-// beside the survivors. The seed must record the growth it can see in its own
-// etcd, without touching the fields etcd's argv is rendered from.
 func TestWithPeers(t *testing.T) {
 	seed := seedState()
 	got := withPeers(seed, 3)
@@ -64,8 +58,6 @@ func TestWithPeers(t *testing.T) {
 	}
 }
 
-// growthFixture points node.yaml and the etcd data lock at temp dirs and saves
-// a seed that still records state=new.
 func growthFixture(t *testing.T) {
 	t.Helper()
 	oldDir, oldData, oldRoot, oldPoll, oldCount := version.K8sConfDir, version.EtcdDataDir, version.DataDir, etcdGrowthPoll, localEtcdMemberCount
@@ -80,9 +72,6 @@ func growthFixture(t *testing.T) {
 	}
 }
 
-// TestRecordEtcdGrowthPersistsOnceTheClusterGrows drives the loop: errors from
-// etcd and a still-single cluster leave node.yaml alone, and the pass that sees
-// three members records it and ends the loop.
 func TestRecordEtcdGrowthPersistsOnceTheClusterGrows(t *testing.T) {
 	growthFixture(t)
 	answers := []func() (int, error){
@@ -106,12 +95,6 @@ func TestRecordEtcdGrowthPersistsOnceTheClusterGrows(t *testing.T) {
 	}
 }
 
-// TestSaveGrowthWritesNothingWhileEtcdHasNotGrown pins the no-record pass:
-// the recorder polls every minute for as long as this seed stays an ungrown
-// singleton, and a pass that finds nothing to record must leave node.yaml
-// alone — not rewrite it with the bytes it just read. The mtime is forced
-// into the past first, so any save moves it forward. Fails if the
-// under-lock mutation owner saves the unchanged state on a no-record pass.
 func TestSaveGrowthWritesNothingWhileEtcdHasNotGrown(t *testing.T) {
 	growthFixture(t)
 	past := time.Now().Add(-time.Hour)
@@ -126,9 +109,6 @@ func TestSaveGrowthWritesNothingWhileEtcdHasNotGrown(t *testing.T) {
 		t.Errorf("a no-record pass rewrote node.yaml (mtime %v, err %v)", fi.ModTime(), err)
 	}
 
-	// A pass that sees the record already present — a rejoin saved it between
-	// the poll's own unlocked read and its locked re-read — ends the loop and
-	// also writes nothing: the state on disk already carries the record.
 	rejoined := seedState()
 	rejoined.EtcdState = "existing"
 	rejoined.EtcdInitialCluster = seedMember + ",cp4=https://10.0.0.4:2380"
@@ -150,10 +130,6 @@ func TestSaveGrowthWritesNothingWhileEtcdHasNotGrown(t *testing.T) {
 	}
 }
 
-// TestRecordEtcdGrowthDoesNotOverwriteARejoin: the poll reads
-// node.yaml, asks etcd, then saves. A rejoin of the seed that saves its new
-// membership in between must not be replaced by the older record the poll read.
-// The save runs under the etcd data lock, against freshly read state.
 func TestRecordEtcdGrowthDoesNotOverwriteARejoin(t *testing.T) {
 	growthFixture(t)
 	rejoined := seedState()
@@ -178,8 +154,6 @@ func TestRecordEtcdGrowthDoesNotOverwriteARejoin(t *testing.T) {
 	}
 }
 
-// TestRecordEtcdGrowthWaitsOutARunningRejoin: while another operation holds the
-// etcd data lock the poll writes nothing, and records the growth on a later pass.
 func TestRecordEtcdGrowthWaitsOutARunningRejoin(t *testing.T) {
 	growthFixture(t)
 	release, err := etcddata.Lock(version.EtcdDataDir)
@@ -207,15 +181,6 @@ func TestRecordEtcdGrowthWaitsOutARunningRejoin(t *testing.T) {
 	}
 }
 
-// TestRecordedGrowthDoesNotChangeTheEtcdManifest is the inttest regression
-// (ha-cluster-upgrade): etcd's argv carries --initial-cluster and
-// --initial-cluster-state, so rewriting them in node.yaml changed the seed's
-// etcd manifest at its next controller restart. kubelet then recreated etcd-cp1
-// in the middle of the cluster upgrade, taking cp1's apiserver unready while the
-// orchestrator on cp1 was renewing its lease through the VIP. A controller
-// restart must not bounce static pods (staticpod.WriteAll), so recording growth
-// must leave every rendered manifest alone, and PrepareController must carry the
-// record forward.
 func TestRecordedGrowthDoesNotChangeTheEtcdManifest(t *testing.T) {
 	growthFixture(t)
 	st := seedState()
@@ -230,7 +195,6 @@ func TestRecordedGrowthDoesNotChangeTheEtcdManifest(t *testing.T) {
 	if !saveGrowth(2) {
 		t.Fatal("the growth was not recorded")
 	}
-	// What the next controller start does.
 	after, err := LoadState()
 	if err != nil || !after.EtcdHasPeers {
 		t.Fatalf("saved state = %+v, %v", after, err)
@@ -247,9 +211,7 @@ func TestRecordedGrowthDoesNotChangeTheEtcdManifest(t *testing.T) {
 	}
 }
 
-// TestKeepEtcdMembershipCarriesTheGrowthRecord: PrepareController builds a fresh
-// state on every start and copies the etcd record from the saved one. Dropping
-// etcdHasPeers there would turn the startup guard off again after one restart.
+// Dropping the record at PrepareController would turn the startup guard off after one restart.
 func TestKeepEtcdMembershipCarriesTheGrowthRecord(t *testing.T) {
 	prev := seedState()
 	prev.EtcdHasPeers = true
@@ -265,11 +227,7 @@ func TestKeepEtcdMembershipCarriesTheGrowthRecord(t *testing.T) {
 	}
 }
 
-// TestKeepEtcdMembershipCarriesAPendingPromote: a joined control plane that
-// stops before its learner is promoted is promoted by a later start, which
-// runs the promotion only while node state records it pending. A restart's
-// fresh state that dropped the record would leave the member a learner, and
-// etcd's one-learner limit would then refuse every later join.
+// Dropping the record leaves the member a learner; etcd's one-learner limit refuses joins.
 func TestKeepEtcdMembershipCarriesAPendingPromote(t *testing.T) {
 	prev := seedState()
 	prev.EtcdState, prev.EtcdPromotePending = "existing", true
@@ -280,15 +238,7 @@ func TestKeepEtcdMembershipCarriesAPendingPromote(t *testing.T) {
 	}
 }
 
-// TestNodeStateWritersKeepFieldsTheyDoNotOwn is the write rule for node.yaml:
-// SaveState replaces the whole file, so a writer that applies its change to a
-// fresh NodeState instead of one read back from disk drops every field another
-// writer recorded — the lost-update shape. Each writer a unit test can reach
-// runs against a state with every field set, and must change only the field it
-// owns. Bring-up's save is deliberately absent from the table: it owns nearly
-// every field and copies them onto the state read back under the lock, so no
-// single-own-field row can pin it — TestPrepareKeepsFieldsAnotherWriterRecordedMidStart
-// and TestPrepareDoesNotResurrectOwnedFieldsItClears pin it instead.
+// Bring-up's save is out of the table on purpose; prepare_savestate_test.go pins it instead.
 func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 	growthFixture(t)
 	seed := seedState()
@@ -327,7 +277,7 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		own  string // the one field the writer may change; empty for none
+		own  string
 		run  func(t *testing.T, st *NodeState)
 	}{
 		{"saveGrowth", "etcdHasPeers", func(t *testing.T, _ *NodeState) {
@@ -382,25 +332,13 @@ func TestNodeStateWritersKeepFieldsTheyDoNotOwn(t *testing.T) {
 	}
 }
 
-// TestRecordConfigPathKeepsAStateWrittenAfterPrepare pins the controller-run
-// writer's side of the one-mutation-owner contract.
-// recordConfigPath runs at the top of RunController, after `stratum up`
-// released the data lock (pkg/cli/up.go releases it before runControllerFn),
-// and the state it is handed is the copy PrepareController built — stale the
-// moment a restore or a rejoin of this node lands while the start runs. The
-// save must re-read under the lock and carry that writer's record, not
-// overwrite it with the prepared copy. Fails if recordConfigPath
-// saves the caller's copy, dropping the restored membership — the
-// risk of bootstrapping an empty etcd beside survivors.
+// The prepared copy is stale once a rejoin lands mid-start; the save must re-read under the lock.
 func TestRecordConfigPathKeepsAStateWrittenAfterPrepare(t *testing.T) {
 	growthFixture(t)
 	prepared := seedState()
 	if err := SaveState(prepared); err != nil {
 		t.Fatal(err)
 	}
-	// A restore or a rejoin of this node lands while the lock is released:
-	// it records the restored membership, the record a bare start must not
-	// lose.
 	restored := seedState()
 	restored.EtcdState = "existing"
 	restored.EtcdInitialCluster = seedMember + ",cp4=https://10.0.0.4:2380"
@@ -424,12 +362,7 @@ func TestRecordConfigPathKeepsAStateWrittenAfterPrepare(t *testing.T) {
 	}
 }
 
-// TestRecordConfigPathRefusesWhileTheDataLockIsHeld pins the lock half of the
-// same contract: the controller-run writer's save takes the data lock itself,
-// so while a restore or a rejoin holds it the save refuses — it is
-// best-effort (RunController only warns), and the next start records the
-// path again. Writing between that operation's read and write is the
-// lost-update the owner exists to remove.
+// The save is best-effort; RunController only warns and the next start records the path again.
 func TestRecordConfigPathRefusesWhileTheDataLockIsHeld(t *testing.T) {
 	growthFixture(t)
 	restored := seedState()
@@ -454,15 +387,7 @@ func TestRecordConfigPathRefusesWhileTheDataLockIsHeld(t *testing.T) {
 	}
 }
 
-// TestWorkerDNSLearnerKeepsAStateWrittenWhileItRan pins the worker's other
-// node.yaml write: prepareWorkerKubelet saves the cluster DNS address its
-// learner picked up, and the state it saves is the copy the start loaded when
-// it began. A writer that changed node.yaml in between must survive the save.
-// On a control plane the interleaving writer is a rejoin or a restore; the
-// configPath write below stands in for any field another writer records. The
-// contract, not a regression, is what this pins: the save must carry what it
-// did not write. Fails if the save writes the caller's copy and
-// drops the other writer's field.
+// The learner's save must carry a field another writer recorded while the start ran.
 func TestWorkerDNSLearnerKeepsAStateWrittenWhileItRan(t *testing.T) {
 	growthFixture(t)
 	st := &NodeState{Role: "worker", Hostname: "w1", NodeIP: "192.0.2.8", KubeletNodeIP: "192.0.2.8",
@@ -501,26 +426,13 @@ func TestWorkerDNSLearnerKeepsAStateWrittenWhileItRan(t *testing.T) {
 	}
 }
 
-// TestPostStartStartsTheGrowthRecorderWithoutTheAPI: the recorder needs only
-// this node's own etcd, not the apiserver, so a seed whose apiserver is down
-// while a second member joins still records the growth — otherwise its
-// node.yaml keeps looking like a safe singleton backup. postStart hands the
-// group the recorder task (startEtcdGrowthRecorder), with no apiserver wait
-// in front of it, so the pin watches what the group starts — and
-// that the group owns it: the stub parks like a real loop until released, so
-// the counter reads exactly the group's starts, and the group's wait must
-// outlive the parked task, which a stray goroutine started by postStart
-// would not. The ungrown seed must get its recorder despite the apiserver
-// never becoming ready; a seed that already recorded and a joined member
-// must not.
+// The recorder needs only this node's etcd, so it starts without the apiserver wait.
 func TestPostStartStartsTheGrowthRecorderWithoutTheAPI(t *testing.T) {
 	oldStart := startEtcdGrowthRecorder
 	t.Cleanup(func() { startEtcdGrowthRecorder = oldStart })
 	var started atomic.Int32
 	fakeHostKubectl(t)
-	// Safety net, not the pin: if the seam stops intercepting the recorder,
-	// the real one runs against these temp paths and this stub's error keeps
-	// it from writing anything, instead of the host's /var/lib/stratum.
+	// Safety net: this stub keeps a real recorder off the host's /var/lib/stratum.
 	growthFixture(t)
 	localEtcdMemberCount = func() (int, error) { return 0, errors.New("no etcd in this test") }
 
@@ -540,12 +452,7 @@ func TestPostStartStartsTheGrowthRecorderWithoutTheAPI(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			started.Store(0)
-			// Parks until released, not on the context, so the group's wait
-			// visibly outlives the task: an early-returning run-group task
-			// would be restarted, and a stray goroutine would leave wait
-			// free to return without it. The channel itself is created
-			// inside the bubble below: a task parked on a channel created
-			// outside it is never durably blocked, and synctest.Wait hangs.
+			// A channel created outside the synctest bubble never durably blocks; synctest.Wait then hangs.
 			var release chan struct{}
 			startEtcdGrowthRecorder = func(context.Context) { started.Add(1); <-release }
 			synctest.Test(t, func(t *testing.T) {
@@ -573,9 +480,6 @@ func TestPostStartStartsTheGrowthRecorderWithoutTheAPI(t *testing.T) {
 
 				cancel()
 				close(release)
-				// A fake minute is far more than the parked stub needs to
-				// return and the group to join it; a recorder task that
-				// never stops must fail, not hang the test.
 				select {
 				case <-waitDone:
 				case <-time.After(time.Minute):

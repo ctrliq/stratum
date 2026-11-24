@@ -30,8 +30,7 @@ func TestBundledOwnershipSurvivesPartialApplyAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A writable bookkeeping label must not make this namespace or its data
-	// belong to the deployer, even while it cleans up the same named stack.
+	// a writable bookkeeping label must not transfer ownership of the namespace's data.
 	if _, err := cs.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: "unrelated-tenant", Labels: map[string]string{group + "/stack": "dashboard"},
 	}}, metav1.CreateOptions{}); err != nil {
@@ -52,7 +51,7 @@ func TestBundledOwnershipSurvivesPartialApplyAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first document must apply before the later parse failure: %v", err)
 	}
-	// Prove cleanup uses trusted history even after the visible label changes.
+	// cleanup must use trusted history even after the visible label changes.
 	obj.Labels = nil
 	if _, err := cs.CoreV1().ConfigMaps("kube-system").Update(t.Context(), obj, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)

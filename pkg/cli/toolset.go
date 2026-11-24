@@ -15,12 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/mcp/kube"
 )
 
-// The MCP extension seam. The MCP server is written and owned by CIQ rather
-// than vendored, and gating happens at registration: a tool above the enabled
-// tier is never registered, so it never appears in tools/list. The tier gate,
-// not the CLI's --yes, is the control. It is not a security boundary;
-// Kubernetes RBAC is.
-
 // Tier is how much damage a tool can do. It decides whether the tool is
 // registered, not whether a call is allowed: see AddTool.
 type Tier int
@@ -61,26 +55,20 @@ type Registrar struct {
 	allowWrite       bool
 	allowDestructive bool
 
-	// registered is every tool name admitted, in registration order.
 	registered []string
 
-	// mismatches are rejections registerAll turns into a startup failure.
+	// mismatches fail server startup, via registerAll.
 	mismatches []error
 
 	// byName makes a second claim on a name an error, not a shadowing.
 	byName map[string]bool
 
-	// credentials records, for every admitted catalog tool, which Kubernetes
-	// credential that tool reaches the API with, as its row in internal/mcp's
-	// catalog declares it. Of the contributed tools only those admitted
-	// through AddDestructiveNodeTool record one, the node connector they run
-	// on; AddTool's handlers bring their own credential and record none.
+	// A credential per admitted catalog tool and per destructive node tool; AddTool records none.
 	credentials map[string]string
 
 	nodeConn *kube.Connector
 }
 
-// newRegistrar returns a Registrar admitting the tiers the operator enabled.
 func newRegistrar(srv *mcp.Server, allowWrite, allowDestructive bool) *Registrar {
 	return &Registrar{srv: srv, allowWrite: allowWrite, allowDestructive: allowDestructive}
 }
@@ -105,13 +93,7 @@ func (r *Registrar) Registered() []string {
 	return out
 }
 
-// credentialSources returns which Kubernetes credential each admitted tool
-// reaches the API with — "configurable connector", "node connector" or
-// "none" — as its catalog row declared when it was admitted. A tool admitted
-// from a row that declares no source records an empty string, so the
-// credential-source pin fails on it instead of letting a tool ride an
-// undeclared credential. The map is a copy, so the record cannot be edited
-// through it.
+// The map is a copy, so the record cannot be edited through it.
 func (r *Registrar) credentialSources() map[string]string {
 	out := make(map[string]string, len(r.credentials))
 	maps.Copy(out, r.credentials)
@@ -137,11 +119,7 @@ func addTool[In, Out any](r *Registrar, tier Tier, t *mcp.Tool, h mcp.ToolHandle
 	if !r.Allows(tier) {
 		return false
 	}
-	// The SDK's registry is keyed by name and replaces silently, so without this
-	// a contributed set could register "version_get" and take over the engine's
-	// handler with nothing said — at whatever tier and annotations it liked,
-	// since its own registration is checked against its own labels and not
-	// against the tool it displaced.
+	// The SDK's registry replaces silently on a repeated name, so a duplicate must fail here.
 	if r.byName[t.Name] {
 		r.mismatches = append(r.mismatches,
 			fmt.Errorf("tool %q is registered twice: the second registration would silently replace the first", t.Name))
@@ -157,13 +135,15 @@ func addTool[In, Out any](r *Registrar, tier Tier, t *mcp.Tool, h mcp.ToolHandle
 	return true
 }
 
-// NodeEnv is what a NodeOperation runs with: Out collects the progress the operator reads, and Clientset is on the node connector.
+// NodeEnv is what a NodeOperation runs with: Out collects the progress the
+// operator reads, and Clientset is on the node connector.
 type NodeEnv struct {
 	Out       io.Writer
 	Clientset kubernetes.Interface
 }
 
-// NodeResult is what a NodeOperation reports; Next and Warnings reach the operator whether or not the operation fails.
+// NodeResult is what a NodeOperation reports; Next and Warnings reach the
+// operator whether or not the operation fails.
 type NodeResult struct {
 	Next     string
 	Warnings []string
@@ -172,7 +152,8 @@ type NodeResult struct {
 // NodeOperation is a destructive operation on this node, run on the node connector's client.
 type NodeOperation[In any] func(ctx context.Context, env NodeEnv, in In) (NodeResult, error)
 
-// AddDestructiveNodeTool registers op at the destructive tier, run like the engine's destructive tools: on a Stratum node only, one at a time with them.
+// AddDestructiveNodeTool registers op at the destructive tier, run like the
+// engine's destructive tools: on a Stratum node only, one at a time with them.
 func AddDestructiveNodeTool[In any](r *Registrar, t *mcp.Tool, op NodeOperation[In]) {
 	if r == nil || t == nil {
 		return
@@ -232,7 +213,6 @@ func withNodeResult(err error, res NodeResult) error {
 	return fmt.Errorf("%w\n%s", err, b.String())
 }
 
-// checkTier rejects a tool whose tier contradicts its annotations.
 func checkTier(tier Tier, t *mcp.Tool) error {
 	a := t.Annotations
 	if a == nil {
@@ -252,8 +232,6 @@ func checkTier(tier Tier, t *mcp.Tool) error {
 	return nil
 }
 
-// err reports every rejection seen during registration — a tier that
-// contradicts its annotations, or a name claimed twice.
 func (r *Registrar) err() error {
 	if r == nil || len(r.mismatches) == 0 {
 		return nil

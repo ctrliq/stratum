@@ -17,9 +17,7 @@ import (
 )
 
 func TestNodeCredentialBuilderReloadsReissuedCredentials(t *testing.T) {
-	// CA rotation reissues the embedded admin credentials between phases.
-	// Changing the embedded bearer credential exercises the same config reload
-	// without a live control plane or a full certificate rotation.
+	// Changes the embedded bearer token, exercising the reload a CA rotation performs.
 	var authorization atomic.Value
 	authorization.Store("Bearer before-rotation")
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,14 +1,5 @@
 package upgrade
 
-// The upgrade plan is owned here. Plan is the orchestrator's own
-// classification, Preflight and ordering, over any kubernetes.Interface, so
-// `upgrade --cluster`'s dry run and the MCP upgrade_plan tool render one plan
-// instead of two. Classification is canonical: a node is a control plane only
-// when the Stratum label is exactly "true", with the etcd-roster fallback;
-// the kubeadm role label alone does not qualify, because counting a
-// mislabeled or unlabeled node would put it into the serial batch that must
-// keep etcd quorum.
-
 import (
 	"bytes"
 	"context"
@@ -25,12 +16,9 @@ import (
 	"github.com/ctrliq/stratum/internal/k8sutil"
 )
 
-// planKubeadmCPLabel is the kubeadm role label, spelled here rather than
-// imported, so the test shows the exact label whose presence must not qualify.
+// Spelled here, not imported, so the test names the exact label that must not qualify.
 const planKubeadmCPLabel = "node-role.kubernetes.io/control-plane"
 
-// planNodeAPI is one Node object as the API reports it: Ready, with the given
-// labels, kubelet version and in-progress record.
 func planNodeAPI(name string, labels map[string]string, kubeletVersion, inProgress string) *corev1.Node {
 	n := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
@@ -45,9 +33,6 @@ func planNodeAPI(name string, labels map[string]string, kubeletVersion, inProgre
 	return n
 }
 
-// TestNodeFromAPIControlPlaneOnlyWhenTheStratumLabelIsTrue: the exported
-// classifier carries the orchestrator's rule. The kubeadm role label, and any
-// Stratum label but exactly "true", plans the node as a worker.
 func TestNodeFromAPIControlPlaneOnlyWhenTheStratumLabelIsTrue(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -67,9 +52,6 @@ func TestNodeFromAPIControlPlaneOnlyWhenTheStratumLabelIsTrue(t *testing.T) {
 	}
 }
 
-// TestNodeFromAPITrimsTheKubeletBuildSuffix: an SKE kubelet reports
-// "v<k8s>-stratum"; compared raw, the version never equalled the bare
-// in-progress record, so an interrupted node looked finished.
 func TestNodeFromAPITrimsTheKubeletBuildSuffix(t *testing.T) {
 	n := NodeFromAPI(planNodeAPI("w1", nil, "v1.37.9-stratum", "v1.37.9"))
 	if n.Version != "v1.37.9" || n.Interrupted() != "v1.37.9" {
@@ -77,10 +59,6 @@ func TestNodeFromAPITrimsTheKubeletBuildSuffix(t *testing.T) {
 	}
 }
 
-// TestPlanClassifiesOrdersAndSteps: Plan over a kubernetes.Interface classifies
-// the way the orchestrator does, orders control planes before workers in the
-// order the API served them, and steps the rollout: one serial control plane
-// at a time, then workers in batches of at most maxUnavailable.
 func TestPlanClassifiesOrdersAndSteps(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		planNodeAPI("cp-1", map[string]string{k8sutil.ControlPlaneLabel: "true"}, "v1.37.9", ""),
@@ -130,7 +108,6 @@ func TestPlanClassifiesOrdersAndSteps(t *testing.T) {
 		t.Errorf("Steps = %+v, want %+v", plan.Steps, wantSteps)
 	}
 
-	// A maxUnavailable below one means one: every worker rolls serially.
 	solo, err := Plan(context.Background(), cs, "v1.37.10", 0)
 	if err != nil {
 		t.Fatalf("Plan with maxUnavailable 0: %v", err)
@@ -145,8 +122,6 @@ func TestPlanClassifiesOrdersAndSteps(t *testing.T) {
 	}
 }
 
-// TestPlanRunsPreflight: a cluster the orchestrator refuses plans as refused —
-// Allowed false, the orchestrator's reason named, and no steps offered.
 func TestPlanRunsPreflight(t *testing.T) {
 	cs := fake.NewSimpleClientset(
 		planNodeAPI("cp-1", map[string]string{k8sutil.ControlPlaneLabel: "true"}, "v1.37.9", ""),
@@ -226,12 +201,6 @@ func TestPlanUsesTheEtcdRosterForUnlabeledControlPlanes(t *testing.T) {
 	}
 }
 
-// TestPlanRefusesCollidingUpgradeJobNames: the orchestrator's Job-name gate
-// travels with the plan, so upgrade_plan reports the same refusal the rollout
-// makes. A long node's hashed Job name can equal a short node's own name —
-// the pair TestValidateUpgradeJobNames constructs — and before this gate moved
-// into the plan, the MCP preview called that cluster allowed while
-// upgrade_apply refused it.
 func TestPlanRefusesCollidingUpgradeJobNames(t *testing.T) {
 	const prefix = "stratum-upgrade-"
 	long := strings.Repeat("a", 63) + ".worker-1"

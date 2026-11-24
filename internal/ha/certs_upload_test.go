@@ -38,11 +38,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// uploadFixture stands in the control plane UploadCerts reads and the cluster it
-// writes to: a real generated PKI under a temporary version.PKIDir, a saved
-// netconfig, and the existing seams (as TestUploadCertsMintsTheEtcdTrust
-// BeforeListing sets them) plus the client seam pointing at a fake apiserver
-// the test keeps a handle on.
 func uploadFixture(t *testing.T) *fake.Clientset {
 	t.Helper()
 	origPKI := version.PKIDir
@@ -74,14 +69,7 @@ func uploadFixture(t *testing.T) *fake.Clientset {
 	return cs
 }
 
-// mintedTokensExist stands in the first half of every mint: token.Issue
-// creates the bootstrap-token Secret before the upload names it as the
-// bundle's owner, and an upload keeps a grant's entry only while that Secret
-// exists. Each stratum-certs write that adds a bootstrap-token owner creates
-// the owner's token Secret, so a test expires a grant the way the apiserver
-// does — by deleting its token Secret — and a later write does not bring it
-// back, because that owner is no longer new. Reactors run under the fake's
-// lock, so this one reaches the store through the tracker only.
+// Reactors run under the fake's lock; reach the store through the tracker only.
 func mintedTokensExist(cs *fake.Clientset) {
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
 	cs.PrependReactor("*", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -114,24 +102,16 @@ func mintedTokensExist(cs *fake.Clientset) {
 	})
 }
 
-// tokenOwner is the bootstrap-token Secret owner `token create --control-plane`
-// ties stratum-certs to: garbage collection removes the bundle only once every
-// owning token is gone.
 func tokenOwner(name, uid string) *metav1.OwnerReference {
 	return &metav1.OwnerReference{APIVersion: "v1", Kind: "Secret", Name: name, UID: types.UID(uid)}
 }
 
-// grantEntryName is the stratum-certs data key that carries one live grant's
-// ciphertext: "certs-" plus the bootstrap token's ID, the part of the token
-// Secret's name bootstrap-token-<id> after its prefix.
 func grantEntryName(tokenID string) string { return "certs-" + tokenID }
 
-// grantTokenID is the token ID of a bootstrap-token Secret owner reference.
 func grantTokenID(owner *metav1.OwnerReference) string {
 	return strings.TrimPrefix(owner.Name, "bootstrap-token-")
 }
 
-// uploadedCertsSecret reads back the stratum-certs Secret an upload left.
 func uploadedCertsSecret(t *testing.T, cs *fake.Clientset) *corev1.Secret {
 	t.Helper()
 	sec, err := cs.CoreV1().Secrets("kube-system").Get(context.Background(), certsSecret, metav1.GetOptions{})
@@ -141,13 +121,6 @@ func uploadedCertsSecret(t *testing.T, cs *fake.Clientset) *corev1.Secret {
 	return sec
 }
 
-// grantDecrypts opens the Secret's data entry named entry with the
-// certificate-key key and requires the uploaded file set back through the v1
-// envelope the entry carries: the payload is the envelope — decryptedEnvelope
-// requires version 1 — and its Files, the part the strict allowlist governs,
-// must match the upload byte for byte. The legacy `certs` entry is not a grant
-// entry and stays the bare flat map (decryptedFlatMap): the negotiated
-// transition keeps that shape published for every supported joiner version.
 func grantDecrypts(t *testing.T, sec *corev1.Secret, entry, key string, uploaded map[string][]byte) {
 	t.Helper()
 	files := decryptedEnvelope(t, sec, entry, key).Files
@@ -161,19 +134,6 @@ func grantDecrypts(t *testing.T, sec *corev1.Secret, entry, key string, uploaded
 	}
 }
 
-// TestTwoUploadsLeaveTheBundleUnderTheNewestKey pins what two consecutive
-// `token create --control-plane` runs leave behind in the multi-entry grant
-// Secret: ONE stratum-certs Secret, one ciphertext entry per live grant keyed
-// by token ID, mint APPENDS and never replaces, the in-binary operator prunes
-// expired entries, and the legacy `certs` entry stays published for the
-// negotiated transition. The deciding question is whether BOTH pending grants
-// stay decryptable — each its own entry, under the certificate-key its mint
-// printed — not merely whether the second certificate-key opens the `certs`
-// entry, so this pin asserts that, and that the owner references still carry
-// both tokens. Each grant entry decrypts through the v1 envelope — its
-// authenticated metadata around the same file set — to the uploaded files,
-// while the legacy `certs` entry stays the bare flat map every supported
-// joiner version decodes.
 func TestTwoUploadsLeaveTheBundleUnderTheNewestKey(t *testing.T) {
 	cs := uploadFixture(t)
 	owner1, owner2 := tokenOwner("bootstrap-token-abc123", "uid-token-1"), tokenOwner("bootstrap-token-def456", "uid-token-2")
@@ -208,20 +168,11 @@ func TestTwoUploadsLeaveTheBundleUnderTheNewestKey(t *testing.T) {
 		t.Fatalf("collectBundle: %v", err)
 	}
 
-	// Each pending grant decrypts its own entry under the key it was minted
-	// with: the second upload appended its grant, it did not replace the
-	// first one's. The entry's payload is the versioned envelope, and its
-	// Files carry the uploaded set.
 	grantDecrypts(t, sec, grantEntryName(grantTokenID(owner1)), k1, uploaded)
 	grantDecrypts(t, sec, grantEntryName(grantTokenID(owner2)), k2, uploaded)
 
-	// The legacy `certs` entry is still published for the negotiated
-	// transition, under the newest mint's key, as the bare flat map every
-	// supported joiner version decodes — not the envelope, which a released
-	// joiner would refuse.
 	uploadedFilesMatch(t, decryptedFlatMap(t, sec, "certs", k2), uploaded)
 
-	// Both pending joins keep their grant: owner refs are merged, not replaced.
 	owners := map[string]bool{}
 	for _, r := range sec.OwnerReferences {
 		owners[string(r.UID)] = true
@@ -232,16 +183,6 @@ func TestTwoUploadsLeaveTheBundleUnderTheNewestKey(t *testing.T) {
 	}
 }
 
-// TestSecondControlPlaneTokenKeepsOrRevokesTheFirst pins that a second
-// control-plane mint keeps the first grant: each mint writes its own
-// `certs-<token-id>` entry and never touches another grant's, so a pending
-// grant stays decryptable with the certificate-key its mint printed for as
-// long as its bootstrap token is live. An expired or revoked grant's entry is
-// removed by the next mint and by the operator's entry reconciler
-// (ha.PruneExpiredGrants); a live grant's entry is never touched. Each grant
-// entry decrypts through the v1 envelope to the uploaded files, and the legacy
-// `certs` entry stays the bare flat map the negotiated transition keeps
-// published for every supported joiner version.
 func TestSecondControlPlaneTokenKeepsOrRevokesTheFirst(t *testing.T) {
 	cs := uploadFixture(t)
 	owner1, owner2 := tokenOwner("bootstrap-token-abc123", "uid-token-1"), tokenOwner("bootstrap-token-def456", "uid-token-2")
@@ -251,7 +192,6 @@ func TestSecondControlPlaneTokenKeepsOrRevokesTheFirst(t *testing.T) {
 		t.Fatalf("collectBundle: %v", err)
 	}
 
-	// The first mint publishes its grant's own entry beside the legacy one.
 	if err := UploadCerts(k1, owner1, nil); err != nil {
 		t.Fatalf("first mint: %v", err)
 	}
@@ -259,9 +199,6 @@ func TestSecondControlPlaneTokenKeepsOrRevokesTheFirst(t *testing.T) {
 	grantDecrypts(t, sec, grantEntryName(grantTokenID(owner1)), k1, uploaded)
 	uploadedFilesMatch(t, decryptedFlatMap(t, sec, "certs", k1), uploaded)
 
-	// The second mint appends. The first grant is still decryptable with the
-	// key its mint printed — minting a second control-plane join does not
-	// break the first — and the legacy entry moves to the newest key.
 	if err := UploadCerts(k2, owner2, nil); err != nil {
 		t.Fatalf("second mint: %v", err)
 	}
@@ -280,23 +217,12 @@ func TestSecondControlPlaneTokenKeepsOrRevokesTheFirst(t *testing.T) {
 	}
 }
 
-// TestReUploadCertsRetiresGrantsSealedBeforeIt: a grant entry is a snapshot of
-// the shared files sealed at mint time under that mint's key, and nothing can
-// re-seal it — the key was printed to the operator, not kept. The rotation and
-// migration re-upload changes the trust those files carry, so a grant sealed
-// before it would hand a later joiner the pre-rotation set: during a halted
-// rotation the joiner passes discovery (cluster-info still carries old‖new),
-// joins without the staged root, and the resumed run then skips trust-new on
-// it. The re-upload retires every grant instead, so a pre-rotation join
-// command fails at decryption, before it installs anything, and a new one is
-// minted from the current material.
 func TestReUploadCertsRetiresGrantsSealedBeforeIt(t *testing.T) {
 	cs := uploadFixture(t)
 	k1, k2 := mustKey(t), mustKey(t)
 	if err := UploadCerts(k1, tokenOwner("bootstrap-token-abc123", "uid-token-1"), nil); err != nil {
 		t.Fatalf("the grant's mint: %v", err)
 	}
-	// The rotation changes the shared trust the next upload collects.
 	rotated := filepath.Join(version.PKIDir, pki.RootTrustBundleName)
 	b, err := os.ReadFile(rotated)
 	if err != nil {
@@ -325,30 +251,7 @@ func TestReUploadCertsRetiresGrantsSealedBeforeIt(t *testing.T) {
 	}
 }
 
-// --- the versioned envelope ---
-//
-// The bundle payload gains one versioned envelope (v1): each grant's
-// certs-<token-id> entry carries {version, metadata, files} instead of the
-// bare flat map, and the metadata travels INSIDE the ciphertext, so the facts
-// a joiner reads from it are authenticated by the same AES-GCM open that
-// authenticates the files. The metadata carries the publication's generation,
-// whether the bundle carries the at-rest key, the cluster VIP the uploading
-// control plane has recorded, and the etcd client endpoints that move out of
-// the unauthenticated Secret annotation.
-//
-// The negotiated transition: publication keeps a shape every supported joiner
-// version decodes. The legacy `certs` entry therefore keeps the legacy
-// flat-map payload under the newest mint's key, and the etcd-endpoints
-// annotation stays published; a released joiner, which knows only the flat
-// map and the annotation, still joins an upgraded cluster. The v1 envelope
-// rides only the grant entries this build's mints write, and the decode side
-// accepts both shapes — the tests below drive this package's own legacy
-// decoder as the older joiner.
-
-// envelopeShape is the v1 envelope's wire shape, spelled out in the tests
-// because the JSON names are the cross-version contract: a future stratum
-// must decode what this shape publishes, and this stratum must decode the
-// legacy flat map beside it.
+// Spelled out here because the JSON names are the cross-version contract.
 type envelopeShape struct {
 	Version  int `json:"version"`
 	Metadata struct {
@@ -361,8 +264,6 @@ type envelopeShape struct {
 	Files map[string][]byte `json:"files"`
 }
 
-// sealedEnvelope encrypts env under the certificate-key key, the way a grant
-// entry publishes it.
 func sealedEnvelope(t *testing.T, key string, env envelopeShape) []byte {
 	t.Helper()
 	b, err := json.Marshal(env)
@@ -376,8 +277,6 @@ func sealedEnvelope(t *testing.T, key string, env envelopeShape) []byte {
 	return ct
 }
 
-// encryptFlat encrypts the legacy flat-map payload under key, the way the
-// legacy `certs` entry — and every pre-envelope bundle — publishes it.
 func encryptFlat(t *testing.T, key string, files map[string][]byte) []byte {
 	t.Helper()
 	b, err := json.Marshal(files)
@@ -391,10 +290,6 @@ func encryptFlat(t *testing.T, key string, files map[string][]byte) []byte {
 	return ct
 }
 
-// decryptedEnvelope opens the Secret's data entry named entry with key and
-// requires the v1 envelope back. A flat map — the pre-envelope payload — is
-// not an envelope, and an envelope of another version is refused, never
-// decoded as v1.
 func decryptedEnvelope(t *testing.T, sec *corev1.Secret, entry, key string) envelopeShape {
 	t.Helper()
 	ct, ok := sec.Data[entry]
@@ -415,9 +310,6 @@ func decryptedEnvelope(t *testing.T, sec *corev1.Secret, entry, key string) enve
 	return env
 }
 
-// decryptedFlatMap opens the Secret's data entry named entry with key and
-// requires the legacy flat map back — the shape every supported joiner
-// version decodes, which the legacy `certs` entry keeps published.
 func decryptedFlatMap(t *testing.T, sec *corev1.Secret, entry, key string) map[string][]byte {
 	t.Helper()
 	ct, ok := sec.Data[entry]
@@ -435,8 +327,6 @@ func decryptedFlatMap(t *testing.T, sec *corev1.Secret, entry, key string) map[s
 	return files
 }
 
-// uploadedFilesMatch requires files to carry exactly the uploaded set, byte
-// for byte.
 func uploadedFilesMatch(t *testing.T, files, uploaded map[string][]byte) {
 	t.Helper()
 	if len(files) != len(uploaded) {
@@ -449,8 +339,6 @@ func uploadedFilesMatch(t *testing.T, files, uploaded map[string][]byte) {
 	}
 }
 
-// controlPlaneStateDir points the node-state directory at a temporary one, so
-// the state an upload reads stays inside the test tree.
 func controlPlaneStateDir(t *testing.T) {
 	t.Helper()
 	orig := version.K8sConfDir
@@ -458,8 +346,6 @@ func controlPlaneStateDir(t *testing.T) {
 	t.Cleanup(func() { version.K8sConfDir = orig })
 }
 
-// controlPlaneState records the uploading control plane's node state — the
-// cluster VIP bring-up and the join persist — in a temporary state directory.
 func controlPlaneState(t *testing.T, vip string) {
 	t.Helper()
 	controlPlaneStateDir(t)
@@ -469,14 +355,6 @@ func controlPlaneState(t *testing.T, vip string) {
 	}
 }
 
-// TestUploadPublishesTheVersionedEnvelope pins the v1 envelope around each
-// grant entry's payload: the metadata inside the ciphertext carries the
-// publication's generation, the at-rest-key fact, the cluster VIP this control
-// plane has recorded, and the etcd client endpoints that move out of the
-// unauthenticated annotation; the strict file allowlist stays inside the
-// envelope's files; and the legacy `certs` entry keeps the flat-map payload and
-// the annotation keeps the endpoint list, so every supported joiner version
-// still decodes the bundle.
 func TestUploadPublishesTheVersionedEnvelope(t *testing.T) {
 	cs := uploadFixture(t)
 	controlPlaneState(t, "10.0.0.10")
@@ -492,8 +370,6 @@ func TestUploadPublishesTheVersionedEnvelope(t *testing.T) {
 	}
 	sec := uploadedCertsSecret(t, cs)
 
-	// The grant's entry carries the envelope, and its metadata is the
-	// authenticated copy of the facts the join consumes.
 	env := decryptedEnvelope(t, sec, grantEntryName("abc123"), k1)
 	if env.Metadata.Generation != 1 {
 		t.Errorf("the first publication's generation = %d, want 1", env.Metadata.Generation)
@@ -515,15 +391,11 @@ func TestUploadPublishesTheVersionedEnvelope(t *testing.T) {
 		}
 	}
 
-	// The legacy shape stays published for the supported joiner versions: the
-	// legacy `certs` entry keeps the flat-map payload, and the annotation
-	// keeps the endpoint list a released joiner reads.
 	uploadedFilesMatch(t, decryptedFlatMap(t, sec, "certs", k1), uploaded)
 	if got := parseEtcdEndpoints(sec.Annotations[etcdEndpointsAnnotation]); !slices.Equal(got, []string{"10.0.0.11"}) {
 		t.Errorf("the etcd endpoints annotation = %v, want the same list the envelope authenticates", got)
 	}
 
-	// The next mint appends: its own generation, the earlier grant untouched.
 	k2 := mustKey(t)
 	if err := UploadCerts(k2, tokenOwner("bootstrap-token-def456", "uid-token-2"), nil); err != nil {
 		t.Fatalf("second upload: %v", err)
@@ -535,13 +407,9 @@ func TestUploadPublishesTheVersionedEnvelope(t *testing.T) {
 	if env := decryptedEnvelope(t, sec, grantEntryName("abc123"), k1); env.Metadata.Generation != 1 {
 		t.Errorf("the second mint moved the first grant's generation to %d, want 1: mint appends, never replaces", env.Metadata.Generation)
 	}
-	// The legacy entry still decodes as the flat map, under the newest key.
 	uploadedFilesMatch(t, decryptedFlatMap(t, sec, "certs", k2), uploaded)
 }
 
-// TestUploadPublishesTheVersionedEnvelope/no_VIP rows: the VIP metadata is
-// what the uploading control plane has recorded, and its absence is metadata
-// absence, never an upload failure.
 func TestUploadPublishesTheVersionedEnvelopeWithoutAVIP(t *testing.T) {
 	t.Run("a control plane with no recorded VIP publishes none", func(t *testing.T) {
 		cs := uploadFixture(t)
@@ -569,14 +437,6 @@ func TestUploadPublishesTheVersionedEnvelopeWithoutAVIP(t *testing.T) {
 	})
 }
 
-// TestUploadPublishesTheAtRestKeyProof pins the upload-side half of the key
-// gate's contract: an upload whose bundle carries the at-rest key also
-// publishes the encryption-key-proof entry, sealed under the raw 32 bytes the
-// key's base64 encodes — the open, not an annotation, is what tells the
-// controller-start key gate (internal/cluster, through
-// ha.PublishedBundleCarriesKey) that a published bundle would hand a joiner
-// THIS node's key. An upload whose bundle carries no key publishes none and
-// drops a stale one.
 func TestUploadPublishesTheAtRestKeyProof(t *testing.T) {
 	cs := uploadFixture(t)
 	keyB64 := testEncryptionKey(t)
@@ -616,8 +476,6 @@ func TestUploadPublishesTheAtRestKeyProof(t *testing.T) {
 		t.Error("the envelope metadata does not say the bundle carries the at-rest key")
 	}
 
-	// A keyless re-upload leaves no stale proof behind: the proof vouches for
-	// the bundle THIS upload published, and this one carries no key.
 	if err := os.Remove(configPath); err != nil {
 		t.Fatal(err)
 	}
@@ -634,8 +492,6 @@ func TestUploadPublishesTheAtRestKeyProof(t *testing.T) {
 	}
 }
 
-// serveCertsSecret stands in the apiserver side of a join: it answers the one
-// read DownloadCerts makes, GET kube-system/stratum-certs, with sec.
 func serveCertsSecret(t *testing.T, sec *corev1.Secret) *httptest.Server {
 	t.Helper()
 	b, err := json.Marshal(sec)
@@ -654,9 +510,6 @@ func serveCertsSecret(t *testing.T, sec *corev1.Secret) *httptest.Server {
 	return srv
 }
 
-// writeBootstrapKubeconfig writes the minimal kubeconfig DownloadCerts builds
-// its client from, carrying token — a bootstrap token spelled <id>.<secret> —
-// as the joining node's credential.
 func writeBootstrapKubeconfig(t *testing.T, server, token string) string {
 	t.Helper()
 	const tpl = `apiVersion: v1
@@ -683,29 +536,12 @@ users:
 	return path
 }
 
-// TestDownloadCertsDecryptsTheGrantsOwnEntry: a joining control plane decrypts
-// the stratum-certs entry that carries ITS grant — `certs-<token-id>`, under
-// the certificate-key its mint printed — not the newest grant's entry — and the
-// bundle facts come back as one bundleGrant: the etcd endpoints from the
-// envelope's authenticated metadata when the entry carries one — the
-// annotation's list is only the legacy shape's fallback, never an equal source
-// — the VIP the publishing control plane recorded, the publication's
-// generation, and whether the bundle carried the at-rest key. A bundle in the
-// legacy flat-map shape — published before the envelope, or fetched with admin
-// credentials by an already-joined control plane, which has no token ID — still
-// joins through the legacy decode; an unknown envelope version is refused,
-// never decoded as v1; unknown entries are refused inside the envelope exactly
-// as in the flat map; and a certificate-key that opens neither entry is
-// refused.
 func TestDownloadCertsDecryptsTheGrantsOwnEntry(t *testing.T) {
 	uploadFixture(t) // a real PKI the decrypted bundle is written into
 	uploaded, err := collectBundle(false)
 	if err != nil {
 		t.Fatalf("collectBundle: %v", err)
 	}
-	// Mark one file so the decrypted bundle is distinguishable on disk from
-	// the byte-identical files GenerateAll already wrote under the same names,
-	// and give the bundle the at-rest key its metadata claims.
 	uploaded[netconfigEntry] = []byte("the downloaded grant's own bundle")
 	uploaded[encryptionConfigEntry] = []byte("the downloaded grant's at-rest key")
 	k1, k2 := mustKey(t), mustKey(t)
@@ -725,9 +561,6 @@ func TestDownloadCertsDecryptsTheGrantsOwnEntry(t *testing.T) {
 		env.Metadata.VIP = "10.0.0.10"
 		env.Files = uploaded
 		sec := &corev1.Secret{
-			// The annotation carries a list that is NOT the cluster's: the
-			// unauthenticated hint must never pass for the authenticated
-			// metadata a new joiner reads.
 			ObjectMeta: metav1.ObjectMeta{Name: certsSecret, Namespace: "kube-system",
 				Annotations: map[string]string{etcdEndpointsAnnotation: "192.0.2.99"}},
 			Data: map[string][]byte{
@@ -758,10 +591,6 @@ func TestDownloadCertsDecryptsTheGrantsOwnEntry(t *testing.T) {
 	})
 
 	t.Run("legacy fallback", func(t *testing.T) {
-		// The pre-envelope shape: a flat-map legacy entry under the newest
-		// key, no grant entry of this token's, and the annotation for the
-		// endpoints. Every supported joiner version decodes this bundle — the
-		// decode path the negotiated transition keeps.
 		keyless := map[string][]byte{}
 		for name, b := range uploaded {
 			if name != encryptionConfigEntry {
@@ -838,9 +667,6 @@ func TestDownloadCertsDecryptsTheGrantsOwnEntry(t *testing.T) {
 	})
 }
 
-// TestReUploadCertsIsTheRotatingUpload: the CA rotation's re-upload goes ahead
-// without an old key a rotation recorded as forced lost; an unforced rotation
-// and `token create` do not.
 func TestReUploadCertsIsTheRotatingUpload(t *testing.T) {
 	uploadFixture(t)
 	var rotating []bool
@@ -866,7 +692,6 @@ func TestReUploadCertsIsTheRotatingUpload(t *testing.T) {
 	}
 }
 
-// certsReaderBinding reads back the stratum:certs-reader RoleBinding.
 func certsReaderBinding(t *testing.T, cs *fake.Clientset) *rbacv1.RoleBinding {
 	t.Helper()
 	rb, err := cs.RbacV1().RoleBindings("kube-system").Get(context.Background(), "stratum:certs-reader", metav1.GetOptions{})
@@ -878,10 +703,6 @@ func certsReaderBinding(t *testing.T, cs *fake.Clientset) *rbacv1.RoleBinding {
 
 var controlPlaneGroupOnly = []rbacv1.Subject{{Kind: "Group", Name: k8sutil.ControlPlaneBootstrapGroup, APIGroup: rbacv1.GroupName}}
 
-// TestUploadCertsGrantsOnlyTheControlPlaneGroup: the read grant on
-// stratum-certs names the control-plane bootstrap group and nothing else, so a
-// worker token, which carries only k8sutil.BootstrapGroup, cannot get the
-// ciphertext.
 func TestUploadCertsGrantsOnlyTheControlPlaneGroup(t *testing.T) {
 	cs := uploadFixture(t)
 	if err := UploadCerts(mustKey(t), tokenOwner("bootstrap-token-abc123", "uid-token-1"), nil); err != nil {
@@ -892,10 +713,6 @@ func TestUploadCertsGrantsOnlyTheControlPlaneGroup(t *testing.T) {
 	}
 }
 
-// TestUploadCertsReconcilesAnOldShapeBinding: a cluster set up by an earlier
-// stratum already has the binding, granting the shared node group. Creating
-// only when absent would leave that grant in place; the upload must rewrite it
-// before any ciphertext is written.
 func TestUploadCertsReconcilesAnOldShapeBinding(t *testing.T) {
 	cs := uploadFixture(t)
 	createOldShapeBinding(t, cs)
@@ -907,10 +724,6 @@ func TestUploadCertsReconcilesAnOldShapeBinding(t *testing.T) {
 	}
 }
 
-// TestUploadCertsRefusesAForeignBinding: roleRef is immutable, so a binding by
-// that name pointing anywhere else cannot be reconciled in place. The upload
-// stops before writing the Secret rather than publish ciphertext under a grant
-// it did not set.
 func TestUploadCertsRefusesAForeignBinding(t *testing.T) {
 	cs := uploadFixture(t)
 	foreign := &rbacv1.RoleBinding{
@@ -941,8 +754,6 @@ func createOldShapeBinding(t *testing.T, cs *fake.Clientset) {
 	}
 }
 
-// conflictOnUpdate makes the first n RoleBinding updates fail with a Conflict,
-// as a concurrent writer would, and counts every update attempted.
 func conflictOnUpdate(cs *fake.Clientset, n int) *int {
 	calls := 0
 	cs.PrependReactor("update", "rolebindings", func(k8stesting.Action) (bool, runtime.Object, error) {
@@ -955,9 +766,6 @@ func conflictOnUpdate(cs *fake.Clientset, n int) *int {
 	return &calls
 }
 
-// TestUploadCertsRetriesAConflictingBindingUpdate: two control planes uploading
-// at once race on the binding; the loser re-reads and converges instead of
-// failing the upload.
 func TestUploadCertsRetriesAConflictingBindingUpdate(t *testing.T) {
 	cs := uploadFixture(t)
 	createOldShapeBinding(t, cs)
@@ -973,8 +781,6 @@ func TestUploadCertsRetriesAConflictingBindingUpdate(t *testing.T) {
 	}
 }
 
-// TestUploadCertsStopsWhenTheBindingNeverSettles: a binding that keeps
-// conflicting fails the upload, and no ciphertext is written under the old grant.
 func TestUploadCertsStopsWhenTheBindingNeverSettles(t *testing.T) {
 	cs := uploadFixture(t)
 	createOldShapeBinding(t, cs)
@@ -987,9 +793,6 @@ func TestUploadCertsStopsWhenTheBindingNeverSettles(t *testing.T) {
 	}
 }
 
-// TestNarrowCertsReaderBindingDropsTheWorkerGrant: a token mint on an upgraded
-// cluster rewrites the old binding, so worker tokens lose read on an existing
-// stratum-certs without waiting for the next upload.
 func TestNarrowCertsReaderBindingDropsTheWorkerGrant(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	createOldShapeBinding(t, cs)
@@ -1001,8 +804,6 @@ func TestNarrowCertsReaderBindingDropsTheWorkerGrant(t *testing.T) {
 	}
 }
 
-// TestNarrowCertsReaderBindingLeavesAnAbsentBindingAbsent: a cluster that never
-// uploaded shared certs gets no binding from a worker token mint.
 func TestNarrowCertsReaderBindingLeavesAnAbsentBindingAbsent(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	if err := NarrowCertsReaderBinding(context.Background(), cs); err != nil {
@@ -1013,9 +814,6 @@ func TestNarrowCertsReaderBindingLeavesAnAbsentBindingAbsent(t *testing.T) {
 	}
 }
 
-// TestJoinTokenHint: a Forbidden read of stratum-certs on a join, as downloadWith
-// wraps it, says the token is not a control-plane token and stays Forbidden;
-// any other outcome passes through untouched.
 func TestJoinTokenHint(t *testing.T) {
 	forbidden := fmt.Errorf("get %s secret: %w", certsSecret,
 		apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, certsSecret, errors.New("no rule")))
@@ -1032,9 +830,6 @@ func TestJoinTokenHint(t *testing.T) {
 	}
 }
 
-// leaseRequestAllowed applies RBAC's exact-match resource request semantics to
-// the Role upload publishes. The name is empty on a collection POST, even when
-// the object in its body has metadata.name.
 func leaseRequestAllowed(role *rbacv1.Role, verb, name string) bool {
 	for _, rule := range role.Rules {
 		if slices.Contains(rule.APIGroups, "coordination.k8s.io") &&
@@ -1055,8 +850,6 @@ func TestPublishedLeaseGrantCanAcquireAbsentMaintenanceLeases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The joiner's requests pass the published Role and the join fence policy
-	// the same mint put in place, under the holder the join takes the fence as.
 	joiner := joinerClientset(role, "abc123")
 	guard, release, err := maintlease.AcquireCompatible(context.Background(), joiner, "kube-system", "stratum-cluster-maintenance", k8sutil.JoinMaintenanceHolder("abc123"))
 	if err != nil {
@@ -1116,21 +909,6 @@ func TestExplicitRekeyFailureLeavesOldGrantsDecryptable(t *testing.T) {
 	}
 }
 
-// --- grant entries outliving their token, and the Secret size limit ---
-//
-// Every mint appends a bundle-sized grant entry, and the apiserver caps a
-// Secret's data at corev1.MaxSecretSize, so stratum-certs holds a few dozen
-// grants at most. Garbage collection deletes the whole Secret only once every
-// owning token is gone, and the operator's pruner does not run on a cluster
-// with spec.operator: false, so the mint itself drops the entries of grants
-// whose bootstrap token is gone, and refuses — naming the remedy — a mint the
-// Secret cannot hold.
-
-// TestUploadCertsDropsTheGrantsOfTokensThatAreGone: a mint drops every grant
-// entry whose bootstrap-token Secret is gone — an expired or revoked join
-// command — in the same update that appends its own, and keeps the live
-// grants, the legacy entry and the at-rest-key proof. A token that cannot be
-// read is never taken for gone: its grant stays, and the mint goes ahead.
 func TestUploadCertsDropsTheGrantsOfTokensThatAreGone(t *testing.T) {
 	cs := uploadFixture(t)
 	ctx := context.Background()
@@ -1150,8 +928,6 @@ func TestUploadCertsDropsTheGrantsOfTokensThatAreGone(t *testing.T) {
 	if err := UploadCerts(k2, tokenOwner("bootstrap-token-def456", "uid-token-2"), nil); err != nil {
 		t.Fatalf("second mint: %v", err)
 	}
-	// The first join command expired: the apiserver's token cleaner deleted
-	// its bootstrap-token Secret.
 	if err := cs.CoreV1().Secrets("kube-system").Delete(ctx, "bootstrap-token-abc123", metav1.DeleteOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1176,7 +952,6 @@ func TestUploadCertsDropsTheGrantsOfTokensThatAreGone(t *testing.T) {
 		t.Errorf("owner references = %v, want all three kept: pruning drops data entries, and garbage collection settles the owners", sec.OwnerReferences)
 	}
 
-	// A token read that fails says nothing about the token: its grant stays.
 	cs.PrependReactor("get", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if action.(k8stesting.GetAction).GetName() == "bootstrap-token-def456" {
 			return true, nil, apierrors.NewInternalError(errors.New("etcdserver: request timed out"))
@@ -1191,16 +966,9 @@ func TestUploadCertsDropsTheGrantsOfTokensThatAreGone(t *testing.T) {
 	grantDecrypts(t, sec, grantEntryName("jkl012"), k4, uploaded)
 }
 
-// TestUploadCertsRefusesAMintTheSecretCannotHold: once the live grants fill
-// stratum-certs, the next mint is refused before it writes anything, and the
-// refusal says how many grants fill it and how to free room — the apiserver's
-// own rejection says only that the data is too long. Deleting join tokens no
-// longer needed then makes room, because the next mint drops their grants.
 func TestUploadCertsRefusesAMintTheSecretCannotHold(t *testing.T) {
 	cs := uploadFixture(t)
 	ctx := context.Background()
-	// The apiserver's Secret validation, which the fake does not run: data
-	// whose values total more than corev1.MaxSecretSize is too long.
 	tooLong := 0
 	cs.PrependReactor("*", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		var written *corev1.Secret
@@ -1248,8 +1016,6 @@ func TestUploadCertsRefusesAMintTheSecretCannotHold(t *testing.T) {
 	if tooLong != 0 {
 		t.Errorf("the apiserver rejected %d writes as too long: the mint must refuse, naming the remedy, before it sends one", tooLong)
 	}
-	// `stratum token list` does not say which tokens are control-plane ones,
-	// so the refusal names the grants' token IDs.
 	for _, want := range []string{
 		fmt.Sprintf("%d control-plane join grants", minted),
 		tokenID(0) + ", " + tokenID(1),
@@ -1265,8 +1031,6 @@ func TestUploadCertsRefusesAMintTheSecretCannotHold(t *testing.T) {
 		t.Error("the refused mint changed stratum-certs: a refusal must publish nothing")
 	}
 
-	// The remedy the refusal names: delete the join tokens no longer needed,
-	// and the next mint drops their grants and fits.
 	for i := range 3 {
 		if err := cs.CoreV1().Secrets("kube-system").Delete(ctx, "bootstrap-token-"+tokenID(i), metav1.DeleteOptions{}); err != nil {
 			t.Fatal(err)
@@ -1283,19 +1047,6 @@ func TestUploadCertsRefusesAMintTheSecretCannotHold(t *testing.T) {
 	}
 }
 
-// versionedCertsSecret makes the fake apiserver keep the stratum-certs
-// Secret's resourceVersion the way the real one does. The fake tracker stores
-// whatever it is handed, so a write that dropped the version it read would
-// pass every other test. The stored Secret starts at version rv. An update
-// carrying the stored version is stored under the next one, an update carrying
-// another version conflicts, and one carrying none is unconditional — the
-// apiserver's rule for an update with no precondition, and exactly the write
-// that clobbers a concurrent one. concurrent, when set, runs before each
-// update's check with the stored Secret, so a test can land another writer's
-// change between the uploader's read and its write; it reports whether it
-// changed anything. The returned slice records the version each update
-// carried. Reactors run under the fake's lock, so this one reaches the store
-// through the tracker only.
 func versionedCertsSecret(t *testing.T, cs *fake.Clientset, rv string, concurrent func(call int, stored *corev1.Secret) bool) *[]string {
 	t.Helper()
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
@@ -1344,15 +1095,8 @@ func versionedCertsSecret(t *testing.T, cs *fake.Clientset, rv string, concurren
 	return &carried
 }
 
-// TestUploadCertsRetriesAConflictingSecretUpdate: another writer — here a
-// second mint's grant — can land between the upload's read of stratum-certs
-// and its write. The upload writes the object it read, carrying that
-// resourceVersion, so its write conflicts, and the retry re-reads and appends
-// to the fresh state: both grants stay decryptable, and both owners stay.
 func TestUploadCertsRetriesAConflictingSecretUpdate(t *testing.T) {
 	gvr := corev1.SchemeGroupVersion.WithResource("secrets")
-	// setup mints the first grant, then arms the versioned store with the
-	// concurrent grant (sealed under k2) landing during the next update.
 	setup := func(t *testing.T) (cs *fake.Clientset, k1, k2 string, uploaded map[string][]byte, carried *[]string) {
 		cs = uploadFixture(t)
 		k1, k2 = mustKey(t), mustKey(t)
@@ -1363,8 +1107,6 @@ func TestUploadCertsRetriesAConflictingSecretUpdate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("collectBundle: %v", err)
 		}
-		// The concurrent mint created its token Secret before its grant
-		// lands, as every mint orders it.
 		tok := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "bootstrap-token-def456", Namespace: "kube-system"}}
 		if err := cs.Tracker().Create(gvr, tok, "kube-system"); err != nil {
 			t.Fatal(err)
@@ -1410,9 +1152,6 @@ func TestUploadCertsRetriesAConflictingSecretUpdate(t *testing.T) {
 	})
 
 	t.Run("the store catches a write that drops the version it read", func(t *testing.T) {
-		// Without this, the test above could pass against a fake that accepts
-		// anything: a writer that drops the version it read must lose the
-		// concurrent grant here.
 		cs, _, _, _, _ := setup(t)
 		ctx := context.Background()
 		secrets := cs.CoreV1().Secrets("kube-system")
@@ -1431,14 +1170,6 @@ func TestUploadCertsRetriesAConflictingSecretUpdate(t *testing.T) {
 	})
 }
 
-// TestUploadCertsRefusesTheSecretWriteAfterLosingTheLease is the mid-helper
-// regression for the upload path: the fence's recheck rides immediately before
-// the Secret publication (and inside its conflict retry), so a lease lost
-// while the intermediate calls ran — the etcd-CA ensure, the member list, the
-// RBAC grant — refuses the publication instead of replacing the successor's
-// bundle with this node's snapshot. The recheck refuses on its first run,
-// after those intermediate calls have made their API traffic: the
-// stratum-certs Secret is never created.
 func TestUploadCertsRefusesTheSecretWriteAfterLosingTheLease(t *testing.T) {
 	cs := uploadFixture(t)
 	var errMaintenanceLost = errors.New("maintenance lease lost")
@@ -1449,16 +1180,11 @@ func TestUploadCertsRefusesTheSecretWriteAfterLosingTheLease(t *testing.T) {
 	if _, err := cs.CoreV1().Secrets("kube-system").Get(context.Background(), certsSecret, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("stratum-certs after the refusal: %v; the refused publication must not write the Secret", err)
 	}
-	// The RBAC grant did run — the refusal sits at the publication, after the
-	// intermediate calls, not at the helper's front door.
 	if _, err := cs.RbacV1().Roles("kube-system").Get(context.Background(), "stratum:certs-reader", metav1.GetOptions{}); err != nil {
 		t.Errorf("the stratum:certs-reader Role did not exist after the refusal: %v", err)
 	}
 }
 
-// The grant's envelope names the uploading control plane's profile, so a
-// joiner of another profile refuses it before it writes the bundle: "" for a
-// node without one, and nothing at all when the node state cannot be read.
 func TestUploadCertsNamesTheUploadersProfile(t *testing.T) {
 	cs := uploadFixture(t)
 	old := recordedProfile

@@ -15,7 +15,6 @@ import (
 	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
-// joinedLearnerState is a control plane a join just added as a learner.
 func joinedLearnerState() *NodeState {
 	st := seedState()
 	st.Hostname, st.NodeIP, st.EtcdName = "cp2", "10.0.0.2", "cp2"
@@ -23,11 +22,6 @@ func joinedLearnerState() *NodeState {
 	return st
 }
 
-// stubLearnerPromotion saves st as this node's state and points the learner
-// task's seams at answer and a lock that is free unless held is set or the
-// task already holds it, and that answer must be asked without. This node's
-// etcd answers as a voter, which must be asked under the lock. It returns the
-// number of promote attempts made.
 func stubLearnerPromotion(t *testing.T, st *NodeState, held *bool, answer func() (ha.LearnerState, error)) *int {
 	t.Helper()
 	redirectStateArea(t)
@@ -76,10 +70,6 @@ func pendingOnDisk(t *testing.T) bool {
 	return st.EtcdPromotePending
 }
 
-// TestPromoteLearnerOnceClearsThePendingRecordOnlyOnceAVoter pins one look of
-// the controller's learner task: it keeps the pending record while the learner
-// waits or etcd refuses, and clears it once the member is a voter, whether this
-// look promoted it or an earlier one whose answer was lost did.
 func TestPromoteLearnerOnceClearsThePendingRecordOnlyOnceAVoter(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -112,10 +102,6 @@ func TestPromoteLearnerOnceClearsThePendingRecordOnlyOnceAVoter(t *testing.T) {
 	}
 }
 
-// TestPromoteLearnerOnceLeavesARejoinsLearnerAlone: a snapshot rejoin holds
-// the etcd data lock while it replaces this node's member and promotes its own
-// learner, and clears the pending record, so the task neither promotes under a
-// held lock nor promotes a member nothing records pending.
 func TestPromoteLearnerOnceLeavesARejoinsLearnerAlone(t *testing.T) {
 	t.Run("the data lock is held", func(t *testing.T) {
 		held := true
@@ -136,9 +122,6 @@ func TestPromoteLearnerOnceLeavesARejoinsLearnerAlone(t *testing.T) {
 	})
 }
 
-// TestPromoteLearnerOnceKeepsARejoinsRecord: the promote runs without the
-// etcd data lock, so a snapshot rejoin can land meanwhile and clear the
-// pending record itself. The look then has nothing to record and is done.
 func TestPromoteLearnerOnceKeepsARejoinsRecord(t *testing.T) {
 	rejoined := joinedLearnerState()
 	rejoined.EtcdPromotePending = false
@@ -162,12 +145,6 @@ func TestPromoteLearnerOnceKeepsARejoinsRecord(t *testing.T) {
 	}
 }
 
-// TestPromoteLearnerOnceKeepsTheRecordOfAMemberARejoinReplaced: the promote
-// runs without the etcd data lock, so a snapshot rejoin can replace the member
-// it promoted and stop before promoting its own learner, leaving the pending
-// record for it. The look then must not clear that record on the old
-// member's answer: it records the promote only once this node's etcd answers
-// as a voter under the retaken lock, and the next look promotes the learner.
 func TestPromoteLearnerOnceKeepsTheRecordOfAMemberARejoinReplaced(t *testing.T) {
 	rejoined := joinedLearnerState()
 	rejoined.EtcdInitialCluster = grownThree + ",cp4=https://10.0.0.4:2380"
@@ -213,11 +190,7 @@ func TestPromoteLearnerOnceKeepsTheRecordOfAMemberARejoinReplaced(t *testing.T) 
 	}
 }
 
-// TestPromoteLearnerOnceWarnsWhenTheLockCannotBeTaken: only another
-// operation holding the etcd data lock is a quiet skip. A lock that cannot be
-// taken at all, such as a data dir the controller cannot write, would
-// otherwise retry every poll and never say why the learner is not promoted.
-// The warning is printed once, however often the look repeats.
+// A lock that cannot be taken at all must warn, or the task retries every poll without saying why.
 func TestPromoteLearnerOnceWarnsWhenTheLockCannotBeTaken(t *testing.T) {
 	broken := fmt.Errorf("etcd data lock: create parent: %w", os.ErrPermission)
 	for _, tc := range []struct {
@@ -256,9 +229,7 @@ func TestPromoteLearnerOnceWarnsWhenTheLockCannotBeTaken(t *testing.T) {
 	}
 }
 
-// TestPromoteLearnerWaitsAFullPollAfterASlowLook: a look whose etcd calls
-// take longer than the poll still leaves a full poll before the next one, so
-// an operation that needs the etcd data lock gets a window to take it.
+// A full poll between looks gives operations needing the etcd data lock a window to take it.
 func TestPromoteLearnerWaitsAFullPollAfterASlowLook(t *testing.T) {
 	stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerWaiting, nil })
 	var starts, ends []time.Time
@@ -287,9 +258,6 @@ func TestPromoteLearnerWaitsAFullPollAfterASlowLook(t *testing.T) {
 	})
 }
 
-// TestPromoteLearnerRetriesUntilPromoted drives the task: it looks again every
-// poll, through refusals, until the learner is promoted, and then holds until
-// shutdown without looking again.
 func TestPromoteLearnerRetriesUntilPromoted(t *testing.T) {
 	answers := []error{errors.New("refused"), errors.New("refused"), nil}
 	attempts := stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) {
@@ -321,11 +289,6 @@ func TestPromoteLearnerRetriesUntilPromoted(t *testing.T) {
 	})
 }
 
-// TestPromoteLearnerWarnsOnceWhenALearnerKeepsWaiting: etcd allows one
-// learner at a time, so a learner that never catches up blocks every other
-// control-plane join. The task stays quiet through the ordinary catch-up, and
-// once the learner has waited learnerWarnAfter it says so, once, with etcd's
-// reason.
 func TestPromoteLearnerWarnsOnceWhenALearnerKeepsWaiting(t *testing.T) {
 	reason := fmt.Errorf("%w: this node's etcd does not answer: connection refused", ha.ErrLearnerWaiting)
 	stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerWaiting, reason })
@@ -354,9 +317,6 @@ func TestPromoteLearnerWarnsOnceWhenALearnerKeepsWaiting(t *testing.T) {
 	}
 }
 
-// TestPromoteLearnerWarnsWhenNodeStateCannotBeRead: a node state the task
-// cannot read leaves the learner unpromoted for as long as it lasts, so it is
-// printed, once.
 func TestPromoteLearnerWarnsWhenNodeStateCannotBeRead(t *testing.T) {
 	attempts := stubLearnerPromotion(t, joinedLearnerState(), nil, func() (ha.LearnerState, error) { return ha.LearnerPromoted, nil })
 	if err := os.WriteFile(nodestate.StatePath(), []byte("role: [\n"), 0o600); err != nil {
@@ -378,8 +338,6 @@ func TestPromoteLearnerWarnsWhenNodeStateCannotBeRead(t *testing.T) {
 	}
 }
 
-// TestPostStartPromotesOnlyARecordedLearner: the learner task runs on a
-// control plane whose node state records a pending promote, and on no other.
 func TestPostStartPromotesOnlyARecordedLearner(t *testing.T) {
 	fakeHostKubectl(t)
 	cfg := loadClusterConfig(t, "spec: {}\n")

@@ -16,9 +16,6 @@ import (
 	"github.com/ctrliq/stratum/internal/version"
 )
 
-// Stratum's images are exempt from kubelet's pull-credential check, so an
-// image kubelet pulls under another name with the same image ID cannot send
-// kubelet to the registry for an image an airgapped node already holds.
 func TestKubeletConfigExemptsTheShippedImages(t *testing.T) {
 	isolatePayload(t)
 	version.PKIDir, version.K8sConfDir = joinedPKIDir(t), t.TempDir()
@@ -45,8 +42,6 @@ func TestKubeletConfigExemptsTheShippedImages(t *testing.T) {
 	}
 }
 
-// A build that did not stamp the payload registry exempts nothing, so kubelet
-// keeps its default policy instead of trusting a namespace like unknown/*.
 func TestKubeletConfigExemptsNothingWithoutAPayloadRegistry(t *testing.T) {
 	isolatePayload(t)
 	for _, reg := range []string{"", "unknown"} {
@@ -71,8 +66,6 @@ func TestKubeletConfigExemptsNothingWithoutAPayloadRegistry(t *testing.T) {
 	}
 }
 
-// isolatePayload points the kubelet config, the PKI and the staged payload at a
-// test's own directories, and restores the registry stamp afterwards.
 func isolatePayload(t *testing.T) {
 	t.Helper()
 	oldPKI, oldConf, oldData, oldDropIn, oldReg := version.PKIDir, version.K8sConfDir, version.DataDir, version.ImagesDropInDir, addons.ImageRegistry
@@ -88,8 +81,6 @@ func stageArchive(t *testing.T, name, index string) {
 	stageArchiveIn(t, filepath.Join(version.DataDir, "images"), name, index)
 }
 
-// markImported writes the stamp the import leaves once an operator archive's
-// images are pinned.
 func markImported(t *testing.T, name string) {
 	t.Helper()
 	tar := filepath.Join(version.ImagesDropInDir, name)
@@ -148,9 +139,7 @@ func kubeletAllowlist(t *testing.T) []string {
 	return conf.Allowlist
 }
 
-// An importer's images are outside the payload registry namespace. Without
-// their own entries kubelet asks the registry for them, and an airgapped node
-// goes to ImagePullBackOff on an image it holds.
+// Importer images sit outside the payload namespace; kubelet would ask the registry for them.
 func TestKubeletConfigExemptsEveryPayloadRepository(t *testing.T) {
 	isolatePayload(t)
 	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
@@ -184,9 +173,6 @@ func TestKubeletConfigRefusesAnUnreadablePayloadArchive(t *testing.T) {
 	}
 }
 
-// An operator who stages an image for a node with no registry access puts its
-// archive in images.d. Without an allowlist entry kubelet still asks the
-// registry for it, so the node goes to ImagePullBackOff on an image it holds.
 func TestKubeletConfigExemptsTheOperatorsDropInImages(t *testing.T) {
 	isolatePayload(t)
 	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
@@ -204,8 +190,7 @@ func TestKubeletConfigExemptsTheOperatorsDropInImages(t *testing.T) {
 	}
 }
 
-// A bad file the operator dropped must not keep the kubelet from starting: it
-// is skipped, and the operator's other archives are still exempted.
+// A bad file the operator dropped must not keep the kubelet from starting.
 func TestKubeletConfigSkipsAnUnreadableDropInArchive(t *testing.T) {
 	isolatePayload(t)
 	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
@@ -221,10 +206,7 @@ func TestKubeletConfigSkipsAnUnreadableDropInArchive(t *testing.T) {
 	}
 }
 
-// The exemption covers a whole repository, so an archive that is not imported
-// and pinned, whether it is new or its import failed, exempts nothing: pods
-// would otherwise use other images of that repository on the node without
-// their own credentials. A replaced archive waits for its new import too.
+// An unimported archive exempts nothing: its whole repository would then be used unverified.
 func TestKubeletConfigExemptsOnlyImportedDropInArchives(t *testing.T) {
 	isolatePayload(t)
 	addons.ImageRegistry = "ghcr.io/ctrliq/stratum"
