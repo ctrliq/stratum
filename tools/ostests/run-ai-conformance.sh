@@ -45,7 +45,7 @@ OUT=$(cd "$OUT" && pwd)
 RESULTS="$OUT/ai-conformance-results-$PROVIDER-$ARCH-$TAG.tar.gz"
 RAW="$OUT/ai-conformance-$PROVIDER-$ARCH"
 # A previous run's files must not be reported as this run's.
-rm -rf "$RAW"
+rm -rf "$RAW" "$RESULTS"
 mkdir -p "$RAW"
 
 SUITE=$(mktemp -d)

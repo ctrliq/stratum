@@ -67,13 +67,14 @@ junit() { printf '<testsuites><testsuite>%s</testsuite></testsuites>' "$1"; }
 NO_GPU_TESTS='TestGatewayAPIInference|TestGangScheduling|TestAIServiceMetrics|TestRobustCRDControllerOperation|TestWorkloadSandboxing'
 
 # run_case <name> <want-exit> <gpu> <junit-body|none> <gotestsum-rc> [seed-stale] [VAR=val]
-# seed-stale=1 leaves a passing junit.xml where a previous run would have.
+# seed-stale=1 leaves a passing junit.xml and results tarball where a previous run would have.
 run_case() {
   local name=$1 want=$2 gpu=$3 body=$4 rc=$5 seed=${6:-0} extra=${7:-} got out="$TEST_TMP/out-$1"
   rm -rf "$out"; : >"$CALLS"
   if [[ $seed == 1 ]]; then
     mkdir -p "$out/ai-conformance-gcp-amd64"
     junit "$PASS" >"$out/ai-conformance-gcp-amd64/junit.xml"
+    echo stale >"$out/$TARBALL"
   fi
   if [[ $body == none ]]; then export FIX_JUNIT=none; else FIX_JUNIT=$(junit "$body"); export FIX_JUNIT; fi
   got=0
@@ -149,8 +150,10 @@ failed_with_evidence empty-log 'no e2e.log was produced'
 
 # --- stops before testing -------------------------------------------------------
 
-run_case setup-fails 1 1 "$PASS" 0 0 FIX_SETUP_FAIL=50-gang-scheduler
+run_case setup-fails 1 1 "$PASS" 0 1 FIX_SETUP_FAIL=50-gang-scheduler
 ! grep -q '^gotestsum ' "$CALLS" || fail "setup-fails: tests ran after a setup script failed"
+[[ ! -e $LAST_OUT/ai-conformance-gcp-amd64/junit.xml ]] || fail "setup-fails: a previous run's junit.xml is still there"
+[[ ! -e $LAST_OUT/$TARBALL ]] || fail "setup-fails: a previous run's results tarball is still there"
 run_case no-runtimeclass 1 1 "$PASS" 0 0 FIX_NO_RUNTIMECLASS=1
 grep -q 'RuntimeClass runsc not found' "$LAST_OUT.log" || fail "no-runtimeclass: $(cat "$LAST_OUT.log")"
 ! grep -q '^gotestsum ' "$CALLS" || fail "no-runtimeclass: tests ran without the RuntimeClass"
