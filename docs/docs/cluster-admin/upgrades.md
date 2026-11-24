@@ -38,6 +38,7 @@ link gives the check to run before you upgrade.
 | joins control planes with join tokens | [HA join tokens and the shared certs](../appendices/upgrade-reference.md#ha-join-tokens-and-the-shared-certs) |
 | joins new workers during the upgrade | [Node client certificate approval](../appendices/upgrade-reference.md#node-client-certificate-approval) |
 | has a `HelmChart` with `spec.valuesSecrets` | [HelmCharts that take values from Secrets](../appendices/upgrade-reference.md#helmcharts-that-take-values-from-secrets) |
+| has nodes that declare `failure-domain.beta.kubernetes.io` or `beta.kubernetes.io/instance-type` labels | [Node labels a node can no longer declare](../appendices/upgrade-reference.md#node-labels-a-node-can-no-longer-declare) |
 
 ## Stage the upgrade binary
 
@@ -260,6 +261,16 @@ process on them. It restores the newest backup set the last upgrade left; see
     ```
 
 3. Check the installed versions with `sudo /usr/local/bin/stratum version --components`.
+
+A release from before node labels, taints and runtime handlers drops them from
+`/var/lib/stratum/config/node.yaml` when it rewrites that file, and a worker restart
+never reads `spec.node`. After you roll a worker back to such a release and
+upgrade it again, it has no saved labels, taints or runtime handlers, and
+nothing warns. Restore them on the upgraded worker: re-run
+`stratum up --worker` with its `--node-label` and `--runtime-handler` flags, or
+restore the handlers with `stratum runtime apply --runtime-handler`. The Node
+keeps the taints it registered with. A control plane reads `spec.node` from its
+config file at every start, so it needs nothing.
 
 A rollback that restores host binaries needs only the stratum supervisor to be
 running. It recovers a node whose kubelet or containerd is crash-looping on the

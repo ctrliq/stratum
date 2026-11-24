@@ -196,7 +196,7 @@ func RunWorker(ctx context.Context, st *NodeState) error {
 	// config just written. A changed config reaches a running containerd only
 	// through whoever owns it — `stratum registry apply` (runtime.ApplyRegistry)
 	// or the in-place upgrade's own host reload.
-	if _, err := runtime.EnsureContainerdConfigs(os.Stdout, st); err != nil {
+	if err := ensureWorkerContainerdConfigs(ctx, st); err != nil {
 		return fmt.Errorf("prepare containerd: %w", err)
 	}
 	if err := prepareWorkerKubelet(st); err != nil {
@@ -667,6 +667,11 @@ var (
 	// change.
 	labelOwnNode = func(ctx context.Context, st *NodeState) {
 		label := func(ctx context.Context) error {
+			release, err := lockRuntimeHandlers(ctx, os.Stderr)
+			if err != nil {
+				return err
+			}
+			defer release()
 			cur := st
 			if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
 				cur = saved
@@ -690,6 +695,10 @@ var (
 	// loadedHandlers narrows a node's declared runtime handlers to those its
 	// running containerd has loaded.
 	loadedHandlers = runtime.LoadedHandlers
+
+	// lockRuntimeHandlers and ensureContainerdConfigs are seams for tests.
+	lockRuntimeHandlers     = runtime.LockHandlers
+	ensureContainerdConfigs = runtime.EnsureContainerdConfigs
 
 	// waitOwnNodeRegistered waits, as the kubelet, for a worker's Node to
 	// register, giving up after timeout.
@@ -719,12 +728,81 @@ var (
 // from st as its caller has it. A worker restart only warns about a missing
 // binary, so its handler stays unlabelled until a relabel after the binary is
 // installed. It is the one labelling rule for a kubelet or containerd start,
-// `stratum runtime apply` and `stratum runtime restart`.
+// `stratum runtime apply` and `stratum runtime restart`. It also removes a
+// label in AppliedNodeLabels that the node no longer declares.
 func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 	runnable := slices.DeleteFunc(slices.Sorted(maps.Keys(st.RuntimeHandlers)), func(n string) bool {
 		return checkHandlerBinary(st.RuntimeHandlers[n]) != nil
 	})
-	return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loadedHandlers(runnable))
+	loaded, err := loadedHandlers(ctx, runnable)
+	if err != nil {
+		return err
+	}
+	declared := slices.Sorted(maps.Keys(st.NodeLabels))
+	owned, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string { return sortedUnion(cur, declared) })
+	switch {
+	case errors.Is(err, errNotThisNodeState):
+		return reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loaded, nil)
+	case err != nil:
+		return fmt.Errorf("record the labels %s declares before applying them: %w", st.Hostname, err)
+	}
+	if err := reconcileOwnNodeLabels(ctx, st.Hostname, st.NodeLabels, loaded, owned); err != nil {
+		return err
+	}
+	pruned := slices.DeleteFunc(slices.Clone(owned), func(k string) bool { _, ok := st.NodeLabels[k]; return ok })
+	if len(pruned) == 0 {
+		return nil
+	}
+	if _, err := recordAppliedNodeLabels(st.Hostname, func(cur []string) []string {
+		return slices.DeleteFunc(slices.Clone(cur), func(k string) bool { return slices.Contains(pruned, k) })
+	}); err != nil {
+		return fmt.Errorf("record the labels removed from %s: %w", st.Hostname, err)
+	}
+	return nil
+}
+
+// errNotThisNodeState is recordAppliedNodeLabels' refusal of a node.yaml that
+// is missing or names another host: the labels are applied, but none recorded
+// or pruned.
+var errNotThisNodeState = errors.New("node.yaml is not this node's")
+
+// recordAppliedNodeLabels updates hostname's AppliedNodeLabels from the value
+// in node.yaml, under its mutation lock, and returns the record it leaves. A
+// record already in node.yaml is synced before it is relied on: a save that
+// replaced node.yaml but could not sync its directory leaves the record
+// visible, and a crash could still lose it, and with it the labels to prune.
+func recordAppliedNodeLabels(hostname string, update func([]string) []string) ([]string, error) {
+	var record []string
+	err := nodestate.MutateSave(func(cur *NodeState) error {
+		if cur.Hostname != hostname {
+			return errNotThisNodeState
+		}
+		next := update(cur.AppliedNodeLabels)
+		if len(next) == 0 {
+			next = nil
+		}
+		record = next
+		if slices.Equal(next, cur.AppliedNodeLabels) {
+			if err := syncStateDir(); err != nil {
+				return err
+			}
+			return nodestate.ErrUnchanged
+		}
+		cur.AppliedNodeLabels = next
+		return nil
+	}, saveState)
+	return record, err
+}
+
+// sortedUnion is the sorted, deduplicated keys of a and b.
+func sortedUnion(a, b []string) []string {
+	out := slices.Concat(a, b)
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // kubeletOnStart is the supervisor's OnStart hook, for a controller and a
@@ -2050,6 +2128,35 @@ func saveCiliumSettings(s addons.CiliumSettings) error {
 	}
 	if err := host.WriteFileAtomically(version.CiliumSettingsPath, s.Encode(), 0o644); err != nil {
 		return fmt.Errorf("save the Cilium settings: %w", err)
+	}
+	return nil
+}
+
+// ensureWorkerContainerdConfigs writes a worker's containerd configs with the
+// runtime handlers node.yaml holds under the runtime-handlers lock, not the
+// ones st read before host preparation: a `stratum runtime apply` in between
+// saved newer ones.
+func ensureWorkerContainerdConfigs(ctx context.Context, st *NodeState) error {
+	release, err := lockRuntimeHandlers(ctx, os.Stdout)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if saved, err := LoadState(); err == nil && saved.Hostname == st.Hostname {
+		st.RuntimeHandlers = saved.RuntimeHandlers
+	}
+	_, err = ensureContainerdConfigs(os.Stdout, st)
+	return err
+}
+
+// syncStateDir makes node.yaml's last replacement durable. A save that
+// returned ErrNotDurable left the new file visible, so a retry that finds
+// nothing to change syncs before it acts on what it read. A var so a test can
+// fail it.
+var syncStateDir = func() error {
+	dir := filepath.Dir(nodestate.StatePath())
+	if err := atomicfile.SyncDir(dir); err != nil {
+		return fmt.Errorf("%w: sync %s: %w", atomicfile.ErrNotDurable, dir, err)
 	}
 	return nil
 }

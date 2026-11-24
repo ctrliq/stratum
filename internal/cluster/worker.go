@@ -1,12 +1,14 @@
 package cluster
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -171,6 +173,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 				strings.Join(o.Node.Taints, ","), cmp.Or(strings.Join(st.NodeTaints, ","), "none"), st.Hostname)
 		}
 		labels, handlers, replaced := restartNodeFacts(st, o.Node)
+		if err := (NodeSpec{Labels: labels}).Validate(); err != nil {
+			return nil, fmt.Errorf("worker restart: the labels this worker saved: %w; replace them with --node-label "+
+				"or remove them with --clear-node-labels; nothing was saved", err)
+		}
 		// A restart keeps the address this worker registered with unless
 		// --node-ip moves it, by the rule every controller start uses: the
 		// saved address outranks $NODE_IP, which says only what the
@@ -357,6 +363,11 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The old label record belongs to the Node in the cluster whose CA was
+	// saved on this host. A new join may target another cluster with the same
+	// hostname; its Node's labels must not be pruned using that record.
+	previousCA, caErr := os.ReadFile(filepath.Join(version.PKIDir, pki.RootCAName+".crt"))
+	sameCluster := caErr == nil && bytes.Equal(previousCA, ca)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -409,7 +420,12 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	// containerd and kubelet configs are RunWorker's, on this start as on
 	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {
-		st.ClusterDNSIP = cur.ClusterDNSIP
+		if sameCluster {
+			st.ClusterDNSIP = cur.ClusterDNSIP
+		}
+		if sameCluster && cur.Hostname == hostname {
+			st.AppliedNodeLabels = cur.AppliedNodeLabels
+		}
 		*cur = *st
 		return nil
 	}); err != nil {
@@ -423,7 +439,12 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 // changes what the worker saved.
 func restartNodeFacts(st *NodeState, flags NodeSpec) (labels, handlers map[string]string, replaced []string) {
 	labels, handlers = st.NodeLabels, st.RuntimeHandlers
-	if flags.Labels != nil && !maps.Equal(flags.Labels, labels) {
+	switch {
+	case flags.Labels == nil || maps.Equal(flags.Labels, labels):
+	case len(flags.Labels) == 0:
+		replaced = append(replaced, fmt.Sprintf("--clear-node-labels removes the labels this worker saved (%s)", FormatKeyValues(labels)))
+		labels = flags.Labels
+	default:
 		replaced = append(replaced, fmt.Sprintf("--node-label replaces the labels this worker saved (%s -> %s)", FormatKeyValues(labels), FormatKeyValues(flags.Labels)))
 		labels = flags.Labels
 	}

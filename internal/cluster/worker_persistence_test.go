@@ -207,6 +207,12 @@ func TestWorkerJoinStateSaveGoesThroughTheDataLock(t *testing.T) {
 		if err := SaveState(prev); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.MkdirAll(version.PKIDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(version.PKIDir, pki.RootCAName+".crt"), ca, 0o644); err != nil {
+			t.Fatal(err)
+		}
 
 		st, err := PrepareWorker(context.Background(), WorkerOptions{Server: server, Token: tok, CAHash: caHash})
 		if err != nil {
