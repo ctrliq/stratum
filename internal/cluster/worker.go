@@ -1,12 +1,14 @@
 package cluster
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -361,6 +363,11 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The old label record belongs to the Node in the cluster whose CA was
+	// saved on this host. A new join may target another cluster with the same
+	// hostname; its Node's labels must not be pruned using that record.
+	previousCA, caErr := os.ReadFile(filepath.Join(version.PKIDir, pki.RootCAName+".crt"))
+	sameCluster := caErr == nil && bytes.Equal(previousCA, ca)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -413,8 +420,10 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 	// containerd and kubelet configs are RunWorker's, on this start as on
 	// every other.
 	if err := nodestate.Mutate(func(cur *NodeState) error {
-		st.ClusterDNSIP = cur.ClusterDNSIP
-		if cur.Hostname == hostname {
+		if sameCluster {
+			st.ClusterDNSIP = cur.ClusterDNSIP
+		}
+		if sameCluster && cur.Hostname == hostname {
 			st.AppliedNodeLabels = cur.AppliedNodeLabels
 		}
 		*cur = *st

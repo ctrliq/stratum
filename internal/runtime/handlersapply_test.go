@@ -319,8 +319,8 @@ func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T)
 	if !res.Changed || !res.Unloaded || res.Restarted {
 		t.Fatalf("apply without a restart = %+v, want changed and unloaded", res)
 	}
-	if got, err := LoadedHandlers(context.Background(), []string{"gvisor", "kata"}); err != nil || !slices.Equal(got, []string{"gvisor"}) {
-		t.Errorf("LoadedHandlers before the restart = %v, %v; want [gvisor]", got, err)
+	if got, err := LoadedHandlers(context.Background(), []string{"gvisor", "kata"}); err != nil || len(got) != 0 {
+		t.Errorf("LoadedHandlers before the restart = %v, %v; want none until the drop-in is loaded", got, err)
 	}
 	if r := CheckHandlers(both); !strings.Contains(findings(r, SeverityError), "has not loaded the runtime handlers kata") {
 		t.Errorf("check before the restart = %+v, want an error naming kata and the restart", r.Findings)
@@ -334,6 +334,31 @@ func TestApplyHandlersRestartsAContainerdThatHasNotLoadedTheDropIn(t *testing.T)
 	}
 	if got, err := LoadedHandlers(context.Background(), []string{"gvisor", "kata"}); err != nil || !slices.Equal(got, []string{"gvisor", "kata"}) {
 		t.Errorf("LoadedHandlers after the restart = %v, %v; want both", got, err)
+	}
+}
+
+// A handler with the same name in the shared conf.d does not prove that the
+// running containerd has read stratum's later definition of that handler.
+func TestLoadedHandlersWaitsForOwnDropInAfterSharedName(t *testing.T) {
+	confd := handlersHost(t, true)
+	fakeSupervisor(t, false)
+	if err := os.WriteFile(filepath.Join(confd, "99-nvidia.toml"), []byte("[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.nvidia]\nruntime_type = 'io.containerd.runc.v2'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldCRI := criRuntimeHandlers
+	t.Cleanup(func() { criRuntimeHandlers = oldCRI })
+	criRuntimeHandlers = func(context.Context) ([]string, error) { return []string{"nvidia"}, nil }
+	if _, err := ApplyHandlers(io.Discard, map[string]string{"nvidia": fakeBinary(t, "nvidia-container-runtime")}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadedHandlers(context.Background(), []string{"nvidia"}); err != nil || len(got) != 0 {
+		t.Errorf("before restart = %v, %v; want no label for the shared definition", got, err)
+	}
+	if err := RestartContainerd(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadedHandlers(context.Background(), []string{"nvidia"}); err != nil || !slices.Equal(got, []string{"nvidia"}) {
+		t.Errorf("after restart = %v, %v; want the loaded stratum definition", got, err)
 	}
 }
 

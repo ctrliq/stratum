@@ -295,6 +295,15 @@ func LoadedHandlers(ctx context.Context, names []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	unloaded, err := dropInUnloaded()
+	if err != nil {
+		return nil, fmt.Errorf("check whether containerd read the runtime-handler drop-in: %w", err)
+	}
+	if unloaded {
+		// CRI reports names, not the binary paths or other options they use.
+		// A name can come from an older drop-in or a shared conf.d file.
+		return nil, nil
+	}
 	return slices.DeleteFunc(slices.Clone(names), func(n string) bool { return !slices.Contains(loaded, n) }), nil
 }
 

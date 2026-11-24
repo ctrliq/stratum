@@ -162,11 +162,13 @@ and changes nothing, as during an upgrade. The label update that follows a
 containerd start waits for an `apply` or `runtime restart` in progress.
 
 The node carries a handler's label only once its running containerd reports
-the handler loaded, so a RuntimeClass never schedules a pod onto a node that
-cannot run it. While containerd cannot be asked, the labels are not changed, and
-the update is retried. A change written without a restart, such as by the MCP `runtime_apply`
-tool, removes the labels of handlers the node no longer declares and adds the
-new ones when containerd next restarts.
+the handler loaded and has read Stratum's latest drop-in, so a RuntimeClass
+never schedules a pod onto a node that cannot run it. While containerd cannot
+be asked, the labels are not changed, and the update is retried. A change
+written without a restart, such as by the MCP `runtime_apply` tool, removes
+the node's runtime-handler labels until containerd restarts and reads the
+drop-in, even if it reports some of the same handler names from an older
+configuration.
 
 On a worker, the handlers you give replace the ones it saved, and `--clear`
 removes them all:

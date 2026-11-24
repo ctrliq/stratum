@@ -11,6 +11,8 @@ import (
 
 	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/nodestate"
+	"github.com/ctrliq/stratum/internal/pki"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 func TestNodeSpecValidate(t *testing.T) {
@@ -443,8 +445,15 @@ func TestWorkerRestartSaysWhatItReplaces(t *testing.T) {
 
 func TestWorkerRejoinKeepsTheLabelsItAppliedToPrune(t *testing.T) {
 	redirectJoinDirs(t)
-	stubJoinHost(t, "gpu-1", "10.80.0.5", []byte("-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n"))
+	ca := []byte("-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----\n")
+	stubJoinHost(t, "gpu-1", "10.80.0.5", ca)
 	recordTrust(t)
+	if err := os.MkdirAll(version.PKIDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(version.PKIDir, pki.RootCAName+".crt"), ca, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := SaveState(&NodeState{Role: "worker", Hostname: "gpu-1", AppliedNodeLabels: []string{"pool"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -455,6 +464,32 @@ func TestWorkerRejoinKeepsTheLabelsItAppliedToPrune(t *testing.T) {
 	}
 	if got := mustLoadState(t).AppliedNodeLabels; !slices.Equal(got, []string{"pool"}) {
 		t.Errorf("AppliedNodeLabels = %v after a rejoin, want [pool] kept so the Node's old label is pruned", got)
+	}
+}
+
+// Reusing a worker's hostname in another cluster must not let its old label
+// record remove labels another writer placed on that cluster's Node.
+func TestWorkerJoinToAnotherClusterDropsTheLabelRecord(t *testing.T) {
+	redirectJoinDirs(t)
+	stubJoinHost(t, "gpu-1", "10.80.0.5", []byte("-----BEGIN CERTIFICATE-----\nnew-ca\n-----END CERTIFICATE-----\n"))
+	recordTrust(t)
+	if err := os.MkdirAll(version.PKIDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(version.PKIDir, pki.RootCAName+".crt"), []byte("-----BEGIN CERTIFICATE-----\nold-ca\n-----END CERTIFICATE-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveState(&NodeState{Role: "worker", Hostname: "gpu-1", ClusterDNSIP: "10.0.0.10", AppliedNodeLabels: []string{"pool"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareWorker(context.Background(), WorkerOptions{
+		Server: "https://cp:6443", Token: "abcdef.0123456789abcdef", CAHash: "sha256:aa",
+	}); err != nil {
+		t.Fatalf("PrepareWorker = %v", err)
+	}
+	st := mustLoadState(t)
+	if len(st.AppliedNodeLabels) != 0 || st.ClusterDNSIP != "" {
+		t.Errorf("new cluster inherited label ownership %v and DNS IP %q", st.AppliedNodeLabels, st.ClusterDNSIP)
 	}
 }
 
