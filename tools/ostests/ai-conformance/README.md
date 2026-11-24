@@ -7,10 +7,14 @@ Stratum and submit the results for Kubernetes v1.37:
 - `../run-ai-conformance.sh` runs the upstream test suite
   ([kubernetes-sigs/ai-conformance](https://github.com/kubernetes-sigs/ai-conformance))
   at the commit pinned as `ai_conformance_commit` in `build/versions.mk`. It
-  writes `e2e.log`, `junit.xml` and `results.json`.
+  works like `run-conformance.sh`: it uses a cluster that already exists and
+  packages the evidence whether the run passes or fails.
 - `setup.d/` holds Stratum's replacements for the upstream setup scripts that do
   not work on Stratum as written. The runner uses the upstream scripts for
-  everything else.
+  everything else. The chart versions these install are pinned in
+  `build/versions.mk`, and the runner passes them in.
+- `tools/test-ostests-ai-conformance.sh` tests the runner without a cluster, and
+  `make lint` runs it.
 - `PRODUCT.yaml` is the submission checklist, copied from the v1.37 template and
   partly filled in.
 
@@ -38,22 +42,36 @@ lists what has to land first.
       - runsc
   ```
 
-- The machine running the tests needs `git`, `go`, `helm` and `kubectl`, a
-  cluster-admin kubeconfig, and access to the internet: the setup scripts pull
+- The machine running the tests needs `git`, `go`, `helm`, `kubectl`, `python3`
+  and `gotestsum` at the version `gotestsum_version` pins in `build/versions.mk`
+  (`go install gotest.tools/gotestsum@v<version>`), a cluster-admin kubeconfig,
+  and access to the internet: the setup scripts pull
   charts and manifests from upstream, and the tests pull `python:3.13-alpine` and
   `ubuntu:22.04`.
 
 ## Running it
 
 ```console
-$ KUBECONFIG=/path/to/admin.conf tools/ostests/run-ai-conformance.sh
+$ KUBECONFIG=/path/to/admin.conf PROVIDER=gcp ARCH=amd64 TAG=v1.37.2-stratum.0 \
+    tools/ostests/run-ai-conformance.sh
 ```
 
 `GPU=0` runs only the tests that need no GPU, on a cluster without one:
 Gateway API, gang scheduling, AI service metrics, the Kubeflow Trainer operator and
-workload sandboxing. Results go to `_output/ai-conformance`, or to `$OUT`. The
-full run takes up to about 3 hours; `$TIMEOUT` sets `go test -timeout` (default
-`240m`).
+workload sandboxing. `PROVIDER`, `ARCH` and `TAG` only name the results file.
+The full run takes up to about 3 hours. `$TIMEOUT` sets `go test -timeout`
+(default `240m`).
+
+Results go to `_output/ai-conformance`, or to `$OUT`:
+
+- `ai-conformance-<provider>-<arch>/` holds `e2e.log`, `junit.xml`,
+  `results.json`, `summary.txt` and `test-args`, the flags the tests ran with.
+  The runner empties it first, so it never holds an earlier run's files.
+- `ai-conformance-results-<provider>-<arch>-<tag>.tar.gz` packs that folder.
+
+The run passes only when the tests exit 0, `junit.xml` shows no failures and at
+least one test that ran, and `e2e.log` is not empty. A failed run still writes
+the tarball, and `summary.txt` names the failed tests.
 
 ## What each requirement uses
 

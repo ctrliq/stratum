@@ -3,7 +3,7 @@
 set -o errexit -o nounset -o pipefail
 
 DCGM_EXPORTER_NAMESPACE="${DCGM_EXPORTER_NAMESPACE:-dcgm-exporter}"
-DCGM_EXPORTER_CHART_VERSION="${DCGM_EXPORTER_CHART_VERSION:-4.8.4}"
+: "${DCGM_EXPORTER_CHART_VERSION:?set by run-ai-conformance.sh from build/versions.mk}"
 
 echo "Installing DCGM Exporter ${DCGM_EXPORTER_CHART_VERSION}..."
 helm upgrade -i dcgm-exporter dcgm-exporter \

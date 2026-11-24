@@ -523,6 +523,7 @@ lint: lint-shell
 	tools/test-ostests-skew-verdict.sh
 	tools/test-ostests-sweep.sh
 	tools/test-ostests-conformance.sh
+	tools/test-ostests-ai-conformance.sh
 	tools/test-ostests-backends.sh
 	tools/test-ostests-matrix.sh
 	tools/test-inttest-header.sh

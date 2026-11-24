@@ -150,6 +150,11 @@ hydrophone_sha256_linux_arm64 = 3ad340d2891decbdc1f2f460a85beaf4fa114a823eb41544
 ai_conformance_commit = 9b080e0d157f4353e122dcf288a60a1f205c646b
 # renovate: datasource=github-releases depName=gotestyourself/gotestsum
 gotestsum_version = 1.13.0
+# Helm charts the AI Conformance run installs. The version docs/docs/cluster-admin/gpus.md verified.
+# renovate: datasource=github-releases depName=NVIDIA/k8s-device-plugin
+nvidia_device_plugin_version = 0.17.4
+# renovate: datasource=github-releases depName=NVIDIA/dcgm-exporter
+dcgm_exporter_version = 4.8.4
 
 # renovate: datasource=github-releases depName=google/go-containerregistry
 crane_version = 0.22.1

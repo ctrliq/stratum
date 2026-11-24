@@ -2,7 +2,7 @@
 # cdi-cri: the suite's GPU pods set no runtimeClassName, so containerd must inject the GPU via CDI.
 set -o errexit -o nounset -o pipefail
 
-NVIDIA_DEVICE_PLUGIN_VERSION="${NVIDIA_DEVICE_PLUGIN_VERSION:-0.17.4}"
+: "${NVIDIA_DEVICE_PLUGIN_VERSION:?set by run-ai-conformance.sh from build/versions.mk}"
 NVIDIA_CDI_HOOK_PATH="${NVIDIA_CDI_HOOK_PATH:-/usr/bin/nvidia-cdi-hook}"
 
 values="$(mktemp)"
