@@ -64,7 +64,7 @@ EOF
 
 lb_ip() { on cp1 "$K get svc $1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}'" 2>/dev/null; }
 in_pool() { [[ $(lb_ip "$1") == "$NET".5? ]]; }
-lease_held() { [[ -n $(on cp1 "$K -n kube-system get lease cilium-l2announce-default-$1 -o jsonpath='{.spec.holderIdentity}'" 2>/dev/null) ]]; }
+lease_held() { [[ -n $(on cp1 "$K -n kube-system get lease cilium-l2announce-default.$1 -o jsonpath='{.spec.holderIdentity}'" 2>/dev/null) ]]; }
 fetch() {  # address: a GET from the client host over a plain socket
   on "$CLIENT" "python3 - $1" <<'PY'
 import socket, sys
@@ -88,7 +88,7 @@ for svc in web-lb web-l2; do
   if wait_for "an agent holds the announcement Lease for $svc" 120 lease_held "$svc"; then
     pass "cp1's agent holds the announcement Lease for $svc"
   else
-    fail "no agent holds cilium-l2announce-default-$svc: $(on cp1 "$K -n kube-system get lease" 2>&1 | grep l2announce || true)"
+    fail "no agent holds cilium-l2announce-default.$svc: $(on cp1 "$K -n kube-system get lease" 2>&1 | grep l2announce || true)"
   fi
   ip=$(lb_ip "$svc")
   if wait_for "$CLIENT reaches $svc at $ip" 60 reaches "$ip"; then
