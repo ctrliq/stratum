@@ -10,6 +10,7 @@ trap 'rm -f "${values}"' EXIT
 cat >"${values}" <<VALUES
 runtimeClassName: nvidia
 deviceListStrategy: cdi-cri
+nvidiaDriverRoot: /
 cdi:
   nvidiaHookPath: ${NVIDIA_CDI_HOOK_PATH}
 nodeSelector:

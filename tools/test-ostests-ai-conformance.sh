@@ -34,6 +34,10 @@ STUB
 cat >"$TEST_TMP/bin/helm" <<'STUB'
 #!/bin/sh
 echo "helm $*" >>"$CALLS"
+while [ $# -gt 0 ]; do
+  [ "$1" = --values ] && sed 's/^/values: /' "$2" >>"$CALLS"
+  shift
+done
 STUB
 cat >"$TEST_TMP/bin/kubectl" <<'STUB'
 #!/bin/sh
@@ -118,6 +122,9 @@ for s in 10-cert-manager 40-kubeflow-trainer 50-agentgateway 50-gang-scheduler \
 done
 grep -q "^helm upgrade -i nvidia-device-plugin nvidia-device-plugin .*--version $(pin nvidia_device_plugin_version) " "$CALLS" \
   || fail "pass-gpu: device plugin not installed at its pin: $(cat "$CALLS")"
+for v in 'deviceListStrategy: cdi-cri' 'nvidiaDriverRoot: /'; do
+  grep -qx "values: $v" "$CALLS" || fail "pass-gpu: device plugin values lack '$v': $(grep '^values: ' "$CALLS")"
+done
 grep -q "^helm upgrade -i dcgm-exporter dcgm-exporter .*--version $(pin dcgm_exporter_version) " "$CALLS" \
   || fail "pass-gpu: DCGM exporter not installed at its pin: $(cat "$CALLS")"
 grep -q -- '-run \. ./test -args ' "$CALLS" || fail "pass-gpu: not every test ran: $(grep gotestsum "$CALLS")"
