@@ -101,18 +101,30 @@ func ApplyRuntimeHandlers(w io.Writer, o RuntimeApplyOptions) (RuntimeApplyResul
 		return RuntimeApplyResult{}, err
 	}
 	out := RuntimeApplyResult{Handlers: want, Source: source}
-	if !maps.Equal(st.RuntimeHandlers, want) {
-		err := nodestate.MutateSave(func(cur *NodeState) error { cur.RuntimeHandlers = want; return nil }, saveState)
-		if errors.Is(err, atomicfile.ErrNotDurable) {
-			out.Saved = true
-			return out, fmt.Errorf("save runtime handlers: %w; %s holds the new runtime handlers but may not survive a crash, "+
-				"and the drop-in was not changed: run `stratum runtime apply` again", err, nodestate.StatePath())
+	changed := false
+	err = nodestate.MutateSave(func(cur *NodeState) error {
+		if maps.Equal(cur.RuntimeHandlers, want) {
+			// A retry after a save that replaced node.yaml but did not sync
+			// finds the handlers already there: sync before the drop-in
+			// follows them, or a crash could bring back the old ones.
+			if err := syncStateDir(); err != nil {
+				return err
+			}
+			return nodestate.ErrUnchanged
 		}
-		if err != nil {
-			return out, fmt.Errorf("save runtime handlers: %w; nothing was changed", err)
-		}
-		out.Saved = true
+		changed = true
+		cur.RuntimeHandlers = want
+		return nil
+	}, saveState)
+	if errors.Is(err, atomicfile.ErrNotDurable) {
+		out.Saved = changed
+		return out, fmt.Errorf("save runtime handlers: %w; %s holds the new runtime handlers but may not survive a crash, "+
+			"and the drop-in was not changed: run `stratum runtime apply` again", err, nodestate.StatePath())
 	}
+	if err != nil {
+		return out, fmt.Errorf("save runtime handlers: %w; nothing was changed", err)
+	}
+	out.Saved = changed
 	res, err := applyHandlers(w, want, o.Restart)
 	out.ApplyHandlersResult = res
 	if err != nil {

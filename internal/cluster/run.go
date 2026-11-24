@@ -767,7 +767,10 @@ func reconcileNodeLabels(ctx context.Context, st *NodeState) error {
 var errNotThisNodeState = errors.New("node.yaml is not this node's")
 
 // recordAppliedNodeLabels updates hostname's AppliedNodeLabels from the value
-// in node.yaml, under its mutation lock, and returns the record it leaves.
+// in node.yaml, under its mutation lock, and returns the record it leaves. A
+// record already in node.yaml is synced before it is relied on: a save that
+// replaced node.yaml but could not sync its directory leaves the record
+// visible, and a crash could still lose it, and with it the labels to prune.
 func recordAppliedNodeLabels(hostname string, update func([]string) []string) ([]string, error) {
 	var record []string
 	err := nodestate.MutateSave(func(cur *NodeState) error {
@@ -780,6 +783,9 @@ func recordAppliedNodeLabels(hostname string, update func([]string) []string) ([
 		}
 		record = next
 		if slices.Equal(next, cur.AppliedNodeLabels) {
+			if err := syncStateDir(); err != nil {
+				return err
+			}
 			return nodestate.ErrUnchanged
 		}
 		cur.AppliedNodeLabels = next
@@ -2141,4 +2147,16 @@ func ensureWorkerContainerdConfigs(ctx context.Context, st *NodeState) error {
 	}
 	_, err = ensureContainerdConfigs(os.Stdout, st)
 	return err
+}
+
+// syncStateDir makes node.yaml's last replacement durable. A save that
+// returned ErrNotDurable left the new file visible, so a retry that finds
+// nothing to change syncs before it acts on what it read. A var so a test can
+// fail it.
+var syncStateDir = func() error {
+	dir := filepath.Dir(nodestate.StatePath())
+	if err := atomicfile.SyncDir(dir); err != nil {
+		return fmt.Errorf("%w: sync %s: %w", atomicfile.ErrNotDurable, dir, err)
+	}
+	return nil
 }

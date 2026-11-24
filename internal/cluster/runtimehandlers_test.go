@@ -457,6 +457,27 @@ func TestApplyRuntimeHandlersReportsASaveThatReplacedNodeYAMLButDidNotSync(t *te
 	if got := savedHandlers(t); !maps.Equal(got, kata) {
 		t.Errorf("node.yaml declares %v, want %v", got, kata)
 	}
+
+	// The retry the error asks for finds the handlers already saved, so it
+	// syncs node.yaml before it writes the drop-in, and writes none while that
+	// sync fails.
+	saveState = old
+	oldSync := syncStateDir
+	t.Cleanup(func() { syncStateDir = oldSync })
+	syncs := 0
+	syncStateDir = func() error {
+		syncs++
+		return fmt.Errorf("%w: sync dir: input/output error", atomicfile.ErrNotDurable)
+	}
+	res, err = ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata})
+	if !errors.Is(err, atomicfile.ErrNotDurable) || res.Saved || len(*written) != 0 || syncs != 1 {
+		t.Fatalf("retry = %+v, %v after %d syncs with drop-in writes %v; want the sync's error and no drop-in", res, err, syncs, *written)
+	}
+	syncStateDir = func() error { syncs++; return nil }
+	res, err = ApplyRuntimeHandlers(io.Discard, RuntimeApplyOptions{Handlers: kata})
+	if err != nil || res.Saved || len(*written) != 1 || syncs < 2 {
+		t.Errorf("retry = %+v, %v after %d syncs with drop-in writes %v; want a synced node.yaml and the drop-in written", res, err, syncs, *written)
+	}
 }
 
 // A drop-in written but whose containerd restart failed is what the next

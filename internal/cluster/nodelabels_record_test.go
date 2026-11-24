@@ -2,11 +2,15 @@ package cluster
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ctrliq/stratum/internal/atomicfile"
 )
 
 func stubLabelPatch(t *testing.T) (recordAtPatch, prune *[]string) {
@@ -133,5 +137,38 @@ func TestWorkerRestartRefusesSavedLabelsItNoLongerAccepts(t *testing.T) {
 				t.Errorf("saved labels = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// A record node.yaml already holds may be one a save replaced but could not
+// sync, so a reconcile that finds it unchanged syncs node.yaml's directory
+// before it patches the Node, and patches nothing when that sync fails.
+func TestNodeLabelsSyncAnUnchangedRecordBeforeThePatch(t *testing.T) {
+	workerScratchHost(t)
+	patched := false
+	old := reconcileOwnNodeLabels
+	t.Cleanup(func() { reconcileOwnNodeLabels = old })
+	reconcileOwnNodeLabels = func(context.Context, string, map[string]string, []string, []string) error {
+		patched = true
+		return nil
+	}
+	st := &NodeState{Role: "worker", Hostname: "w1", NodeLabels: map[string]string{"zone": "r1"}, AppliedNodeLabels: []string{"zone"}}
+	if err := SaveState(st); err != nil {
+		t.Fatal(err)
+	}
+	oldSync := syncStateDir
+	t.Cleanup(func() { syncStateDir = oldSync })
+	syncs := 0
+	syncStateDir = func() error {
+		syncs++
+		return fmt.Errorf("%w: sync dir: input/output error", atomicfile.ErrNotDurable)
+	}
+	err := reconcileNodeLabels(context.Background(), st)
+	if !errors.Is(err, atomicfile.ErrNotDurable) || patched || syncs != 1 {
+		t.Fatalf("reconcile = %v after %d syncs, patched %v; want the sync's error and no patch", err, syncs, patched)
+	}
+	syncStateDir = func() error { syncs++; return nil }
+	if err := reconcileNodeLabels(context.Background(), st); err != nil || !patched || syncs != 2 {
+		t.Errorf("reconcile = %v after %d syncs, patched %v; want a synced record and the patch", err, syncs, patched)
 	}
 }
