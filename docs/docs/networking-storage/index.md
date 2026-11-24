@@ -81,7 +81,7 @@ answer. Cilium announces a Service that sets no `loadBalancerClass`, or sets
     `Cluster` policy.
 
 One node at a time announces each address: the holder of a Lease in
-`kube-system` named `cilium-l2announce-<namespace>-<service>`. If that node
+`kube-system` named `cilium-l2announce-<namespace>.<service>`. If that node
 goes down, another agent takes the Lease once it expires, after 15 seconds,
 and starts answering. All the traffic for one address passes through the node
 that holds its Lease. Each agent renews its Leases every few seconds, and
