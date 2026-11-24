@@ -239,12 +239,13 @@ var destructiveOps = defaultDestructiveDeps()
 
 // UpgradeApplyIn is upgrade_apply's input.
 type UpgradeApplyIn struct {
-	Scope                 string `json:"scope" jsonschema:"node to upgrade only this node, or cluster to roll every node in the cluster"`
-	Target                string `json:"target,omitempty" jsonschema:"Kubernetes version as vMAJOR.MINOR.PATCH; defaults to the version this binary carries"`
-	From                  string `json:"from,omitempty" jsonschema:"for scope=node, only the currently running binary is accepted; run a different staged binary directly with its CLI. Required for scope=cluster: the name of a binary an operator staged in /var/lib/stratum/upgrade (or its full path there), which must exist at that same path on every node"`
-	WorkersMaxUnavailable int    `json:"workers_max_unavailable,omitempty" jsonschema:"how many workers may be upgraded at once; defaults to 1"`
-	SoakSeconds           int    `json:"soak_seconds,omitempty" jsonschema:"seconds to hold each node healthy before moving on; defaults to 15, and 0 means the default rather than no soak"`
-	SkipSnapshot          bool   `json:"skip_snapshot,omitempty" jsonschema:"skip the pre-upgrade etcd snapshot; strongly discouraged"`
+	Scope                 string   `json:"scope" jsonschema:"node to upgrade only this node, or cluster to roll every node in the cluster"`
+	Target                string   `json:"target,omitempty" jsonschema:"Kubernetes version as vMAJOR.MINOR.PATCH; defaults to the version this binary carries"`
+	From                  string   `json:"from,omitempty" jsonschema:"for scope=node, only the currently running binary is accepted; run a different staged binary directly with its CLI. Required for scope=cluster: the name of a binary an operator staged in /var/lib/stratum/upgrade (or its full path there), which must exist at that same path on every node"`
+	WorkersMaxUnavailable int      `json:"workers_max_unavailable,omitempty" jsonschema:"how many workers may be upgraded at once; defaults to 1"`
+	SoakSeconds           int      `json:"soak_seconds,omitempty" jsonschema:"seconds to hold each node healthy before moving on; defaults to 15, and 0 means the default rather than no soak"`
+	SkipSnapshot          bool     `json:"skip_snapshot,omitempty" jsonschema:"skip the pre-upgrade etcd snapshot; strongly discouraged"`
+	NodeChecks            []string `json:"node_checks,omitempty" jsonschema:"for scope=cluster only, the post-upgrade checks kube-system/stratum-upgrade-node-checks declares that this run may execute, by name. Each runs a command as root on the nodes it selects, so the run refuses any declared check not named here, and any name the ConfigMap does not declare"`
 }
 
 // UpgradeApplyHandler performs a real upgrade. A cluster rollout runs on the
@@ -295,6 +296,7 @@ func UpgradeApplyHandler(conn *kube.Connector) sdk.ToolHandlerFor[UpgradeApplyIn
 					SoakSec:               in.SoakSeconds, SkipSnapshot: in.SkipSnapshot,
 					VerifyStagedOnNode: true,
 					Client:             cs,
+					NodeChecks:         in.NodeChecks,
 				})
 			})
 			return nil, out, err

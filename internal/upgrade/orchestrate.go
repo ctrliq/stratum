@@ -101,6 +101,12 @@ type ClusterOptions struct {
 	SkipSnapshot bool
 	DryRun       bool
 
+	// NodeChecks names the checks PostCheckConfigMap declares that the operator
+	// expects this run to execute. A check runs a command as root on the nodes
+	// it selects, so a run refuses a declared check this list does not name,
+	// and a name the ConfigMap does not declare.
+	NodeChecks []string
+
 	// VerifyStagedOnNode has each node check the staged binary before it runs
 	// it: neither the file nor its directory may be a symlink, both must be
 	// owned by root and writable by no one else, and on a node of this
@@ -122,6 +128,18 @@ type ClusterOptions struct {
 	// stratumVersion is the staged binary's release, stamped on every node:
 	// this orchestrator may be an older build than the one it installs.
 	stratumVersion string
+	// postChecks are the checks PostCheckConfigMap declares, read once at the
+	// start of the run.
+	postChecks []postCheck
+	// self is this orchestrator's own binary, the one a re-run after a failed
+	// check must use: the upgrade binary may predate the checks and would
+	// finish the node without them. Empty when it cannot be found.
+	self string
+	// keepCPCordon has a control plane's upgrade Job leave its cordon for this
+	// run to undo once the node's checks pass. A cluster with one control plane
+	// keeps the Job's own uncordon, as this run may not outlive that node's
+	// upgrade.
+	keepCPCordon bool
 }
 
 // nodeOutcome is what upgradeOneNode did with a node.
@@ -188,8 +206,9 @@ func (o *ClusterOptions) leaseConfirm(ctx context.Context) error {
 // UpgradeCluster orchestrates a quorum-safe rolling HA upgrade from one CP node:
 // preflight -> serial control planes -> workers (up to --workers-max-unavailable at
 // a time); per node it does cordon -> drain (PDB-aware) -> per-node Job
-// (`stratum upgrade --from`) -> node Ready + health gate -> stamp version ->
-// uncordon. Halts on any node failure.
+// (`stratum upgrade --from`) -> node Ready + health gate -> the post-upgrade
+// checks PostCheckConfigMap declares for the node -> stamp version -> uncordon.
+// Halts on any node failure.
 //
 // Control planes are always serial (never two etcd members down at once). Workers
 // run up to --workers-max-unavailable concurrently (default 1); they are not etcd
@@ -219,6 +238,13 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 		return fmt.Errorf("preflight: %s", plan.Blocker)
 	}
 	ordered := orderedNodes(plan.Nodes)
+	if o.postChecks, err = loadPostChecks(ctx, cs); err != nil {
+		return err
+	}
+	o.keepCPCordon = keepsCPCordon(o.postChecks, ordered)
+	if self, err := selfExecutable(); err == nil {
+		o.self = self
+	}
 
 	// The dry run renders the plan — the same classification and ordering the
 	// MCP upgrade_plan tool reports, so the two cannot disagree about which
@@ -235,10 +261,28 @@ func UpgradeCluster(w io.Writer, o ClusterOptions) error {
 		}
 	}
 	fmt.Fprintln(w, "  first, import the upgrade binary's images on every Ready node: the add-ons roll out to every node as soon as the first control plane is upgraded")
+	printPostChecks(w, o.postChecks)
+	nodeChecksErr := acceptedPostChecks(o.postChecks, o.NodeChecks)
+	if o.DryRun && nodeChecksErr != nil {
+		fmt.Fprintf(w, "  this run would refuse: %v\n", nodeChecksErr)
+	}
 	warnUntrustedKubeletServing(w, ctx, ordered)
 	if o.DryRun {
 		fmt.Fprintln(w, "\n(dry-run; no changes) — ensure the upgrade binary is staged at", o.From, "on every node.")
 		return nil
+	}
+	if nodeChecksErr != nil {
+		return fmt.Errorf("%w (no node was cordoned or upgraded)", nodeChecksErr)
+	}
+	if o.keepCPCordon {
+		ok, err := stagedKeepsCordon(ctx, o.From)
+		if err != nil {
+			return fmt.Errorf("%w (no node was cordoned or upgraded)", err)
+		}
+		if !ok {
+			o.keepCPCordon = false
+			fmt.Fprintf(w, "  WARN: the upgrade binary %s cannot leave a control plane cordoned for its checks, so each control plane's own upgrade Job uncordons it and its checks run after it is schedulable\n", o.From)
+		}
 	}
 
 	// Exclusive cluster-wide from here until the run ends (lease.go). The
@@ -803,6 +847,12 @@ func upgradeOneNode(w io.Writer, ctx context.Context, cs kubernetes.Interface, n
 		err = waitAPIHealthz(hctx, cs)
 		cancel()
 	}
+	if err == nil {
+		err = runPostChecks(ctx, w, cs, n, jn, o)
+		if errors.Is(err, errPostCheckFailed) {
+			return nodeUpgraded, holdFailedNode(ctx, cs, n, jn, o, err)
+		}
+	}
 	// The leases again, and by renewing them, on every attempt of the write that
 	// stamps the node and undoes its cordon: the Job, the Ready wait and the gate
 	// can span an API outage long enough for a lease to expire and a successor
@@ -831,22 +881,30 @@ func upgradeOneNode(w io.Writer, ctx context.Context, cs kubernetes.Interface, n
 // per-node Job runs on the host and does not stop with this process, so it may
 // still be upgrading the node. A controller's Job also uncordons the node once
 // its upgrade passes, which can be before this run's own gates fail or after
-// it halts, so only a worker is said to be left cordoned.
+// it halts, so only a worker, or a controller whose Job keeps its cordon for
+// its checks, is said to be left cordoned. With checks declared, the only way
+// back is a re-run, which runs them before it uncordons the node.
 func recoverySteps(n Node, job string, o ClusterOptions) string {
 	// The --from binary runs every command, kubectl included: the node has no
 	// kubectl on its PATH, and a bare `stratum` may be an older release.
 	from := shellQuote(o.From)
 	state := "is left cordoned, and its upgrade Job"
-	if n.IsCP {
+	if n.IsCP && !o.keepCPCordon {
 		state = "may be left cordoned (its upgrade Job uncordons it once upgraded), and the Job"
 	}
-	return fmt.Sprintf("  %s %s may still be running. To recover:\n"+
+	steps := fmt.Sprintf("  %s %s may still be running. To recover:\n"+
 		"    1. %s kubectl -n %s get job/%s       (wait for it to succeed or fail; \"not found\" means it\n"+
-		"       already finished and was cleaned up)\n"+
-		"    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node)\n"+
+		"       already finished and was cleaned up)\n",
+		n.Name, state, from, cuNamespace, job)
+	if len(o.postChecks) > 0 {
+		return steps + fmt.Sprintf("    2. %s    (finishes the node, and runs its\n"+
+			"       post-upgrade checks before it uncordons it)",
+			rerunCommand(o))
+	}
+	return steps + fmt.Sprintf("    2. %s upgrade --cluster --target %s --from %s --yes    (finishes the node)\n"+
 		"       or, if the node is at the target and healthy, and this run cordoned it (you did not cordon it yourself\n"+
 		"       before the upgrade): %s kubectl uncordon %s",
-		n.Name, state, from, cuNamespace, job, from, o.Target, from, from, n.Name)
+		from, o.Target, from, from, n.Name)
 }
 
 // shellQuote is s as one shell word: unchanged when it is made only of
@@ -941,6 +999,9 @@ func nodeUpgradeArgv(o ClusterOptions, n Node) []string {
 	argv := append(stagedUpgradeArgv(o, n), "--soak", strconv.Itoa(o.SoakSec))
 	if o.SkipSnapshot {
 		argv = append(argv, "--skip-snapshot")
+	}
+	if n.IsCP && o.keepCPCordon {
+		argv = append(argv, "--keep-cordon")
 	}
 	return argv
 }
@@ -1138,16 +1199,27 @@ var runImageImport = nodejob.Run
 // Every node runs the same build (the rollout pins it), so this node's copy
 // answers for all of them. A var for tests.
 var stagedImportsImages = func(ctx context.Context, path string) (bool, error) {
+	return stagedAcceptsFlag(ctx, path, "--import-images", "import images")
+}
+
+// stagedKeepsCordon reports whether the upgrade binary at path can leave a
+// control plane cordoned for the run's checks, asked as stagedImportsImages
+// asks. A var for tests.
+var stagedKeepsCordon = func(ctx context.Context, path string) (bool, error) {
+	return stagedAcceptsFlag(ctx, path, "--keep-cordon", "keep a control plane cordoned")
+}
+
+func stagedAcceptsFlag(ctx context.Context, path, flag, what string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "upgrade", "--import-images", "--help").CombinedOutput()
+	out, err := exec.CommandContext(ctx, path, "upgrade", flag, "--help").CombinedOutput()
 	if err == nil {
 		return true, nil
 	}
-	if strings.Contains(string(out), "unknown flag: --import-images") {
+	if strings.Contains(string(out), "unknown flag: "+flag) {
 		return false, nil
 	}
-	return false, fmt.Errorf("ask the upgrade binary %s whether it can import images: %w", path, err)
+	return false, fmt.Errorf("ask the upgrade binary %s whether it can %s: %w", path, what, err)
 }
 
 // nodeCheckArgv is nodeUpgradeArgv's read-only twin: the same exec of the

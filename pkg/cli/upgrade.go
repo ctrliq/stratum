@@ -16,6 +16,10 @@ import (
 // only by supplying the outcome itself.
 var upgradeNode = upgrade.UpgradeNode
 
+// upgradeCluster is upgrade.UpgradeCluster; a var so a test can read the
+// options the command builds without rolling a cluster.
+var upgradeCluster = upgrade.UpgradeCluster
+
 func newUpgradeCommand() *cobra.Command {
 	var (
 		clusterWide bool
@@ -31,6 +35,8 @@ func newUpgradeCommand() *cobra.Command {
 		importImgs  bool
 		expect      string
 		expectSum   string
+		keepCordon  bool
+		nodeChecks  []string
 	)
 	cmd := &cobra.Command{
 		Use:   "upgrade",
@@ -42,6 +48,9 @@ func newUpgradeCommand() *cobra.Command {
 			}
 			if importImgs && (clusterWide || check || dry) {
 				return fmt.Errorf("--import-images is one node's step of a cluster upgrade; it cannot be combined with --cluster, --check or --dry-run")
+			}
+			if len(nodeChecks) > 0 && !clusterWide {
+				return fmt.Errorf("--node-checks names the post-upgrade checks a cluster upgrade runs; it needs --cluster")
 			}
 			if clusterWide {
 				// Before the confirmation gate and the orchestrator: a cluster
@@ -57,9 +66,10 @@ func newUpgradeCommand() *cobra.Command {
 				if target == "" {
 					target = version.K8sVersion
 				}
-				return upgrade.UpgradeCluster(os.Stdout, upgrade.ClusterOptions{
+				return upgradeCluster(os.Stdout, upgrade.ClusterOptions{
 					Target: target, From: from, WorkersMaxUnavailable: wmu,
 					DrainGraceSec: grace, SoakSec: soak, SkipSnapshot: skipSnap, DryRun: dry,
+					NodeChecks: nodeChecks,
 				})
 			}
 			// The node upgrade runs as the version it installs, so an installed
@@ -69,7 +79,7 @@ func newUpgradeCommand() *cobra.Command {
 			}
 			err := upgradeNode(os.Stdout, upgrade.NodeOptions{
 				Target: target, From: from, SoakSec: soak, SkipSnapshot: skipSnap, DryRun: dry, Check: check,
-				ImportImages: importImgs, ExpectBuild: expect, ExpectSHA256: expectSum,
+				ImportImages: importImgs, ExpectBuild: expect, ExpectSHA256: expectSum, KeepCordon: keepCordon,
 			})
 			// --check answers in its exit status: the cluster orchestrator reads
 			// it from the Job's pod before deciding whether to drain.
@@ -91,6 +101,7 @@ func newUpgradeCommand() *cobra.Command {
 	fs.StringVar(&from, "from", "", "path to the upgrade binary — the new stratum binary; run from the installed binary, it hands off to it (default: this binary's own embedded payload)")
 	fs.StringVar(&target, "target", "", "target Kubernetes version, bare vMAJOR.MINOR.PATCH (default: one node uses --from binary if set, else this binary; --cluster uses this binary)")
 	fs.BoolVar(&yes, "yes", false, "proceed with a --cluster rollout without the confirmation")
+	fs.StringSliceVar(&nodeChecks, "node-checks", nil, "(--cluster) the post-upgrade checks kube-system/stratum-upgrade-node-checks declares that this run may execute, comma-separated; the run refuses any declared check not named")
 	fs.IntVar(&wmu, "workers-max-unavailable", 1, "(--cluster) upgrade this many workers concurrently (default 1 = serial); control planes are always serial")
 	fs.IntVar(&grace, "drain-grace", 60, "drain grace period in seconds (--cluster)")
 	fs.IntVar(&soak, "soak", 15, "health-gate soak in seconds")
@@ -109,6 +120,8 @@ func newUpgradeCommand() *cobra.Command {
 	// other nodes must already hold their images.
 	fs.BoolVar(&importImgs, "import-images", false, "import this upgrade binary's images into the node's runtime, and change nothing else")
 	_ = fs.MarkHidden("import-images")
+	fs.BoolVar(&keepCordon, "keep-cordon", false, "leave a control-plane node cordoned after its upgrade, for the cluster upgrade to uncordon")
+	_ = fs.MarkHidden("keep-cordon")
 	return cmd
 }
 

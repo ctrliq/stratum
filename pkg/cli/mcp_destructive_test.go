@@ -245,7 +245,7 @@ func TestDestructiveToolInputsArePinned(t *testing.T) {
 		required []string
 	}{
 		{"upgrade_apply",
-			[]string{"scope", "target", "from", "workers_max_unavailable", "soak_seconds", "skip_snapshot"},
+			[]string{"scope", "target", "from", "workers_max_unavailable", "soak_seconds", "skip_snapshot", "node_checks"},
 			[]string{"scope"}},
 		{"rollback", []string{"soak_seconds", "etcd_snapshot"}, nil},
 		{"certs_rotate", []string{"if_expiring_days"}, nil},
