@@ -207,8 +207,6 @@ jobs:
       # runs the artifact in a clean container the way a user would.
       - name: smoke test the artifact
         run: make smoke TARGET_ARCH=${{ matrix.arch }}
-      - name: build-info
-        run: make build-info TARGET_ARCH=${{ matrix.arch }}
 
       # What an importer of pkg/cli rebuilds this build from: the payload,
       # carved off the smoke-tested binary, and the engine's -X stamps. Unsigned,
@@ -221,6 +219,9 @@ jobs:
           set -euo pipefail
           rm -rf "staging/linux-${{ matrix.arch }}/images"
           make payload-asset engine-ldflags TARGET_ARCH=${{ matrix.arch }}
+
+      - name: build-info
+        run: make build-info TARGET_ARCH=${{ matrix.arch }}
 
       - name: name the assets for the arch they were built on
         run: |
