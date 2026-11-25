@@ -207,6 +207,19 @@ jobs:
       # runs the artifact in a clean container the way a user would.
       - name: smoke test the artifact
         run: make smoke TARGET_ARCH=${{ matrix.arch }}
+
+      # What an importer of pkg/cli rebuilds this build from: the payload,
+      # carved off the smoke-tested binary, and the engine's -X stamps. Unsigned,
+      # like everything else here; an importer takes them only when it is told
+      # to accept an unsigned engine. The staged image tar goes first: with it,
+      # the binary and the carved zip, the runner would hold three copies of the
+      # image set.
+      - name: importer assets
+        run: |
+          set -euo pipefail
+          rm -rf "staging/linux-${{ matrix.arch }}/images"
+          make payload-asset engine-ldflags TARGET_ARCH=${{ matrix.arch }}
+
       - name: build-info
         run: make build-info TARGET_ARCH=${{ matrix.arch }}
 
@@ -214,9 +227,15 @@ jobs:
         run: |
           set -euo pipefail
           mv dist/stratum "dist/stratum-linux-${{ matrix.arch }}"
+          mv dist/stratum-payload.zip "dist/stratum-payload-linux-${{ matrix.arch }}.zip"
+          mv dist/stratum-ldflags.txt "dist/stratum-ldflags-linux-${{ matrix.arch }}.txt"
           mv build-info.json "dist/build-info-${{ matrix.arch }}.json"
           ( cd dist && sha256sum "stratum-linux-${{ matrix.arch }}" "build-info-${{ matrix.arch }}.json" \
               > "sha256sums-${{ matrix.arch }}.txt" )
+          # The importer assets get a sums file of their own: the Depot job
+          # downloads stratum-linux-* and build-info-* and nothing else.
+          ( cd dist && sha256sum "stratum-payload-linux-${{ matrix.arch }}.zip" "stratum-ldflags-linux-${{ matrix.arch }}.txt" \
+              > "sha256sums-importer-${{ matrix.arch }}.txt" )
           ls -l dist/
 
       - name: upload to the prerelease
@@ -226,7 +245,10 @@ jobs:
           gh release upload "${{ needs.meta.outputs.tag }}" --clobber \
             "dist/stratum-linux-${{ matrix.arch }}" \
             "dist/build-info-${{ matrix.arch }}.json" \
-            "dist/sha256sums-${{ matrix.arch }}.txt"
+            "dist/sha256sums-${{ matrix.arch }}.txt" \
+            "dist/stratum-payload-linux-${{ matrix.arch }}.zip" \
+            "dist/stratum-ldflags-linux-${{ matrix.arch }}.txt" \
+            "dist/sha256sums-importer-${{ matrix.arch }}.txt"
 
       - name: build and push the per-arch image
         if: ${{ inputs.push_images }}
