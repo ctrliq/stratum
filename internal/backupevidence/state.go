@@ -76,6 +76,13 @@ type Attempts struct {
 	// ran with — an unreadable snapshot.conf, a cluster config that cannot be
 	// read — the same WARN lines the effective policy reports.
 	Warnings []string `json:"warnings,omitempty"`
+	// NodeState and NodeStateUpload are the latest attempts to save and to
+	// upload the node-state bundle taken beside the snapshot, with their own
+	// last-success stamps. Empty on a node that takes none.
+	NodeState                  Attempt   `json:"nodeState,omitzero"`
+	NodeStateUpload            Attempt   `json:"nodeStateUpload,omitzero"`
+	LastNodeStateSuccess       time.Time `json:"lastNodeStateSuccess,omitzero"`
+	LastNodeStateUploadSuccess time.Time `json:"lastNodeStateUploadSuccess,omitzero"`
 }
 
 // EvidencePath is where the attempt-state record persists: beside node.yaml

@@ -928,6 +928,11 @@ type BackupMaintenanceRow struct {
 	LastUploadSuccess string           `json:"lastUploadSuccess,omitempty" jsonschema:"RFC 3339; absent when no upload has succeeded"`
 	Warnings          []string         `json:"warnings" jsonschema:"the record's scheduling and retention warnings, as typed safe reasons"`
 	AttemptsKnown     bool             `json:"attemptsKnown" jsonschema:"false means the diagnostics are unknown — the record could not be read — never that no attempt was made"`
+
+	NodeState                  *BackupAttemptRow `json:"nodeState,omitempty" jsonschema:"the latest attempt to save the node-state bundle taken beside the snapshot (the PKI and node state a snapshot does not hold); absent on a node that takes none"`
+	NodeStateUpload            *BackupAttemptRow `json:"nodeStateUpload,omitempty" jsonschema:"the latest attempt to upload the node-state bundle; absent when none was made"`
+	LastNodeStateSuccess       string            `json:"lastNodeStateSuccess,omitempty" jsonschema:"RFC 3339; absent when no node-state bundle has been saved"`
+	LastNodeStateUploadSuccess string            `json:"lastNodeStateUploadSuccess,omitempty" jsonschema:"RFC 3339; absent when no node-state bundle has been uploaded"`
 }
 
 // BackupEvidenceOut is backup_evidence's result: the shared machine-readable

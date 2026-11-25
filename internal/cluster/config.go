@@ -257,6 +257,9 @@ type Snapshot struct {
 	Retain        int    `json:"retain,omitempty"`        // default 5
 	S3            *S3    `json:"s3,omitempty"`
 	Dir           string `json:"dir,omitempty"`
+	// NodeState, when it names a recipient, has each snapshot taken with a
+	// node-state bundle beside it.
+	NodeState *NodeStateBackup `json:"nodeState,omitempty"`
 }
 
 type S3 struct {
@@ -501,6 +504,9 @@ func parseConfigWithRead(path string, read func(string) ([]byte, error)) (*Clust
 	// the unset marker defaults() replaces with the built-in retention.
 	if c.Spec.Snapshot.Retain < 0 {
 		return nil, nil, fmt.Errorf("%s: spec.snapshots.retain %d is negative", path, c.Spec.Snapshot.Retain)
+	}
+	if err := c.validateNodeStateBackup(path); err != nil {
+		return nil, nil, err
 	}
 	return c, b, nil
 }

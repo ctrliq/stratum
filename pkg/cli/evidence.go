@@ -257,6 +257,14 @@ type BackupMaintenance struct {
 	// the diagnostics are unknown because the record is unreadable or the
 	// request ended — never that no attempt was made.
 	AttemptsKnown bool
+	// NodeState and NodeStateUpload are the latest attempts to save and to
+	// upload the node-state bundle taken beside the snapshot, and the stamps
+	// when each last succeeded. No attempt is recorded on a node that takes
+	// no bundle: its snapshots hold etcd's data alone.
+	NodeState                  BackupAttempt
+	NodeStateUpload            BackupAttempt
+	LastNodeStateSuccess       time.Time
+	LastNodeStateUploadSuccess time.Time
 }
 
 // BackupEvidenceResult is one bounded read of the engine's backup evidence:
@@ -473,6 +481,11 @@ func backupMaintenanceFrom(m backupevidence.Maintenance) BackupMaintenance {
 		LastUploadSuccess: m.LastUploadSuccess,
 		Warnings:          m.Warnings,
 		AttemptsKnown:     m.AttemptsKnown,
+
+		NodeState:                  backupAttemptFrom(m.NodeState),
+		NodeStateUpload:            backupAttemptFrom(m.NodeStateUpload),
+		LastNodeStateSuccess:       m.LastNodeStateSuccess,
+		LastNodeStateUploadSuccess: m.LastNodeStateUploadSuccess,
 	}
 }
 

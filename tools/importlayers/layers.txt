@@ -55,13 +55,15 @@ layer2 github.com/ctrliq/stratum/internal/assets
 # load, cert issuance and CA rotation, persisted node state, kubeconfig
 # read/write, profile file materialization, network config, cert SAN
 # assembly, typed client-go helpers, the bootstrap-token kubeconfig, addon
-# manifest handling. Cert issuance sits beside pki because it is PKI work:
+# manifest handling, the sealed bundle of a node's PKI and state. Cert
+# issuance sits beside pki because it is PKI work:
 # its four upward imports into the orchestration layer are reviewed
 # exceptions in exceptions.txt, not free same-layer reach.
 layer3 github.com/ctrliq/stratum/internal/host
 layer3 github.com/ctrliq/stratum/internal/pki
 layer3 github.com/ctrliq/stratum/internal/certs
 layer3 github.com/ctrliq/stratum/internal/nodestate
+layer3 github.com/ctrliq/stratum/internal/nodebackup
 layer3 github.com/ctrliq/stratum/internal/kubeconfig
 layer3 github.com/ctrliq/stratum/internal/profilefiles
 layer3 github.com/ctrliq/stratum/internal/netcfg

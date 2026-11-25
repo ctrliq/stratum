@@ -169,6 +169,12 @@ type SaveOptions struct {
 	// attempt replaces the record's warnings with the tick's current ones,
 	// so a warning from a condition that has healed does not linger.
 	EvidenceWarnings []string
+	// NodeState, when set, has the save take a node-state bundle beside the
+	// snapshot: the PKI and node state a snapshot does not hold and a
+	// replacement control plane cannot start without. It is uploaded and
+	// pruned with the snapshot. A bundle that fails leaves the snapshot
+	// saved, and the save returns the bundle's error beside the path.
+	NodeState *NodeState
 }
 
 // Save takes a local snapshot, optionally uploads it to S3, then prunes both
@@ -192,9 +198,10 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		// would make manual prune (which keys on the short name) never match.
 		hn, _ = host.Hostname()
 	}
+	stamp := NowStamp()
 	name := o.Name
 	if name == "" {
-		name = ScheduledName(hn, NowStamp())
+		name = ScheduledName(hn, stamp)
 	}
 	path := filepath.Join(dir, name)
 	// The scheduled save records each attempt as it happens, so evidence of
@@ -251,6 +258,40 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 			// not touch the backup's own evidence.
 			evidence.recordPrune(pruneErrs)
 		}
+	}
+	if o.NodeState == nil {
+		// A node that takes no bundle has no current bundle attempt. One left
+		// from a tick before the recipients were removed would read as
+		// bundles still being taken.
+		if evidence != nil {
+			evidence.clearNodeState()
+		}
+		return path, uploadErr
+	}
+	// A save that was stopped after its snapshot has no bundle, and says so:
+	// returning the snapshot alone would report a backup set that is not one.
+	if cerr := ctx.Err(); cerr != nil {
+		stopped := nodeStateResult{save: cerr}
+		if evidence != nil {
+			evidence.recordNodeState(stopped)
+		}
+		return path, errors.Join(uploadErr, fmt.Errorf("%w: %w", ErrNodeStateIncomplete, stopped.err()))
+	}
+	ns := saveNodeState(ctx, w, dir, hn, nodeStateNameFor(hn, stamp, name, o.Name != ""), name, o.NodeState, o.S3, o.Retain)
+	for _, perr := range ns.prune {
+		fmt.Fprintf(w, "  WARN: %v\n", perr)
+		if o.PruneWarn != nil {
+			o.PruneWarn(perr)
+		}
+		if evidence != nil {
+			evidence.warnings = append(evidence.warnings, fmt.Sprintf("WARN: %v", perr))
+		}
+	}
+	if evidence != nil {
+		evidence.recordNodeState(ns)
+	}
+	if nerr := ns.err(); nerr != nil {
+		return path, errors.Join(uploadErr, fmt.Errorf("%w: %w", ErrNodeStateIncomplete, nerr))
 	}
 	return path, uploadErr
 }
@@ -336,6 +377,13 @@ type snapshotEvidence struct {
 	LastSaveSuccess   time.Time       `json:"lastSaveSuccess,omitzero"`
 	LastUploadSuccess time.Time       `json:"lastUploadSuccess,omitzero"`
 	Warnings          []string        `json:"warnings,omitempty"`
+	// The node-state bundle's attempts, recorded like the snapshot's and
+	// apart from them: a snapshot with no bundle restores a datastore onto a
+	// control plane that cannot be rebuilt. Absent when the node takes none.
+	NodeState                  snapshotAttempt `json:"nodeState,omitzero"`
+	NodeStateUpload            snapshotAttempt `json:"nodeStateUpload,omitzero"`
+	LastNodeStateSuccess       time.Time       `json:"lastNodeStateSuccess,omitzero"`
+	LastNodeStateUploadSuccess time.Time       `json:"lastNodeStateUploadSuccess,omitzero"`
 }
 
 // recordSave records a save attempt: the attempt itself always, the
@@ -480,6 +528,37 @@ func (r *evidenceRecorder) recordPrune(errs []error) {
 	r.mutate(func(e *snapshotEvidence) {
 		e.recordPrune(time.Now(), joined)
 		e.Warnings = r.warnings
+	})
+}
+
+// recordNodeState records the bundle's save attempt and, when one was made,
+// its S3 copy attempt.
+func (r *evidenceRecorder) recordNodeState(ns nodeStateResult) {
+	r.mutate(func(e *snapshotEvidence) {
+		at := time.Now()
+		e.NodeState = snapshotAttemptOf(at, ns.save)
+		if ns.save == nil {
+			e.LastNodeStateSuccess = at
+		}
+		// A bundle not copied off the node this tick has no current upload
+		// attempt, whatever an earlier tick with S3 set did.
+		e.NodeStateUpload = snapshotAttempt{}
+		if ns.uploaded {
+			e.NodeStateUpload = snapshotAttemptOf(at, ns.upload)
+			if ns.upload == nil {
+				e.LastNodeStateUploadSuccess = at
+			}
+		}
+		e.Warnings = r.warnings
+	})
+}
+
+// clearNodeState records that this tick took no bundle: no current save or
+// upload attempt. The last successes stay, as the history they are.
+func (r *evidenceRecorder) clearNodeState() {
+	r.mutate(func(e *snapshotEvidence) {
+		e.NodeState = snapshotAttempt{}
+		e.NodeStateUpload = snapshotAttempt{}
 	})
 }
 
