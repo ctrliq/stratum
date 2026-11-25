@@ -125,7 +125,8 @@ CASES = [
     # go is exact: lint-go-version rejects anything but the tag's .go-version.
     ("release-1.36", "go",                       "1.26.8",   False),
     ("release-1.36", "go",                       "1.26.9",   False),
-    ("release-1.36", "go",                       "1.26.10",  True),
+    ("release-1.36", "go",                       "1.26.10",  False),
+    ("release-1.36", "go",                       "1.26.11",  True),
     ("release-1.36", "go",                       "1.27.0",   False),
     ("release-1.36", "containerd/containerd",    "2.3.5",    True),
     # containerd's 1.37 row is published upstream now (ceiling <=2.4); Cilium
