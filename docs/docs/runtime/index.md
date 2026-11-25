@@ -110,7 +110,9 @@ a slower disk. The Stratum log names each archive as its import begins. Later
 starts skip an archive that has not changed. `stratum upgrade` imports the
 archives that are not imported yet before it restarts anything on a node, so
 an archive you staged without restarting Stratum does not hold the kubelet
-down during the upgrade.
+down during the upgrade. See
+[Images loaded onto a node by hand](../appendices/upgrade-reference.md#images-loaded-onto-a-node-by-hand)
+for when their images become usable.
 
 An archive that Stratum cannot read or import is skipped with a warning in the
 Stratum log, and exempts nothing; the node still starts. If pinning fails, the

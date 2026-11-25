@@ -443,4 +443,48 @@ func TestUpgradeAtTargetImportsStagedArchivesBeforeTheHandoff(t *testing.T) {
 	if !slices.Equal(events, []string{"staged", "reexec"}) {
 		t.Errorf("events = %v, want the staged-archive import, then the supervisor restart", events)
 	}
+
+	// The supervisor now runs the installed build, so a further rerun restarts
+	// nothing. It imports nothing either: an import with no start to follow it
+	// would leave the images on the node with nothing to exempt them.
+	events = nil
+	if err := UpgradeNode(io.Discard, NodeOptions{}); err != nil {
+		t.Fatalf("UpgradeNode again: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("a rerun that restarts nothing did %v", events)
+	}
+}
+
+// A staged-archive import that fails stops the upgrade before it restarts
+// anything: going on would restart kubelet with the archive still to import,
+// which is the failure the import is there to prevent.
+func TestUpgradeNodeStopsWhenTheStagedImportFails(t *testing.T) {
+	events := controllerUpgradeFixture(t, "v1.37.9", 0)
+	stagedArchive(t, events)
+	swap(t, &importStagedImages, func(context.Context, io.Writer) error { return errors.New("containerd is not serving") })
+	swap(t, &restartUnit, func(name string) error { *events = append(*events, "restart:"+name); return nil })
+	swap(t, &reloadUnit, func(name string, _ supervisor.ProcSpec) error {
+		*events = append(*events, "reload:"+name)
+		return nil
+	})
+	_, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{SkipSnapshot: true}) })
+	if err == nil || !strings.Contains(err.Error(), "containerd is not serving") {
+		t.Fatalf("error = %v, want the import's", err)
+	}
+	if slices.ContainsFunc(*events, func(e string) bool { return strings.HasPrefix(e, "reload:") || strings.HasPrefix(e, "stamp:") }) {
+		t.Errorf("the upgrade went on after its staged import failed: %v", *events)
+	}
+}
+
+// The same for the step every node runs before any is upgraded: its failure
+// is the Job's failure, which stops the run before anything is cordoned.
+func TestUpgradeNodeImportImagesFailsWhenTheStagedImportFails(t *testing.T) {
+	importFixture(t, t.TempDir())
+	var events []string
+	stagedArchive(t, &events)
+	swap(t, &importStagedImages, func(context.Context, io.Writer) error { return errors.New("containerd is not serving") })
+	if err := UpgradeNode(io.Discard, NodeOptions{ImportImages: true}); err == nil || !strings.Contains(err.Error(), "containerd is not serving") {
+		t.Fatalf("error = %v, want the import's", err)
+	}
 }

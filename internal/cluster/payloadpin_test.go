@@ -3,6 +3,7 @@ package cluster
 import (
 	"archive/tar"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -393,7 +394,7 @@ func TestImportDropInImagesDoesNotStampAnArchiveWhoseImagesAreGone(t *testing.T)
 	if runtime.DropInImported(tar) {
 		t.Error("stamped an archive whose images containerd does not have")
 	}
-	if want := "containerd no longer has ghcr.io/ctrliq/stratum-fleet-agent:v1"; !strings.Contains(warn.String(), want) {
+	if want := "containerd does not list ghcr.io/ctrliq/stratum-fleet-agent:v1"; !strings.Contains(warn.String(), want) {
 		t.Errorf("warning does not name the missing image:\n%s", warn.String())
 	}
 }
@@ -421,5 +422,108 @@ func TestImportDropInImagesPinsEachArchiveBeforeImportingTheNext(t *testing.T) {
 	next := strings.Index(string(logged), "images import "+later)
 	if pin < 0 || next < 0 || pin > next {
 		t.Errorf("the first archive was not pinned before the next was imported; ctr calls:\n%s", logged)
+	}
+}
+
+// An upgrade records an archive's import without rendering kubelet.conf. The
+// next kubelet start finds the archive imported, and renders for it anyway:
+// otherwise its images would stay subject to the pull-credential check until
+// Stratum itself restarted. Once rendered, later starts leave kubelet.conf be.
+func TestImportOperatorImagesRendersForAnArchiveTheUpgradeImported(t *testing.T) {
+	dropInHost(t, "nothing")
+	oldWait, oldLoad, oldWrite := importWaitContainerd, LoadState, writeKubeletConf
+	t.Cleanup(func() { importWaitContainerd, LoadState, writeKubeletConf = oldWait, oldLoad, oldWrite })
+	importWaitContainerd = func(context.Context, time.Duration) error { return nil }
+	LoadState = func() (*nodestate.NodeState, error) { return &nodestate.NodeState{Role: "worker", Hostname: "w1"}, nil }
+	conf := runtime.KubeletConfigPath()
+	if err := os.WriteFile(conf, []byte("rendered before the import\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(conf, past, past); err != nil {
+		t.Fatal(err)
+	}
+	renders := 0
+	writeKubeletConf = func(*nodestate.NodeState) error {
+		renders++
+		return os.WriteFile(conf, []byte("rendered after the import\n"), 0o600)
+	}
+	var out strings.Builder
+	if err := ImportStagedImages(context.Background(), &out); err != nil {
+		t.Fatalf("ImportStagedImages: %v", err)
+	}
+	if renders != 0 {
+		t.Fatalf("the upgrade's import rendered kubelet.conf %d times", renders)
+	}
+	var warn strings.Builder
+	importOperatorImages(context.Background(), &out, &warn)
+	if renders != 1 {
+		t.Fatalf("the start after the upgrade's import rendered kubelet.conf %d times, want once", renders)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(conf, later, later); err != nil {
+		t.Fatal(err)
+	}
+	importOperatorImages(context.Background(), &out, &warn)
+	if renders != 1 {
+		t.Errorf("a later start rendered kubelet.conf again (%d renders) with nothing imported since", renders)
+	}
+}
+
+// containerd lists an image under the name it normalises the archive's to. The
+// archive's names are matched in that form, or an archive that names an image
+// by the registry's legacy host, or without a tag, would never count as
+// imported and would be imported again on every start.
+func TestContainerdImageNameMatchesWhatContainerdLists(t *testing.T) {
+	for in, want := range map[string]string{
+		"index.docker.io/library/nginx:1":         "docker.io/library/nginx:1",
+		"docker.io/library/nginx":                 "docker.io/library/nginx:latest",
+		"registry.example:5000/team/app":          "registry.example:5000/team/app:latest",
+		"registry.example:5000/team/app:v2":       "registry.example:5000/team/app:v2",
+		"ghcr.io/ctrliq/stratum-fleet-agent:v1":   "ghcr.io/ctrliq/stratum-fleet-agent:v1",
+		"ghcr.io/ctrliq/app@sha256:0123456789abc": "ghcr.io/ctrliq/app@sha256:0123456789abc",
+	} {
+		if got := containerdImageName(in); got != want {
+			t.Errorf("containerdImageName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A pin that fails for an archive already imported does not bring another
+// import, and the warning must not say it does: what the operator has to know
+// is that the images are unpinned until a start pins them.
+func TestImportDropInImagesPinFailureOnAnImportedArchiveSaysWhatHappens(t *testing.T) {
+	dropInHost(t, "nothing")
+	var out, warn strings.Builder
+	if !importDropInImages(context.Background(), &out, &warn) {
+		t.Fatalf("the first start did not import the archive:\n%s", warn.String())
+	}
+	failing := "#!/bin/sh\nshift 4\n[ \"$1 $2\" = \"images ls\" ] && exit 1\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(version.BinDir, "ctr"), []byte(failing), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	warn.Reset()
+	importDropInImages(context.Background(), &out, &warn)
+	if !strings.Contains(warn.String(), "image garbage collection may remove") || strings.Contains(warn.String(), "imported again") {
+		t.Errorf("warning for a failed pin of an imported archive:\n%s", warn.String())
+	}
+	if !runtime.DropInImported(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
+		t.Error("a failed pin removed the record of an archive that is imported")
+	}
+}
+
+// With an archive staged, containerd must answer before the import: one that
+// does not is an error the upgrade stops on, not an import silently skipped.
+func TestImportStagedImagesFailsWhenContainerdDoesNotAnswer(t *testing.T) {
+	dropInHost(t, "nothing")
+	oldWait := importWaitContainerd
+	t.Cleanup(func() { importWaitContainerd = oldWait })
+	importWaitContainerd = func(context.Context, time.Duration) error { return errors.New("containerd is not serving") }
+	err := ImportStagedImages(context.Background(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "containerd is not serving") {
+		t.Fatalf("error = %v, want containerd's", err)
+	}
+	if runtime.DropInImported(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
+		t.Error("recorded an import that did not happen")
 	}
 }

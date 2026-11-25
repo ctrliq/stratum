@@ -1880,10 +1880,11 @@ func importPayloadImages(ctx context.Context) error {
 	return nil
 }
 
-// importOperatorImages imports the operator's archives and, when it imported a
-// new one, renders kubelet.conf again so kubelet exempts its images.
+// importOperatorImages imports the operator's archives and renders kubelet.conf
+// again, so kubelet exempts their images, when it imported a new one or when
+// one was imported since kubelet.conf was last rendered.
 func importOperatorImages(ctx context.Context, w, warn io.Writer) {
-	if !importDropInImages(ctx, w, warn) {
+	if !importDropInImages(ctx, w, warn) && !dropInRenderOwed() {
 		return
 	}
 	st, err := LoadState()
@@ -1893,6 +1894,28 @@ func importOperatorImages(ctx context.Context, w, warn io.Writer) {
 	if err != nil {
 		fmt.Fprintf(warn, "stratum: warning: the operator images imported from %s are not exempt from kubelet's pull-credential check until the next start: render kubelet.conf: %v\n", version.ImagesDropInDir, err)
 	}
+}
+
+// dropInRenderOwed reports whether an operator archive was imported after
+// kubelet.conf was last rendered, so the kubelet.conf on disk does not exempt
+// its images yet. An upgrade's import (ImportStagedImages) leaves that behind:
+// it records the import without rendering, and a start that finds the archive
+// already imported would otherwise never render for it.
+func dropInRenderOwed() bool {
+	conf, err := os.Stat(runtime.KubeletConfigPath())
+	if err != nil {
+		return false
+	}
+	tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar"))
+	for _, tar := range tars {
+		if !runtime.DropInImported(tar) {
+			continue
+		}
+		if stamp, err := os.Stat(runtime.DropInImportStamp(tar)); err == nil && !stamp.ModTime().Before(conf.ModTime()) {
+			return true
+		}
+	}
+	return false
 }
 
 // importDropInImages imports and pins the operator's image archives and
@@ -1940,10 +1963,15 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 			continue
 		}
 		names := map[string]bool{}
-		for _, n := range got {
-			names[n] = true
+		for i, n := range got {
+			got[i] = containerdImageName(n)
+			names[got[i]] = true
 		}
 		pinned, err := pinPayloadImages(ctx, ctr, sock, names)
+		if err != nil && current {
+			fmt.Fprintf(warn, "stratum: warning: pin the operator images of %s, which image garbage collection may remove until a start pins them: %v\n", tar, err)
+			continue
+		}
 		if err != nil {
 			fmt.Fprintf(warn, "stratum: warning: pin the operator images of %s, which is imported again on the next start: %v\n", tar, err)
 			continue
@@ -1952,8 +1980,8 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 			continue
 		}
 		if gone := missingNames(got, pinned); len(gone) > 0 {
-			fmt.Fprintf(warn, "stratum: warning: %s is imported again on the next start: containerd no longer has %s, which it carries\n",
-				tar, strings.Join(gone, ", "))
+			fmt.Fprintf(warn, "stratum: warning: %s is imported again on the next start: containerd does not list %s, which it carries, "+
+				"so the image was removed since the import or containerd names it differently\n", tar, strings.Join(gone, ", "))
 			continue
 		}
 		if err := writeDropInStamp(tar, value); err != nil {
@@ -1963,6 +1991,19 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 		stamped = true
 	}
 	return stamped
+}
+
+// containerdImageName is name as containerd lists it once imported, for the
+// forms an archive can carry that containerd rewrites: the registry's legacy
+// host name, and a name with neither a tag nor a digest.
+func containerdImageName(name string) string {
+	if rest, ok := strings.CutPrefix(name, "index.docker.io/"); ok {
+		name = "docker.io/" + rest
+	}
+	if !strings.Contains(name, "@") && strings.LastIndex(name, ":") <= strings.LastIndex(name, "/") {
+		name += ":latest"
+	}
+	return name
 }
 
 // missingNames is the names of want that pinned lacks, sorted.
@@ -1984,8 +2025,8 @@ func missingNames(want []string, pinned map[string]bool) []string {
 // for one outlasts the time the upgrade gives kubelet to come back. kubelet.conf
 // is left alone, since the node's configs are not the upgrade's to change this
 // early; the archives' exemption from the pull-credential check follows when
-// the upgrade renders them. A bad archive is skipped with a warning, as on a
-// start.
+// the upgrade renders them, or at the next kubelet start (dropInRenderOwed).
+// A bad archive is skipped with a warning, as on a start.
 func ImportStagedImages(ctx context.Context, w io.Writer) error {
 	if tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar")); len(tars) == 0 {
 		return nil

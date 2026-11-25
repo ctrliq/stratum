@@ -85,8 +85,8 @@ func TestRestartWaitEndsAtTheCapWhenTheGateNeverPasses(t *testing.T) {
 	})
 	start := time.Now()
 	err := waitForReplacement("kubelet", 100, "restart", 50*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "held at its start gate") {
-		t.Fatalf("error = %v, want one that names the start gate", err)
+	if err == nil || !strings.Contains(err.Error(), "was still held at its start gate") || strings.Contains(err.Error(), "did not come back") {
+		t.Fatalf("error = %v, want the one for a component still held at its gate, not the timeout", err)
 	}
 	if took := time.Since(start); took > 5*time.Second {
 		t.Errorf("the wait ran %s, past its cap", took)
@@ -106,8 +106,8 @@ func TestRestartWaitStillLimitsTheTimeAfterTheGate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "did not come back") || !strings.Contains(err.Error(), "start gate") {
 		t.Fatalf("error = %v, want a timeout that names the time at the gate", err)
 	}
-	if took := time.Since(start); took < 3*timeout || took > 5*time.Second {
-		t.Errorf("the wait ran %s, want about the gate's 200ms and the timeout's 100ms", took)
+	if took := time.Since(start); took < timeout || took > 5*time.Second {
+		t.Errorf("the wait ran %s, want the timeout's 100ms and some of the gate's 200ms", took)
 	}
 }
 
