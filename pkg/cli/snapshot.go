@@ -34,6 +34,8 @@ func newSnapshotCommand() *cobra.Command {
 		newSnapshotPruneRestoresCommand(),
 		newSnapshotRejoinCommand(),
 		newSnapshotScheduleCommand(),
+		newSnapshotKeygenCommand(),
+		newSnapshotRestoreNodeStateCommand(),
 	)
 }
 
@@ -56,10 +58,10 @@ var (
 
 func newSnapshotSaveCommand() *cobra.Command {
 	var name string
-	var scheduled bool
+	var scheduled, noNodeState bool
 	cmd := &cobra.Command{
 		Use:   "save",
-		Short: "Take an etcd snapshot now",
+		Short: "Take an etcd snapshot now, with the node-state bundle when one is configured",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadSnapshotConfig()
@@ -77,8 +79,19 @@ func newSnapshotSaveCommand() *cobra.Command {
 			// tolerates and prune removes.
 			ctx, stop := interrupt.DerivedContext(cmd.Context())
 			defer stop()
-			p, err := saveSnapshot(ctx, os.Stdout, etcdsnap.SaveOptions{Dir: cfg.Dir, Name: name, Retain: cfg.Retain, S3: cfg.S3Target()})
-			if err != nil {
+			opts := etcdsnap.SaveOptions{Dir: cfg.Dir, Name: name, Retain: cfg.Retain, S3: cfg.S3Target()}
+			if !noNodeState {
+				ns, nerr := loadNodeStateBackup()
+				switch {
+				case nerr != nil:
+					fmt.Fprintf(os.Stderr, "WARN: no node-state bundle is taken with this snapshot: %v\n", nerr)
+				case ns == nil:
+					fmt.Fprintln(os.Stderr, "note: no node-state bundle is taken with this snapshot: spec.snapshots.nodeState names no recipient")
+				}
+				opts.NodeState = ns
+			}
+			p, err := saveSnapshot(ctx, os.Stdout, opts)
+			if err != nil && !(p != "" && errors.Is(err, etcdsnap.ErrNodeStateIncomplete)) {
 				if interrupt.ExpectedStop(ctx, err) {
 					fmt.Println("stratum: snapshot save stopped (signal received)")
 					return &cleanStopExit{stop: err}
@@ -86,8 +99,14 @@ func newSnapshotSaveCommand() *cobra.Command {
 				return err
 			}
 			fmt.Printf("snapshot saved: %s\n", p)
+			if err != nil {
+				return err
+			}
 			if t := cfg.S3Target(); t != nil {
 				fmt.Printf("uploaded to s3 bucket %q (prefix %q)\n", t.Bucket, t.Prefix)
+				if opts.NodeState != nil {
+					fmt.Printf("node state uploaded to s3 bucket %q (prefix %q)\n", t.Bucket, etcdsnap.NodeStateTarget(t).Prefix)
+				}
 			}
 			return nil
 		},
@@ -95,6 +114,7 @@ func newSnapshotSaveCommand() *cobra.Command {
 	fs := cmd.Flags()
 	fs.StringVar(&name, "name", "", "snapshot file name (default etcd-snapshot-<host>-<ts>.db)")
 	fs.BoolVar(&scheduled, "scheduled", false, "(internal) invoked by the snapshot timer")
+	fs.BoolVar(&noNodeState, "no-node-state", false, "take the etcd snapshot alone, without the node-state bundle")
 	return cmd
 }
 
@@ -127,7 +147,11 @@ func newSnapshotListCommand() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "%-46s %-6s %-10s %s\n", "NAME", "WHERE", "SIZE", "MODIFIED (UTC)")
-			for _, it := range items {
+			bundles, berr := etcdsnap.ListNodeState(cfg.Dir, cfg.S3Target())
+			if berr != nil {
+				fmt.Fprintln(os.Stderr, "WARN:", berr)
+			}
+			for _, it := range append(items, bundles...) {
 				fmt.Fprintf(out, "%-46s %-6s %-10d %s\n", it.Name, it.Location, it.Size, it.Modified.UTC().Format("2006-01-02 15:04"))
 			}
 			return nil
@@ -735,7 +759,22 @@ func backupMaintenanceRow(m BackupMaintenance) mcpsrv.BackupMaintenanceRow {
 		LastUploadSuccess: backupEvidenceStamp(m.LastUploadSuccess),
 		Warnings:          backupRowStrings(m.Warnings),
 		AttemptsKnown:     m.AttemptsKnown,
+
+		NodeState:                  backupAttemptRowOrNone(m.NodeState),
+		NodeStateUpload:            backupAttemptRowOrNone(m.NodeStateUpload),
+		LastNodeStateSuccess:       backupEvidenceStamp(m.LastNodeStateSuccess),
+		LastNodeStateUploadSuccess: backupEvidenceStamp(m.LastNodeStateUploadSuccess),
 	}
+}
+
+// backupAttemptRowOrNone is backupAttemptRow for an attempt a node may never
+// make: nil when none is recorded, so the row is absent rather than empty.
+func backupAttemptRowOrNone(a BackupAttempt) *mcpsrv.BackupAttemptRow {
+	if a.AttemptedAt.IsZero() && a.Outcome == "" {
+		return nil
+	}
+	row := backupAttemptRow(a)
+	return &row
 }
 
 // backupAttemptRow restates one recorded attempt with its typed outcome.

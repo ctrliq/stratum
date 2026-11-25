@@ -1,0 +1,280 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ctrliq/stratum/internal/etcdsnap"
+	"github.com/ctrliq/stratum/internal/nodebackup"
+	"github.com/ctrliq/stratum/internal/nodestate"
+	"github.com/ctrliq/stratum/internal/version"
+)
+
+// nodeStateRoots points the node's state paths at a temp tree.
+func nodeStateRoots(t *testing.T) {
+	t.Helper()
+	oldPKI, oldConf, oldK8s, oldMan, oldEtcd := version.PKIDir, version.ConfDir, version.K8sConfDir, version.ManifestsDir, version.EtcdDataDir
+	t.Cleanup(func() {
+		version.PKIDir, version.ConfDir, version.K8sConfDir, version.ManifestsDir, version.EtcdDataDir = oldPKI, oldConf, oldK8s, oldMan, oldEtcd
+	})
+	root := t.TempDir()
+	version.PKIDir = filepath.Join(root, "var/lib/stratum/pki")
+	version.ConfDir = filepath.Join(root, "etc/stratum")
+	version.K8sConfDir = filepath.Join(root, "var/lib/stratum/config")
+	version.ManifestsDir = filepath.Join(root, "var/lib/stratum/manifests")
+	version.EtcdDataDir = filepath.Join(root, "var/lib/stratum/etcd")
+}
+
+func writeNodeFile(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// lostNode lays out a control plane called cp-1 at the redirected paths,
+// seals its state to a new identity, wipes it, and returns the bundle file,
+// the identity file and the bundle's manifest.
+func lostNode(t *testing.T) (bundle, identity string, m nodebackup.Manifest) {
+	t.Helper()
+	nodeStateRoots(t)
+	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.crt"), "-----BEGIN CERTIFICATE-----\nQ0E=\n-----END CERTIFICATE-----\n")
+	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.key"), "THE CA KEY")
+	writeNodeFile(t, nodestate.StatePath(), "role: controller\nhostname: cp-1\n")
+	writeNodeFile(t, filepath.Join(version.ConfDir, "config.yaml"), "spec: {}\n")
+	id, err := nodebackup.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, m, err := nodebackup.Collect(nodebackup.Sources{PKIDir: version.PKIDir, StatePath: nodestate.StatePath(), ConfDir: version.ConfDir},
+		nodebackup.Meta{Hostname: "cp-1", NodeIP: "10.0.0.1", StratumVersion: version.StratumVersion, KubernetesVersion: version.K8sVersion,
+			CreatedAt: time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC), Snapshot: "etcd-snapshot-cp-1-20261125-120000.db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := nodebackup.Seal([]nodebackup.Recipient{id.Recipient()}, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := t.TempDir()
+	bundle, identity = filepath.Join(keep, "cp-1.bundle"), filepath.Join(keep, "identity")
+	secret, err := id.String()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeNodeFile(t, bundle, string(sealed))
+	writeNodeFile(t, identity, secret+"\n")
+	for _, dir := range []string{version.PKIDir, version.ConfDir, version.K8sConfDir} {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldHost := nodeStateHostname
+	t.Cleanup(func() { nodeStateHostname = oldHost })
+	nodeStateHostname = func() (string, error) { return "cp-1", nil }
+	return bundle, identity, m
+}
+
+func runRestoreNodeState(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd := newSnapshotRestoreNodeStateCommand()
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+func caKeyRestored() bool {
+	_, err := os.Stat(filepath.Join(version.PKIDir, "ca.key"))
+	return err == nil
+}
+
+// keygen writes the identity to a private file it never prints, and prints
+// the recipient that identity opens bundles for.
+func TestSnapshotKeygenWritesTheIdentityAndPrintsTheRecipient(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "identity")
+	var buf bytes.Buffer
+	cmd := newSnapshotKeygenCommand()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--out", out})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("identity file mode = %v (%v), want 0600", fi.Mode().Perm(), err)
+	}
+	id, err := readIdentityFile(out)
+	if err != nil {
+		t.Fatalf("the identity keygen wrote does not read back: %v", err)
+	}
+	secret, _ := id.String()
+	if strings.Contains(buf.String(), secret) {
+		t.Error("keygen printed the identity")
+	}
+	if !strings.Contains(buf.String(), "recipient: "+id.Recipient().String()) {
+		t.Errorf("keygen did not print the identity's recipient:\n%s", buf.String())
+	}
+	again := newSnapshotKeygenCommand()
+	again.SetOut(io.Discard)
+	again.SetErr(io.Discard)
+	again.SilenceUsage, again.SilenceErrors = true, true
+	again.SetArgs([]string{"--out", out})
+	if err := again.Execute(); err == nil {
+		t.Error("keygen overwrote an identity file: every bundle sealed to it would be lost")
+	}
+	if back, err := readIdentityFile(out); err != nil || back.Recipient().String() != id.Recipient().String() {
+		t.Errorf("the refused keygen changed the identity file (%v)", err)
+	}
+}
+
+// The restore puts a lost control plane's state back on a machine that has
+// none, and says what to run next.
+func TestRestoreNodeStatePutsTheNodeBack(t *testing.T) {
+	bundle, identity, m := lostNode(t)
+	out, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--ca-sha256", m.ClusterCASHA256)
+	if err != nil {
+		t.Fatalf("restore-node-state: %v\n%s", err, out)
+	}
+	for path, want := range map[string]string{
+		filepath.Join(version.PKIDir, "ca.key"):       "THE CA KEY",
+		nodestate.StatePath():                         "role: controller\nhostname: cp-1\n",
+		filepath.Join(version.ConfDir, "config.yaml"): "spec: {}\n",
+	} {
+		if b, err := os.ReadFile(path); err != nil || string(b) != want {
+			t.Errorf("%s = %q, %v; want %q", path, b, err, want)
+		}
+	}
+	for _, want := range []string{m.ClusterCASHA256, "etcd-snapshot-cp-1-20261125-120000.db", "stratum up --config", "stratum snapshot restore"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not mention %q:\n%s", want, out)
+		}
+	}
+}
+
+// Every refusal leaves the machine as it was: the CA keys are written only by
+// a restore the operator confirmed, of the bundle they meant, onto a machine
+// that is the lost node's replacement and nothing else yet.
+func TestRestoreNodeStateRefusals(t *testing.T) {
+	t.Run("without --yes it shows the bundle and writes nothing", func(t *testing.T) {
+		bundle, identity, m := lostNode(t)
+		out, err := runRestoreNodeState(t, bundle, "--identity-file", identity)
+		if err == nil || !strings.Contains(err.Error(), "--yes") {
+			t.Fatalf("error = %v, want one asking for --yes", err)
+		}
+		if !strings.Contains(out, m.ClusterCASHA256) {
+			t.Errorf("the unconfirmed run did not show the CA fingerprint to check:\n%s", out)
+		}
+		if caKeyRestored() {
+			t.Error("an unconfirmed restore wrote the CA key")
+		}
+	})
+	t.Run("another cluster's CA", func(t *testing.T) {
+		bundle, identity, _ := lostNode(t)
+		_, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--ca-sha256", strings.Repeat("ab", 32))
+		if err == nil || !strings.Contains(err.Error(), "--ca-sha256") || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal that writes nothing", err, caKeyRestored())
+		}
+	})
+	t.Run("a machine of another name", func(t *testing.T) {
+		bundle, identity, _ := lostNode(t)
+		nodeStateHostname = func() (string, error) { return "cp-9", nil }
+		_, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes")
+		if err == nil || !strings.Contains(err.Error(), "cp-9") || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal naming this machine", err, caKeyRestored())
+		}
+		if _, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--allow-hostname-mismatch"); err != nil {
+			t.Errorf("with --allow-hostname-mismatch: %v", err)
+		}
+	})
+	t.Run("a machine that is already a node", func(t *testing.T) {
+		bundle, identity, _ := lostNode(t)
+		writeNodeFile(t, filepath.Join(version.PKIDir, "ca.crt"), "another cluster's CA")
+		_, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes")
+		if err == nil || !strings.Contains(err.Error(), "uninstall") || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal pointing at uninstall", err, caKeyRestored())
+		}
+	})
+	t.Run("a machine that holds etcd data", func(t *testing.T) {
+		bundle, identity, _ := lostNode(t)
+		writeNodeFile(t, filepath.Join(version.EtcdDataDir, "member", "wal"), "x")
+		if _, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes"); err == nil || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal", err, caKeyRestored())
+		}
+	})
+	t.Run("someone else's identity", func(t *testing.T) {
+		bundle, _, _ := lostNode(t)
+		other, err := nodebackup.GenerateIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		secret, _ := other.String()
+		wrong := filepath.Join(t.TempDir(), "identity")
+		writeNodeFile(t, wrong, secret)
+		if _, err := runRestoreNodeState(t, bundle, "--identity-file", wrong, "--yes"); !errors.Is(err, nodebackup.ErrNotForIdentity) || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want ErrNotForIdentity", err, caKeyRestored())
+		}
+	})
+	t.Run("an identity file others can read", func(t *testing.T) {
+		bundle, identity, _ := lostNode(t)
+		if err := os.Chmod(identity, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes"); err == nil || !strings.Contains(err.Error(), "0600") || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal over the file's mode", err, caKeyRestored())
+		}
+	})
+	t.Run("no identity", func(t *testing.T) {
+		bundle, _, _ := lostNode(t)
+		if _, err := runRestoreNodeState(t, bundle, "--yes"); err == nil || !strings.Contains(err.Error(), "--identity-file") {
+			t.Fatalf("error = %v, want one asking for --identity-file", err)
+		}
+	})
+}
+
+// save takes the bundle the node's config asks for, takes none when told not
+// to, and reports a snapshot whose bundle failed as saved and incomplete.
+func TestSnapshotSaveTakesTheConfiguredNodeStateBundle(t *testing.T) {
+	useSnapshotDir(t)
+	oldSave, oldLoad := saveSnapshot, loadNodeStateBackup
+	t.Cleanup(func() { saveSnapshot, loadNodeStateBackup = oldSave, oldLoad })
+	want := &etcdsnap.NodeState{NodeIP: "10.0.0.1"}
+	loadNodeStateBackup = func() (*etcdsnap.NodeState, error) { return want, nil }
+	var got etcdsnap.SaveOptions
+	var saveErr error
+	saveSnapshot = func(_ context.Context, _ io.Writer, o etcdsnap.SaveOptions) (string, error) {
+		got = o
+		return filepath.Join(o.Dir, "x.db"), saveErr
+	}
+	run := func(args ...string) error {
+		cmd := newSnapshotSaveCommand()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		cmd.SetArgs(args)
+		return cmd.Execute()
+	}
+	if err := run(); err != nil || got.NodeState != want {
+		t.Errorf("save: err = %v, NodeState = %+v; want the configured bundle", err, got.NodeState)
+	}
+	if err := run("--no-node-state"); err != nil || got.NodeState != nil {
+		t.Errorf("save --no-node-state: err = %v, NodeState = %+v; want none", err, got.NodeState)
+	}
+	saveErr = etcdsnap.ErrNodeStateIncomplete
+	if err := run(); !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) {
+		t.Errorf("a save whose bundle failed returned %v, want the failure: a backup set without its bundle is not a success", err)
+	}
+}

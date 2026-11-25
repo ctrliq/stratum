@@ -553,6 +553,7 @@ var (
 		var warns tickWarnings
 		opts := scheduledSaveOptions(c, snapshotLoadConfig, io.MultiWriter(os.Stdout, &warns))
 		opts.EvidenceWarnings = warns.recorded()
+		opts.NodeState = nodeStateFor(c, os.Stderr)
 		return etcdsnap.SaveContext(ctx, os.Stdout, opts)
 	}
 
@@ -1646,6 +1647,10 @@ func snapshotLoop(ctx context.Context, cfg *ClusterConfig) {
 	}
 	interval := snapshotInterval(cfg)
 	started := time.Now()
+	if len(cfg.nodeStateRecipients()) == 0 {
+		fmt.Fprintln(os.Stdout, "stratum: node-state backup is off: spec.snapshots.nodeState names no recipient, so each "+
+			"snapshot holds etcd's data alone and cannot rebuild a control plane without a separate backup of its PKI and node state")
+	}
 	// The start phase's saves run under the window's deadline: etcdctl has no
 	// timeout of its own, so a save that hangs while etcd comes up is cut off
 	// when the window ends and the window's log line still comes. A window

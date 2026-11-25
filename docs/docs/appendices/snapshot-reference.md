@@ -351,7 +351,8 @@ prints one line for each:
 
 ### What to back up
 
-Copy these off each controller with the snapshots. Copy them again after a
+A [node-state bundle](#the-node-state-bundle) carries these for you. Without
+one, copy these off each controller with the snapshots. Copy them again after a
 certificate or CA rotation, a change to the cluster config, a change under
 `/var/lib/stratum/manifests/`, or enabling a profile.
 
@@ -367,6 +368,38 @@ certificate or CA rotation, a change to the cluster config, a change under
 
 `/var/lib/stratum/config/manifests/` holds the control-plane static pods, which
 `stratum up` generates. You do not need to back it up.
+
+### The node-state bundle
+
+With a recipient under `spec.snapshots.nodeState.recipients`, each control
+plane takes a bundle with every scheduled snapshot and every
+`stratum snapshot save`.
+
+| | |
+|---|---|
+| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it |
+| On the node | `<snapshot directory>/node-state/`, directory mode `0700`, file mode `0600` |
+| In S3 | `<prefix>/node-state/`, one level below the snapshots |
+| Retention | The snapshots' `retain`, counted for this host's bundles alone |
+| Holds | `/var/lib/stratum/pki/`, `/var/lib/stratum/config/node.yaml`, `/etc/stratum/`, `/var/lib/stratum/manifests/`, and the cluster config file when it is kept outside `/etc/stratum` |
+| Leaves out | `/etc/stratum/images.d/`, the kubeconfigs and the systemd unit, which `stratum up` writes again |
+| Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. |
+| Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient. |
+
+A bundle that cannot be taken or uploaded does not fail the snapshot: the
+snapshot is kept, and the save reports the bundle's error beside it and exits
+non-zero. The scheduled loop records the attempt in the node's snapshot
+evidence, which `stratum snapshot list -o json` shows as `nodeState` and
+`nodeStateUpload` with their last-success stamps.
+
+`stratum snapshot list` shows bundles after the snapshots, as
+`node-state/<name>`. Nothing that lists, counts or prunes snapshots reads the
+`node-state` directory or prefix, so a bundle is never counted as a snapshot.
+
+`stratum snapshot restore-node-state` writes only under `/var/lib/stratum/pki/`,
+`/etc/stratum/` and `/var/lib/stratum/manifests/`, and `node.yaml`, whatever a
+bundle names. It checks the whole bundle against its manifest before it writes
+the first file.
 
 ### The etcdHasPeers record
 

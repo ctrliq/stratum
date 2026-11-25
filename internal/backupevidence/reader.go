@@ -63,6 +63,14 @@ type Maintenance struct {
 	// streak of failures does not erase when backups last worked.
 	LastSaveSuccess   time.Time
 	LastUploadSuccess time.Time
+	// NodeState and NodeStateUpload are the latest attempts to save and to
+	// upload the node-state bundle taken beside the snapshot, and the stamps
+	// when each last succeeded. No attempt is recorded on a node that takes
+	// no bundle: its snapshots hold etcd's data alone.
+	NodeState                  AttemptEvidence
+	NodeStateUpload            AttemptEvidence
+	LastNodeStateSuccess       time.Time
+	LastNodeStateUploadSuccess time.Time
 	// Warnings state the record's scheduling and retention warnings as
 	// typed safe reasons.
 	Warnings []string
@@ -318,6 +326,11 @@ func maintenanceFrom(a *Attempts) Maintenance {
 		LastUploadSuccess: a.LastUploadSuccess,
 		Warnings:          safeRecordedWarnings(a.Warnings),
 		AttemptsKnown:     true,
+
+		NodeState:                  attemptEvidence(a.NodeState),
+		NodeStateUpload:            attemptEvidence(a.NodeStateUpload),
+		LastNodeStateSuccess:       a.LastNodeStateSuccess,
+		LastNodeStateUploadSuccess: a.LastNodeStateUploadSuccess,
 	}
 }
 

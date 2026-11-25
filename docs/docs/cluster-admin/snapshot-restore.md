@@ -280,9 +280,73 @@ backup.
     the lost machine as a failed member of a running cluster instead, or
     contact support.
 
-### What to back up
+### Back up node state with every snapshot
 
-Back up these files from each controller, together with the snapshots. Back them
+A control plane can take a *node-state bundle* beside each etcd snapshot: one
+encrypted file holding its PKI, its `node.yaml`, `/etc/stratum` and
+`/var/lib/stratum/manifests/`. It is taken on the snapshot schedule and by
+`stratum snapshot save`, uploaded to the same S3 target, and pruned with the
+same retention, so it is current after a certificate rotation or a config
+change without anyone remembering to take it.
+
+The bundle is encrypted to a public key. The cluster holds only that key, the
+*recipient*. The private key, the *identity*, is the only thing that opens a
+bundle, and it never needs to be on a control plane.
+
+1. Make the key pair, on any machine with `stratum`, preferably not a cluster
+    node:
+
+    ```console
+    $ stratum snapshot keygen --out ./stratum-backup-identity
+    ```
+
+    It writes the identity to the file, mode `0600`, and prints the recipient.
+    Move the identity off that machine and keep at least two copies, with the
+    people who would run a recovery. An identity cannot be recovered: without
+    it every bundle is unreadable.
+
+2. Add the recipient to the cluster config on every control plane, then
+    restart Stratum on each, one at a time:
+
+    ```yaml
+    spec:
+      snapshots:
+        nodeState:
+          recipients:
+            - stratum-backup-recipient-<...>
+    ```
+
+    List more than one recipient to let any of several identities open the
+    bundles. Recipients are read from the cluster config only, not from
+    `snapshot.conf`. A release from before this key refuses a config that
+    carries it, so remove it before you roll back to one.
+
+3. Take a snapshot and check that a bundle came with it:
+
+    ```console
+    # /usr/local/bin/stratum snapshot save
+    # /usr/local/bin/stratum snapshot list
+    ```
+
+    The bundle is `node-state/node-state-<host>-<stamp>.bundle`, in the
+    snapshot directory and under the S3 prefix, with the stamp of the snapshot
+    it was taken with.
+
+With no recipient configured, no bundle is taken in any form, the controller's
+log says so at each start, and you back the files up yourself as the next
+section describes. What a bundle holds, and what it leaves out, is in
+[The node-state bundle](../appendices/snapshot-reference.md#the-node-state-bundle).
+
+!!! warning "A bundle proves who can read it, not who wrote it"
+    Anyone with the recipient can make a bundle. Before you restore one, check
+    the cluster CA fingerprint the restore prints against your own record of
+    the cluster, or pass it with `--ca-sha256`. Print it on a control plane
+    with `openssl x509 -in /var/lib/stratum/pki/ca.crt -outform DER | sha256sum`.
+
+### What to back up by hand
+
+Without a recipient, back up these files from each controller yourself, together
+with the snapshots. Back them
 up again after a certificate or CA rotation, a change to the cluster config or
 to `/var/lib/stratum/manifests/`, or enabling a profile:
 
@@ -370,6 +434,24 @@ because that start otherwise creates a new CA. The commands call Stratum as
    the workers connect to it.
 3. Install the same Stratum release the old controller ran, at
    `/usr/local/bin/stratum`. Do not start it.
+
+    If you have a node-state bundle of the old controller, restore it now and
+    skip the next step. Copy the identity file to the machine, mode `0600`:
+
+    ```console
+    # /usr/local/bin/stratum snapshot restore-node-state <bundle> \
+      --identity-file ./stratum-backup-identity --ca-sha256 <fingerprint> --yes
+    ```
+
+    `<bundle>` is a file, or `s3://<bucket>/<key>` with `--s3-endpoint`,
+    `--s3-region` and `--s3-path-style` as the target needs and the
+    credentials in `STRATUM_S3_ACCESS_KEY` and `STRATUM_S3_SECRET_KEY`. Without
+    `--yes` the command shows the bundle's host, date and CA fingerprint and
+    writes nothing. It refuses a machine that already holds a node's state,
+    and one whose hostname is not the bundle's. If the old controller's
+    cluster config was not under `/etc/stratum`, the command names its path
+    and asks for `--allow-path <path>` before it writes there. Remove the
+    identity file from the machine when the restore is done.
 4. Copy the encrypted backup to `/root` on the replacement, then decrypt and
     unpack it at `/`:
 
