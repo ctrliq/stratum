@@ -316,8 +316,8 @@ bundle, and it never needs to be on a control plane.
             - stratum-backup-recipient-<...>
     ```
 
-    List more than one recipient to let any of several identities open the
-    bundles. Recipients are read from the cluster config only, not from
+    List more than one recipient, up to 16, to let any of several identities
+    open the bundles. Recipients are read from the cluster config only, not from
     `snapshot.conf`. A release from before this key refuses a config that
     carries it, so remove it before you roll back to one.
 
@@ -332,6 +332,12 @@ bundle, and it never needs to be on a control plane.
     snapshot directory and under the S3 prefix, with the stamp of the snapshot
     it was taken with.
 
+    The save prints the cluster CA fingerprint beside the bundle:
+    `node state saved: <path> (sealed to 1 recipient(s), cluster CA SHA-256 <fingerprint>)`.
+    Record it with the identity, off the cluster. A restore needs it, and it
+    stays the same until the cluster CA is rotated; record it again after a
+    rotation.
+
 With no recipient configured, no bundle is taken in any form, the controller's
 log says so at each start, and you back the files up yourself as the next
 section describes. What a bundle holds, and what it leaves out, is in
@@ -340,13 +346,14 @@ section describes. What a bundle holds, and what it leaves out, is in
 !!! warning "A bundle proves who can read it, not who wrote it"
     Anyone with the recipient can make a bundle, so treat write access to the
     place bundles are kept as you treat root on a control plane, as you
-    already must for the snapshots beside them. Before you restore one, check
-    the cluster CA fingerprint the restore prints against your own record of
-    the cluster, or pass it with `--ca-sha256`. The restore computes it from
-    the CA certificate the bundle carries and checks that the bundle's CA key
-    is that certificate's. That ties the restored CA to your cluster; it does
-    not vouch for the rest of the bundle. Print the fingerprint on a control
-    plane with
+    already must for the snapshots beside them. A restore therefore asks for
+    the fingerprint you recorded, with `--ca-sha256`, and refuses a bundle
+    whose CA is another. The restore computes it from the CA certificate the
+    bundle carries and checks that the bundle's CA key is that certificate's.
+    That ties the restored CA to your cluster; it does not vouch for the rest
+    of the bundle. If you have no record, `--no-ca-pin` restores without one
+    once you have checked the printed fingerprint by other means. While a
+    control plane still runs, print the fingerprint on it with
     `openssl x509 -in /var/lib/stratum/pki/ca.crt -outform DER | sha256sum`.
 
 ### What to back up by hand
@@ -454,10 +461,13 @@ because that start otherwise creates a new CA. The commands call Stratum as
     `--s3-region` and `--s3-path-style` as the target needs and the
     credentials in `STRATUM_S3_ACCESS_KEY` and `STRATUM_S3_SECRET_KEY`. Without
     `--yes` the command shows the bundle's host, date and CA fingerprint and
-    writes nothing. It refuses a machine that already holds a node's state,
-    and one whose hostname is not the bundle's. If the old controller's
-    cluster config was not under `/etc/stratum`, the command names its path
-    and writes nothing until you pass `--allow-path <path>`. Remove the
+    writes nothing. With `--yes` it needs `--ca-sha256`, or `--no-ca-pin` to
+    restore without a pin. It refuses a machine that already holds a node's
+    state, and one whose hostname is not the bundle's; pass
+    `--allow-hostname-mismatch` if the names differ only in how they are
+    written. If the old controller's cluster config was not under
+    `/etc/stratum`, the command names its path and writes nothing until you
+    pass `--allow-path <path>`, and writes that file owner-only. Remove the
     identity file from the machine when the restore is done.
 
     A bundle does not hold the systemd unit, so there is none to start yet.

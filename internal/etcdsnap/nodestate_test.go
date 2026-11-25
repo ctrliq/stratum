@@ -361,7 +361,7 @@ func TestANamedSnapshotsBundleIsKeptWithIt(t *testing.T) {
 		}
 	}
 	save("pre-change.db")
-	kept := filepath.Join(dir, etcdsnap.NodeStateDir, "node-state-pre-change.bundle")
+	kept := filepath.Join(dir, etcdsnap.NodeStateDir, "node-state-cp1--pre-change.bundle")
 	if _, err := os.Stat(kept); err != nil {
 		t.Fatalf("the named snapshot's bundle is not named for it: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestANamedSnapshotsBundleIsKeptWithIt(t *testing.T) {
 	if _, err := os.Stat(kept); err != nil {
 		t.Errorf("scheduled saves pruned the bundle of a named snapshot that is itself kept: %v", err)
 	}
-	scheduled, _ := filepath.Glob(filepath.Join(dir, etcdsnap.NodeStateDir, "node-state-cp1-*.bundle"))
+	scheduled, _ := filepath.Glob(filepath.Join(dir, etcdsnap.NodeStateDir, "node-state-cp1-2*.bundle"))
 	if len(scheduled) != 1 {
 		t.Errorf("scheduled bundles left = %v, want the newest one", scheduled)
 	}
@@ -450,5 +450,113 @@ func TestAStoppedSaveReportsItsMissingBundle(t *testing.T) {
 		if len(bundles) == 0 {
 			t.Fatalf("a stopped save returned %v with a snapshot and no bundle, want ErrNodeStateIncomplete", err)
 		}
+	}
+}
+
+// A bundle is one node's. The same snapshot name saved on two control planes
+// is two bundles under the S3 prefix, not one that the last upload wins.
+func TestANamedSnapshotsBundlesAreOnePerHost(t *testing.T) {
+	redirectEvidence(t)
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	ns, _ := nodeStateFixture(t)
+	var bucket recordingBucket
+	target := bucket.target(t, "clusters/a")
+	for _, host := range []string{"cp1", "cp2"} {
+		if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+			Dir: t.TempDir(), Host: host, Name: "pre-maint.db", S3: target, NodeState: ns,
+		}); err != nil {
+			t.Fatalf("SaveContext on %s: %v", host, err)
+		}
+	}
+	var bundles []string
+	for _, k := range bucket.puts {
+		if strings.Contains(k, "/node-state/") {
+			bundles = append(bundles, k)
+		}
+	}
+	slices.Sort(bundles)
+	want := []string{"clusters/a/node-state/node-state-cp1--pre-maint.bundle", "clusters/a/node-state/node-state-cp2--pre-maint.bundle"}
+	if !slices.Equal(bundles, want) {
+		t.Errorf("bundle uploads = %v, want one per host %v", bundles, want)
+	}
+}
+
+// A bundle saved but not copied off the node is an incomplete backup set: the
+// save says so, keeps the snapshot, and records the failed upload.
+func TestAFailedBundleUploadIsReported(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	ns, _ := nodeStateFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/node-state/"):
+			http.Error(w, "denied", http.StatusForbidden)
+		case r.Method == http.MethodPut:
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("ETag", "\"x\"")
+		default:
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name><IsTruncated>false</IsTruncated></ListBucketResult>`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	target := &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
+	path, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+		Dir: dir, Host: "cp1", Evidence: true, S3: target, NodeState: ns,
+	})
+	if !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) {
+		t.Fatalf("SaveContext = %v, want ErrNodeStateIncomplete for a bundle the upload refused", err)
+	}
+	if path == "" {
+		t.Error("the snapshot path was not returned beside the bundle's error")
+	}
+	rec, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.NodeStateUpload.AttemptedAt.IsZero() || rec.NodeStateUpload.Result == "" {
+		t.Errorf("the failed bundle upload was not recorded: %+v", rec.NodeStateUpload)
+	}
+}
+
+// A node whose recipients were removed takes no bundle, and its evidence says
+// so: an attempt left from before would read as bundles still being taken.
+func TestEvidenceForgetsTheBundleOnceNoneIsTaken(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	ns, _ := nodeStateFixture(t)
+	var bucket recordingBucket
+	save := func(o etcdsnap.SaveOptions) {
+		t.Helper()
+		o.Dir, o.Host, o.Evidence = dir, "cp1", true
+		if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, o); err != nil {
+			t.Fatalf("SaveContext: %v", err)
+		}
+	}
+	save(etcdsnap.SaveOptions{S3: bucket.target(t, ""), NodeState: ns})
+	time.Sleep(1100 * time.Millisecond)
+	save(etcdsnap.SaveOptions{NodeState: ns})
+	rec, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rec.NodeStateUpload.IsZero() {
+		t.Errorf("a tick without S3 kept the earlier bundle upload attempt: %+v", rec.NodeStateUpload)
+	}
+	if rec.NodeState.IsZero() {
+		t.Fatal("the tick's bundle save was not recorded")
+	}
+	time.Sleep(1100 * time.Millisecond)
+	save(etcdsnap.SaveOptions{})
+	if rec, err = backupevidence.LoadAttempts(); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.NodeState.IsZero() || !rec.NodeStateUpload.IsZero() {
+		t.Errorf("a tick that takes no bundle kept the earlier bundle attempts: %+v %+v", rec.NodeState, rec.NodeStateUpload)
+	}
+	if rec.LastNodeStateSuccess.IsZero() {
+		t.Error("the last bundle success was dropped; it stays as history")
 	}
 }

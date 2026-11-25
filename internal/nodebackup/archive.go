@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 )
@@ -373,7 +374,55 @@ func readManifest(tr *tar.Reader) (Manifest, error) {
 	if m.Format != formatVersion {
 		return Manifest{}, fmt.Errorf("node-state bundle manifest is format %d; this stratum reads format %d", m.Format, formatVersion)
 	}
+	if err := checkManifest(m); err != nil {
+		return Manifest{}, fmt.Errorf("node-state bundle manifest: %w; nothing was restored", err)
+	}
 	return m, nil
+}
+
+// checkManifest refuses a manifest whose text could mislead the person
+// restoring it. A restore prints these fields, and whoever sealed the bundle
+// wrote them: a control character could redraw the CA fingerprint on the
+// terminal, and a config path is printed as part of a command to run.
+func checkManifest(m Manifest) error {
+	for name, v := range map[string]string{
+		"hostname": m.Hostname, "nodeIP": m.NodeIP, "stratumVersion": m.StratumVersion,
+		"kubernetesVersion": m.KubernetesVersion, "snapshot": m.Snapshot, "clusterCASHA256": m.ClusterCASHA256,
+		"extraConfig": m.ExtraConfig, "configPath": m.ConfigPath,
+	} {
+		if !printable(v) {
+			return fmt.Errorf("%s %q holds a character that is not printable", name, v)
+		}
+	}
+	for _, f := range m.Files {
+		if !printable(f.Path) || !printable(f.Link) {
+			return fmt.Errorf("the entry %q holds a character that is not printable", f.Path)
+		}
+	}
+	if m.ConfigPath != "" && (!filepath.IsAbs(m.ConfigPath) || filepath.Clean(m.ConfigPath) != m.ConfigPath) {
+		return fmt.Errorf("configPath %q is not a plain absolute path", m.ConfigPath)
+	}
+	// The cluster config kept outside the configuration directory is the one
+	// file a restore may write outside node state. It is the config the node
+	// ran with and a YAML file, never a path of the bundle's choosing.
+	if m.ExtraConfig != "" {
+		if m.ExtraConfig != m.ConfigPath {
+			return fmt.Errorf("extraConfig %q is not the config the node ran with, %q", m.ExtraConfig, m.ConfigPath)
+		}
+		if ext := filepath.Ext(m.ExtraConfig); ext != ".yaml" && ext != ".yml" {
+			return fmt.Errorf("extraConfig %q is not a .yaml or .yml file", m.ExtraConfig)
+		}
+	}
+	return nil
+}
+
+func printable(s string) bool {
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // Destination is where a restore may write. Nothing in a bundle lands
@@ -412,7 +461,7 @@ func Extract(plain []byte, dst Destination) (Restored, error) {
 	// existing directory on the way to an entry is checked before the first
 	// write, so a refusal changes nothing.
 	for _, e := range entries {
-		if err := dst.refuseLinkedParents(e.Path); err != nil {
+		if err := dst.refuseLinkedParents(e.Path, e.Dir); err != nil {
 			return Restored{}, err
 		}
 	}
@@ -463,17 +512,26 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 		}
 		want, ok := listed[path]
 		if !ok {
-			return fail(fmt.Errorf("node-state bundle holds %s, which its manifest does not list", path))
+			return fail(fmt.Errorf("node-state bundle holds %q, which its manifest does not list", path))
 		}
 		delete(listed, path)
-		if !dst.allows(path) {
-			if path == m.ExtraConfig && h.Typeflag == tar.TypeReg {
+		extra := m.ExtraConfig != "" && path == m.ExtraConfig
+		if extra && h.Typeflag != tar.TypeReg {
+			return fail(fmt.Errorf("node-state bundle holds its cluster config %s as something other than a file; nothing was restored", path))
+		}
+		if !dst.allows(path, m.ExtraConfig) {
+			if extra {
 				skipped = path
 				continue
 			}
 			return fail(fmt.Errorf("node-state bundle holds %s, which is not node state; nothing was restored", path))
 		}
 		e := entry{File: want}
+		if extra {
+			// The outside config is written owner-only, whatever mode the
+			// bundle states for it.
+			e.Mode = want.Mode &^ 0o077
+		}
 		switch h.Typeflag {
 		case tar.TypeDir:
 			if !want.Dir {
@@ -574,9 +632,11 @@ func writeEntry(e entry) error {
 }
 
 // refuseLinkedParents refuses path when a directory between its tree's root
-// and path exists on this machine as a symbolic link, or path itself exists as
-// a link to a directory.
-func (d Destination) refuseLinkedParents(path string) error {
+// and path exists on this machine as a symbolic link, or when path is a
+// directory entry and itself exists as a link: making it and setting its mode
+// would follow the link. A file or link entry replaces a link at its own path
+// rather than following it.
+func (d Destination) refuseLinkedParents(path string, dir bool) error {
 	root := ""
 	for _, r := range []string{d.PKIDir, d.ConfDir, d.ManifestsDir} {
 		if r != "" && within(r, path) {
@@ -591,7 +651,11 @@ func (d Destination) refuseLinkedParents(path string) error {
 		return err
 	}
 	cur := root
-	for _, comp := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+	comps := strings.Split(filepath.Dir(rel), string(filepath.Separator))
+	if dir {
+		comps = append(comps, filepath.Base(rel))
+	}
+	for _, comp := range comps {
 		if comp == "." || comp == "" {
 			continue
 		}
@@ -622,17 +686,23 @@ func (d Destination) linkAllowed(path string) bool {
 	return false
 }
 
-func (d Destination) allows(path string) bool {
+// allows reports whether path may be written. Outside the trees and
+// node.yaml, only the bundle's own outside cluster config may be, and only
+// when the operator named that same path.
+func (d Destination) allows(path, extraConfig string) bool {
 	for _, root := range []string{d.PKIDir, d.ConfDir, d.ManifestsDir} {
 		if root != "" && (path == root || within(root, path)) {
 			return true
 		}
 	}
-	return (d.StatePath != "" && path == d.StatePath) || (d.AllowExtra != "" && path == d.AllowExtra)
+	if d.StatePath != "" && path == d.StatePath {
+		return true
+	}
+	return d.AllowExtra != "" && path == d.AllowExtra && path == extraConfig
 }
 
 // within reports whether path is strictly under root.
 func within(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
-	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return err == nil && rel != "." && filepath.IsLocal(rel)
 }

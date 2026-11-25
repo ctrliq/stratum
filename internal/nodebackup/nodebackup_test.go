@@ -307,19 +307,15 @@ func TestCollectRefusesWhatItCannotHoldWhole(t *testing.T) {
 func TestExtractWritesOnlyNodeState(t *testing.T) {
 	n := fixtureNode(t)
 	outside := filepath.Join(t.TempDir(), "cron.d", "job")
-	ok, err := readFile(filepath.Join(n.src.PKIDir, "ca.key"))
-	if err != nil {
-		t.Fatal(err)
+	abcd := func(path string) entry {
+		return entry{File: File{Path: path, Mode: 0o644, Size: 4,
+			SHA256: "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"}, data: []byte("abcd")}
 	}
+	// Each forged bundle is otherwise whole, the cluster CA and its key
+	// included, so the refusal is the path's and not a missing CA's.
 	forge := func(t *testing.T, e entry) []byte {
 		t.Helper()
-		entries := []entry{ok, e}
-		m := Manifest{Format: formatVersion, Meta: testMeta, Files: []File{ok.File, e.File}}
-		plain, err := writeArchive(m, entries)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return plain
+		return rebuildBundle(t, n, func(entries []entry) []entry { return append(entries, e) })
 	}
 	wiped := func(t *testing.T) {
 		t.Helper()
@@ -327,16 +323,25 @@ func TestExtractWritesOnlyNodeState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for name, e := range map[string]entry{
-		"a file outside node state": {File: File{Path: outside, Mode: 0o644, Size: 4,
-			SHA256: "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"}, data: []byte("abcd")},
-		"a link to another directory": {File: File{Path: filepath.Join(n.src.PKIDir, "x"), Mode: 0o777, Link: "../../etc/shadow"}},
-	} {
+	cases := map[string]struct {
+		e     entry
+		want  string
+		plain []byte
+	}{
+		"a file outside node state":                {e: abcd(outside), want: "not node state"},
+		"a sibling of the configuration directory": {e: abcd(n.src.ConfDir + "-evil/job"), want: "not node state"},
+		"a link to another directory":              {e: entry{File: File{Path: filepath.Join(n.src.PKIDir, "x"), Mode: 0o777, Link: "../../etc/shadow"}}, want: "link"},
+	}
+	for name, c := range cases {
+		c.plain = forge(t, c.e)
+		cases[name] = c
+	}
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			plain := forge(t, e)
+			plain := c.plain
 			wiped(t)
-			if _, err := Extract(plain, n.dst); err == nil {
-				t.Fatal("Extract accepted it")
+			if _, err := Extract(plain, n.dst); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Extract = %v, want a refusal saying %q", err, c.want)
 			}
 			if _, err := os.Stat(filepath.Join(n.src.PKIDir, "ca.key")); !os.IsNotExist(err) {
 				t.Errorf("a refused bundle still wrote the CA key (stat: %v)", err)
@@ -385,6 +390,7 @@ func TestExtractWritesTheOutsideConfigOnlyWhereAllowed(t *testing.T) {
 	extra := filepath.Join(t.TempDir(), "site", "cluster.yaml")
 	write(t, extra, "spec: {site: true}\n", 0o640)
 	n.src.ExtraConfig = extra
+	n.src.ConfigPath = extra
 	plain, m, err := Collect(n.src, testMeta)
 	if err != nil {
 		t.Fatal(err)
@@ -548,6 +554,13 @@ func TestCollectRefusesABundleARestoreWouldRefuse(t *testing.T) {
 // entries: a bundle only someone other than Collect would write.
 func rebuildBundle(t *testing.T, n node, change func(entries []entry) []entry) []byte {
 	t.Helper()
+	return rebuildBundleManifest(t, n, nil, change)
+}
+
+// rebuildBundleManifest is rebuildBundle that also lets the test rewrite the
+// manifest's own fields before the archive is written.
+func rebuildBundleManifest(t *testing.T, n node, manifest func(*Manifest), change func(entries []entry) []entry) []byte {
+	t.Helper()
 	_, m, err := Collect(n.src, testMeta)
 	if err != nil {
 		t.Fatal(err)
@@ -564,7 +577,12 @@ func rebuildBundle(t *testing.T, n node, change func(entries []entry) []entry) [
 		}
 		entries = append(entries, e)
 	}
-	entries = change(entries)
+	if change != nil {
+		entries = change(entries)
+	}
+	if manifest != nil {
+		manifest(&m)
+	}
 	m.Files = nil
 	for _, e := range entries {
 		m.Files = append(m.Files, e.File)
@@ -694,5 +712,115 @@ func TestCollectRequiresTheOutsideConfigItNames(t *testing.T) {
 	n.src.ExtraConfig = filepath.Join(t.TempDir(), "gone.yaml")
 	if _, _, err := Collect(n.src, testMeta); err == nil || !strings.Contains(err.Error(), "gone.yaml") {
 		t.Errorf("Collect = %v, want a refusal naming the missing config", err)
+	}
+}
+
+// The fields a restore prints come from whoever sealed the bundle. One that
+// holds a control character could redraw the CA fingerprint on the terminal,
+// and a config path is printed inside a command to run, so neither is read.
+func TestReadManifestRefusesTextThatCouldMislead(t *testing.T) {
+	n := fixtureNode(t)
+	for name, mutate := range map[string]func(*Manifest){
+		"an escape in the snapshot name":    func(m *Manifest) { m.Snapshot = "x\x1b[1A\r\x1b[2K  cluster CA SHA-256: 00" },
+		"a newline in the hostname":         func(m *Manifest) { m.Hostname = "cp-1\nok" },
+		"a relative config path":            func(m *Manifest) { m.ConfigPath = "etc/stratum/config.yaml" },
+		"an outside config not the one run": func(m *Manifest) { m.ExtraConfig = "/root/elsewhere.yaml" },
+		"an outside config that is not YAML": func(m *Manifest) {
+			m.ExtraConfig, m.ConfigPath = "/etc/cron.d/stratum", "/etc/cron.d/stratum"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plain := rebuildBundleManifest(t, n, mutate, nil)
+			if _, err := Inspect(plain, n.dst); err == nil || !strings.Contains(err.Error(), "manifest") {
+				t.Fatalf("Inspect = %v, want the manifest refused", err)
+			}
+		})
+	}
+}
+
+// The one path outside node state a restore may write is the bundle's own
+// outside config, as a file, at the path the operator named, owner-only.
+func TestExtractWritesTheAllowedPathOnlyAsTheBundlesConfigFile(t *testing.T) {
+	t.Run("an allowed path the manifest does not name", func(t *testing.T) {
+		n := fixtureNode(t)
+		target := filepath.Join(t.TempDir(), "elsewhere")
+		plain := rebuildBundle(t, n, func(entries []entry) []entry {
+			return append(entries, entry{File: File{Path: target, Mode: 0o777, Dir: true}})
+		})
+		dst := n.dst
+		dst.AllowExtra = target
+		if _, err := Extract(plain, dst); err == nil {
+			t.Fatal("Extract wrote a path the operator allowed but the bundle's manifest does not name as its config")
+		}
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			t.Errorf("the refused bundle created %s (stat: %v)", target, err)
+		}
+	})
+	t.Run("the config written owner-only", func(t *testing.T) {
+		n := fixtureNode(t)
+		extra := filepath.Join(t.TempDir(), "site", "cluster.yaml")
+		write(t, extra, "spec: {}\n", 0o666)
+		if err := os.Chmod(extra, 0o666); err != nil {
+			t.Fatal(err)
+		}
+		n.src.ExtraConfig, n.src.ConfigPath = extra, extra
+		plain, _, err := Collect(n.src, testMeta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(extra); err != nil {
+			t.Fatal(err)
+		}
+		dst := n.dst
+		dst.AllowExtra = extra
+		if _, err := Extract(plain, dst); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Stat(extra)
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Errorf("the outside config is %v, %v; want 0600", fi.Mode().Perm(), err)
+		}
+	})
+}
+
+// A directory entry whose own path is a link on this machine is refused:
+// making it and setting its mode would follow the link out of node state.
+func TestExtractRefusesADirectoryEntryThatIsALinkOnTheMachine(t *testing.T) {
+	n := fixtureNode(t)
+	hooks := filepath.Join(n.src.ConfDir, "hooks")
+	plain := rebuildBundle(t, n, func(entries []entry) []entry {
+		return append(entries, entry{File: File{Path: hooks, Mode: 0o777, Dir: true}})
+	})
+	elsewhere := t.TempDir()
+	if err := os.Chmod(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, hooks); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Extract(plain, n.dst); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("Extract = %v, want a refusal naming the link", err)
+	}
+	if fi, err := os.Stat(elsewhere); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("the directory the link names is now %v (%v); want it untouched at 0700", fi.Mode().Perm(), err)
+	}
+}
+
+// A config naming more recipients than a bundle can be sealed to is refused
+// when it is read, not at every snapshot after.
+func TestParseRecipientsRefusesMoreThanABundleTakes(t *testing.T) {
+	var list []string
+	for range maxRecipients + 1 {
+		id, err := GenerateIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		list = append(list, id.Recipient().String())
+	}
+	if _, err := ParseRecipients(list[:maxRecipients]); err != nil {
+		t.Fatalf("ParseRecipients(%d): %v", maxRecipients, err)
+	}
+	if _, err := ParseRecipients(list); err == nil {
+		t.Fatalf("ParseRecipients(%d) accepted more recipients than Seal takes", len(list))
 	}
 }

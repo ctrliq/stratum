@@ -241,7 +241,7 @@ func fetchSealedBundle(parent context.Context, src string, s3 nodeStateS3Flags) 
 
 func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 	var identityFile, allowPath, caSHA256 string
-	var yes, anyHostname bool
+	var yes, anyHostname, noPin bool
 	var s3 nodeStateS3Flags
 	cmd := &cobra.Command{
 		Use:   "restore-node-state <FILE|s3://bucket/key>",
@@ -276,13 +276,14 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 			}
 			fmt.Fprintf(w, "node-state bundle of %s (node IP %s), taken %s\n", m.Hostname, m.NodeIP, m.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"))
 			fmt.Fprintf(w, "  stratum %s, Kubernetes %s\n", m.StratumVersion, m.KubernetesVersion)
-			fmt.Fprintf(w, "  cluster CA SHA-256: %s\n", m.ClusterCASHA256)
 			if m.Snapshot != "" {
 				fmt.Fprintf(w, "  taken with etcd snapshot: %s\n", m.Snapshot)
 			}
 			if m.ExtraConfig != "" {
 				fmt.Fprintf(w, "  cluster config kept outside %s: %s\n", version.ConfDir, m.ExtraConfig)
 			}
+			// Printed last, after every field the bundle wrote itself.
+			fmt.Fprintf(w, "  cluster CA SHA-256: %s\n", m.ClusterCASHA256)
 			// A bundle is sealed to a public key: opening it proves who can
 			// read it, not who wrote it. The fingerprint is the carried CA
 			// certificate's own, and the bundle's CA key is checked to be that
@@ -311,13 +312,23 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 			}
 			if !yes {
 				return errors.New("this writes that cluster's CA keys and this node's identity onto this machine; " +
-					"check the CA fingerprint above against your record of the cluster, then re-run with --yes")
+					"check the CA fingerprint above against your record of the cluster, then re-run with --yes " +
+					"and --ca-sha256 set to it")
+			}
+			// Anyone who can write where bundles are kept can seal one to the
+			// public recipient, with a CA of their own. The pin is what holds
+			// the restore to the cluster the operator means, so it is not
+			// skipped without being asked to.
+			if caSHA256 == "" && !noPin {
+				return errors.New("pass --ca-sha256 with the cluster CA fingerprint you recorded when the bundle was saved " +
+					"(each save prints it), so a bundle sealed with another CA is refused. If you have checked the " +
+					"fingerprint above against the cluster by other means, pass --no-ca-pin instead. Nothing was restored")
 			}
 			res, err := nodebackup.Extract(plain, dst)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(w, "\nrestored %d files under %s, %s and %s\n", res.Files, version.PKIDir, version.ConfDir, filepath.Dir(nodestate.StatePath()))
+			fmt.Fprintf(w, "\nrestored %d files under %s, %s, %s and %s\n", res.Files, version.PKIDir, version.ConfDir, version.ManifestsDir, filepath.Dir(nodestate.StatePath()))
 			config := cluster.DefaultConfigPath
 			if m.ConfigPath != "" {
 				config = m.ConfigPath
@@ -326,14 +337,15 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 				"  1. Start Stratum:        stratum up --config %s\n"+
 				"     If it refuses to start an empty member, every other control plane is gone or powered off,\n"+
 				"     and you mean to rebuild from this one, add --confirm-etcd-quorum-lost for this one start.\n"+
-				"  2. Restore the datastore: stratum snapshot restore <snapshot> --yes\n", config)
+				"  2. Restore the datastore: stratum snapshot restore <snapshot> --yes\n", shellQuote(config))
 			return nil
 		},
 	}
 	fs := cmd.Flags()
 	fs.StringVar(&identityFile, "identity-file", "", "file holding the backup identity, as written by stratum snapshot keygen")
 	fs.BoolVar(&yes, "yes", false, "confirm: write the bundle's CA keys and node state onto this machine")
-	fs.StringVar(&caSHA256, "ca-sha256", "", "refuse a bundle whose cluster CA certificate does not have this SHA-256")
+	fs.StringVar(&caSHA256, "ca-sha256", "", "refuse a bundle whose cluster CA certificate does not have this SHA-256 (required with --yes unless --no-ca-pin)")
+	fs.BoolVar(&noPin, "no-ca-pin", false, "restore without --ca-sha256, having checked the printed CA fingerprint by other means")
 	fs.BoolVar(&anyHostname, "allow-hostname-mismatch", false, "restore a bundle taken on a host of another name")
 	fs.StringVar(&allowPath, "allow-path", "", "also restore the bundle's cluster config to this path outside the configuration directory")
 	fs.StringVar(&s3.endpoint, "s3-endpoint", "", "S3 endpoint for an s3:// bundle (credentials come from the environment)")

@@ -377,21 +377,22 @@ plane takes a bundle with every scheduled snapshot and every
 
 | | |
 |---|---|
-| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it. Beside a snapshot saved with `--name <name>.db`, `node-state-<name>.bundle` |
+| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it. Beside a snapshot saved with `--name <name>.db`, `node-state-<host>--<name>.bundle`, so each control plane's is its own |
 | On the node | `<snapshot directory>/node-state/`, directory mode `0700`, file mode `0600` |
 | In S3 | `<prefix>/node-state/`, one level below the snapshots |
 | Retention | The snapshots' `retain`, counted for this host's scheduled bundles alone. The bundle of a `--name` snapshot is kept, as the snapshot is |
 | Holds | `/var/lib/stratum/pki/`, `/var/lib/stratum/config/node.yaml`, `/etc/stratum/`, `/var/lib/stratum/manifests/`, and the cluster config file when it is kept outside `/etc/stratum` |
 | Leaves out | `/etc/stratum/images.d/`, the kubeconfigs and the systemd unit, which `stratum up` writes again |
 | Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. A link is taken only when it points to a file beside it. A save checks its bundle the way a restore will, and refuses to keep one a restore would turn away. |
-| Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient. |
+| Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient, at most 16. |
 
 A bundle is collected under the node maintenance lock, so it never holds a
 certificate from one side of a rotation and its key from the other. It waits up
 to 30 seconds for an operation that holds the lock, and is not taken if the
 operation outlasts that. A bundle must hold the cluster CA certificate and its
 key, and a cluster config kept outside `/etc/stratum` if the node runs with
-one; without them none is taken.
+one; without them none is taken. A cluster config kept outside `/etc/stratum`
+must be a `.yaml` or `.yml` file.
 
 A bundle that cannot be taken or uploaded does not fail the snapshot: the
 snapshot is kept, and the save reports the bundle's error beside it and exits
@@ -405,9 +406,12 @@ evidence, which `stratum snapshot list -o json` shows as `nodeState` and
 
 `stratum snapshot restore-node-state` writes only under `/var/lib/stratum/pki/`,
 `/etc/stratum/` and `/var/lib/stratum/manifests/`, and `node.yaml`, whatever a
-bundle names. It checks the whole bundle against its manifest before it writes
-the first file, and refuses to write through a directory on the machine that is
-a symbolic link.
+bundle names, and the bundle's own outside cluster config at the path given to
+`--allow-path`, mode `0600`. It checks the whole bundle against its manifest
+before it writes the first file, refuses a manifest whose text holds a
+character that is not printable, and refuses to write through a link on the
+machine. With `--yes` it needs `--ca-sha256`, or `--no-ca-pin`, and prints the
+fingerprint after every field the bundle states about itself.
 
 ### The etcdHasPeers record
 

@@ -260,6 +260,12 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		}
 	}
 	if o.NodeState == nil {
+		// A node that takes no bundle has no current bundle attempt. One left
+		// from a tick before the recipients were removed would read as
+		// bundles still being taken.
+		if evidence != nil {
+			evidence.clearNodeState()
+		}
 		return path, uploadErr
 	}
 	// A save that was stopped after its snapshot has no bundle, and says so:
@@ -534,6 +540,9 @@ func (r *evidenceRecorder) recordNodeState(ns nodeStateResult) {
 		if ns.save == nil {
 			e.LastNodeStateSuccess = at
 		}
+		// A bundle not copied off the node this tick has no current upload
+		// attempt, whatever an earlier tick with S3 set did.
+		e.NodeStateUpload = snapshotAttempt{}
 		if ns.uploaded {
 			e.NodeStateUpload = snapshotAttemptOf(at, ns.upload)
 			if ns.upload == nil {
@@ -541,6 +550,15 @@ func (r *evidenceRecorder) recordNodeState(ns nodeStateResult) {
 			}
 		}
 		e.Warnings = r.warnings
+	})
+}
+
+// clearNodeState records that this tick took no bundle: no current save or
+// upload attempt. The last successes stay, as the history they are.
+func (r *evidenceRecorder) clearNodeState() {
+	r.mutate(func(e *snapshotEvidence) {
+		e.NodeState = snapshotAttempt{}
+		e.NodeStateUpload = snapshotAttempt{}
 	})
 }
 

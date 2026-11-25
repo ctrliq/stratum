@@ -207,8 +207,23 @@ func TestRestoreNodeStateRefusals(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "cp-9") || caKeyRestored() {
 			t.Fatalf("error = %v, CA key restored = %v; want a refusal naming this machine", err, caKeyRestored())
 		}
-		if _, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--allow-hostname-mismatch"); err != nil {
+		if _, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--allow-hostname-mismatch", "--no-ca-pin"); err != nil {
 			t.Errorf("with --allow-hostname-mismatch: %v", err)
+		}
+	})
+	t.Run("an unpinned --yes", func(t *testing.T) {
+		bundle, identity, m := lostNode(t)
+		_, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes")
+		if err == nil || !strings.Contains(err.Error(), "--ca-sha256") || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal asking for the pin", err, caKeyRestored())
+		}
+		out, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--no-ca-pin")
+		if err != nil || !caKeyRestored() {
+			t.Fatalf("with --no-ca-pin: %v, CA key restored = %v", err, caKeyRestored())
+		}
+		lines := strings.Split(strings.TrimSpace(strings.SplitN(out, "\nrestored", 2)[0]), "\n")
+		if last := lines[len(lines)-1]; !strings.Contains(last, m.ClusterCASHA256) {
+			t.Errorf("the summary's last line is %q; the CA fingerprint must be printed after every field the bundle wrote", last)
 		}
 	})
 	t.Run("a machine that is already a node", func(t *testing.T) {
@@ -371,14 +386,14 @@ func TestRestoreNodeStateSettlesAnOutsideConfigBeforeItWrites(t *testing.T) {
 	if !strings.Contains(out, extra) {
 		t.Errorf("the bundle's summary does not name the outside config:\n%s", out)
 	}
-	out, err = runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--allow-path", extra)
+	out, err = runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--allow-path", extra, "--no-ca-pin")
 	if err != nil {
 		t.Fatalf("with --allow-path: %v\n%s", err, out)
 	}
 	if b, err := os.ReadFile(extra); err != nil || string(b) != "spec: {site: true}\n" {
 		t.Errorf("the outside config = %q, %v", b, err)
 	}
-	if !strings.Contains(out, "stratum up --config "+extra) {
+	if !strings.Contains(out, "stratum up --config '"+extra+"'") {
 		t.Errorf("the next step does not start the node with the config it ran with:\n%s", out)
 	}
 }
@@ -406,7 +421,7 @@ func TestRestoreNodeStateFetchesTheS3ObjectTheURLNames(t *testing.T) {
 		got, gotName = *t, name
 		return root.WriteFile(name, sealed, 0o600)
 	}
-	out, err := runRestoreNodeState(t, "s3://bkt/snaps/node-state/cp-1.bundle", "--identity-file", identity, "--yes", "--s3-endpoint", "https://flag.example")
+	out, err := runRestoreNodeState(t, "s3://bkt/snaps/node-state/cp-1.bundle", "--identity-file", identity, "--yes", "--no-ca-pin", "--s3-endpoint", "https://flag.example")
 	if err != nil {
 		t.Fatalf("restore from s3://: %v\n%s", err, out)
 	}

@@ -92,6 +92,9 @@ func ParseRecipient(s string) (Recipient, error) {
 // ParseRecipients reads every recipient of list, refusing a duplicate: two
 // entries for one key look like two key holders and are one.
 func ParseRecipients(list []string) ([]Recipient, error) {
+	if len(list) > maxRecipients {
+		return nil, fmt.Errorf("%d backup recipients, at most %d: a bundle is sealed to %d at most", len(list), maxRecipients, maxRecipients)
+	}
 	out := make([]Recipient, 0, len(list))
 	seen := map[string]bool{}
 	for _, s := range list {

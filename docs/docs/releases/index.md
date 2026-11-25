@@ -59,7 +59,8 @@ snapshot does not hold and a replacement control plane cannot start without.
 Name a recipient under `spec.snapshots.nodeState.recipients` and the bundle is
 taken, uploaded and pruned with every snapshot. `stratum snapshot keygen` makes
 the key pair, and `stratum snapshot restore-node-state` puts a bundle back on a
-replacement machine. Without a recipient nothing changes. An earlier release
+replacement machine, pinned with `--ca-sha256` to the cluster CA fingerprint
+each save prints. Without a recipient nothing changes. An earlier release
 refuses a cluster config that carries the new key. See
 [Back up node state with every snapshot](../cluster-admin/snapshot-restore.md#back-up-node-state-with-every-snapshot).
 

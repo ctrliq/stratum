@@ -47,12 +47,15 @@ func NodeStateName(host, stamp string) string {
 // nodeStateNameFor is the bundle taken with snapshot. A scheduled snapshot's
 // bundle carries its host and stamp, and retention owns both alike. A
 // snapshot saved under a name of its own is never pruned, so neither is its
-// bundle: it is named for the snapshot, which retention does not match.
+// bundle: it is named for its host and the snapshot, with a double dash
+// retention does not match. The host is in the name because a bundle is one
+// node's: the same snapshot name saved on each control plane is one bundle
+// per node under one S3 prefix, not one that the last upload wins.
 func nodeStateNameFor(host, stamp, snapshot string, named bool) string {
 	if !named {
 		return NodeStateName(host, stamp)
 	}
-	return nodeStatePrefix + strings.TrimSuffix(snapshot, ".db") + nodeStateSuffix
+	return nodeStatePrefix + host + "--" + strings.TrimSuffix(snapshot, ".db") + nodeStateSuffix
 }
 
 // hostNodeState matches host's bundle names the way hostSnapshot matches its
@@ -140,7 +143,7 @@ func saveNodeState(ctx context.Context, w io.Writer, dir, host, name, snapshot s
 		res.save = err
 		return res
 	}
-	plain, _, err := nodebackup.Collect(ns.Sources, nodebackup.Meta{
+	plain, m, err := nodebackup.Collect(ns.Sources, nodebackup.Meta{
 		Hostname:          host,
 		NodeIP:            ns.NodeIP,
 		StratumVersion:    version.StratumVersion,
@@ -168,7 +171,7 @@ func saveNodeState(ctx context.Context, w io.Writer, dir, host, name, snapshot s
 		return res
 	}
 	res.path = path
-	fmt.Fprintf(w, "node state saved: %s (sealed to %d recipient(s))\n", path, len(ns.Recipients))
+	fmt.Fprintf(w, "node state saved: %s (sealed to %d recipient(s), cluster CA SHA-256 %s)\n", path, len(ns.Recipients), m.ClusterCASHA256)
 	target := NodeStateTarget(remote)
 	if target != nil {
 		res.uploaded = true
