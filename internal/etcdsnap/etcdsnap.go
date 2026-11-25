@@ -259,8 +259,17 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 			evidence.recordPrune(pruneErrs)
 		}
 	}
-	if o.NodeState == nil || ctx.Err() != nil {
+	if o.NodeState == nil {
 		return path, uploadErr
+	}
+	// A save that was stopped after its snapshot has no bundle, and says so:
+	// returning the snapshot alone would report a backup set that is not one.
+	if cerr := ctx.Err(); cerr != nil {
+		stopped := nodeStateResult{save: cerr}
+		if evidence != nil {
+			evidence.recordNodeState(stopped)
+		}
+		return path, errors.Join(uploadErr, fmt.Errorf("%w: %w", ErrNodeStateIncomplete, stopped.err()))
 	}
 	ns := saveNodeState(ctx, w, dir, hn, nodeStateNameFor(hn, stamp, name, o.Name != ""), name, o.NodeState, o.S3, o.Retain)
 	for _, perr := range ns.prune {

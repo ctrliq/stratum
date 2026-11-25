@@ -99,11 +99,11 @@ func newSnapshotSaveCommand() *cobra.Command {
 			if err == nil || (p != "" && errors.Is(err, etcdsnap.ErrNodeStateIncomplete)) {
 				err = errors.Join(err, nodeStateErr)
 			}
+			if err != nil && interrupt.ExpectedStop(ctx, err) {
+				fmt.Println("stratum: snapshot save stopped (signal received)")
+				return &cleanStopExit{stop: err}
+			}
 			if err != nil && !(p != "" && errors.Is(err, etcdsnap.ErrNodeStateIncomplete)) {
-				if interrupt.ExpectedStop(ctx, err) {
-					fmt.Println("stratum: snapshot save stopped (signal received)")
-					return &cleanStopExit{stop: err}
-				}
 				return err
 			}
 			fmt.Printf("snapshot saved: %s\n", p)

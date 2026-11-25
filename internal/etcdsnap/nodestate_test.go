@@ -413,3 +413,42 @@ func TestAFailedBundlePruneIsRecorded(t *testing.T) {
 		t.Errorf("the failed bundle prune is not among the recorded warnings: %v", rec.Warnings)
 	}
 }
+
+// A save stopped after its snapshot was taken has no bundle. It says so, and
+// records the bundle as not taken, instead of returning the snapshot as a
+// whole backup set.
+func TestAStoppedSaveReportsItsMissingBundle(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+	ns, _ := nodeStateFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop := filepath.Join(t.TempDir(), "taken")
+	fakeEtcdctl(t, "printf snapshot > \"$3\"; : > "+stop)
+	go func() {
+		for {
+			if _, err := os.Stat(stop); err == nil {
+				cancel()
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	var path string
+	var err error
+	for range 200 {
+		path, err = etcdsnap.SaveContext(ctx, io.Discard, etcdsnap.SaveOptions{Dir: dir, Host: "cp1", Evidence: true, NodeState: ns})
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if path == "" {
+		t.Skipf("the save was stopped before its snapshot was taken (%v); nothing to check", err)
+	}
+	if !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) {
+		bundles, _ := filepath.Glob(filepath.Join(dir, etcdsnap.NodeStateDir, "*.bundle"))
+		if len(bundles) == 0 {
+			t.Fatalf("a stopped save returned %v with a snapshot and no bundle, want ErrNodeStateIncomplete", err)
+		}
+	}
+}
