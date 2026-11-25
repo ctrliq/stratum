@@ -386,6 +386,13 @@ plane takes a bundle with every scheduled snapshot and every
 | Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. A link is taken only when it points to a file beside it. A save checks its bundle the way a restore will, and refuses to keep one a restore would turn away. |
 | Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient. |
 
+A bundle is collected under the node maintenance lock, so it never holds a
+certificate from one side of a rotation and its key from the other. It waits up
+to 30 seconds for an operation that holds the lock, and is not taken if the
+operation outlasts that. A bundle must hold the cluster CA certificate and its
+key, and a cluster config kept outside `/etc/stratum` if the node runs with
+one; without them none is taken.
+
 A bundle that cannot be taken or uploaded does not fail the snapshot: the
 snapshot is kept, and the save reports the bundle's error beside it and exits
 non-zero. The scheduled loop records the attempt in the node's snapshot
@@ -399,7 +406,8 @@ evidence, which `stratum snapshot list -o json` shows as `nodeState` and
 `stratum snapshot restore-node-state` writes only under `/var/lib/stratum/pki/`,
 `/etc/stratum/` and `/var/lib/stratum/manifests/`, and `node.yaml`, whatever a
 bundle names. It checks the whole bundle against its manifest before it writes
-the first file.
+the first file, and refuses to write through a directory on the machine that is
+a symbolic link.
 
 ### The etcdHasPeers record
 

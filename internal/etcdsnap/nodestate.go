@@ -12,6 +12,7 @@ import (
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/nodebackup"
+	"github.com/ctrliq/stratum/internal/nodelock"
 	"github.com/ctrliq/stratum/internal/objstore"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -83,6 +84,35 @@ func NodeStateTarget(t *objstore.Target) *objstore.Target {
 	return &sub
 }
 
+// nodeStateLockWait is how long a bundle waits for the node maintenance lock
+// before it gives up, and how often it asks. Vars so a test can shorten them.
+var (
+	nodeStateLockWait  = 30 * time.Second
+	nodeStateLockEvery = 2 * time.Second
+)
+
+// nodeStateLock takes the node maintenance lock for a bundle's collection,
+// waiting a short while for an operation that holds it: a rotation is quick,
+// and a bundle given up at once is not taken again until the next snapshot.
+// One still held after the wait is an error, and the bundle is not taken.
+var nodeStateLock = func(ctx context.Context) (func(), error) {
+	deadline := time.Now().Add(nodeStateLockWait)
+	for {
+		release, err := nodelock.Acquire("node-state backup")
+		if err == nil {
+			return release, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(nodeStateLockEvery):
+		}
+	}
+}
+
 // nodeStateResult is what saveNodeState did, each step's error apart: the
 // local bundle and its off-box copy are evidence of different things, as a
 // snapshot's are.
@@ -102,6 +132,14 @@ func saveNodeState(ctx context.Context, w io.Writer, dir, host, name, snapshot s
 	remote *objstore.Target, retain int) nodeStateResult {
 	var res nodeStateResult
 	sub := filepath.Join(dir, NodeStateDir)
+	// Collected under the node maintenance lock: a certificate or CA rotation
+	// replaces a certificate and its key as two files, and a bundle read
+	// between the two holds a pair that does not match.
+	release, err := nodeStateLock(ctx)
+	if err != nil {
+		res.save = err
+		return res
+	}
 	plain, _, err := nodebackup.Collect(ns.Sources, nodebackup.Meta{
 		Hostname:          host,
 		NodeIP:            ns.NodeIP,
@@ -110,6 +148,7 @@ func saveNodeState(ctx context.Context, w io.Writer, dir, host, name, snapshot s
 		CreatedAt:         time.Now().UTC().Truncate(time.Second),
 		Snapshot:          snapshot,
 	})
+	release()
 	if err != nil {
 		res.save = err
 		return res

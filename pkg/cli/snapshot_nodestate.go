@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,21 @@ var (
 	nodeStateHostname   = host.Hostname
 	nodeStateS3Config   = etcdsnap.LoadConfigOr
 )
+
+// s3ObjectSize is the size of the object name under target, from a listing
+// of its prefix. A var so a test need not serve one.
+var s3ObjectSize = func(ctx context.Context, target *objstore.Target, name string) (int64, error) {
+	objs, err := target.List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list s3://%s/%s: %w", target.Bucket, target.Prefix, err)
+	}
+	for _, o := range objs {
+		if o.Name == name {
+			return o.Size, nil
+		}
+	}
+	return 0, fmt.Errorf("no object %s in s3://%s", target.Key(name), target.Bucket)
+}
 
 // maxSealedBundle bounds a bundle read from disk or S3: the archive's own
 // cap, with room for its header and seal.
@@ -151,7 +167,7 @@ type nodeStateS3Flags struct {
 // config (it is inside the bundle), so the S3 target is the URL's bucket and
 // key with the endpoint from flags and the credentials from the environment,
 // as every other S3 use takes them.
-func fetchSealedBundle(cmd *cobra.Command, src string, s3 nodeStateS3Flags) ([]byte, error) {
+func fetchSealedBundle(parent context.Context, src string, s3 nodeStateS3Flags) ([]byte, error) {
 	if !strings.HasPrefix(src, "s3://") {
 		f, err := os.Open(src)
 		if err != nil {
@@ -195,6 +211,18 @@ func fetchSealedBundle(cmd *cobra.Command, src string, s3 nodeStateS3Flags) ([]b
 	if s3.pathStyle {
 		target.PathStyle = true
 	}
+	ctx, stop := interrupt.DerivedContext(parent)
+	defer stop()
+	// The download writes whatever the object holds, so its size is checked
+	// first: a bundle is small, and an object that is not must not fill this
+	// machine's disk before it is turned away.
+	size, err := s3ObjectSize(ctx, target, name)
+	if err != nil {
+		return nil, err
+	}
+	if size > maxSealedBundle {
+		return nil, fmt.Errorf("%s is %d MiB, too large to be a node-state bundle", src, size>>20)
+	}
 	dir, err := os.MkdirTemp("", "stratum-node-state-")
 	if err != nil {
 		return nil, err
@@ -205,12 +233,10 @@ func fetchSealedBundle(cmd *cobra.Command, src string, s3 nodeStateS3Flags) ([]b
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	ctx, stop := interrupt.DerivedContext(cmd.Context())
-	defer stop()
 	if err := s3Download(target, ctx, root, name); err != nil {
 		return nil, err
 	}
-	return fetchSealedBundle(cmd, filepath.Join(dir, name), s3)
+	return fetchSealedBundle(parent, filepath.Join(dir, name), s3)
 }
 
 func newSnapshotRestoreNodeStateCommand() *cobra.Command {
@@ -235,7 +261,7 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 			if err := refuseExistingNode(); err != nil {
 				return err
 			}
-			sealed, err := fetchSealedBundle(cmd, args[0], s3)
+			sealed, err := fetchSealedBundle(cmd.Context(), args[0], s3)
 			if err != nil {
 				return err
 			}

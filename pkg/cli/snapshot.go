@@ -80,17 +80,25 @@ func newSnapshotSaveCommand() *cobra.Command {
 			ctx, stop := interrupt.DerivedContext(cmd.Context())
 			defer stop()
 			opts := etcdsnap.SaveOptions{Dir: cfg.Dir, Name: name, Retain: cfg.Retain, S3: cfg.S3Target()}
+			// A config that cannot say whether a bundle is wanted is not a
+			// config that wants none: the snapshot is still taken, and the
+			// save reports the backup set incomplete.
+			var nodeStateErr error
 			if !noNodeState {
 				ns, nerr := loadNodeStateBackup()
 				switch {
 				case nerr != nil:
-					fmt.Fprintf(os.Stderr, "WARN: no node-state bundle is taken with this snapshot: %v\n", nerr)
+					nodeStateErr = fmt.Errorf("%w: no bundle was taken, because the cluster config could not be read for its recipients: %w",
+						etcdsnap.ErrNodeStateIncomplete, nerr)
 				case ns == nil:
 					fmt.Fprintln(os.Stderr, "note: no node-state bundle is taken with this snapshot: spec.snapshots.nodeState names no recipient")
 				}
 				opts.NodeState = ns
 			}
 			p, err := saveSnapshot(ctx, os.Stdout, opts)
+			if err == nil || (p != "" && errors.Is(err, etcdsnap.ErrNodeStateIncomplete)) {
+				err = errors.Join(err, nodeStateErr)
+			}
 			if err != nil && !(p != "" && errors.Is(err, etcdsnap.ErrNodeStateIncomplete)) {
 				if interrupt.ExpectedStop(ctx, err) {
 					fmt.Println("stratum: snapshot save stopped (signal received)")

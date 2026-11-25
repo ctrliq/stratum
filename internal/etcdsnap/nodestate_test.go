@@ -26,6 +26,7 @@ import (
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 	"github.com/ctrliq/stratum/internal/nodebackup"
 	"github.com/ctrliq/stratum/internal/objstore"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 // nodeStateFixture is a node's state under a temp root, an identity, and the
@@ -48,6 +49,9 @@ func nodeStateFixture(t *testing.T) (*etcdsnap.NodeState, nodebackup.Identity) {
 			t.Fatal(err)
 		}
 	}
+	oldLock := version.NodeUpgradeLockPath
+	version.NodeUpgradeLockPath = filepath.Join(root, "node.lock")
+	t.Cleanup(func() { version.NodeUpgradeLockPath = oldLock })
 	id, err := nodebackup.GenerateIdentity()
 	if err != nil {
 		t.Fatal(err)

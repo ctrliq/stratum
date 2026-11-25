@@ -130,7 +130,7 @@ func Collect(src Sources, meta Meta) ([]byte, Manifest, error) {
 	for _, f := range []struct {
 		path     string
 		required bool
-	}{{src.StatePath, true}, {src.ExtraConfig, false}} {
+	}{{src.StatePath, true}, {src.ExtraConfig, true}} {
 		if f.path == "" {
 			continue
 		}
@@ -406,6 +406,16 @@ func Extract(plain []byte, dst Destination) (Restored, error) {
 		return Restored{}, err
 	}
 	res := Restored{ExtraConfigSkipped: skipped}
+	// The allowlist is of names, and a write follows a link that is already
+	// on the machine: a directory under the configuration directory that
+	// links elsewhere would carry an allowed entry out of node state. Every
+	// existing directory on the way to an entry is checked before the first
+	// write, so a refusal changes nothing.
+	for _, e := range entries {
+		if err := dst.refuseLinkedParents(e.Path); err != nil {
+			return Restored{}, err
+		}
+	}
 	for _, e := range entries {
 		if err := writeEntry(e); err != nil {
 			return res, fmt.Errorf("restore %s: %w", e.Path, err)
@@ -475,12 +485,15 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 				return fail(fmt.Errorf("node-state bundle holds a link at %s it may not; nothing was restored", path))
 			}
 		case tar.TypeReg:
+			if h.Size > maxFileBytes || h.Size != want.Size {
+				return fail(fmt.Errorf("node-state bundle: %s is not the size its manifest states, or is over %d MiB", path, maxFileBytes>>20))
+			}
 			data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
 			if err != nil {
 				return fail(fmt.Errorf("node-state bundle: %s: %w", path, err))
 			}
 			sum := sha256.Sum256(data)
-			if want.Dir || want.Link != "" || hex.EncodeToString(sum[:]) != want.SHA256 {
+			if want.Dir || want.Link != "" || int64(len(data)) != want.Size || hex.EncodeToString(sum[:]) != want.SHA256 {
 				return fail(fmt.Errorf("node-state bundle: %s does not match its manifest", path))
 			}
 			e.data = data
@@ -505,9 +518,26 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 		return fail(fmt.Errorf("node-state bundle states cluster CA %s and carries %s; nothing was restored",
 			orNone(m.ClusterCASHA256), orNone(got)))
 	}
-	if caCert != nil && caKey != nil {
-		if err := caKeyMatches(caCert, caKey); err != nil {
-			return fail(fmt.Errorf("node-state bundle: %w; nothing was restored", err))
+	if caCert == nil || caKey == nil {
+		return fail(errors.New("node-state bundle does not hold the cluster CA certificate and its key; a node started " +
+			"from it would mint a new CA or refuse to start. Nothing was restored"))
+	}
+	if err := caKeyMatches(caCert, caKey); err != nil {
+		return fail(fmt.Errorf("node-state bundle: %w; nothing was restored", err))
+	}
+	// A link in a bundle points to a file beside it. An entry beneath one
+	// would be written through it, into whatever directory it named.
+	links := map[string]bool{}
+	for _, e := range entries {
+		if e.Link != "" {
+			links[e.Path] = true
+		}
+	}
+	for _, e := range entries {
+		for dir := filepath.Dir(e.Path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
+			if links[dir] {
+				return fail(fmt.Errorf("node-state bundle holds %s beneath the link %s; nothing was restored", e.Path, dir))
+			}
 		}
 	}
 	return m, entries, skipped, nil
@@ -541,6 +571,44 @@ func writeEntry(e entry) error {
 		return err
 	}
 	return atomicfile.WriteFile(e.Path, e.data, perm)
+}
+
+// refuseLinkedParents refuses path when a directory between its tree's root
+// and path exists on this machine as a symbolic link, or path itself exists as
+// a link to a directory.
+func (d Destination) refuseLinkedParents(path string) error {
+	root := ""
+	for _, r := range []string{d.PKIDir, d.ConfDir, d.ManifestsDir} {
+		if r != "" && within(r, path) {
+			root = r
+		}
+	}
+	if root == "" {
+		return nil
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	cur := root
+	for _, comp := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
+		if comp == "." || comp == "" {
+			continue
+		}
+		cur = filepath.Join(cur, comp)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s on this machine is a symbolic link, and restoring %s would write through it, outside node state; "+
+				"remove the link. Nothing was restored", cur, path)
+		}
+	}
+	return nil
 }
 
 // linkAllowed reports whether a link may be restored at path: inside one of

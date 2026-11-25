@@ -288,6 +288,16 @@ func TestSnapshotSaveTakesTheConfiguredNodeStateBundle(t *testing.T) {
 	if err := run(); !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) {
 		t.Errorf("a save whose bundle failed returned %v, want the failure: a backup set without its bundle is not a success", err)
 	}
+	// A config that cannot be read for its recipients is not one that asks
+	// for no bundle: the snapshot is taken, and the save fails as incomplete.
+	saveErr = nil
+	loadNodeStateBackup = func() (*etcdsnap.NodeState, error) { return nil, errors.New("config.yaml: unreadable") }
+	if err := run(); !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) || !strings.Contains(err.Error(), "unreadable") || got.Dir == "" {
+		t.Errorf("save with an unreadable config returned %v, want the snapshot taken and the set reported incomplete", err)
+	}
+	if err := run("--no-node-state"); err != nil {
+		t.Errorf("save --no-node-state with an unreadable config: %v, want success: no bundle was asked for", err)
+	}
 }
 
 // testCA is a self-signed CA certificate and its key, PEM encoded: a restore
@@ -383,8 +393,10 @@ func TestRestoreNodeStateFetchesTheS3ObjectTheURLNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldCfg, oldDL := nodeStateS3Config, s3Download
-	t.Cleanup(func() { nodeStateS3Config, s3Download = oldCfg, oldDL })
+	oldCfg, oldDL, oldSize := nodeStateS3Config, s3Download, s3ObjectSize
+	t.Cleanup(func() { nodeStateS3Config, s3Download, s3ObjectSize = oldCfg, oldDL, oldSize })
+	size := int64(len(sealed))
+	s3ObjectSize = func(context.Context, *objstore.Target, string) (int64, error) { return size, nil }
 	nodeStateS3Config = func(etcdsnap.Config) (etcdsnap.Config, error) {
 		return etcdsnap.Config{S3: objstore.Target{Bucket: "other", Prefix: "snaps", Endpoint: "https://conf.example", AccessKey: "k", SecretKey: "s"}}, nil
 	}
@@ -407,8 +419,14 @@ func TestRestoreNodeStateFetchesTheS3ObjectTheURLNames(t *testing.T) {
 	if !caKeyRestored() {
 		t.Error("the bundle fetched from S3 was not restored")
 	}
+	// An object too large to be a bundle is turned away before any of it is
+	// downloaded onto the replacement machine's disk.
+	size, gotName = maxSealedBundle+1, ""
+	if _, err := fetchSealedBundle(context.Background(), "s3://bkt/snaps/node-state/huge.bundle", nodeStateS3Flags{}); err == nil || gotName != "" {
+		t.Errorf("an oversized object: error = %v, downloaded %q; want a refusal with no download", err, gotName)
+	}
 	for _, bad := range []string{"s3://bkt", "s3://bkt/", "s3://bkt/dir/"} {
-		if _, err := fetchSealedBundle(newSnapshotRestoreNodeStateCommand(), bad, nodeStateS3Flags{}); err == nil {
+		if _, err := fetchSealedBundle(context.Background(), bad, nodeStateS3Flags{}); err == nil {
 			t.Errorf("%s was accepted as naming a bundle", bad)
 		}
 	}

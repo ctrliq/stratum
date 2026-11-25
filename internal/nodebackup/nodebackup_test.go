@@ -543,3 +543,156 @@ func TestCollectRefusesABundleARestoreWouldRefuse(t *testing.T) {
 		t.Errorf("Collect = %v, want a refusal: the manifest of that many files is over what a restore reads", err)
 	}
 }
+
+// rebuildBundle re-archives the node at n, after change has altered the
+// entries: a bundle only someone other than Collect would write.
+func rebuildBundle(t *testing.T, n node, change func(entries []entry) []entry) []byte {
+	t.Helper()
+	_, m, err := Collect(n.src, testMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []entry
+	for _, f := range m.Files {
+		e := entry{File: f}
+		if !f.Dir && f.Link == "" {
+			b, err := os.ReadFile(f.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.data = b
+		}
+		entries = append(entries, e)
+	}
+	entries = change(entries)
+	m.Files = nil
+	for _, e := range entries {
+		m.Files = append(m.Files, e.File)
+	}
+	out, err := writeArchive(m, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A bundle without the cluster CA certificate and its key restores a node
+// that mints a new CA or refuses to start, so neither side accepts one.
+func TestABundleMustHoldTheClusterCAAndItsKey(t *testing.T) {
+	for _, gone := range []string{"ca.crt", "ca.key"} {
+		n := fixtureNode(t)
+		if err := os.Remove(filepath.Join(n.src.PKIDir, gone)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := Collect(n.src, testMeta); err == nil || !strings.Contains(err.Error(), "cluster CA") {
+			t.Errorf("without %s: Collect = %v, want a refusal naming the cluster CA", gone, err)
+		}
+	}
+}
+
+// A file is restored whole or not at all: an entry longer than its manifest
+// states, or than a bundle may hold, is refused, never cut to the part that
+// was hashed.
+func TestExtractRefusesAnEntryOfAnotherSize(t *testing.T) {
+	n := fixtureNode(t)
+	target := filepath.Join(n.src.ConfDir, "config.yaml")
+	_, m, err := Collect(n.src, testMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []entry
+	for i, f := range m.Files {
+		e := entry{File: f}
+		if !f.Dir && f.Link == "" {
+			b, err := os.ReadFile(f.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.data = b
+		}
+		if f.Path == target {
+			// The archive carries more than the manifest states, hashed whole:
+			// only the stated size tells the two apart.
+			e.data = append(e.data, []byte("trailing bytes the manifest does not count")...)
+			sum := sha256.Sum256(e.data)
+			e.Size, e.SHA256 = int64(len(e.data)), hex.EncodeToString(sum[:])
+			m.Files[i].SHA256 = e.SHA256
+		}
+		entries = append(entries, e)
+	}
+	forged, err := writeArchive(m, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Extract(forged, n.dst); err == nil || !strings.Contains(err.Error(), "size") {
+		t.Fatalf("error = %v, want a refusal over the entry's size", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("a refused bundle wrote %s (stat: %v)", target, err)
+	}
+}
+
+// An entry beneath a link in the same bundle would be written through the
+// link, so a bundle that holds one is refused.
+func TestExtractRefusesAnEntryBeneathALink(t *testing.T) {
+	n := fixtureNode(t)
+	link := filepath.Join(n.src.ConfDir, "sub")
+	forged := rebuildBundle(t, n, func(entries []entry) []entry {
+		data := []byte("x")
+		sum := sha256.Sum256(data)
+		return append(entries,
+			entry{File: File{Path: link, Mode: 0o777, Link: "images.d"}},
+			entry{File: File{Path: filepath.Join(link, "job"), Mode: 0o600, Size: 1, SHA256: hex.EncodeToString(sum[:])}, data: data})
+	})
+	if _, err := Extract(forged, n.dst); err == nil || !strings.Contains(err.Error(), "beneath the link") {
+		t.Errorf("error = %v, want a refusal of the entry beneath the link", err)
+	}
+}
+
+// A directory already on the machine that links out of node state would
+// carry an allowed entry with it. The restore refuses before it writes
+// anything, and what the link points to is untouched.
+func TestExtractRefusesALinkedDirectoryOnTheMachine(t *testing.T) {
+	n := fixtureNode(t)
+	write(t, filepath.Join(n.src.ConfDir, "hooks", "job"), "node state", 0o600)
+	plain, _, err := Collect(n.src, testMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "job"), "not node state", 0o600)
+	for _, dir := range []string{n.src.PKIDir, n.src.ConfDir} {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(n.src.ConfDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(n.src.ConfDir, "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Extract(plain, n.dst); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("error = %v, want a refusal of the linked directory", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(outside, "job")); err != nil || string(b) != "not node state" {
+		t.Errorf("the restore wrote through the link: %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(n.src.PKIDir, "ca.key")); !os.IsNotExist(err) {
+		t.Errorf("a refused restore wrote the CA key (stat: %v)", err)
+	}
+}
+
+// The cluster config a node runs with, kept outside the configuration
+// directory, is part of the bundle or there is no bundle: one that names it
+// and does not hold it restores a node that cannot start.
+func TestCollectRequiresTheOutsideConfigItNames(t *testing.T) {
+	n := fixtureNode(t)
+	n.src.ExtraConfig = filepath.Join(t.TempDir(), "gone.yaml")
+	if _, _, err := Collect(n.src, testMeta); err == nil || !strings.Contains(err.Error(), "gone.yaml") {
+		t.Errorf("Collect = %v, want a refusal naming the missing config", err)
+	}
+}
