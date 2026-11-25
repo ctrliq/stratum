@@ -488,3 +488,29 @@ func TestUpgradeNodeImportImagesFailsWhenTheStagedImportFails(t *testing.T) {
 		t.Fatalf("error = %v, want the import's", err)
 	}
 }
+
+// A resumed upgrade already has its host binaries swapped, so a failure as
+// early as the payload import rolls back, and the rollback restarts kubelet.
+// The staged archives are imported before that can happen.
+func TestResumedUpgradeImportsStagedArchivesBeforeAStepThatCanRollBack(t *testing.T) {
+	events := controllerUpgradeFixture(t, version.K8sVersion, 0)
+	interruptedAt(t, version.K8sVersion)
+	writeFile(t, filepath.Join(version.BinDir, "kubelet.bak-"+resumeTS), "old", 0o755)
+	stagedArchive(t, events)
+	swap(t, &unitExists, func(string) bool { return true })
+	swap(t, &restartUnit, func(name string) error { *events = append(*events, "restart:"+name); return nil })
+	images := t.TempDir()
+	swap(t, &resolvePayload, func(io.Writer, string, []string) (Source, error) {
+		return Source{Dir: t.TempDir(), Images: images}, nil
+	})
+	swap(t, &importImages, func(context.Context, io.Writer, string) error { return errors.New("payload import failed") })
+	_, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{SkipSnapshot: true}) })
+	if err == nil || !strings.Contains(err.Error(), "payload import failed") {
+		t.Fatalf("error = %v, want the payload import's", err)
+	}
+	staged := slices.Index(*events, "staged")
+	restart := slices.IndexFunc(*events, func(e string) bool { return strings.HasPrefix(e, "restart:") })
+	if staged < 0 || restart < 0 || staged > restart {
+		t.Errorf("events = %v, want the staged-archive import before the rollback's first restart", *events)
+	}
+}

@@ -2123,6 +2123,13 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 	}
 	fail := func(cause error) error { return rollbackNode(w, cause, backups, hostSwapped, ts) }
 
+	// Before anything that can fail into a rollback: a rollback restarts
+	// kubelet too, and a resume can reach one, with the host binaries already
+	// swapped, from the very next step.
+	if err := importStaged(w); err != nil {
+		return fail(err)
+	}
+
 	// Self-install FIRST (spec): a crash anywhere after this point leaves the
 	// on-disk binary and the manifests converging on the same version at the
 	// next start. The operator is NOT restarted until the node gate passes.
@@ -2156,9 +2163,6 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 		if err := importImages(context.Background(), w, src.Images); err != nil {
 			return fail(err)
 		}
-	}
-	if err := importStaged(w); err != nil {
-		return fail(err)
 	}
 
 	if isCP {
