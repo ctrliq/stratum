@@ -128,3 +128,21 @@ func TestRestartWaitAgainstASupervisorThatReportsNoGate(t *testing.T) {
 		t.Errorf("the wait ran %s on a 100ms timeout", took)
 	}
 }
+
+// The cap is on the whole wait. A gate that passes just short of it leaves the
+// component only what is left of the cap to start in, not a full timeout more.
+func TestRestartWaitCapCoversTheTimeAfterTheGateToo(t *testing.T) {
+	const capWait = 200 * time.Millisecond
+	shortWaits(t, capWait)
+	statusServer(t, func(since time.Duration) supervisor.ProcStatus {
+		return supervisor.ProcStatus{Name: "kubelet", Waiting: since < capWait-50*time.Millisecond}
+	})
+	start := time.Now()
+	err := waitForReplacement("kubelet", 100, "restart", 10*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "did not come back") {
+		t.Fatalf("error = %v, want a timeout", err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("the wait ran %s, past its %s cap, on the timeout left after the gate", took, capWait)
+	}
+}

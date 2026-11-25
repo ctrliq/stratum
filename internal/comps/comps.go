@@ -76,7 +76,8 @@ var replacementPoll = 500 * time.Millisecond
 // held at its start gate is not counted against that: the gate is a
 // dependency's time, such as the kubelet's wait for an image archive to be
 // imported, and can run to minutes on a healthy node. gateWaitCap bounds the
-// whole wait, so a gate that never passes still ends it.
+// whole wait, gate and start together, so a gate that never passes still ends
+// it.
 func waitForReplacement(name string, before int, operation string, timeout time.Duration) error {
 	start := time.Now()
 	last := start
@@ -99,10 +100,10 @@ func waitForReplacement(name string, before int, operation string, timeout time.
 				"the supervisor's log says what that is (journalctl -u stratum)", Normalize(name),
 				elapsed.Round(time.Second), operation)
 		}
-		if elapsed-gated >= timeout {
+		if elapsed-gated >= timeout || (gated > 0 && elapsed >= gateWaitCap) {
 			if gated > 0 {
-				return fmt.Errorf("%s did not come back within %s of %s, not counting %s held at its start gate",
-					Normalize(name), timeout, operation, gated.Round(time.Second))
+				return fmt.Errorf("%s did not come back within %s of %s, %s of that held at its start gate",
+					Normalize(name), elapsed.Round(time.Second), operation, gated.Round(time.Second))
 			}
 			return fmt.Errorf("%s did not come back within %s of %s", Normalize(name), timeout, operation)
 		}

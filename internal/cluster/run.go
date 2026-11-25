@@ -1912,8 +1912,7 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 	}
 	sock := strings.TrimPrefix(version.ContainerdSock, "unix://")
 	ctr := filepath.Join(version.BinDir, "ctr")
-	names := map[string]bool{}
-	imported := map[string]string{} // archive -> its stamp value before import
+	stamped := false
 	for _, tar := range tars {
 		before, err := os.Stat(tar)
 		if err != nil {
@@ -1940,19 +1939,23 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 			fmt.Fprintf(warn, "stratum: warning: skipping %s, which changed while it was imported; it is imported again on the next start\n", tar)
 			continue
 		}
+		names := map[string]bool{}
 		for _, n := range got {
 			names[n] = true
 		}
-		if !current {
-			imported[tar] = value
+		pinned, err := pinPayloadImages(ctx, ctr, sock, names)
+		if err != nil {
+			fmt.Fprintf(warn, "stratum: warning: pin the operator images of %s, which is imported again on the next start: %v\n", tar, err)
+			continue
 		}
-	}
-	if err := pinPayloadImages(ctx, ctr, sock, names); err != nil {
-		fmt.Fprintf(warn, "stratum: warning: pin the operator images in %s, which are imported again on the next start: %v\n", version.ImagesDropInDir, err)
-		return false
-	}
-	stamped := false
-	for tar, value := range imported {
+		if current {
+			continue
+		}
+		if gone := missingNames(got, pinned); len(gone) > 0 {
+			fmt.Fprintf(warn, "stratum: warning: %s is imported again on the next start: containerd no longer has %s, which it carries\n",
+				tar, strings.Join(gone, ", "))
+			continue
+		}
 		if err := writeDropInStamp(tar, value); err != nil {
 			fmt.Fprintf(warn, "stratum: warning: %s is not exempt from kubelet's pull-credential check, and is imported again on the next start: record its import: %v\n", tar, err)
 			continue
@@ -1960,6 +1963,18 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 		stamped = true
 	}
 	return stamped
+}
+
+// missingNames is the names of want that pinned lacks, sorted.
+func missingNames(want []string, pinned map[string]bool) []string {
+	var gone []string
+	for _, n := range want {
+		if !pinned[n] {
+			gone = append(gone, n)
+		}
+	}
+	slices.Sort(gone)
+	return gone
 }
 
 // ImportStagedImages imports and pins the operator's archives in
@@ -2035,7 +2050,8 @@ func ImportImagesWithWriter(ctx context.Context, w io.Writer, dir string) error 
 	// Pinning is a handful of ctr calls — cheap enough to re-assert every
 	// start, and it also covers images imported before a stratum upgrade
 	// introduced pinning.
-	return pinPayloadImages(ctx, ctr, sock, names)
+	_, err = pinPayloadImages(ctx, ctr, sock, names)
+	return err
 }
 
 // importWaitContainerd is waitContainerd behind a seam, so a test can run ImportImages against a fake ctr.
@@ -2099,11 +2115,12 @@ func payloadImageRows(ls string, archived map[string]bool) [][2]string {
 //
 // Both were found by CI, not invented: the digest miss is why add-ons pulled
 // from a cold mirror, and a tight runner disk GC'd them minutes after import.
-func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string]bool) error {
+func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string]bool) (map[string]bool, error) {
 	out, err := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "ls").Output()
 	if err != nil {
-		return fmt.Errorf("pin payload images: list: %w", err)
+		return nil, fmt.Errorf("pin payload images: list: %w", err)
 	}
+	pinned := map[string]bool{}
 	for _, row := range payloadImageRows(string(out), archived) {
 		ref, digest := row[0], row[1]
 		names := []string{ref}
@@ -2121,7 +2138,7 @@ func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string
 			cmd := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io",
 				"images", "tag", "--force", ref, alias)
 			if tout, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("alias %s: %w\n%s", alias, err, tout)
+				return nil, fmt.Errorf("alias %s: %w\n%s", alias, err, tout)
 			}
 			names = append(names, alias)
 		}
@@ -2129,11 +2146,12 @@ func pinPayloadImages(ctx context.Context, ctr, sock string, archived map[string
 			cmd := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io",
 				"images", "label", name, "io.cri-containerd.pinned=pinned")
 			if lout, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("pin %s: %w\n%s", name, err, lout)
+				return nil, fmt.Errorf("pin %s: %w\n%s", name, err, lout)
 			}
 		}
+		pinned[ref] = true
 	}
-	return nil
+	return pinned, nil
 }
 
 // saveCiliumSettings records the Cilium settings this control plane renders,

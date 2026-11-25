@@ -374,3 +374,52 @@ func TestImportStagedImagesWithNothingStagedDoesNotWaitForContainerd(t *testing.
 		t.Fatalf("ImportStagedImages: %v", err)
 	}
 }
+
+// With kubelet running, its image garbage collection can remove an archive's
+// images before they are pinned. An archive whose images containerd no longer
+// has is not stamped, so the next start imports it again instead of skipping
+// an archive the node cannot run.
+func TestImportDropInImagesDoesNotStampAnArchiveWhoseImagesAreGone(t *testing.T) {
+	dropInHost(t, "nothing")
+	gone := "#!/bin/sh\nshift 4\n[ \"$1 $2\" = \"images ls\" ] && echo 'REF TYPE DIGEST SIZE PLATFORMS LABELS'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(version.BinDir, "ctr"), []byte(gone), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tar := filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")
+	var out, warn strings.Builder
+	if importDropInImages(context.Background(), &out, &warn) {
+		t.Error("reported a fresh import for an archive whose images containerd does not have")
+	}
+	if runtime.DropInImported(tar) {
+		t.Error("stamped an archive whose images containerd does not have")
+	}
+	if want := "containerd no longer has ghcr.io/ctrliq/stratum-fleet-agent:v1"; !strings.Contains(warn.String(), want) {
+		t.Errorf("warning does not name the missing image:\n%s", warn.String())
+	}
+}
+
+// Each archive is pinned as soon as it is imported, not once every archive is:
+// while a later, large one imports, the earlier one's images are already safe
+// from garbage collection.
+func TestImportDropInImagesPinsEachArchiveBeforeImportingTheNext(t *testing.T) {
+	calls := dropInHost(t, "nothing")
+	b, err := os.ReadFile(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := filepath.Join(version.ImagesDropInDir, "later.tar")
+	if err := os.WriteFile(later, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, warn strings.Builder
+	importDropInImages(context.Background(), &out, &warn)
+	logged, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := strings.Index(string(logged), "images label ghcr.io/ctrliq/stratum-fleet-agent:v1")
+	next := strings.Index(string(logged), "images import "+later)
+	if pin < 0 || next < 0 || pin > next {
+		t.Errorf("the first archive was not pinned before the next was imported; ctr calls:\n%s", logged)
+	}
+}

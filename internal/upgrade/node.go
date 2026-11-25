@@ -2048,6 +2048,9 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 				previewSupervisorHandoff(w, false)
 				return nil
 			}
+			if err := importStaged(w); err != nil {
+				return err
+			}
 			_, err := handOverAndGate(w, "upgrade", func() error { return nodeGate(isCP, nodeName(st)) })
 			return err
 		case berr != nil && o.Check:

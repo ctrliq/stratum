@@ -411,3 +411,36 @@ func TestUpgradeNodeWithNothingStagedSkipsTheStep(t *testing.T) {
 		t.Errorf("output announces a staged-archive import with nothing staged:\n%s", out.String())
 	}
 }
+
+// A rerun on a node already at its target still restarts a supervisor running
+// the previous build, and with it kubelet. Archives staged since are imported
+// first there too, and not at all by a dry run.
+func TestUpgradeAtTargetImportsStagedArchivesBeforeTheHandoff(t *testing.T) {
+	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
+	resumeFixture(t)
+	redirect(t, &version.K8sVersion, "v1.37.9")
+	fakeKubelet(t, version.K8sVersion)
+	installedBuild(t, "this build", "this build")
+	runtimeFixture(t, version.K8sVersion, version.K8sVersion, version.K8sVersion)
+	f := newSupervisorFixture(t)
+	var events []string
+	stagedArchive(t, &events)
+	swap(t, &reexecSupervisor, func() error {
+		events = append(events, "reexec")
+		f.stale = false
+		return nil
+	})
+
+	if err := UpgradeNode(io.Discard, NodeOptions{DryRun: true}); err != nil {
+		t.Fatalf("UpgradeNode --dry-run: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("a dry run did %v", events)
+	}
+	if err := UpgradeNode(io.Discard, NodeOptions{}); err != nil {
+		t.Fatalf("UpgradeNode: %v", err)
+	}
+	if !slices.Equal(events, []string{"staged", "reexec"}) {
+		t.Errorf("events = %v, want the staged-archive import, then the supervisor restart", events)
+	}
+}
