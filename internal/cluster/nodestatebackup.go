@@ -52,6 +52,9 @@ func NodeStateSources(configPath string) nodebackup.Sources {
 		ManifestsDir: version.ManifestsDir,
 		Skip:         []string{version.ImagesDropInDir},
 	}
+	if configPath != "" && filepath.IsAbs(configPath) {
+		src.ConfigPath = filepath.Clean(configPath)
+	}
 	if configPath != "" && filepath.IsAbs(configPath) && !strings.HasPrefix(filepath.Clean(configPath)+"/", filepath.Clean(version.ConfDir)+"/") {
 		src.ExtraConfig = filepath.Clean(configPath)
 	}

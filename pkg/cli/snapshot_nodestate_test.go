@@ -3,8 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +21,7 @@ import (
 	"github.com/ctrliq/stratum/internal/etcdsnap"
 	"github.com/ctrliq/stratum/internal/nodebackup"
 	"github.com/ctrliq/stratum/internal/nodestate"
+	"github.com/ctrliq/stratum/internal/objstore"
 	"github.com/ctrliq/stratum/internal/version"
 )
 
@@ -48,8 +56,9 @@ func writeNodeFile(t *testing.T, path, data string) {
 func lostNode(t *testing.T) (bundle, identity string, m nodebackup.Manifest) {
 	t.Helper()
 	nodeStateRoots(t)
-	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.crt"), "-----BEGIN CERTIFICATE-----\nQ0E=\n-----END CERTIFICATE-----\n")
-	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.key"), "THE CA KEY")
+	ca, caKey := testCA(t)
+	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.crt"), ca)
+	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.key"), caKey)
 	writeNodeFile(t, nodestate.StatePath(), "role: controller\nhostname: cp-1\n")
 	writeNodeFile(t, filepath.Join(version.ConfDir, "config.yaml"), "spec: {}\n")
 	id, err := nodebackup.GenerateIdentity()
@@ -150,13 +159,15 @@ func TestRestoreNodeStatePutsTheNodeBack(t *testing.T) {
 		t.Fatalf("restore-node-state: %v\n%s", err, out)
 	}
 	for path, want := range map[string]string{
-		filepath.Join(version.PKIDir, "ca.key"):       "THE CA KEY",
 		nodestate.StatePath():                         "role: controller\nhostname: cp-1\n",
 		filepath.Join(version.ConfDir, "config.yaml"): "spec: {}\n",
 	} {
 		if b, err := os.ReadFile(path); err != nil || string(b) != want {
 			t.Errorf("%s = %q, %v; want %q", path, b, err, want)
 		}
+	}
+	if b, err := os.ReadFile(filepath.Join(version.PKIDir, "ca.key")); err != nil || !strings.Contains(string(b), "PRIVATE KEY") {
+		t.Errorf("the CA key was not restored (%v)", err)
 	}
 	for _, want := range []string{m.ClusterCASHA256, "etcd-snapshot-cp-1-20261125-120000.db", "stratum up --config", "stratum snapshot restore"} {
 		if !strings.Contains(out, want) {
@@ -276,5 +287,129 @@ func TestSnapshotSaveTakesTheConfiguredNodeStateBundle(t *testing.T) {
 	saveErr = etcdsnap.ErrNodeStateIncomplete
 	if err := run(); !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) {
 		t.Errorf("a save whose bundle failed returned %v, want the failure: a backup set without its bundle is not a success", err)
+	}
+}
+
+// testCA is a self-signed CA certificate and its key, PEM encoded: a restore
+// checks that a bundle's CA key is its CA certificate's.
+func testCA(t *testing.T) (certPEM, keyPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "stratum-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kder, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}))
+}
+
+// A cluster config the node kept outside its configuration directory is
+// named before anything is written, and nothing is written until the operator
+// allows its path: a node restored without the config it starts with would
+// have to be wiped to try again.
+func TestRestoreNodeStateSettlesAnOutsideConfigBeforeItWrites(t *testing.T) {
+	nodeStateRoots(t)
+	ca, caKey := testCA(t)
+	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.crt"), ca)
+	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.key"), caKey)
+	writeNodeFile(t, nodestate.StatePath(), "role: controller\n")
+	extra := filepath.Join(t.TempDir(), "site", "cluster.yaml")
+	writeNodeFile(t, extra, "spec: {site: true}\n")
+	id, err := nodebackup.GenerateIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, _, err := nodebackup.Collect(nodebackup.Sources{PKIDir: version.PKIDir, StatePath: nodestate.StatePath(),
+		ExtraConfig: extra, ConfigPath: extra}, nodebackup.Meta{Hostname: "cp-1", StratumVersion: version.StratumVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := nodebackup.Seal([]nodebackup.Recipient{id.Recipient()}, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := t.TempDir()
+	bundle, identity := filepath.Join(keep, "b"), filepath.Join(keep, "identity")
+	secret, _ := id.String()
+	writeNodeFile(t, bundle, string(sealed))
+	writeNodeFile(t, identity, secret)
+	for _, p := range []string{version.PKIDir, version.K8sConfDir, filepath.Dir(extra)} {
+		if err := os.RemoveAll(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldHost := nodeStateHostname
+	t.Cleanup(func() { nodeStateHostname = oldHost })
+	nodeStateHostname = func() (string, error) { return "cp-1", nil }
+
+	out, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes")
+	if err == nil || !strings.Contains(err.Error(), "--allow-path "+extra) {
+		t.Fatalf("error = %v, want one naming --allow-path %s", err, extra)
+	}
+	if caKeyRestored() {
+		t.Fatal("the CA key was written before the outside config's path was settled")
+	}
+	if !strings.Contains(out, extra) {
+		t.Errorf("the bundle's summary does not name the outside config:\n%s", out)
+	}
+	out, err = runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--allow-path", extra)
+	if err != nil {
+		t.Fatalf("with --allow-path: %v\n%s", err, out)
+	}
+	if b, err := os.ReadFile(extra); err != nil || string(b) != "spec: {site: true}\n" {
+		t.Errorf("the outside config = %q, %v", b, err)
+	}
+	if !strings.Contains(out, "stratum up --config "+extra) {
+		t.Errorf("the next step does not start the node with the config it ran with:\n%s", out)
+	}
+}
+
+// An s3:// bundle is fetched from the bucket and key the URL names. A
+// snapshot config already on the machine says how to reach the bucket and
+// nothing about where the bundle is: its prefix is the snapshots', one level
+// up.
+func TestRestoreNodeStateFetchesTheS3ObjectTheURLNames(t *testing.T) {
+	bundle, identity, _ := lostNode(t)
+	sealed, err := os.ReadFile(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCfg, oldDL := nodeStateS3Config, s3Download
+	t.Cleanup(func() { nodeStateS3Config, s3Download = oldCfg, oldDL })
+	nodeStateS3Config = func(etcdsnap.Config) (etcdsnap.Config, error) {
+		return etcdsnap.Config{S3: objstore.Target{Bucket: "other", Prefix: "snaps", Endpoint: "https://conf.example", AccessKey: "k", SecretKey: "s"}}, nil
+	}
+	var got objstore.Target
+	var gotName string
+	s3Download = func(t *objstore.Target, _ context.Context, root *os.Root, name string) error {
+		got, gotName = *t, name
+		return root.WriteFile(name, sealed, 0o600)
+	}
+	out, err := runRestoreNodeState(t, "s3://bkt/snaps/node-state/cp-1.bundle", "--identity-file", identity, "--yes", "--s3-endpoint", "https://flag.example")
+	if err != nil {
+		t.Fatalf("restore from s3://: %v\n%s", err, out)
+	}
+	if got.Bucket != "bkt" || got.Prefix != "snaps/node-state" || gotName != "cp-1.bundle" {
+		t.Errorf("fetched bucket %q prefix %q name %q, want the URL's", got.Bucket, got.Prefix, gotName)
+	}
+	if got.Endpoint != "https://flag.example" || got.AccessKey != "k" {
+		t.Errorf("target = %+v, want the flag's endpoint over the config's, and the config's credentials", got)
+	}
+	if !caKeyRestored() {
+		t.Error("the bundle fetched from S3 was not restored")
+	}
+	for _, bad := range []string{"s3://bkt", "s3://bkt/", "s3://bkt/dir/"} {
+		if _, err := fetchSealedBundle(newSnapshotRestoreNodeStateCommand(), bad, nodeStateS3Flags{}); err == nil {
+			t.Errorf("%s was accepted as naming a bundle", bad)
+		}
 	}
 }

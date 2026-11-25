@@ -262,11 +262,14 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	if o.NodeState == nil || ctx.Err() != nil {
 		return path, uploadErr
 	}
-	ns := saveNodeState(ctx, w, dir, hn, stamp, name, o.NodeState, o.S3, o.Retain)
+	ns := saveNodeState(ctx, w, dir, hn, nodeStateNameFor(hn, stamp, name, o.Name != ""), name, o.NodeState, o.S3, o.Retain)
 	for _, perr := range ns.prune {
 		fmt.Fprintf(w, "  WARN: %v\n", perr)
 		if o.PruneWarn != nil {
 			o.PruneWarn(perr)
+		}
+		if evidence != nil {
+			evidence.warnings = append(evidence.warnings, fmt.Sprintf("WARN: %v", perr))
 		}
 	}
 	if evidence != nil {

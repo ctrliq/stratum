@@ -377,13 +377,13 @@ plane takes a bundle with every scheduled snapshot and every
 
 | | |
 |---|---|
-| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it |
+| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it. Beside a snapshot saved with `--name <name>.db`, `node-state-<name>.bundle` |
 | On the node | `<snapshot directory>/node-state/`, directory mode `0700`, file mode `0600` |
 | In S3 | `<prefix>/node-state/`, one level below the snapshots |
-| Retention | The snapshots' `retain`, counted for this host's bundles alone |
+| Retention | The snapshots' `retain`, counted for this host's scheduled bundles alone. The bundle of a `--name` snapshot is kept, as the snapshot is |
 | Holds | `/var/lib/stratum/pki/`, `/var/lib/stratum/config/node.yaml`, `/etc/stratum/`, `/var/lib/stratum/manifests/`, and the cluster config file when it is kept outside `/etc/stratum` |
 | Leaves out | `/etc/stratum/images.d/`, the kubeconfigs and the systemd unit, which `stratum up` writes again |
-| Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. |
+| Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. A link is taken only when it points to a file beside it. A save checks its bundle the way a restore will, and refuses to keep one a restore would turn away. |
 | Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient. |
 
 A bundle that cannot be taken or uploaded does not fail the snapshot: the

@@ -250,6 +250,13 @@ type BackupMaintenance struct {
 	// streak of failures does not erase when backups last worked.
 	LastSaveSuccess   time.Time
 	LastUploadSuccess time.Time
+	// Warnings state the record's scheduling and retention warnings as typed
+	// safe reasons.
+	Warnings []string
+	// AttemptsKnown says the record was read or does not exist. False means
+	// the diagnostics are unknown because the record is unreadable or the
+	// request ended — never that no attempt was made.
+	AttemptsKnown bool
 	// NodeState and NodeStateUpload are the latest attempts to save and to
 	// upload the node-state bundle taken beside the snapshot, and the stamps
 	// when each last succeeded. No attempt is recorded on a node that takes
@@ -258,13 +265,6 @@ type BackupMaintenance struct {
 	NodeStateUpload            BackupAttempt
 	LastNodeStateSuccess       time.Time
 	LastNodeStateUploadSuccess time.Time
-	// Warnings state the record's scheduling and retention warnings as typed
-	// safe reasons.
-	Warnings []string
-	// AttemptsKnown says the record was read or does not exist. False means
-	// the diagnostics are unknown because the record is unreadable or the
-	// request ended — never that no attempt was made.
-	AttemptsKnown bool
 }
 
 // BackupEvidenceResult is one bounded read of the engine's backup evidence:

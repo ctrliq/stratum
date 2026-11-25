@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -47,6 +49,10 @@ type Sources struct {
 	// ExtraConfig is the cluster config file when it is kept outside ConfDir,
 	// else empty.
 	ExtraConfig string
+	// ConfigPath is the cluster config file the node runs with, wherever it
+	// is kept, recorded for the person who restores: it is the file to start
+	// the replacement with. Empty when the node runs with the default.
+	ConfigPath string
 	// Skip is directories under the others that are not node state and are
 	// not descended into: image archives measured in gigabytes.
 	Skip []string
@@ -85,7 +91,10 @@ type Manifest struct {
 	// ExtraConfig is the path of the cluster config file the bundle holds
 	// from outside the configuration directory, else empty.
 	ExtraConfig string `json:"extraConfig,omitempty"`
-	Files       []File `json:"files"`
+	// ConfigPath is the cluster config file the node ran with, the one to
+	// start its replacement with; empty when it ran with the default.
+	ConfigPath string `json:"configPath,omitempty"`
+	Files      []File `json:"files"`
 }
 
 type entry struct {
@@ -137,13 +146,26 @@ func Collect(src Sources, meta Meta) ([]byte, Manifest, error) {
 		}
 	}
 	slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.Path, b.Path) })
-	m := Manifest{Format: formatVersion, Meta: meta, ExtraConfig: src.ExtraConfig}
-	m.ClusterCASHA256 = caFingerprint(filepath.Join(src.PKIDir, "ca.crt"))
+	m := Manifest{Format: formatVersion, Meta: meta, ExtraConfig: src.ExtraConfig, ConfigPath: src.ConfigPath}
 	for _, e := range entries {
 		m.Files = append(m.Files, e.File)
+		if e.Path == filepath.Join(src.PKIDir, caCertName) {
+			m.ClusterCASHA256 = certFingerprint(e.data)
+		}
 	}
 	plain, err := writeArchive(m, entries)
-	return plain, m, err
+	if err != nil {
+		return nil, Manifest{}, err
+	}
+	// A bundle that is taken must be one a restore accepts: the two sides
+	// have their own rules and limits, and a bundle only the save side is
+	// happy with is found out when the node it was for is gone.
+	back := Destination{PKIDir: src.PKIDir, StatePath: src.StatePath, ConfDir: src.ConfDir, ManifestsDir: src.ManifestsDir,
+		AllowExtra: src.ExtraConfig}
+	if _, _, _, err := readBundle(plain, back); err != nil {
+		return nil, Manifest{}, fmt.Errorf("the node state makes a bundle a restore would refuse: %w", err)
+	}
+	return plain, m, nil
 }
 
 func collectTree(root string, required bool, skip []string, add func(entry) error) error {
@@ -219,19 +241,60 @@ func readFile(path string) (entry, error) {
 		SHA256: hex.EncodeToString(sum[:])}, data: data}, nil
 }
 
-// caFingerprint is the SHA-256 of the first certificate in the PEM file at
-// path, or empty when there is none to read.
-func caFingerprint(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	block, _ := pem.Decode(b)
-	if block == nil {
+const (
+	caCertName = "ca.crt"
+	caKeyName  = "ca.key"
+)
+
+// certFingerprint is the SHA-256 of the first certificate in the PEM data,
+// or empty when there is none.
+func certFingerprint(pemData []byte) string {
+	block, _ := pem.Decode(pemData)
+	if block == nil || block.Type != "CERTIFICATE" {
 		return ""
 	}
 	sum := sha256.Sum256(block.Bytes)
 	return hex.EncodeToString(sum[:])
+}
+
+// caKeyMatches reports whether keyPEM is the private key of the certificate
+// in certPEM. A bundle carrying a CA certificate beside another CA's key
+// would restore a control plane that signs with a key nothing trusts, or with
+// one someone else holds.
+func caKeyMatches(certPEM, keyPEM []byte) error {
+	cb, _ := pem.Decode(certPEM)
+	if cb == nil {
+		return errors.New("the cluster CA certificate is not PEM")
+	}
+	cert, err := x509.ParseCertificate(cb.Bytes)
+	if err != nil {
+		return fmt.Errorf("the cluster CA certificate: %w", err)
+	}
+	kb, _ := pem.Decode(keyPEM)
+	if kb == nil {
+		return errors.New("the cluster CA key is not PEM")
+	}
+	var key any
+	switch kb.Type {
+	case "EC PRIVATE KEY":
+		key, err = x509.ParseECPrivateKey(kb.Bytes)
+	case "RSA PRIVATE KEY":
+		key, err = x509.ParsePKCS1PrivateKey(kb.Bytes)
+	default:
+		key, err = x509.ParsePKCS8PrivateKey(kb.Bytes)
+	}
+	if err != nil {
+		return fmt.Errorf("the cluster CA key: %w", err)
+	}
+	signer, ok := key.(crypto.Signer)
+	if !ok {
+		return errors.New("the cluster CA key is not a signing key")
+	}
+	pub, ok := signer.Public().(interface{ Equal(crypto.PublicKey) bool })
+	if !ok || !pub.Equal(cert.PublicKey) {
+		return errors.New("the cluster CA key is not the key of the cluster CA certificate")
+	}
+	return nil
 }
 
 func writeArchive(m Manifest, entries []entry) ([]byte, error) {
@@ -274,14 +337,13 @@ func writeArchive(m Manifest, entries []entry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// ReadManifest returns the manifest of an opened bundle, without writing
-// anything, for the caller to check before it restores.
-func ReadManifest(plain []byte) (Manifest, error) {
-	tr, err := openArchive(plain)
-	if err != nil {
-		return Manifest{}, err
-	}
-	return readManifest(tr)
+// Inspect checks an opened bundle whole against its manifest and against dst,
+// without writing anything, and returns the manifest. The cluster CA
+// fingerprint it returns is computed from the certificate the bundle carries,
+// not taken from what the bundle says of itself.
+func Inspect(plain []byte, dst Destination) (Manifest, error) {
+	m, _, _, err := readBundle(plain, dst)
+	return m, err
 }
 
 func openArchive(plain []byte) (*tar.Reader, error) {
@@ -289,7 +351,7 @@ func openArchive(plain []byte) (*tar.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("node-state bundle: %w", err)
 	}
-	return tar.NewReader(io.LimitReader(gz, maxBundleBytes+(1<<20))), nil
+	return tar.NewReader(io.LimitReader(gz, 2*maxBundleBytes)), nil
 }
 
 func readManifest(tr *tar.Reader) (Manifest, error) {
@@ -297,8 +359,15 @@ func readManifest(tr *tar.Reader) (Manifest, error) {
 	if err != nil || h.Name != manifestName || h.Typeflag != tar.TypeReg {
 		return Manifest{}, errors.New("node-state bundle does not begin with its manifest")
 	}
+	b, err := io.ReadAll(io.LimitReader(tr, maxBundleBytes+1))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("node-state bundle manifest: %w", err)
+	}
+	if int64(len(b)) > maxBundleBytes {
+		return Manifest{}, errors.New("node-state bundle manifest is too large: the node state holds too many files")
+	}
 	var m Manifest
-	if err := json.NewDecoder(io.LimitReader(tr, 4<<20)).Decode(&m); err != nil {
+	if err := json.Unmarshal(b, &m); err != nil {
 		return Manifest{}, fmt.Errorf("node-state bundle manifest: %w", err)
 	}
 	if m.Format != formatVersion {
@@ -332,73 +401,11 @@ type Restored struct {
 // against its manifest and against dst before it writes the first file, so a
 // bundle it refuses changes nothing.
 func Extract(plain []byte, dst Destination) (Restored, error) {
-	tr, err := openArchive(plain)
+	_, entries, skipped, err := readBundle(plain, dst)
 	if err != nil {
 		return Restored{}, err
 	}
-	m, err := readManifest(tr)
-	if err != nil {
-		return Restored{}, err
-	}
-	listed := map[string]File{}
-	for _, f := range m.Files {
-		listed[f.Path] = f
-	}
-	var res Restored
-	var entries []entry
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return Restored{}, fmt.Errorf("node-state bundle: %w", err)
-		}
-		path := "/" + strings.TrimSuffix(h.Name, "/")
-		if path != filepath.Clean(path) {
-			return Restored{}, fmt.Errorf("node-state bundle holds the path %q, which is not a plain path", h.Name)
-		}
-		want, ok := listed[path]
-		if !ok {
-			return Restored{}, fmt.Errorf("node-state bundle holds %s, which its manifest does not list", path)
-		}
-		delete(listed, path)
-		if !dst.allows(path) {
-			if path == m.ExtraConfig && h.Typeflag == tar.TypeReg {
-				res.ExtraConfigSkipped = path
-				continue
-			}
-			return Restored{}, fmt.Errorf("node-state bundle holds %s, which is not node state; nothing was restored", path)
-		}
-		e := entry{File: want}
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if !want.Dir {
-				return Restored{}, fmt.Errorf("node-state bundle: %s does not match its manifest", path)
-			}
-		case tar.TypeSymlink:
-			if want.Link != h.Linkname || h.Linkname == "" || h.Linkname == "." || h.Linkname == ".." ||
-				strings.ContainsRune(h.Linkname, filepath.Separator) || !within(dst.PKIDir, path) {
-				return Restored{}, fmt.Errorf("node-state bundle holds a link at %s it may not; nothing was restored", path)
-			}
-		case tar.TypeReg:
-			data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
-			if err != nil {
-				return Restored{}, fmt.Errorf("node-state bundle: %s: %w", path, err)
-			}
-			sum := sha256.Sum256(data)
-			if want.Dir || want.Link != "" || hex.EncodeToString(sum[:]) != want.SHA256 {
-				return Restored{}, fmt.Errorf("node-state bundle: %s does not match its manifest", path)
-			}
-			e.data = data
-		default:
-			return Restored{}, fmt.Errorf("node-state bundle holds %s, which is neither a file, a directory nor a link", path)
-		}
-		entries = append(entries, e)
-	}
-	for path := range listed {
-		return Restored{}, fmt.Errorf("node-state bundle is missing %s, which its manifest lists", path)
-	}
+	res := Restored{ExtraConfigSkipped: skipped}
 	for _, e := range entries {
 		if err := writeEntry(e); err != nil {
 			return res, fmt.Errorf("restore %s: %w", e.Path, err)
@@ -408,6 +415,109 @@ func Extract(plain []byte, dst Destination) (Restored, error) {
 		}
 	}
 	return res, nil
+}
+
+// readBundle reads an opened bundle whole and checks it: every entry is
+// listed in the manifest and matches it, every listed entry is there, each
+// lands inside dst, the cluster CA fingerprint the manifest states is the
+// certificate's, and the CA key is that certificate's. It returns the
+// entries to write and the path of an outside config file it left out.
+func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error) {
+	fail := func(err error) (Manifest, []entry, string, error) { return Manifest{}, nil, "", err }
+	tr, err := openArchive(plain)
+	if err != nil {
+		return fail(err)
+	}
+	m, err := readManifest(tr)
+	if err != nil {
+		return fail(err)
+	}
+	listed := map[string]File{}
+	for _, f := range m.Files {
+		listed[f.Path] = f
+	}
+	var skipped string
+	var entries []entry
+	var caCert, caKey []byte
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fail(fmt.Errorf("node-state bundle: %w", err))
+		}
+		path := "/" + strings.TrimSuffix(h.Name, "/")
+		if path != filepath.Clean(path) {
+			return fail(fmt.Errorf("node-state bundle holds the path %q, which is not a plain path", h.Name))
+		}
+		want, ok := listed[path]
+		if !ok {
+			return fail(fmt.Errorf("node-state bundle holds %s, which its manifest does not list", path))
+		}
+		delete(listed, path)
+		if !dst.allows(path) {
+			if path == m.ExtraConfig && h.Typeflag == tar.TypeReg {
+				skipped = path
+				continue
+			}
+			return fail(fmt.Errorf("node-state bundle holds %s, which is not node state; nothing was restored", path))
+		}
+		e := entry{File: want}
+		switch h.Typeflag {
+		case tar.TypeDir:
+			if !want.Dir {
+				return fail(fmt.Errorf("node-state bundle: %s does not match its manifest", path))
+			}
+		case tar.TypeSymlink:
+			if want.Link != h.Linkname || h.Linkname == "" || h.Linkname == "." || h.Linkname == ".." ||
+				strings.ContainsRune(h.Linkname, filepath.Separator) || !dst.linkAllowed(path) {
+				return fail(fmt.Errorf("node-state bundle holds a link at %s it may not; nothing was restored", path))
+			}
+		case tar.TypeReg:
+			data, err := io.ReadAll(io.LimitReader(tr, maxFileBytes+1))
+			if err != nil {
+				return fail(fmt.Errorf("node-state bundle: %s: %w", path, err))
+			}
+			sum := sha256.Sum256(data)
+			if want.Dir || want.Link != "" || hex.EncodeToString(sum[:]) != want.SHA256 {
+				return fail(fmt.Errorf("node-state bundle: %s does not match its manifest", path))
+			}
+			e.data = data
+			switch path {
+			case filepath.Join(dst.PKIDir, caCertName):
+				caCert = data
+			case filepath.Join(dst.PKIDir, caKeyName):
+				caKey = data
+			}
+		default:
+			return fail(fmt.Errorf("node-state bundle holds %s, which is neither a file, a directory nor a link", path))
+		}
+		entries = append(entries, e)
+	}
+	for path := range listed {
+		return fail(fmt.Errorf("node-state bundle is missing %s, which its manifest lists", path))
+	}
+	// What the bundle says its cluster CA is counts for nothing: whoever
+	// sealed it wrote that too. The fingerprint a restore shows and pins is
+	// the certificate's own.
+	if got := certFingerprint(caCert); got != m.ClusterCASHA256 {
+		return fail(fmt.Errorf("node-state bundle states cluster CA %s and carries %s; nothing was restored",
+			orNone(m.ClusterCASHA256), orNone(got)))
+	}
+	if caCert != nil && caKey != nil {
+		if err := caKeyMatches(caCert, caKey); err != nil {
+			return fail(fmt.Errorf("node-state bundle: %w; nothing was restored", err))
+		}
+	}
+	return m, entries, skipped, nil
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }
 
 func writeEntry(e entry) error {
@@ -431,6 +541,17 @@ func writeEntry(e entry) error {
 		return err
 	}
 	return atomicfile.WriteFile(e.Path, e.data, perm)
+}
+
+// linkAllowed reports whether a link may be restored at path: inside one of
+// the trees, where a link to a file beside it reaches nothing outside.
+func (d Destination) linkAllowed(path string) bool {
+	for _, root := range []string{d.PKIDir, d.ConfDir, d.ManifestsDir} {
+		if root != "" && within(root, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d Destination) allows(path string) bool {

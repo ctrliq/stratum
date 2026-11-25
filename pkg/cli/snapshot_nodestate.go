@@ -176,15 +176,24 @@ func fetchSealedBundle(cmd *cobra.Command, src string, s3 nodeStateS3Flags) ([]b
 	if dir := path.Dir(key); dir != "." {
 		prefix = dir
 	}
-	cfg, err := nodeStateS3Config(etcdsnap.Config{S3: objstore.Target{
-		Bucket: bucket, Prefix: prefix, Endpoint: s3.endpoint, Region: s3.region, PathStyle: s3.pathStyle}})
+	// The URL names the object. A snapshot config already on the machine, and
+	// the flags, say only how to reach the bucket: its prefix is the
+	// snapshots', one level above the bundles, and is not this object's.
+	cfg, err := nodeStateS3Config(etcdsnap.Config{})
 	if err != nil {
 		return nil, err
 	}
-	target := cfg.S3Target()
-	if target == nil || target.Bucket != bucket || target.Key(name) != key {
-		return nil, fmt.Errorf("%s is not what this machine's snapshot config (%s) points at; pass the bundle as a file instead",
-			src, etcdsnap.ConfigPath)
+	target := &objstore.Target{Bucket: bucket, Prefix: prefix,
+		Endpoint: cfg.S3.Endpoint, Region: cfg.S3.Region, PathStyle: cfg.S3.PathStyle,
+		AccessKey: cfg.S3.AccessKey, SecretKey: cfg.S3.SecretKey}
+	if s3.endpoint != "" {
+		target.Endpoint = s3.endpoint
+	}
+	if s3.region != "" {
+		target.Region = s3.region
+	}
+	if s3.pathStyle {
+		target.PathStyle = true
 	}
 	dir, err := os.MkdirTemp("", "stratum-node-state-")
 	if err != nil {
@@ -234,7 +243,8 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: %w", args[0], err)
 			}
-			m, err := nodebackup.ReadManifest(plain)
+			dst := nodeStateDestination(allowPath)
+			m, err := nodebackup.Inspect(plain, dst)
 			if err != nil {
 				return fmt.Errorf("%s: %w", args[0], err)
 			}
@@ -244,9 +254,14 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 			if m.Snapshot != "" {
 				fmt.Fprintf(w, "  taken with etcd snapshot: %s\n", m.Snapshot)
 			}
+			if m.ExtraConfig != "" {
+				fmt.Fprintf(w, "  cluster config kept outside %s: %s\n", version.ConfDir, m.ExtraConfig)
+			}
 			// A bundle is sealed to a public key: opening it proves who can
-			// read it, not who wrote it. The CA fingerprint is what ties it to
-			// the cluster the operator means to rebuild.
+			// read it, not who wrote it. The fingerprint is the carried CA
+			// certificate's own, and the bundle's CA key is checked to be that
+			// certificate's, so a pin holds the restored CA to the cluster the
+			// operator means. It does not vouch for the rest of the bundle.
 			if caSHA256 != "" && !strings.EqualFold(strings.ReplaceAll(caSHA256, ":", ""), m.ClusterCASHA256) {
 				return fmt.Errorf("the bundle's cluster CA is %s, not the --ca-sha256 given; nothing was restored", m.ClusterCASHA256)
 			}
@@ -259,24 +274,27 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 				fmt.Fprintf(w, "  WARN: the bundle was taken on stratum %s and this is %s; install the same release before starting\n",
 					m.StratumVersion, version.StratumVersion)
 			}
+			// The outside config's path comes from the bundle, so it is written
+			// only where the operator names it, and that is settled before
+			// anything is written: a node restored without the config it
+			// starts with would have to be wiped to try again.
+			if m.ExtraConfig != "" && allowPath != m.ExtraConfig {
+				return fmt.Errorf("the bundle holds the cluster config this node ran with, %s, which is outside %s, and a bundle "+
+					"may not choose where it writes. Pass --allow-path %s to restore it there. Nothing was restored",
+					m.ExtraConfig, version.ConfDir, m.ExtraConfig)
+			}
 			if !yes {
 				return errors.New("this writes that cluster's CA keys and this node's identity onto this machine; " +
 					"check the CA fingerprint above against your record of the cluster, then re-run with --yes")
 			}
-			res, err := nodebackup.Extract(plain, nodeStateDestination(allowPath))
+			res, err := nodebackup.Extract(plain, dst)
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(w, "\nrestored %d files under %s, %s and %s\n", res.Files, version.PKIDir, version.ConfDir, filepath.Dir(nodestate.StatePath()))
 			config := cluster.DefaultConfigPath
-			if m.ExtraConfig != "" {
-				config = m.ExtraConfig
-			}
-			if res.ExtraConfigSkipped != "" {
-				fmt.Fprintf(w, "\nNOT restored: the cluster config this node ran with, %s, which is outside %s. A bundle may not choose\n"+
-					"where it writes. `stratum up` refuses to start without it at that path: run `stratum uninstall --yes`, then this\n"+
-					"command again with --allow-path %s\n", res.ExtraConfigSkipped, version.ConfDir, res.ExtraConfigSkipped)
-				return nil
+			if m.ConfigPath != "" {
+				config = m.ConfigPath
 			}
 			fmt.Fprintf(w, "\nNext, on this machine:\n"+
 				"  1. Start Stratum:        stratum up --config %s\n"+

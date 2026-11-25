@@ -38,22 +38,25 @@ if grep -q "$(cat "$KEEP/identity")" <<<"$keygen"; then fail "keygen printed the
 $K -n default create configmap before-snapshot --from-literal=at=before >/dev/null
 $K -n default create secret generic node-state-proof --from-literal=value=kept >/dev/null
 
+# The scheduled loop takes a snapshot and a bundle of its own as the node comes
+# up, so the bundle this save took is the one it names, not the only one there.
 out=$($W snapshot save --name inttest-node-state.db 2>&1) || { fail "snapshot save failed: $out"; done_testing; exit 1; }
 snap=/var/backups/etcd/inttest-node-state.db
-bundles=(/var/backups/etcd/node-state/node-state-*.bundle)
-if [[ -s $snap && -s ${bundles[0]} && ${#bundles[@]} -eq 1 ]]; then
-  pass "the save took a snapshot and one bundle (${bundles[0]##*/})"
+taken=/var/backups/etcd/node-state/node-state-inttest-node-state.bundle
+if [[ -s $snap && -s $taken ]]; then
+  pass "the save took a snapshot and its bundle (${taken##*/})"
 else
-  fail "no snapshot with one bundle beside it: $out"; done_testing; exit 1
+  fail "no snapshot with its bundle beside it: $out"; done_testing; exit 1
 fi
-assert_eq "the bundle is private" 600 "$(stat -c %a "${bundles[0]}")"
-if grep -q -a 'BEGIN' "${bundles[0]}"; then fail "the bundle holds PEM in the clear"; else pass "the bundle holds no PEM in the clear"; fi
-assert_contains "the listing shows the bundle" "node-state/${bundles[0]##*/}" "$($W snapshot list 2>&1)"
+assert_contains "the save names the bundle it took" "node state saved: $taken" "$out"
+assert_eq "the bundle is private" 600 "$(stat -c %a "$taken")"
+if grep -q -a 'BEGIN' "$taken"; then fail "the bundle holds PEM in the clear"; else pass "the bundle holds no PEM in the clear"; fi
+assert_contains "the listing shows the bundle" "node-state/${taken##*/}" "$($W snapshot list 2>&1)"
 
-cp "$snap" "${bundles[0]}" "$KEEP/"
+cp "$snap" "$taken" "$KEEP/"
 cp "$ROOT/pki/ca.crt" "$KEEP/ca.crt.before"
 cp "$ROOT/pki/ca.key" "$KEEP/ca.key.before"
-bundle="$KEEP/${bundles[0]##*/}"
+bundle="$KEEP/${taken##*/}"
 $K -n default create configmap after-snapshot --from-literal=at=after >/dev/null
 
 # --- the machine is lost ---------------------------------------------
@@ -74,11 +77,15 @@ else
 fi
 if [[ -e $ROOT/pki/ca.key ]]; then fail "an unconfirmed restore wrote the CA key"; else pass "an unconfirmed restore wrote nothing"; fi
 fingerprint=$(sed -n 's/^ *cluster CA SHA-256: //p' <<<"$out")
-if out=$($W snapshot restore-node-state "$bundle" --identity-file "$KEEP/identity" --ca-sha256 "${fingerprint%?}0" --yes 2>&1) && [[ ${fingerprint: -1} != 0 ]]; then
+if [[ ${#fingerprint} -eq 64 ]]; then pass "the restore shows the cluster CA fingerprint"; else fail "no CA fingerprint in: $out"; done_testing; exit 1; fi
+# A fingerprint that differs whatever the real one is: its last digit, changed.
+if [[ ${fingerprint: -1} == 0 ]]; then wrong="${fingerprint%?}1"; else wrong="${fingerprint%?}0"; fi
+if out=$($W snapshot restore-node-state "$bundle" --identity-file "$KEEP/identity" --ca-sha256 "$wrong" --yes 2>&1); then
   fail "a bundle was restored against another CA fingerprint"
 else
   pass "a bundle is refused against another CA fingerprint"
 fi
+if [[ -e $ROOT/pki/ca.key ]]; then fail "the refused restore wrote the CA key"; else pass "the refused restore wrote nothing"; fi
 if out=$($W snapshot restore-node-state "$bundle" --identity-file "$KEEP/identity" --ca-sha256 "$fingerprint" --yes 2>&1); then
   pass "the node state was restored"
 else

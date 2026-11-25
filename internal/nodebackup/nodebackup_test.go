@@ -2,8 +2,17 @@ package nodebackup
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,9 +156,9 @@ func fixtureNode(t *testing.T) node {
 	conf := filepath.Join(root, "etc/stratum")
 	state := filepath.Join(root, "var/lib/stratum/config/node.yaml")
 	manifests := filepath.Join(root, "var/lib/stratum/manifests")
-	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("the cluster CA")})
-	write(t, filepath.Join(pki, "ca.crt"), string(ca), 0o644)
-	write(t, filepath.Join(pki, "ca.key"), "CA KEY", 0o600)
+	ca, caKey := testCA(t)
+	write(t, filepath.Join(pki, "ca.crt"), ca, 0o644)
+	write(t, filepath.Join(pki, "ca.key"), caKey, 0o600)
 	write(t, filepath.Join(pki, "encryption-config.yaml"), "at-rest key", 0o600)
 	write(t, filepath.Join(pki, "kubelet/kubelet-client-2026.pem"), "kubelet cert", 0o600)
 	if err := os.Symlink(filepath.Join(pki, "kubelet/kubelet-client-2026.pem"), filepath.Join(pki, "kubelet/kubelet-client-current.pem")); err != nil {
@@ -207,9 +216,9 @@ func TestCollectThenExtractRestoresTheNode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := ReadManifest(plain)
+	got, err := Inspect(plain, n.dst)
 	if err != nil || got.ClusterCASHA256 != m.ClusterCASHA256 {
-		t.Fatalf("ReadManifest = %+v, %v", got, err)
+		t.Fatalf("Inspect = %+v, %v", got, err)
 	}
 	res, err := Extract(plain, n.dst)
 	if err != nil {
@@ -245,10 +254,10 @@ func TestCollectRefusesWhatItCannotHoldWhole(t *testing.T) {
 	t.Run("a file over the cap", func(t *testing.T) {
 		n := fixtureNode(t)
 		old := maxFileBytes
-		maxFileBytes = 128
+		maxFileBytes = 1024
 		t.Cleanup(func() { maxFileBytes = old })
 		big := filepath.Join(n.src.ConfDir, "big.bin")
-		write(t, big, strings.Repeat("x", 200), 0o600)
+		write(t, big, strings.Repeat("x", 2000), 0o600)
 		if _, _, err := Collect(n.src, testMeta); err == nil || !strings.Contains(err.Error(), big) {
 			t.Errorf("error = %v, want one naming %s", err, big)
 		}
@@ -256,7 +265,7 @@ func TestCollectRefusesWhatItCannotHoldWhole(t *testing.T) {
 	t.Run("a tree over the cap", func(t *testing.T) {
 		n := fixtureNode(t)
 		old := maxBundleBytes
-		maxBundleBytes = 64
+		maxBundleBytes = 512
 		t.Cleanup(func() { maxBundleBytes = old })
 		if _, _, err := Collect(n.src, testMeta); err == nil || !strings.Contains(err.Error(), "MiB") {
 			t.Errorf("error = %v, want the size cap", err)
@@ -321,8 +330,7 @@ func TestExtractWritesOnlyNodeState(t *testing.T) {
 	for name, e := range map[string]entry{
 		"a file outside node state": {File: File{Path: outside, Mode: 0o644, Size: 4,
 			SHA256: "88d4266fd4e6338d13b845fcf289579d209c897823b9217da3e161936f031589"}, data: []byte("abcd")},
-		"a link out of the PKI directory": {File: File{Path: filepath.Join(n.src.ConfDir, "x"), Mode: 0o777, Link: "y"}},
-		"a link to another directory":     {File: File{Path: filepath.Join(n.src.PKIDir, "x"), Mode: 0o777, Link: "../../etc/shadow"}},
+		"a link to another directory": {File: File{Path: filepath.Join(n.src.PKIDir, "x"), Mode: 0o777, Link: "../../etc/shadow"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			plain := forge(t, e)
@@ -403,5 +411,135 @@ func TestExtractWritesTheOutsideConfigOnlyWhereAllowed(t *testing.T) {
 	}
 	if b, err := os.ReadFile(extra); err != nil || string(b) != "spec: {site: true}\n" {
 		t.Errorf("the outside config = %q, %v", b, err)
+	}
+}
+
+// testCA is a self-signed CA certificate and its key, PEM encoded: a restore
+// checks that a bundle's CA key is its CA certificate's.
+func testCA(t *testing.T) (certPEM, keyPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "stratum-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kder, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}))
+}
+
+// The fingerprint a restore shows and pins is the carried certificate's own.
+// What a bundle states of itself is written by whoever sealed it, so a bundle
+// that states one CA and carries another is refused, as is one whose CA key
+// is not its CA certificate's.
+func TestInspectTakesTheCAFromTheCertificateNotTheManifest(t *testing.T) {
+	n := fixtureNode(t)
+	plain, m, err := Collect(n.src, testMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Inspect(plain, n.dst)
+	if err != nil || got.ClusterCASHA256 != m.ClusterCASHA256 || len(got.ClusterCASHA256) != 64 {
+		t.Fatalf("Inspect = %q, %v; want the certificate's SHA-256", got.ClusterCASHA256, err)
+	}
+	rebuild := func(t *testing.T, change func(m *Manifest, entries []entry)) []byte {
+		t.Helper()
+		var entries []entry
+		for _, f := range m.Files {
+			e := entry{File: f}
+			if !f.Dir && f.Link == "" {
+				b, err := os.ReadFile(f.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				e.data = b
+			}
+			entries = append(entries, e)
+		}
+		forged := m
+		forged.Files = nil
+		change(&forged, entries)
+		for _, e := range entries {
+			forged.Files = append(forged.Files, e.File)
+		}
+		out, err := writeArchive(forged, entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	t.Run("a manifest that claims another cluster's CA", func(t *testing.T) {
+		forged := rebuild(t, func(m *Manifest, _ []entry) { m.ClusterCASHA256 = strings.Repeat("ab", 32) })
+		if _, err := Inspect(forged, n.dst); err == nil || !strings.Contains(err.Error(), "states cluster CA") {
+			t.Errorf("error = %v, want a refusal of the stated CA", err)
+		}
+		if _, err := Extract(forged, n.dst); err == nil {
+			t.Error("Extract restored a bundle that lies about its CA")
+		}
+	})
+	t.Run("a CA key that is not the certificate's", func(t *testing.T) {
+		_, otherKey := testCA(t)
+		forged := rebuild(t, func(_ *Manifest, entries []entry) {
+			for i := range entries {
+				if entries[i].Path == filepath.Join(n.src.PKIDir, "ca.key") {
+					sum := sha256.Sum256([]byte(otherKey))
+					entries[i].data, entries[i].Size, entries[i].SHA256 = []byte(otherKey), int64(len(otherKey)), hex.EncodeToString(sum[:])
+				}
+			}
+		})
+		if _, err := Inspect(forged, n.dst); err == nil || !strings.Contains(err.Error(), "not the key of the cluster CA certificate") {
+			t.Errorf("error = %v, want a refusal of the mismatched key", err)
+		}
+	})
+}
+
+// A link beside its target is node state wherever it sits, in the
+// configuration directory as in the PKI directory: what a save takes, a
+// restore accepts.
+func TestALinkInTheConfigDirectoryRoundTrips(t *testing.T) {
+	n := fixtureNode(t)
+	link := filepath.Join(n.src.ConfDir, "current.yaml")
+	if err := os.Symlink("config.yaml", link); err != nil {
+		t.Fatal(err)
+	}
+	plain, _, err := Collect(n.src, testMeta)
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if err := os.RemoveAll(n.src.ConfDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(n.src.PKIDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Extract(plain, n.dst); err != nil {
+		t.Fatalf("Extract refused a bundle Collect took: %v", err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != "config.yaml" {
+		t.Errorf("the link came back as %q (%v)", target, err)
+	}
+}
+
+// A save refuses node state it could seal and a restore would turn away:
+// found at the save, the node is still there to fix; found at the restore, it
+// is gone.
+func TestCollectRefusesABundleARestoreWouldRefuse(t *testing.T) {
+	n := fixtureNode(t)
+	for i := range 400 {
+		write(t, filepath.Join(n.src.ManifestsDir, fmt.Sprintf("m-%04d.yaml", i)), "x", 0o600)
+	}
+	old := maxBundleBytes
+	maxBundleBytes = 16 << 10
+	t.Cleanup(func() { maxBundleBytes = old })
+	if _, _, err := Collect(n.src, testMeta); err == nil || !strings.Contains(err.Error(), "a restore would refuse") {
+		t.Errorf("Collect = %v, want a refusal: the manifest of that many files is over what a restore reads", err)
 	}
 }

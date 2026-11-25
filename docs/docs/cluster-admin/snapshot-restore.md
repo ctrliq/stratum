@@ -338,10 +338,16 @@ section describes. What a bundle holds, and what it leaves out, is in
 [The node-state bundle](../appendices/snapshot-reference.md#the-node-state-bundle).
 
 !!! warning "A bundle proves who can read it, not who wrote it"
-    Anyone with the recipient can make a bundle. Before you restore one, check
+    Anyone with the recipient can make a bundle, so treat write access to the
+    place bundles are kept as you treat root on a control plane, as you
+    already must for the snapshots beside them. Before you restore one, check
     the cluster CA fingerprint the restore prints against your own record of
-    the cluster, or pass it with `--ca-sha256`. Print it on a control plane
-    with `openssl x509 -in /var/lib/stratum/pki/ca.crt -outform DER | sha256sum`.
+    the cluster, or pass it with `--ca-sha256`. The restore computes it from
+    the CA certificate the bundle carries and checks that the bundle's CA key
+    is that certificate's. That ties the restored CA to your cluster; it does
+    not vouch for the rest of the bundle. Print the fingerprint on a control
+    plane with
+    `openssl x509 -in /var/lib/stratum/pki/ca.crt -outform DER | sha256sum`.
 
 ### What to back up by hand
 
@@ -435,8 +441,9 @@ because that start otherwise creates a new CA. The commands call Stratum as
 3. Install the same Stratum release the old controller ran, at
    `/usr/local/bin/stratum`. Do not start it.
 
-    If you have a node-state bundle of the old controller, restore it now and
-    skip the next step. Copy the identity file to the machine, mode `0600`:
+    If you have a node-state bundle of the old controller, restore it now,
+    skip the next step, and start the node as this step says, not as step 5
+    does. Copy the identity file to the machine, mode `0600`:
 
     ```console
     # /usr/local/bin/stratum snapshot restore-node-state <bundle> \
@@ -450,8 +457,20 @@ because that start otherwise creates a new CA. The commands call Stratum as
     writes nothing. It refuses a machine that already holds a node's state,
     and one whose hostname is not the bundle's. If the old controller's
     cluster config was not under `/etc/stratum`, the command names its path
-    and asks for `--allow-path <path>` before it writes there. Remove the
+    and writes nothing until you pass `--allow-path <path>`. Remove the
     identity file from the machine when the restore is done.
+
+    A bundle does not hold the systemd unit, so there is none to start yet.
+    Start Stratum with the command the restore prints, which writes the unit:
+
+    ```console
+    # /usr/local/bin/stratum up --config /etc/stratum/config.yaml
+    ```
+
+    It runs in the foreground. Once the node is up, stop it with Ctrl-C and
+    run `systemctl start stratum`. If it refuses to start an empty member,
+    add `--confirm-etcd-quorum-lost` for this one start, as step 5 describes.
+    Then go on to step 6.
 4. Copy the encrypted backup to `/root` on the replacement, then decrypt and
     unpack it at `/`:
 

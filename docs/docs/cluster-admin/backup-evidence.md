@@ -238,6 +238,10 @@ an executable path or a storage address.
 | `lastUploadSuccess` | `Maintenance.LastUploadSuccess` | when the upload last succeeded |
 | `warnings` | `Maintenance.Warnings` | the scheduling and retention warnings the loop's last tick ran with |
 | `attemptsKnown` | `Maintenance.AttemptsKnown` | the record was read or does not exist; false means the diagnostics are unknown, never that no attempt was made |
+| `nodeState` | `Maintenance.NodeState` | the latest attempt to save the node-state bundle taken beside the snapshot; absent on a node that has never taken one |
+| `nodeStateUpload` | `Maintenance.NodeStateUpload` | the latest attempt to upload that bundle; absent when none was made |
+| `lastNodeStateSuccess` | `Maintenance.LastNodeStateSuccess` | when a node-state bundle was last saved |
+| `lastNodeStateUploadSuccess` | `Maintenance.LastNodeStateUploadSuccess` | when a node-state bundle was last uploaded |
 
 An attempt is `attemptedAt` and `outcome`. An absent `attemptedAt` means no
 attempt is recorded. Interpret absence only when `attemptsKnown` is true;

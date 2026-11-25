@@ -2,9 +2,16 @@ package etcdsnap_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,9 +35,10 @@ func nodeStateFixture(t *testing.T) (*etcdsnap.NodeState, nodebackup.Identity) {
 	root := t.TempDir()
 	pki := filepath.Join(root, "pki")
 	state := filepath.Join(root, "config", "node.yaml")
+	ca, caKey := testCA(t)
 	for path, data := range map[string]string{
-		filepath.Join(pki, "ca.crt"): "-----BEGIN CERTIFICATE-----\nQ0E=\n-----END CERTIFICATE-----\n",
-		filepath.Join(pki, "ca.key"): "THE CA KEY",
+		filepath.Join(pki, "ca.crt"): ca,
+		filepath.Join(pki, "ca.key"): caKey,
 		state:                        "role: controller\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -120,14 +128,14 @@ func TestSaveTakesAndUploadsTheNodeStateBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(sealed), "THE CA KEY") {
+	if strings.Contains(string(sealed), "PRIVATE KEY") {
 		t.Fatal("the bundle on disk holds the CA key in the clear")
 	}
 	plain, err := nodebackup.Open(id, sealed)
 	if err != nil {
 		t.Fatalf("the bundle does not open with the recipient's identity: %v", err)
 	}
-	m, err := nodebackup.ReadManifest(plain)
+	m, err := nodebackup.Inspect(plain, nodebackup.Destination{PKIDir: ns.Sources.PKIDir, StatePath: ns.Sources.StatePath})
 	if err != nil || m.Snapshot != snapshot || m.Hostname != "cp1" || m.NodeIP != "10.0.0.1" {
 		t.Errorf("manifest = %+v (%v), want this host and snapshot %s", m, err, snapshot)
 	}
@@ -307,5 +315,97 @@ func TestNodeStateTargetIsOnePrefixBelowTheSnapshots(t *testing.T) {
 	}
 	if got := etcdsnap.NodeStateTarget(&objstore.Target{}); got != nil {
 		t.Errorf("a target with no bucket gave a bundle target %+v", got)
+	}
+}
+
+// testCA is a self-signed CA certificate and its key, PEM encoded: a restore
+// checks that a bundle's CA key is its CA certificate's.
+func testCA(t *testing.T) (certPEM, keyPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "stratum-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kder, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}))
+}
+
+// A snapshot saved under a name of its own is never pruned, so its bundle is
+// named for it and never pruned either: a kept snapshot with its bundle
+// pruned away could not rebuild a control plane.
+func TestANamedSnapshotsBundleIsKeptWithIt(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	ns, _ := nodeStateFixture(t)
+	save := func(name string) {
+		t.Helper()
+		if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+			Dir: dir, Host: "cp1", Name: name, Retain: 1, NodeState: ns,
+		}); err != nil {
+			t.Fatalf("SaveContext(%q): %v", name, err)
+		}
+	}
+	save("pre-change.db")
+	kept := filepath.Join(dir, etcdsnap.NodeStateDir, "node-state-pre-change.bundle")
+	if _, err := os.Stat(kept); err != nil {
+		t.Fatalf("the named snapshot's bundle is not named for it: %v", err)
+	}
+	save("")
+	time.Sleep(1100 * time.Millisecond)
+	save("")
+	if _, err := os.Stat(kept); err != nil {
+		t.Errorf("scheduled saves pruned the bundle of a named snapshot that is itself kept: %v", err)
+	}
+	scheduled, _ := filepath.Glob(filepath.Join(dir, etcdsnap.NodeStateDir, "node-state-cp1-*.bundle"))
+	if len(scheduled) != 1 {
+		t.Errorf("scheduled bundles left = %v, want the newest one", scheduled)
+	}
+}
+
+// A bundle retention that fails is in the evidence, as a snapshot's is: one
+// that keeps failing fills the bucket with bundles nobody is told about.
+func TestAFailedBundlePruneIsRecorded(t *testing.T) {
+	redirectEvidence(t)
+	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
+	ns, _ := nodeStateFixture(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut:
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("ETag", "\"x\"")
+		case r.Method == http.MethodGet && r.URL.Query().Get("prefix") == "node-state/":
+			http.Error(w, "denied", http.StatusForbidden)
+		case r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>b</Name><IsTruncated>false</IsTruncated></ListBucketResult>`)
+		default:
+			http.Error(w, "unexpected", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	target := &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
+	if _, err := etcdsnap.SaveContext(context.Background(), io.Discard, etcdsnap.SaveOptions{
+		Dir: dir, Host: "cp1", Retain: 1, Evidence: true, S3: target, NodeState: ns,
+	}); err != nil {
+		t.Fatalf("SaveContext: %v", err)
+	}
+	rec, err := backupevidence.LoadAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(rec.Warnings, func(w string) bool { return strings.Contains(w, "node-state prune") }) {
+		t.Errorf("the failed bundle prune is not among the recorded warnings: %v", rec.Warnings)
 	}
 }

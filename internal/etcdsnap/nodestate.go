@@ -43,6 +43,17 @@ func NodeStateName(host, stamp string) string {
 	return nodeStatePrefix + host + "-" + stamp + nodeStateSuffix
 }
 
+// nodeStateNameFor is the bundle taken with snapshot. A scheduled snapshot's
+// bundle carries its host and stamp, and retention owns both alike. A
+// snapshot saved under a name of its own is never pruned, so neither is its
+// bundle: it is named for the snapshot, which retention does not match.
+func nodeStateNameFor(host, stamp, snapshot string, named bool) string {
+	if !named {
+		return NodeStateName(host, stamp)
+	}
+	return nodeStatePrefix + strings.TrimSuffix(snapshot, ".db") + nodeStateSuffix
+}
+
 // hostNodeState matches host's bundle names the way hostSnapshot matches its
 // snapshots: exactly one stamp after the host, so "cp" never owns "cp-2"'s.
 func hostNodeState(host string) func(name string) bool {
@@ -87,11 +98,10 @@ type nodeStateResult struct {
 // named snapshot, uploads it when remote is a target, and prunes this host's
 // older bundles to retain. The plaintext archive exists only in this
 // process's memory.
-func saveNodeState(ctx context.Context, w io.Writer, dir, host, stamp, snapshot string, ns *NodeState,
+func saveNodeState(ctx context.Context, w io.Writer, dir, host, name, snapshot string, ns *NodeState,
 	remote *objstore.Target, retain int) nodeStateResult {
 	var res nodeStateResult
 	sub := filepath.Join(dir, NodeStateDir)
-	name := NodeStateName(host, stamp)
 	plain, _, err := nodebackup.Collect(ns.Sources, nodebackup.Meta{
 		Hostname:          host,
 		NodeIP:            ns.NodeIP,
