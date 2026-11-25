@@ -824,3 +824,55 @@ func TestParseRecipientsRefusesMoreThanABundleTakes(t *testing.T) {
 		t.Fatalf("ParseRecipients(%d) accepted more recipients than Seal takes", len(list))
 	}
 }
+
+// node.yaml and the outside config sit in no tree, so the directories above
+// them are checked too: a link there would carry the write out of node state.
+func TestExtractRefusesALinkAboveAFileOutsideTheTrees(t *testing.T) {
+	t.Run("node.yaml", func(t *testing.T) {
+		n := fixtureNode(t)
+		plain, _, err := Collect(n.src, testMeta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		configDir := filepath.Dir(n.src.StatePath)
+		if err := os.RemoveAll(configDir); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := t.TempDir()
+		if err := os.Symlink(elsewhere, configDir); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Extract(plain, n.dst); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("Extract = %v, want a refusal naming the link", err)
+		}
+		if _, err := os.Lstat(filepath.Join(elsewhere, filepath.Base(n.src.StatePath))); !os.IsNotExist(err) {
+			t.Errorf("node.yaml was written through the link (stat: %v)", err)
+		}
+	})
+	t.Run("the outside config", func(t *testing.T) {
+		n := fixtureNode(t)
+		site := filepath.Join(t.TempDir(), "site")
+		extra := filepath.Join(site, "cluster.yaml")
+		write(t, extra, "spec: {}\n", 0o600)
+		n.src.ExtraConfig, n.src.ConfigPath = extra, extra
+		plain, _, err := Collect(n.src, testMeta)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(site); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := t.TempDir()
+		if err := os.Symlink(elsewhere, site); err != nil {
+			t.Fatal(err)
+		}
+		dst := n.dst
+		dst.AllowExtra = extra
+		if _, err := Extract(plain, dst); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Fatalf("Extract = %v, want a refusal naming the link", err)
+		}
+		if _, err := os.Lstat(filepath.Join(elsewhere, "cluster.yaml")); !os.IsNotExist(err) {
+			t.Errorf("the outside config was written through the link (stat: %v)", err)
+		}
+	})
+}

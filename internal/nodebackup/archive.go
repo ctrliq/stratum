@@ -635,7 +635,9 @@ func writeEntry(e entry) error {
 // and path exists on this machine as a symbolic link, or when path is a
 // directory entry and itself exists as a link: making it and setting its mode
 // would follow the link. A file or link entry replaces a link at its own path
-// rather than following it.
+// rather than following it. node.yaml and the allowed outside config sit in
+// no tree, so every existing directory above them is checked, short of the
+// ones the trees themselves are reached through.
 func (d Destination) refuseLinkedParents(path string, dir bool) error {
 	root := ""
 	for _, r := range []string{d.PKIDir, d.ConfDir, d.ManifestsDir} {
@@ -644,7 +646,7 @@ func (d Destination) refuseLinkedParents(path string, dir bool) error {
 		}
 	}
 	if root == "" {
-		return nil
+		return d.refuseLinkedAncestors(path)
 	}
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
@@ -673,6 +675,45 @@ func (d Destination) refuseLinkedParents(path string, dir bool) error {
 		}
 	}
 	return nil
+}
+
+// refuseLinkedAncestors refuses path when a directory above it exists on this
+// machine as a symbolic link. A directory a tree root is also reached through
+// is the host's own layout and is left to it, as the trees' checks do.
+func (d Destination) refuseLinkedAncestors(path string) error {
+	var dirs []string
+	for p := filepath.Dir(path); p != filepath.Dir(p); p = filepath.Dir(p) {
+		dirs = append(dirs, p)
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		cur := dirs[i]
+		if d.reachesATree(cur) {
+			continue
+		}
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s on this machine is a symbolic link, and restoring %s would write through it, outside node state; "+
+				"remove the link. Nothing was restored", cur, path)
+		}
+	}
+	return nil
+}
+
+// reachesATree reports whether dir is a directory a tree root is reached
+// through: an ancestor of one of the trees.
+func (d Destination) reachesATree(dir string) bool {
+	for _, root := range []string{d.PKIDir, d.ConfDir, d.ManifestsDir} {
+		if root != "" && within(dir, root) {
+			return true
+		}
+	}
+	return false
 }
 
 // linkAllowed reports whether a link may be restored at path: inside one of
