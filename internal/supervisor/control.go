@@ -20,7 +20,7 @@ import (
 // Deliberately line-oriented and dependency-free — internal/comps is the only
 // intended client, but `nc -U` works in a pinch.
 //
-//	{"op":"status"}                      -> {"ok":true,"procs":[{name,pid,running,wanted}]}
+//	{"op":"status"}                      -> {"ok":true,"procs":[{name,pid,running,wanted,waiting}]}
 //	{"op":"restart","name":"etcd"}       -> {"ok":true}
 //	{"op":"stop","name":"etcd"}          -> {"ok":true}   (stays down until start)
 //	{"op":"start","name":"etcd"}         -> {"ok":true}
@@ -53,6 +53,10 @@ type ProcStatus struct {
 	// Foreign: the component's socket is served by a process the supervisor
 	// does not own, so Running (if set) is not this component.
 	Foreign bool `json:"foreign,omitempty"`
+	// Waiting: the component is not running because its start is held at its
+	// dependency gate (Process.WaitFor), which has no time limit of its own.
+	// A supervisor from before this field never sets it.
+	Waiting bool `json:"waiting,omitempty"`
 }
 
 type reply struct {
@@ -190,7 +194,8 @@ func (s *Supervisor) statuses() []ProcStatus {
 	var out []ProcStatus
 	for name, st := range s.procs {
 		v := st.get()
-		out = append(out, ProcStatus{Name: name, Pid: v.pid, Running: v.pid != 0, Wanted: v.wanted, Foreign: v.foreign})
+		out = append(out, ProcStatus{Name: name, Pid: v.pid, Running: v.pid != 0, Wanted: v.wanted, Foreign: v.foreign,
+			Waiting: v.waiting})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

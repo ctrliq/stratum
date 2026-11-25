@@ -3,6 +3,7 @@ package cluster
 import (
 	"archive/tar"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -321,5 +322,55 @@ func TestImportDropInImagesStopsWithItsContext(t *testing.T) {
 	}
 	if runtime.DropInImported(filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")) {
 		t.Error("a cancelled import was stamped")
+	}
+}
+
+// An upgrade imports the staged archives before it restarts anything, so
+// kubelet's start finds them imported. It leaves kubelet.conf alone: the
+// node's configs are the upgrade's to render later, not this early.
+func TestImportStagedImagesImportsAndStampsWithoutRenderingKubeletConf(t *testing.T) {
+	calls := dropInHost(t, "nothing")
+	oldWait, oldWrite := importWaitContainerd, writeKubeletConf
+	t.Cleanup(func() { importWaitContainerd, writeKubeletConf = oldWait, oldWrite })
+	importWaitContainerd = func(context.Context, time.Duration) error { return nil }
+	writeKubeletConf = func(*nodestate.NodeState) error {
+		t.Error("kubelet.conf was rendered by an import that is not a kubelet start")
+		return nil
+	}
+	tar := filepath.Join(version.ImagesDropInDir, "fleet-agent.tar")
+	var out strings.Builder
+	if err := ImportStagedImages(context.Background(), &out); err != nil {
+		t.Fatalf("ImportStagedImages: %v", err)
+	}
+	if !runtime.DropInImported(tar) {
+		t.Errorf("%s was not stamped as imported; output:\n%s", tar, out.String())
+	}
+	if want := "stratum: importing operator images from " + tar; !strings.Contains(out.String(), want) {
+		t.Errorf("output does not say which archive is being imported before it is:\n%s", out.String())
+	}
+	if err := ImportStagedImages(context.Background(), &out); err != nil {
+		t.Fatalf("ImportStagedImages again: %v", err)
+	}
+	b, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), "images import "+tar); n != 1 {
+		t.Errorf("the archive was imported %d times over two calls, want once", n)
+	}
+}
+
+// With nothing staged there is nothing to wait for: a node whose containerd
+// is slow to answer is not held up for archives it does not have.
+func TestImportStagedImagesWithNothingStagedDoesNotWaitForContainerd(t *testing.T) {
+	origDropIn, oldWait := version.ImagesDropInDir, importWaitContainerd
+	t.Cleanup(func() { version.ImagesDropInDir, importWaitContainerd = origDropIn, oldWait })
+	version.ImagesDropInDir = t.TempDir()
+	importWaitContainerd = func(context.Context, time.Duration) error {
+		t.Error("waited for containerd with no archive to import")
+		return nil
+	}
+	if err := ImportStagedImages(context.Background(), io.Discard); err != nil {
+		t.Fatalf("ImportStagedImages: %v", err)
 	}
 }

@@ -1923,6 +1923,7 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 		value := stampValue(before)
 		current := runtime.DropInImported(tar)
 		if !current {
+			fmt.Fprintf(w, "stratum: importing operator images from %s (%d MiB)\n", tar, before.Size()>>20)
 			out, err := exec.CommandContext(ctx, ctr, "--address", sock, "-n", "k8s.io", "images", "import", tar).CombinedOutput()
 			if err != nil {
 				fmt.Fprintf(warn, "stratum: warning: skipping %s: import: %v\n%s", tar, err, out)
@@ -1959,6 +1960,26 @@ func importDropInImages(ctx context.Context, w, warn io.Writer) bool {
 		stamped = true
 	}
 	return stamped
+}
+
+// ImportStagedImages imports and pins the operator's archives in
+// version.ImagesDropInDir that are not yet imported, away from a kubelet start.
+// An upgrade calls it before it restarts anything: kubelet's start waits for
+// these imports, a large archive takes minutes, and a restart that has to wait
+// for one outlasts the time the upgrade gives kubelet to come back. kubelet.conf
+// is left alone, since the node's configs are not the upgrade's to change this
+// early; the archives' exemption from the pull-credential check follows when
+// the upgrade renders them. A bad archive is skipped with a warning, as on a
+// start.
+func ImportStagedImages(ctx context.Context, w io.Writer) error {
+	if tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar")); len(tars) == 0 {
+		return nil
+	}
+	if err := importWaitContainerd(ctx, 3*time.Minute); err != nil {
+		return fmt.Errorf("image import: %w", err)
+	}
+	importDropInImages(ctx, w, w)
+	return nil
 }
 
 // writeDropInStamp records that the operator archive tar, as value describes

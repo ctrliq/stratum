@@ -701,6 +701,10 @@ archives in `/etc/stratum/images.d` on each node, as described in
 push them to a registry the nodes can reach, through a
 [registry mirror](../runtime/index.md#registry-mirrors) if they are airgapped.
 
+The upgrade imports the archives in `/etc/stratum/images.d` that a node has not
+imported yet, on every node, before it upgrades the first one. You do not need
+to restart Stratum after staging them.
+
 ### SELinux confinement
 
 This applies when you upgrade a cluster on Rocky Linux, RHEL or RLC from a
