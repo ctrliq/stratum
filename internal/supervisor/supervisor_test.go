@@ -244,3 +244,48 @@ func TestStartLabelledSetsTheExecContextAndFallsBack(t *testing.T) {
 		t.Errorf("the unlabelled fallback did not run: %v", err)
 	}
 }
+
+// A component held at its dependency gate is reported as waiting, and stops
+// being reported so once the gate passes: a caller waiting for a restart tells
+// a slow dependency from a component that will not start.
+func TestStatusReportsAComponentHeldAtItsGate(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := &state{wanted: true, kick: make(chan struct{}, 1), proc: Process{
+		Name: "test", Path: "/bin/sh", Args: []string{"-c", "sleep 30"},
+		WaitFor: func(ctx context.Context) error {
+			close(entered)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}}
+	sup := &Supervisor{procs: map[string]*state{"test": st}}
+	done := make(chan error, 1)
+	go func() { done <- runOnce(ctx, st, Options{}) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("dependency gate not entered")
+	}
+	if got := sup.statuses()[0]; !got.Waiting || got.Running {
+		t.Errorf("status at the gate = %+v, want waiting and not running", got)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for !sup.statuses()[0].Running {
+		if time.Now().After(deadline) {
+			t.Fatal("the component did not start once its gate passed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sup.statuses()[0]; got.Waiting {
+		t.Errorf("status once running = %+v, want not waiting", got)
+	}
+	cancel()
+	<-done
+}

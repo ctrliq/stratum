@@ -103,6 +103,17 @@ Each start does two things with these archives, as it does with the payload's:
   the node without checking pull credentials. Only an archive whose images were
   imported and pinned is added.
 
+The kubelet does not start until the import is done, so the first start after
+you add or replace an archive keeps the kubelet down for as long as the import
+takes: about two minutes for a 4 GB archive on a cloud SSD volume, and longer on
+a slower disk. The Stratum log names each archive as its import begins. Later
+starts skip an archive that has not changed. `stratum upgrade` imports the
+archives that are not imported yet before it restarts anything on a node, so
+an archive you staged without restarting Stratum does not hold the kubelet
+down during the upgrade. See
+[Images loaded onto a node by hand](../appendices/upgrade-reference.md#images-loaded-onto-a-node-by-hand)
+for when their images become usable.
+
 An archive that Stratum cannot read or import is skipped with a warning in the
 Stratum log, and exempts nothing; the node still starts. If pinning fails, the
 archive is imported and pinned again at the next start. The archive can be OCI or Docker format, as

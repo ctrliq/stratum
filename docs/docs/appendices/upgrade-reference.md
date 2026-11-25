@@ -701,6 +701,15 @@ archives in `/etc/stratum/images.d` on each node, as described in
 push them to a registry the nodes can reach, through a
 [registry mirror](../runtime/index.md#registry-mirrors) if they are airgapped.
 
+The upgrade imports the archives in `/etc/stratum/images.d` that a node has not
+imported yet, on every node, before it upgrades the first one. A node the
+upgrade goes on to upgrade needs no restart of Stratum for them: their images
+are exempt from the pull-credential check once that node's upgrade finishes.
+On a node the upgrade leaves as it is, because it already runs this build, the
+images are imported but become exempt only when the kubelet next starts, so
+restart Stratum there as you would after staging an archive at any other time.
+The import step is given 45 minutes on each node.
+
 ### SELinux confinement
 
 This applies when you upgrade a cluster on Rocky Linux, RHEL or RLC from a

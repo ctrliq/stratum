@@ -63,15 +63,52 @@ func Restart(name string) error {
 	return waitForReplacement(name, before, "restart", 90*time.Second)
 }
 
+// gateWaitCap bounds how long a restart or reload goes on waiting for a
+// component held at its start gate. A var so a test can shorten it.
+var gateWaitCap = 15 * time.Minute
+
+// replacementPoll is how often waitForReplacement asks the supervisor. A var
+// so a test can shorten it.
+var replacementPoll = 500 * time.Millisecond
+
+// waitForReplacement waits until name runs as a process other than before.
+// timeout is how long the component itself gets to come back. Time it spends
+// held at its start gate is not counted against that: the gate is a
+// dependency's time, such as the kubelet's wait for an image archive to be
+// imported, and can run to minutes on a healthy node. gateWaitCap bounds the
+// whole wait, gate and start together, so a gate that never passes still ends
+// it.
 func waitForReplacement(name string, before int, operation string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if pid := pidOf(name); pid != 0 && pid != before {
+	start := time.Now()
+	last := start
+	var gated time.Duration
+	waiting := false
+	for {
+		p, err := lookup(name)
+		now := time.Now()
+		if waiting {
+			gated += now.Sub(last)
+		}
+		last = now
+		waiting = err == nil && p.Waiting
+		if err == nil && p.Running && p.Pid != 0 && p.Pid != before {
 			return nil
 		}
-		time.Sleep(500 * time.Millisecond)
+		elapsed := now.Sub(start)
+		if waiting && elapsed >= gateWaitCap {
+			return fmt.Errorf("%s was still held at its start gate %s after its %s, waiting for what it depends on; "+
+				"the supervisor's log says what that is (journalctl -u stratum)", Normalize(name),
+				elapsed.Round(time.Second), operation)
+		}
+		if elapsed-gated >= timeout || (gated > 0 && elapsed >= gateWaitCap) {
+			if gated > 0 {
+				return fmt.Errorf("%s did not come back within %s of %s, %s of that held at its start gate",
+					Normalize(name), elapsed.Round(time.Second), operation, gated.Round(time.Second))
+			}
+			return fmt.Errorf("%s did not come back within %s of %s", Normalize(name), timeout, operation)
+		}
+		time.Sleep(replacementPoll)
 	}
-	return fmt.Errorf("%s did not come back within %s of %s", Normalize(name), timeout, operation)
 }
 
 // find looks a component up in the supervisor's roster. ok is false when the
@@ -98,11 +135,6 @@ func lookupContext(ctx context.Context, name string) (supervisor.ProcStatus, err
 		}
 	}
 	return supervisor.ProcStatus{}, fmt.Errorf("no supervised component %q", want)
-}
-
-func pidOf(name string) int {
-	pid, _ := checkedPID(name)
-	return pid
 }
 
 // A failed baseline query must not be mistaken for a stopped component: zero

@@ -22,6 +22,8 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/ctrliq/stratum/internal/nodejob"
+	"github.com/ctrliq/stratum/internal/supervisor"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 // jobLog records, in order, the image imports and the per-node upgrade Jobs a
@@ -333,5 +335,182 @@ func TestStagedKeepsCordonAsksTheBinary(t *testing.T) {
 				t.Errorf("stagedKeepsCordon = %v, %v; want %v, error %v", got, err, tc.want, tc.wantErr)
 			}
 		})
+	}
+}
+
+// stagedArchive puts one archive in the node's drop-in directory and records
+// the staged-archive imports in events.
+func stagedArchive(t *testing.T, events *[]string) {
+	t.Helper()
+	dir := t.TempDir()
+	redirect(t, &version.ImagesDropInDir, dir)
+	writeFile(t, filepath.Join(dir, "gpu.tar"), "archive", 0o644)
+	swap(t, &importStagedImages, func(context.Context, io.Writer) error {
+		*events = append(*events, "staged")
+		return nil
+	})
+}
+
+// The step every node runs before any node is upgraded also imports what the
+// operator staged, so no node's kubelet restart has an archive left to import.
+func TestUpgradeNodeImportImagesAlsoImportsStagedArchives(t *testing.T) {
+	for _, images := range []string{t.TempDir(), ""} {
+		var events []string
+		importFixture(t, images)
+		stagedArchive(t, &events)
+		if err := UpgradeNode(io.Discard, NodeOptions{ImportImages: true}); err != nil {
+			t.Fatalf("UpgradeNode --import-images (payload images %q): %v", images, err)
+		}
+		if !slices.Equal(events, []string{"staged"}) {
+			t.Errorf("payload images %q: staged-archive imports = %v, want one", images, events)
+		}
+	}
+}
+
+// kubelet's start waits for every staged archive to be imported, and a large
+// one takes minutes. The upgrade imports them while kubelet still runs, before
+// its first restart, which is given far less time than that.
+func TestUpgradeNodeImportsStagedArchivesBeforeItsFirstRestart(t *testing.T) {
+	events := controllerUpgradeFixture(t, "v1.37.9", 0)
+	stagedArchive(t, events)
+	swap(t, &restartUnit, func(name string) error { *events = append(*events, "restart:"+name); return nil })
+	swap(t, &reloadUnit, func(name string, _ supervisor.ProcSpec) error {
+		*events = append(*events, "reload:"+name)
+		return nil
+	})
+	if _, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{SkipSnapshot: true}) }); err != nil {
+		t.Fatalf("UpgradeNode: %v", err)
+	}
+	staged := slices.Index(*events, "staged")
+	if staged < 0 {
+		t.Fatalf("the staged archives were never imported; events = %v", *events)
+	}
+	for i, e := range *events {
+		if (strings.HasPrefix(e, "restart:") || strings.HasPrefix(e, "reload:")) && i < staged {
+			t.Errorf("%s (%d) came before the staged-archive import (%d)", e, i, staged)
+		}
+	}
+	if !slices.ContainsFunc(*events, func(e string) bool { return strings.HasPrefix(e, "restart:") }) {
+		t.Errorf("the upgrade restarted nothing, so the order was not exercised; events = %v", *events)
+	}
+}
+
+// A node with nothing staged is not told about a step that does nothing.
+func TestUpgradeNodeWithNothingStagedSkipsTheStep(t *testing.T) {
+	importFixture(t, t.TempDir())
+	redirect(t, &version.ImagesDropInDir, t.TempDir())
+	swap(t, &importStagedImages, func(context.Context, io.Writer) error {
+		t.Error("imported staged archives on a node that has none")
+		return nil
+	})
+	var out strings.Builder
+	if err := UpgradeNode(&out, NodeOptions{ImportImages: true}); err != nil {
+		t.Fatalf("UpgradeNode --import-images: %v", err)
+	}
+	if strings.Contains(out.String(), "staged image archives") {
+		t.Errorf("output announces a staged-archive import with nothing staged:\n%s", out.String())
+	}
+}
+
+// A rerun on a node already at its target still restarts a supervisor running
+// the previous build, and with it kubelet. Archives staged since are imported
+// first there too, and not at all by a dry run.
+func TestUpgradeAtTargetImportsStagedArchivesBeforeTheHandoff(t *testing.T) {
+	setRoots(t, t.TempDir(), t.TempDir(), t.TempDir())
+	resumeFixture(t)
+	redirect(t, &version.K8sVersion, "v1.37.9")
+	fakeKubelet(t, version.K8sVersion)
+	installedBuild(t, "this build", "this build")
+	runtimeFixture(t, version.K8sVersion, version.K8sVersion, version.K8sVersion)
+	f := newSupervisorFixture(t)
+	var events []string
+	stagedArchive(t, &events)
+	swap(t, &reexecSupervisor, func() error {
+		events = append(events, "reexec")
+		f.stale = false
+		return nil
+	})
+
+	if err := UpgradeNode(io.Discard, NodeOptions{DryRun: true}); err != nil {
+		t.Fatalf("UpgradeNode --dry-run: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("a dry run did %v", events)
+	}
+	if err := UpgradeNode(io.Discard, NodeOptions{}); err != nil {
+		t.Fatalf("UpgradeNode: %v", err)
+	}
+	if !slices.Equal(events, []string{"staged", "reexec"}) {
+		t.Errorf("events = %v, want the staged-archive import, then the supervisor restart", events)
+	}
+
+	// The supervisor now runs the installed build, so a further rerun restarts
+	// nothing. It imports nothing either: an import with no start to follow it
+	// would leave the images on the node with nothing to exempt them.
+	events = nil
+	if err := UpgradeNode(io.Discard, NodeOptions{}); err != nil {
+		t.Fatalf("UpgradeNode again: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("a rerun that restarts nothing did %v", events)
+	}
+}
+
+// A staged-archive import that fails stops the upgrade before it restarts
+// anything: going on would restart kubelet with the archive still to import,
+// which is the failure the import is there to prevent.
+func TestUpgradeNodeStopsWhenTheStagedImportFails(t *testing.T) {
+	events := controllerUpgradeFixture(t, "v1.37.9", 0)
+	stagedArchive(t, events)
+	swap(t, &importStagedImages, func(context.Context, io.Writer) error { return errors.New("containerd is not serving") })
+	swap(t, &restartUnit, func(name string) error { *events = append(*events, "restart:"+name); return nil })
+	swap(t, &reloadUnit, func(name string, _ supervisor.ProcSpec) error {
+		*events = append(*events, "reload:"+name)
+		return nil
+	})
+	_, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{SkipSnapshot: true}) })
+	if err == nil || !strings.Contains(err.Error(), "containerd is not serving") {
+		t.Fatalf("error = %v, want the import's", err)
+	}
+	if slices.ContainsFunc(*events, func(e string) bool { return strings.HasPrefix(e, "reload:") || strings.HasPrefix(e, "stamp:") }) {
+		t.Errorf("the upgrade went on after its staged import failed: %v", *events)
+	}
+}
+
+// The same for the step every node runs before any is upgraded: its failure
+// is the Job's failure, which stops the run before anything is cordoned.
+func TestUpgradeNodeImportImagesFailsWhenTheStagedImportFails(t *testing.T) {
+	importFixture(t, t.TempDir())
+	var events []string
+	stagedArchive(t, &events)
+	swap(t, &importStagedImages, func(context.Context, io.Writer) error { return errors.New("containerd is not serving") })
+	if err := UpgradeNode(io.Discard, NodeOptions{ImportImages: true}); err == nil || !strings.Contains(err.Error(), "containerd is not serving") {
+		t.Fatalf("error = %v, want the import's", err)
+	}
+}
+
+// A resumed upgrade already has its host binaries swapped, so a failure as
+// early as the payload import rolls back, and the rollback restarts kubelet.
+// The staged archives are imported before that can happen.
+func TestResumedUpgradeImportsStagedArchivesBeforeAStepThatCanRollBack(t *testing.T) {
+	events := controllerUpgradeFixture(t, version.K8sVersion, 0)
+	interruptedAt(t, version.K8sVersion)
+	writeFile(t, filepath.Join(version.BinDir, "kubelet.bak-"+resumeTS), "old", 0o755)
+	stagedArchive(t, events)
+	swap(t, &unitExists, func(string) bool { return true })
+	swap(t, &restartUnit, func(name string) error { *events = append(*events, "restart:"+name); return nil })
+	images := t.TempDir()
+	swap(t, &resolvePayload, func(io.Writer, string, []string) (Source, error) {
+		return Source{Dir: t.TempDir(), Images: images}, nil
+	})
+	swap(t, &importImages, func(context.Context, io.Writer, string) error { return errors.New("payload import failed") })
+	_, err := runWriter(t, func(w io.Writer) error { return UpgradeNode(w, NodeOptions{SkipSnapshot: true}) })
+	if err == nil || !strings.Contains(err.Error(), "payload import failed") {
+		t.Fatalf("error = %v, want the payload import's", err)
+	}
+	staged := slices.Index(*events, "staged")
+	restart := slices.IndexFunc(*events, func(e string) bool { return strings.HasPrefix(e, "restart:") })
+	if staged < 0 || restart < 0 || staged > restart {
+		t.Errorf("events = %v, want the staged-archive import before the rollback's first restart", *events)
 	}
 }

@@ -59,11 +59,14 @@ const (
 )
 
 // The image import Job's budget: the import itself waits up to three minutes
-// for containerd, then reads the payload's image archives. Imports run on up to
+// for containerd, then reads the payload's image archives and the archives the
+// operator staged on the node that are not imported yet. Those can be tens of
+// gigabytes, at about half a minute a gigabyte on a cloud SSD volume, so the
+// budget is for them, not the payload. Imports run on up to
 // imageImportConcurrency nodes at once; each one loads only its own node, so
 // the bound only keeps a large cluster from creating every Job at once.
 const (
-	imageImportDeadline    = 10 * time.Minute
+	imageImportDeadline    = 45 * time.Minute
 	imageImportPolls       = int(imageImportDeadline / (5 * time.Second))
 	imageImportConcurrency = 4
 )
@@ -542,7 +545,7 @@ func pinStagedBinary(o *ClusterOptions) error {
 // --import-images and would refuse it, so the run warns and goes on without
 // the step, as it did before there was one.
 func importImagesOnEveryNode(ctx context.Context, w io.Writer, cs kubernetes.Interface, nodes []Node, o ClusterOptions) error {
-	k8sutil.Step(w, "Importing the upgrade binary's images on every node")
+	k8sutil.Step(w, "Importing the upgrade binary's images, and image archives staged in "+version.ImagesDropInDir+", on every node")
 	ok, err := stagedImportsImages(ctx, o.From)
 	if err != nil {
 		return fmt.Errorf("%w (no node was cordoned or upgraded)", err)
@@ -575,7 +578,7 @@ func importImagesOnEveryNode(ctx context.Context, w io.Writer, cs kubernetes.Int
 			Kind:           "image import",
 		})
 		if err != nil {
-			return fmt.Errorf("import the upgrade binary's images on %[1]s: %[2]w (no node was cordoned or upgraded; fix the import on %[1]s, then re-run the cluster upgrade)", n.Name, err)
+			return fmt.Errorf("import the upgrade binary's images and the archives staged in %[3]s on %[1]s: %[2]w (no node was cordoned or upgraded; fix the import on %[1]s, then re-run the cluster upgrade)", n.Name, err, version.ImagesDropInDir)
 		}
 		return nil
 	})

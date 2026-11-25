@@ -157,6 +157,7 @@ var (
 var (
 	resolvePayload       = ResolveWithWriter
 	importImages         = cluster.ImportImagesWithWriter
+	importStagedImages   = cluster.ImportStagedImages
 	waitStaticPodReady   = staticpod.WaitActive
 	componentPIDs        = staticpod.PIDs
 	restartStaticPod     = staticpod.Restart
@@ -1849,10 +1850,25 @@ func importUpgradeImages(w io.Writer, from string) error {
 	}
 	if src.Images == "" {
 		fmt.Fprintln(w, "stratum upgrade: the upgrade binary carries no images; nothing to import")
-		return nil
+		return importStaged(w)
 	}
 	k8sutil.Step(w, "Import payload images")
-	return importImages(context.Background(), w, src.Images)
+	if err := importImages(context.Background(), w, src.Images); err != nil {
+		return err
+	}
+	return importStaged(w)
+}
+
+// importStaged imports the archives the operator staged on this node that are
+// not imported yet, while kubelet is still running. The restarts that follow
+// then find them imported: left to kubelet's start, a large archive holds
+// kubelet down for minutes, past the time a restart is given.
+func importStaged(w io.Writer) error {
+	if tars, _ := filepath.Glob(filepath.Join(version.ImagesDropInDir, "*.tar")); len(tars) == 0 {
+		return nil
+	}
+	k8sutil.Step(w, "Import staged image archives in "+version.ImagesDropInDir)
+	return importStagedImages(context.Background(), w)
 }
 
 // UpgradeNode upgrades this node to the executing binary's version:
@@ -2032,6 +2048,11 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 				previewSupervisorHandoff(w, false)
 				return nil
 			}
+			if cur, serr := runningSupervisor(); serr == nil && cur.Stale() {
+				if err := importStaged(w); err != nil {
+					return err
+				}
+			}
 			_, err := handOverAndGate(w, "upgrade", func() error { return nodeGate(isCP, nodeName(st)) })
 			return err
 		case berr != nil && o.Check:
@@ -2101,6 +2122,13 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 		return err
 	}
 	fail := func(cause error) error { return rollbackNode(w, cause, backups, hostSwapped, ts) }
+
+	// Before anything that can fail into a rollback: a rollback restarts
+	// kubelet too, and a resume can reach one, with the host binaries already
+	// swapped, from the very next step.
+	if err := importStaged(w); err != nil {
+		return fail(err)
+	}
 
 	// Self-install FIRST (spec): a crash anywhere after this point leaves the
 	// on-disk binary and the manifests converging on the same version at the

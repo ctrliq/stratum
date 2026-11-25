@@ -165,6 +165,7 @@ type state struct {
 	kick        chan struct{} // wakes a stopped supervise loop
 	cur         *exec.Cmd
 	cancelStart context.CancelFunc // cancels this attempt's dependency gate
+	waiting     bool               // this attempt is in its dependency gate
 	foreign     bool               // last exit left Process.Socket served by another process
 }
 
@@ -249,6 +250,8 @@ func (st *state) stillWanted() bool { return st.get().wanted }
 
 func (st *state) get() state { stMu.Lock(); defer stMu.Unlock(); return *st }
 
+func (st *state) setWaiting(v bool) { stMu.Lock(); st.waiting = v; stMu.Unlock() }
+
 var stMu sync.Mutex
 
 func runOnce(ctx context.Context, st *state, opts Options) error {
@@ -273,7 +276,10 @@ func runOnce(ctx context.Context, st *state, opts Options) error {
 		stMu.Unlock()
 	}()
 	if p.WaitFor != nil {
-		if err := p.WaitFor(startCtx); err != nil {
+		st.setWaiting(true)
+		err := p.WaitFor(startCtx)
+		st.setWaiting(false)
+		if err != nil {
 			return fmt.Errorf("waiting for dependency: %w", err)
 		}
 	}
