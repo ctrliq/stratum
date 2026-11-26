@@ -771,7 +771,7 @@ func TestEnsureSecondStartIsANoop(t *testing.T) {
 			if p.count("restorecon -R -x -i -T 0 "+version.StratumInstallPath) != 0 {
 				t.Errorf("second start ran the full relabel again: %q", p.calls)
 			}
-			if !p.has("restorecon -R -x -i -T 0 " + version.BinDir + " " + version.CoreDNSUpstreamDir) {
+			if !p.has("restorecon -F -R -x -i -T 0 " + version.BinDir) {
 				t.Errorf("second start did not relabel the binaries: %q", p.calls)
 			}
 		})
@@ -1319,5 +1319,116 @@ func TestRunIgnoresTheCallersPath(t *testing.T) {
 	out, err := run("env")
 	if err != nil || strings.Contains(out, "SHIM") {
 		t.Errorf("run(env) = %q, %v; want the tool from %s, not the shim", out, err, toolenv.Path)
+	}
+}
+
+// customizableHost is a fake policy whose restorecon behaves as the real one
+// does with a customizable type: it resets a path with such a type only when
+// forced. types holds each path's type; a recursive call covers what lies
+// beneath its arguments.
+func customizableHost(t *testing.T, p *fakePolicy, types map[string]string) {
+	t.Helper()
+	p.override = func(name string, args []string) (string, error, bool) {
+		if name != "restorecon" {
+			return "", nil, false
+		}
+		force, recursive := slices.Contains(args, "-F"), slices.Contains(args, "-R")
+		for path, typ := range types {
+			covered := slices.Contains(args, path)
+			for _, a := range args {
+				covered = covered || recursive && strings.HasPrefix(path, a+"/")
+			}
+			if covered && (force || typ != "home_bin_t") {
+				types[path] = "restored"
+			}
+		}
+		return "", nil, true
+	}
+}
+
+// The payload is staged before Ensure runs, and a login shell's process that
+// creates a bin directory in a home directory, which is what the data
+// directory is when it is a bind mount of one, gives it and the binaries in it
+// home_bin_t. restorecon keeps that type unless forced, and the runtime may
+// not be entered through it, so every start resets the binaries, the first
+// one before its full relabel and a later one that runs no full relabel.
+func TestEnsureResetsStagedBinariesWithACustomizableType(t *testing.T) {
+	for _, m := range []Mode{Enforcing, Permissive} {
+		t.Run(m.String(), func(t *testing.T) {
+			fakeHost(t, m)
+			p := newFakePolicy(t, el9)
+			staged := filepath.Join(version.BinDir, "containerd")
+			if err := os.WriteFile(staged, nil, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			volume := filepath.Join(version.DataDir, "kubelet", "pods", "volume")
+			types := map[string]string{
+				version.StratumInstallPath: "home_bin_t",
+				version.BinDir:             "home_bin_t",
+				staged:                     "home_bin_t",
+				volume:                     "home_bin_t",
+			}
+			customizableHost(t, p, types)
+
+			for _, start := range []string{"first", "second"} {
+				p.reset()
+				if err := Ensure(Options{}); err != nil {
+					t.Fatal(err)
+				}
+				for _, path := range []string{version.StratumInstallPath, version.BinDir, staged} {
+					if types[path] != "restored" {
+						t.Errorf("%s start left %s with %s; ran %q", start, path, types[path], p.calls)
+					}
+				}
+				if types[volume] != "home_bin_t" {
+					t.Errorf("%s start forced a label under the data directory, outside the binaries; ran %q", start, p.calls)
+				}
+				forced := slices.Index(p.calls, "restorecon -F -R -x -i -T 0 "+version.BinDir)
+				registered := -1
+				for i, c := range p.calls {
+					if strings.HasPrefix(c, "semanage fcontext -a") {
+						registered = i
+					}
+				}
+				full := slices.IndexFunc(p.calls, func(c string) bool {
+					return strings.HasPrefix(c, "restorecon -R ") && slices.Contains(strings.Fields(c), version.DataDir)
+				})
+				if forced < 0 || forced < registered {
+					t.Errorf("%s start did not reset the binaries after registering the contexts; ran %q", start, p.calls)
+				}
+				if start == "first" && (full < 0 || forced > full) {
+					t.Errorf("first start did not reset the binaries before the full relabel; ran %q", p.calls)
+				}
+				if start == "second" && full >= 0 {
+					t.Errorf("second start ran the full relabel again; ran %q", p.calls)
+				}
+				for _, path := range []string{version.StratumInstallPath, version.BinDir, staged} {
+					types[path] = "home_bin_t"
+				}
+			}
+		})
+	}
+}
+
+// Forcing is not recursive on its own, and an unforced relabel carries no -F.
+func TestRestoreForcedArguments(t *testing.T) {
+	fakeHost(t, Enforcing)
+	p := newFakePolicy(t, el9)
+	if err := restoreForced(false, version.StratumInstallPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreForced(true, version.BinDir, filepath.Join(version.BinDir, "absent")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(false, version.StratumInstallPath); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"restorecon -F " + version.StratumInstallPath,
+		"restorecon -F -R -x -i -T 0 " + version.BinDir,
+		"restorecon " + version.StratumInstallPath,
+	}
+	if !slices.Equal(p.calls, want) {
+		t.Errorf("calls = %q, want %q", p.calls, want)
 	}
 }

@@ -248,7 +248,27 @@ func unescapeMount(s string) string {
 // beneath them, whether of another filesystem or a bind mount: the run and
 // data directories hold the mounts of running containers and pod volumes,
 // whose labels belong to the runtime and the kubelet.
+//
+// restorecon leaves a file alone whose type the policy lists as customizable,
+// as it does container_file_t, so labels given to pod volumes survive a
+// relabel; restoreForced is for the paths that must not keep one.
 func Restore(recursive bool, paths ...string) error {
+	return restore(recursive, false, paths...)
+}
+
+// restoreForced is Restore with restorecon -F, which resets a file whatever
+// type it has, and its user, role and range with it. A directory named bin
+// that a login shell's process creates in a home directory gets home_bin_t,
+// a customizable type, and so does everything staged into it: that is the
+// binaries' directory when the data directory is a bind mount of a directory
+// under /home, and the runtime may not be entered through such a file. It is
+// for Stratum's own binaries only: under the data directory it would strip
+// the categories from running pods' volumes.
+func restoreForced(recursive bool, paths ...string) error {
+	return restore(recursive, true, paths...)
+}
+
+func restore(recursive, force bool, paths ...string) error {
 	if CurrentMode() == Disabled {
 		return nil
 	}
@@ -265,18 +285,21 @@ func Restore(recursive bool, paths ...string) error {
 	if len(present) == 0 {
 		return nil
 	}
-	args := present
+	var args []string
+	if force {
+		args = append(args, "-F")
+	}
 	if recursive {
 		mounts, err := mountsUnder(present)
 		if err != nil {
 			return fmt.Errorf("restore SELinux labels: %w", err)
 		}
-		args = []string{"-R", "-x", "-i", "-T", "0"}
+		args = append(args, "-R", "-x", "-i", "-T", "0")
 		for _, m := range mounts {
 			args = append(args, "-e", m)
 		}
-		args = append(args, present...)
 	}
+	args = append(args, present...)
 	if _, err := tool("policycoreutils", "restorecon", args...); err != nil {
 		return fmt.Errorf("restore SELinux labels: %w", err)
 	}

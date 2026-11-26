@@ -81,6 +81,26 @@ confined with its own label. [SELinux](configuration.md#selinux) on the
 Configuration page lists what Stratum labels, how containers run and how to
 turn labelling off.
 
+### Data directory on another filesystem
+
+`/var/lib/stratum` holds the binaries, images, etcd and pod volumes, and may
+be too large for the root filesystem. It can be a separate filesystem mounted
+at `/var/lib/stratum`, or a bind mount of a directory on another filesystem
+(an `/etc/fstab` entry with the `bind` option).
+
+Mount it before the first `stratum up`. `stratum uninstall` empties a mounted
+`/var/lib/stratum` and leaves the mount in place.
+
+On an SELinux host, Stratum labels the mounted directory on start as it does
+one on the root filesystem. Every start also resets the labels of its binaries
+in `/var/lib/stratum/bin`, whatever type they have. A bind mount of a directory
+under `/home` needs this: the binaries get `home_bin_t` there, which a plain
+`restorecon` keeps and the container runtime cannot be started from.
+
+A symbolic link at `/var/lib/stratum` is not supported. The SELinux file
+contexts are registered for the path `/var/lib/stratum`, and the relabel does
+not follow a link.
+
 ### Host settings
 
 `stratum up` prepares the host on every start:
