@@ -27,7 +27,9 @@ pause=$(/tools/mirror-images.sh --list | grep '/pause:' | cut -d@ -f1)
 # --- stage an image no registry serves -------------------------------------------
 mkdir -p "$DROPIN"
 $CTR images tag "$pause" "$STAGED" >/dev/null
-$CTR images export --platform "linux/$ARCH" "$DROPIN/staged.tar" "$STAGED"
+# --local: through the transfer API, ctr can exit before its background copy
+# has written the whole archive, and the restart then imports a truncated tar.
+$CTR images export --local --platform "linux/$ARCH" "$DROPIN/staged.tar" "$STAGED"
 $CTR images rm "$STAGED" >/dev/null
 if $CTR images ls -q | grep -qxF "$STAGED"; then fail "$STAGED is still in containerd before the restart"; fi
 
