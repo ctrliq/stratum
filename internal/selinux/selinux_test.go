@@ -774,6 +774,21 @@ func TestEnsureSecondStartIsANoop(t *testing.T) {
 			if !p.has("restorecon -F -R -x -i -T 0 " + version.BinDir) {
 				t.Errorf("second start did not relabel the binaries: %q", p.calls)
 			}
+			unforced := "restorecon"
+			for _, path := range []string{version.SystemdUnitPath, LocalPathDir} {
+				if _, err := os.Lstat(path); err == nil {
+					unforced += " " + path
+				}
+			}
+			for _, want := range []string{
+				"restorecon -F " + version.StratumInstallPath,
+				unforced,
+				"restorecon -R -x -i -T 0 " + version.CoreDNSUpstreamDir,
+			} {
+				if !p.has(want) {
+					t.Errorf("second start did not run %q: %q", want, p.calls)
+				}
+			}
 		})
 	}
 }
