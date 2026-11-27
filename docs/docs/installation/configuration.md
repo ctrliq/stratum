@@ -562,7 +562,10 @@ The first start that registers the contexts relabels everything under
 takes longer on a node with many images. The relabel stays on those
 directories' filesystems, so it does not change the labels of running
 containers' mounts or pod volumes. Later starts relabel only the binaries, the
-unit file, the local-path directory and CoreDNS's upstream directory. Once a
+unit file, the local-path directory and CoreDNS's upstream directory. Every
+start resets `/usr/local/bin/stratum` and the binaries in
+`/var/lib/stratum/bin` with `restorecon -F`, so they do not keep a type a
+plain `restorecon` leaves alone, such as `home_bin_t`. Once a
 node is labelled, payload extraction, `stratum upgrade` and `stratum rollback`
 label each file before it replaces the old one.
 
