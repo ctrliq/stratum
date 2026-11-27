@@ -221,7 +221,9 @@ func Ensure(o Options) error {
 // directory's, which containers may not read. The binaries, the unit, that
 // directory and the local-path directory are relabelled first, before anything that
 // can fail, so a start always corrects what an upgrade wrote before the
-// runtime execs it, whatever the policy's own state.
+// runtime execs it, whatever the policy's own state. The binaries are reset
+// whatever type they have (restoreForced): the payload is staged before this
+// runs, by a process that may give it a type a plain relabel keeps.
 //
 // The full relabel runs when a context changed, when the stamp is missing or
 // records other contexts, or when a previous full relabel did not finish,
@@ -241,10 +243,16 @@ func label(mode Mode) error {
 		}
 		return err
 	}
-	if err := Restore(false, version.StratumInstallPath, version.SystemdUnitPath, LocalPathDir); err != nil {
+	if err := restoreForced(false, version.StratumInstallPath); err != nil {
 		return err
 	}
-	if err := Restore(true, version.BinDir, version.CoreDNSUpstreamDir); err != nil {
+	if err := Restore(false, version.SystemdUnitPath, LocalPathDir); err != nil {
+		return err
+	}
+	if err := restoreForced(true, version.BinDir); err != nil {
+		return err
+	}
+	if err := Restore(true, version.CoreDNSUpstreamDir); err != nil {
 		return err
 	}
 	_, pendingErr := os.Stat(pendingPath())
