@@ -241,8 +241,10 @@ func TestRestoreNodeStateRefusals(t *testing.T) {
 	t.Run("a machine that holds etcd data", func(t *testing.T) {
 		bundle, identity, _ := lostNode(t)
 		writeNodeFile(t, filepath.Join(version.EtcdDataDir, "member", "wal"), "x")
-		if _, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes"); err == nil || caKeyRestored() {
-			t.Fatalf("error = %v, CA key restored = %v; want a refusal", err, caKeyRestored())
+		// --no-ca-pin, so the CA pin's own refusal cannot stand in for this one.
+		_, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes", "--no-ca-pin")
+		if err == nil || !strings.Contains(err.Error(), version.EtcdDataDir) || !strings.Contains(err.Error(), "uninstall") || caKeyRestored() {
+			t.Fatalf("error = %v, CA key restored = %v; want a refusal naming the etcd data directory %s", err, caKeyRestored(), version.EtcdDataDir)
 		}
 	})
 	t.Run("someone else's identity", func(t *testing.T) {
