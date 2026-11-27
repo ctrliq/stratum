@@ -409,8 +409,8 @@ func checkManifest(m Manifest) error {
 	// file a restore may write outside node state. It is the config the node
 	// ran with, whatever its name: `stratum up --config` takes any file. Its
 	// name is no safeguard; what keeps it in its place is that a restore
-	// writes it only at the path the operator names, as a regular owner-only
-	// file.
+	// writes it only at the path it was recorded under, only when the
+	// operator allows that same path, and as a regular owner-only file.
 	if m.ExtraConfig != "" && m.ExtraConfig != m.ConfigPath {
 		return fmt.Errorf("extraConfig %q is not the config the node ran with, %q", m.ExtraConfig, m.ConfigPath)
 	}

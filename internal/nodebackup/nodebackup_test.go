@@ -717,8 +717,8 @@ func TestCollectRequiresTheOutsideConfigItNames(t *testing.T) {
 
 // `stratum up --config` takes a cluster config of any name. A node that runs
 // with one kept outside the configuration directory and not named .yaml takes
-// a bundle like any other, and a restore puts the config back at the path the
-// operator names, owner-only, and nowhere without it.
+// a bundle like any other, and a restore puts the config back at the path it
+// was recorded under, owner-only, only when the operator allows that path.
 func TestAnOutsideConfigOfAnyNameRoundTrips(t *testing.T) {
 	n := fixtureNode(t)
 	extra := filepath.Join(t.TempDir(), "srv", "cluster.conf")
