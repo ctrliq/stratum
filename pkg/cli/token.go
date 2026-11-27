@@ -18,10 +18,11 @@ import (
 	"github.com/ctrliq/stratum/internal/netcfg"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/token"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
-func newTokenCommand() *cobra.Command {
-	return newGroupCommand("token", "Manage join tokens", newTokenCreateCommand(), newTokenListCommand())
+func newTokenCommand(cfg rootConfig) *cobra.Command {
+	return newGroupCommand("token", "Manage join tokens", newTokenCreateCommand(cfg), newTokenListCommand())
 }
 
 // defaultServerURL returns server unchanged when --server names one, else the
@@ -49,7 +50,7 @@ func defaultServerURL(server string) (string, error) {
 	return url, nil
 }
 
-func newTokenCreateCommand() *cobra.Command {
+func newTokenCreateCommand(cfg rootConfig) *cobra.Command {
 	var server string
 	var controlPlane bool
 	ttl := token.DefaultTokenTTL
@@ -92,6 +93,7 @@ func newTokenCreateCommand() *cobra.Command {
 				writeKeyFile:     writeHACertKeyFile,
 				revoke:           token.RevokeOnFailure,
 				out:              os.Stdout,
+				headline:         cfg.headline(),
 				workerExtra:      extra,
 				joinExtra:        joinExtra,
 			})
@@ -154,7 +156,10 @@ func remaining(d time.Duration) string {
 // tokenCmd is the effects `stratum token create` performs, injected so the
 // credential-lifecycle guarantee is testable without a cluster.
 type tokenCmd struct {
-	create func(w io.Writer, serverURL string, ttl time.Duration, controlPlane bool, confirm func(context.Context) error) (tok, hash string, owner *metav1.OwnerReference, err error)
+	// headline is the product line printed first, with the rest of the
+	// output, so a failed mint still prints nothing at all.
+	headline string
+	create   func(w io.Writer, serverURL string, ttl time.Duration, controlPlane bool, confirm func(context.Context) error) (tok, hash string, owner *metav1.OwnerReference, err error)
 	// rekeyGuard is the one re-key entry point (certs.GuardRekey in
 	// production, the same package var `certs rotate --rekey-shared`
 	// consults): a control-plane mint re-keys the shared cert material, and a
@@ -386,12 +391,15 @@ func printJoinInstructions(grant token.Grant, controlPlane bool, ttl time.Durati
 	// worker join.
 	var b bytes.Buffer
 	tokenEnd, keyEnd := 0, 0
+	if c.headline != "" {
+		fmt.Fprintln(&b, c.headline)
+	}
 	if !controlPlane {
-		fmt.Fprintf(&b, "\nWorker join:\n\n  stratum up --worker --server %s --token %s", grant.ServerURL, tok)
+		fmt.Fprintf(&b, "\nOn each new server, install the same stratum file this server runs, then run:\n\n  sudo %s up --worker --server %s --token %s", version.StratumInstallPath, grant.ServerURL, tok)
 		tokenEnd = b.Len()
 		fmt.Fprintf(&b, " --discovery-token-ca-cert-hash %s%s%s\n", hash, c.workerExtra, c.joinExtra)
 	} else {
-		fmt.Fprintf(&b, "\nControl-plane (HA) join:\n\n  stratum up --join %s --token %s", grant.ServerURL, tok)
+		fmt.Fprintf(&b, "\nOn the new control-plane server, install the same stratum file this server runs, then run:\n\n  sudo %s up --join %s --token %s", version.StratumInstallPath, grant.ServerURL, tok)
 		tokenEnd = b.Len()
 		fmt.Fprintf(&b, " --discovery-token-ca-cert-hash %s --certificate-key-file %s", hash, shellQuote(certKeyPath))
 		// The key's path is handed over once it is written; what follows it on
@@ -408,11 +416,10 @@ func printJoinInstructions(grant token.Grant, controlPlane bool, ttl time.Durati
 			"For a worker, mint a separate token with `stratum token create`.\n")
 	}
 	if ttl <= 0 {
-		fmt.Fprintf(&b, "\nThis token does NOT expire (--ttl 0). Delete it by hand once the join is done:\n"+
-			"  kubectl -n kube-system delete secret %s\n", "bootstrap-token-"+tokenID(tok))
+		fmt.Fprintf(&b, "\nThis join token does not expire (--ttl 0), so delete it once the join is done:\n"+
+			"  sudo %s kubectl -n kube-system delete secret %s\n", version.StratumInstallPath, "bootstrap-token-"+tokenID(tok))
 	} else {
-		fmt.Fprintf(&b, "\nThis token expires in %s (tokencleaner removes it automatically). "+
-			"See remaining tokens with `stratum token list`.\n", ttl)
+		fmt.Fprintf(&b, "\nThis join token expires in %s, at %s.\n", readableTTL(ttl), time.Now().Add(ttl).Format("Mon 2 Jan 15:04 MST"))
 	}
 
 	// Printed for BOTH paths: the worker and the HA join line each carry --token,
@@ -421,8 +428,8 @@ func printJoinInstructions(grant token.Grant, controlPlane bool, ttl time.Durati
 	// Both mechanisms named here are wired in pkg/cli/up.go
 	// (resolveToken); tokenEnvVar rather than a literal so this text cannot
 	// outlive the variable it names.
-	fmt.Fprintf(&b, "\n(to keep the token out of `ps`/shell history, pass --token-file <path>,\n"+
-		"or export %s, instead of the --token flag)\n", tokenEnvVar)
+	fmt.Fprintf(&b, "\nTo keep the token out of shell history and `ps`, use --token-file <path> or set %s\n"+
+		"instead of --token. List tokens: stratum token list\n", tokenEnvVar)
 
 	// Rendered once and written once, because the write IS the handover and a
 	// discarded write error would make "the call returned" stand in for "the
@@ -451,5 +458,24 @@ func printJoinInstructions(grant token.Grant, controlPlane bool, ttl time.Durati
 				"  kubectl -n kube-system get secrets --field-selector type=bootstrap.kubernetes.io/token\n", werr)
 		}
 		return tokenHandedOver, fmt.Errorf("the join command was only partially printed (%d of %d bytes): %w", n, b.Len(), werr)
+	}
+}
+
+// readableTTL says how long a token lasts in whole hours or minutes where it
+// can, so the default reads "24 hours" rather than 24h0m0s.
+func readableTTL(d time.Duration) string {
+	unit := func(n int64, one string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %ss", n, one)
+	}
+	switch {
+	case d%time.Hour == 0:
+		return unit(int64(d/time.Hour), "hour")
+	case d%time.Minute == 0:
+		return unit(int64(d/time.Minute), "minute")
+	default:
+		return d.String()
 	}
 }

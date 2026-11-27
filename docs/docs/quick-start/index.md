@@ -50,8 +50,8 @@ the control plane.
 
 `stratum up` stays in the foreground as the node's supervisor. Run the commands
 in the next steps from a second terminal. When the node has registered,
-`stratum up` prints
-`stratum: node <name> registered after <time>; labeling it control-plane and stamping its version`.
+`stratum up` prints `stratum: node <name> registered in <time>`, then
+`stratum: the control plane is up` and the dashboard's address.
 
 `stratum up` also installs and enables `stratum.service`, so the node starts
 again after a reboot. See

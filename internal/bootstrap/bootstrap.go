@@ -32,6 +32,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -202,7 +203,7 @@ func discoverClusterInfo(server, token string) (clusterinfo.Authenticated, error
 
 	reachDeadline := time.Now().Add(reachWaitTimeout)
 	unreachable := func(err error, attempts int) error {
-		return fmt.Errorf("%w (control plane still unreachable after %s, %d attempts)", err, reachWaitTimeout, attempts)
+		return unreachableError(server, err, attempts)
 	}
 	var deadline time.Time // the signature budget, from the first fetch that answers
 	var lastErr error      // the last transient failure, while there has been no answer
@@ -371,4 +372,20 @@ func WriteBootstrapKubeconfig(server, token string, ca []byte) error {
 		return err
 	}
 	return atomicfile.WriteFile(version.BootstrapKubeconfig, b, 0o600)
+}
+
+// unreachableError reports a join that never reached the control plane: where
+// it tried and for how long, the last failure, then the most common cause and
+// a command that tests the connection from this server.
+func unreachableError(server string, err error, attempts int) error {
+	host, port := server, "6443"
+	if u, perr := url.Parse(server); perr == nil && u.Host != "" {
+		host = u.Host
+		if p := u.Port(); p != "" {
+			port = p
+		}
+	}
+	return fmt.Errorf("the control plane at %s is still unreachable after %s, %d attempts: %w\n"+
+		"Most often a firewall blocks the port. Check that the control plane allows %s/tcp and that this server's network can reach it.\n"+
+		"To test from this server:\n  curl -k %s/healthz", host, reachWaitTimeout, attempts, err, port, strings.TrimSuffix(server, "/"))
 }

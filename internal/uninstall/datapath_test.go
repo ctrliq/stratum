@@ -665,7 +665,7 @@ func TestRemoveCiliumTCFiltersWithoutTC(t *testing.T) {
 		return nil, fmt.Errorf("%s: %w", name, exec.ErrNotFound)
 	}
 	err := removeCiliumTCFilters(fx)
-	if err == nil || !strings.Contains(err.Error(), "iproute-tc") || !strings.Contains(err.Error(), "re-run") {
+	if err == nil || !strings.Contains(err.Error(), "iproute-tc") || !strings.Contains(err.Error(), "uninstall --yes") {
 		t.Fatalf("err = %v, want an actionable error: without tc the filters cannot be checked, so the node is not known to be clean", err)
 	}
 }
@@ -1354,7 +1354,7 @@ func TestRunMarksAWorkerWhoseDatapathTeardownFailed(t *testing.T) {
 
 	out := captureWriter(func(w io.Writer) {
 		err := runUninstall(w, true, fx)
-		if err == nil || !strings.Contains(err.Error(), "could not be unmounted") || !strings.Contains(err.Error(), "re-run") {
+		if err == nil || !strings.Contains(err.Error(), "could not be unmounted") || !strings.Contains(err.Error(), "uninstall --yes") {
 			t.Errorf("Run = %v, want the datapath failure and how to finish", err)
 		}
 	})
@@ -1500,7 +1500,7 @@ func TestRunMarksAWorkerWhoseStateWasRemovedWhateverElseFailed(t *testing.T) {
 			tc.setup(t)
 			out := captureWriter(func(w io.Writer) {
 				err := runUninstall(w, true, fx)
-				if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "re-run") {
+				if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "uninstall --yes") {
 					t.Errorf("Run = %v, want the failure (%q) and how to finish", err, tc.want)
 				}
 			})
@@ -1637,7 +1637,7 @@ func TestRemoveCiliumCgroupProgramsWithoutBpftool(t *testing.T) {
 		return nil, fmt.Errorf("%s: %w", name, exec.ErrNotFound)
 	}
 	err := removeCiliumCgroupPrograms(fx)
-	if err == nil || !strings.Contains(err.Error(), "install bpftool") || !strings.Contains(err.Error(), "re-run") {
+	if err == nil || !strings.Contains(err.Error(), "install bpftool") || !strings.Contains(err.Error(), "uninstall --yes") {
 		t.Fatalf("err = %v, want an actionable error: without bpftool the programs cannot be checked", err)
 	}
 }

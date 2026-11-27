@@ -110,7 +110,10 @@ func missingRefusal(mode Mode, o Options, err error) error {
 		return fmt.Errorf("SELinux is %s and %w; the %s profile requires it, with no opt-out", mode, err, o.Profile)
 	}
 	if mode == Enforcing {
-		return fmt.Errorf("SELinux is enforcing and %w. Without it Stratum's runtime and every container run unconfined. Install it, or set spec.selinux: false in the node's config file to run without SELinux labels", err)
+		return fmt.Errorf("SELinux is enforcing and %w. Without it, Stratum's runtime and every container would run without SELinux protection.\n"+
+			"Install the SELinux packages, then run this again:\n"+
+			"  sudo dnf install container-selinux policycoreutils-python-utils libselinux-utils\n"+
+			"Not recommended: to run without SELinux labels, set spec.selinux: false in the node's config file", err)
 	}
 	return nil
 }

@@ -44,6 +44,7 @@ func newUpCommand(cfg rootConfig) *cobra.Command {
 		Args:        cobra.NoArgs,
 		Annotations: map[string]string{ownsNodeStateAnnotation: "1"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg.printHeadline(cmd.OutOrStdout())
 			// An explicit empty --config (an unset "$CFG") would read no file
 			// at all — not even the default — and start on pure defaults,
 			// recording the empty path in the unit (upConfigPath). The unit
@@ -266,7 +267,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 	// for the whole run: the second invocation is refused here instead.
 	releaseStartLock, err := etcddata.AcquireStartLockChecked(startLockPath, preflightNoRunningNode)
 	if err != nil {
-		return err
+		return needsRoot(err)
 	}
 	defer releaseStartLock()
 	if err := ctx.Err(); err != nil {
@@ -373,7 +374,7 @@ func runUp(parent context.Context, o runUpOptions) error {
 		if err := installUnit(upExecArgv(true, "", "")); err != nil {
 			fmt.Fprintf(os.Stderr, "stratum: WARNING: could not install the reboot-persistence unit: %v\n", err)
 		}
-		fmt.Printf("stratum %s: starting worker (server=%s)\n", version.StratumVersion, st.Server)
+		fmt.Printf("stratum: starting a worker node, joining %s\n", st.Server)
 		// Only the run's own signal-asked stop is a clean stop; a host's
 		// cancellation keeps its own meaning and exit code, like the
 		// operator's (cleanStopOr).
@@ -543,7 +544,11 @@ func runUp(parent context.Context, o runUpOptions) error {
 		fmt.Fprintf(os.Stderr, "stratum: WARNING: could not install the reboot-persistence unit: %v\n", err)
 	}
 
-	fmt.Printf("stratum %s: starting control-plane node (vip=%q)\n", version.StratumVersion, st.VIP.Address)
+	if st.VIP.Address != "" {
+		fmt.Printf("stratum: starting the control plane (cluster address %s)\n", st.VIP.Address)
+	} else {
+		fmt.Println("stratum: starting the control plane")
+	}
 	fmt.Printf("stratum: kubeconfig %s\n", version.AdminConf)
 	// Only the run's own signal-asked stop is a clean stop; a host's
 	// cancellation keeps its own meaning and exit code, like the operator's
