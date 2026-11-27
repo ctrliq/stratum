@@ -127,15 +127,23 @@ func isTimeout(err error) bool {
 // The likely cause is not an attack but a control plane started without
 // the signer flag. processes.go renders argv on every start, so the flag
 // arrives with the next restart and there is nothing to edit.
-var unsignedClusterInfoRemedy = `
-The control plane is not publishing a cluster-info signature, so this join cannot
-verify that the CA it was handed is genuine, and stratum will not install an
-unverified CA.
 
-If this cluster was installed by a build that does not run the
-bootstrapsigner, its kube-controller-manager was never told to. There is nothing to hand-edit: argv is
-rendered on every start, so a node running a current build picks the flag up
-the next time the component starts. On EVERY control-plane node:
+var unsignedClusterInfoRemedy = `
+The token was not found or has expired — this is the most likely cause.
+Tokens expire after 24 hours by default and are then removed automatically.
+
+On a control plane, check whether the token is still live:
+
+  stratum token list
+
+If it is gone, mint a new one and retry this join:
+
+  stratum token create
+
+If the token IS listed and live, the control plane may not be running the
+bootstrapsigner. There is nothing to hand-edit: argv is rendered on every start,
+so a node running a current build picks the flag up the next time the component
+starts. On EVERY control-plane node:
 
   1. confirm the node is running a stratum build that runs the bootstrapsigner
   2. restart the controller-manager, so its argv is re-rendered
@@ -148,8 +156,7 @@ the next time the component starts. On EVERY control-plane node:
        ` + version.ControllerManagerControllersFlag + `
 
 Every control plane, not just one: kube-controller-manager leader-elects, so the
-signer runs on whichever node holds the lease. Then re-run ` + "`stratum token create`" + ` on a
-control plane and retry this join with the token it prints.`
+signer runs on whichever node holds the lease.`
 
 // DiscoverCA fetches the kube-public cluster-info ConfigMap (TLS-insecure, since
 // we don't trust the server yet), authenticates it with the bootstrap token's
