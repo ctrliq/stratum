@@ -760,27 +760,44 @@ func TestAnOutsideConfigOfAnyNameRoundTrips(t *testing.T) {
 // nothing. The restore that refuses the same bundle says nothing was
 // restored.
 func TestASaveRefusalReadsAsASave(t *testing.T) {
+	for name, save := range map[string]func(n node) error{
+		"a bundle without the CA key": func(n node) error {
+			if err := os.Remove(filepath.Join(n.src.PKIDir, "ca.key")); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := Collect(n.src, testMeta)
+			return err
+		},
+		"a manifest the restore side refuses": func(n node) error {
+			meta := testMeta
+			meta.Hostname = "cp-1\nok"
+			_, _, err := Collect(n.src, meta)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := save(fixtureNode(t))
+			if err == nil {
+				t.Fatal("Collect took the bundle")
+			}
+			if strings.Contains(strings.ToLower(err.Error()), "nothing was restored") {
+				t.Errorf("Collect = %q; a save restores nothing and must not say so", err)
+			}
+			if !strings.Contains(err.Error(), "a restore would refuse") {
+				t.Errorf("Collect = %q, want the refusal to read as a save's", err)
+			}
+		})
+	}
 	n := fixtureNode(t)
-	if err := os.Remove(filepath.Join(n.src.PKIDir, "ca.key")); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err := Collect(n.src, testMeta)
-	if err == nil {
-		t.Fatal("Collect took a bundle without the cluster CA key")
-	}
-	if strings.Contains(strings.ToLower(err.Error()), "nothing was restored") {
-		t.Errorf("Collect = %q; a save restores nothing and must not say so", err)
-	}
-	if !strings.Contains(err.Error(), "a restore would refuse") {
-		t.Errorf("Collect = %q, want the refusal to read as a save's", err)
-	}
-	plain := rebuildBundleManifest(t, fixtureNode(t), func(m *Manifest) { m.Hostname = "cp-1\nok" }, nil)
+	plain := rebuildBundleManifest(t, n, func(m *Manifest) { m.Hostname = "cp-1\nok" }, nil)
 	for name, restore := range map[string]func() error{
 		"Inspect": func() error { _, err := Inspect(plain, n.dst); return err },
 		"Extract": func() error { _, err := Extract(plain, n.dst); return err },
 	} {
-		if err := restore(); err == nil || !strings.HasSuffix(err.Error(), "; nothing was restored") {
-			t.Errorf("%s = %v, want the refusal to say nothing was restored", name, err)
+		err := restore()
+		if err == nil || !strings.HasSuffix(err.Error(), "; nothing was restored") ||
+			strings.Count(strings.ToLower(err.Error()), "nothing was restored") != 1 {
+			t.Errorf("%s = %v, want the refusal to say once that nothing was restored", name, err)
 		}
 	}
 }

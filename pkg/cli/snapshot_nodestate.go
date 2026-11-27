@@ -302,13 +302,14 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 					m.StratumVersion, version.StratumVersion)
 			}
 			// The outside config's path comes from the bundle, so it is written
-			// only where the operator names it, and that is settled before
-			// anything is written: a node restored without the config it
-			// starts with would have to be wiped to try again.
+			// only when the operator names that same path, and that is settled
+			// before anything is written: a node restored without the config
+			// it starts with would have to be wiped to try again.
 			if m.ExtraConfig != "" && allowPath != m.ExtraConfig {
-				return fmt.Errorf("the bundle holds the cluster config this node ran with, %s, which is outside %s, and a bundle "+
-					"may not choose where it writes. Pass --allow-path %s to restore it there. Nothing was restored",
-					m.ExtraConfig, version.ConfDir, m.ExtraConfig)
+				return fmt.Errorf("the bundle says the cluster config its node ran with is %s, which is outside %s, and a "+
+					"bundle may not choose where it writes. Check that %s is this node's cluster config, then pass "+
+					"--allow-path %s to restore it there. Nothing was restored", m.ExtraConfig, version.ConfDir, m.ExtraConfig,
+					m.ExtraConfig)
 			}
 			if !yes {
 				return errors.New("this writes that cluster's CA keys and this node's identity onto this machine; " +
