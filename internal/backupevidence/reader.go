@@ -224,6 +224,8 @@ const (
 	warningTickConfUnreadable = "WARN: the recorded tick ran with a snapshot config it could not read; it kept every snapshot and uploaded nothing"
 	warningTickLocalPrune     = "WARN: the recorded tick's local snapshot prune failed; local retention may not have held"
 	warningTickRemotePrune    = "WARN: the recorded tick's remote snapshot prune failed; remote retention may not have held"
+	warningTickLocalBundle    = "WARN: the recorded tick's local node-state bundle prune failed; local bundle retention may not have held"
+	warningTickRemoteBundle   = "WARN: the recorded tick's remote node-state bundle prune failed; remote bundle retention may not have held"
 	warningTickUnstateable    = "WARN: the recorded tick carried a warning this reader cannot state safely"
 )
 
@@ -233,6 +235,8 @@ var recordedWarningConditions = []struct{ phrase, safe string }{
 	{"cannot read snapshot config", warningTickConfUnreadable},
 	{"local snapshot prune", warningTickLocalPrune},
 	{"S3 snapshot prune", warningTickRemotePrune},
+	{"local node-state prune", warningTickLocalBundle},
+	{"S3 node-state prune", warningTickRemoteBundle},
 }
 
 // safeRecordedWarnings states the record's warnings as typed safe reasons,
