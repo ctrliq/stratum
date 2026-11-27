@@ -20,6 +20,12 @@ to it.
     # dnf install container-selinux policycoreutils-python-utils libselinux-utils
     ```
 
+- On a host where firewalld is running, as it is by default on RLC, RHEL and
+  some Rocky Linux images, the ports the nodes use to reach each other. A
+  single node needs nothing opened, but a worker cannot join until the
+  controller's firewall admits it. See
+  [Host firewall](../installation/index.md#host-firewall).
+
 ## 1. Put the binary on the node
 
 Copy the `stratum` file to the node, then install it and check that it runs:
@@ -122,6 +128,18 @@ for that, the firewall port, and the other ways to connect.
     ```console
     # /usr/local/bin/stratum kubectl get nodes
     ```
+
+If the join fails with a message that ends in `connect: no route to host` for
+`<controller>:6443`, a firewall is rejecting the connection. The network route
+is usually fine: firewalld rejects a connection it does not allow with an ICMP
+"administratively prohibited" reply, and Linux reports that reply as
+`no route to host`. Open the
+[ports between nodes](../installation/index.md#ports-between-nodes) on both
+nodes, and in any network firewall between them, then run the join command
+again. Do not stop firewalld to get past it; see
+[Host firewall](../installation/index.md#host-firewall) for why, and for a
+tested firewalld configuration. The same message from `kubectl` on another
+machine means the same thing for port `6443`.
 
 If the join stops with
 `worker join needs --server, --token and --discovery-token-ca-cert-hash`, the
