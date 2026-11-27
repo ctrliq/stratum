@@ -198,7 +198,7 @@ func newSnapshotPruneCommand() *cobra.Command {
 			if retain > 0 {
 				keep = retain
 			}
-			h, err := host.NodeName()
+			h, err := host.ShortName()
 			if err != nil {
 				return fmt.Errorf("snapshot prune: resolve host name: %w", err)
 			}

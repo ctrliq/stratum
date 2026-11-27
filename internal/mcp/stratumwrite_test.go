@@ -927,7 +927,7 @@ func TestSnapshotPruneHonoursSnapshotDir(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	hn, err := host.NodeName()
+	hn, err := host.ShortName()
 	if err != nil {
 		t.Fatal(err)
 	}

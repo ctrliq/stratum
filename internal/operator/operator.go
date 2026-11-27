@@ -251,6 +251,8 @@ func Run(ctx context.Context, o Options) error {
 	// reconciler can install with the requester's authority. Skipped when --node-ip
 	// is unset (the backstop still refuses unstamped non-privileged installs).
 	if o.NodeIP != "" {
+		// The raw hostname, which names this instance's EndpointSlice as it
+		// always has; buildEndpointSlice derives the Node name from it.
 		nodeName, _ := os.Hostname()
 		webhookDone := make(chan struct{})
 		done = append(done, webhookDone)

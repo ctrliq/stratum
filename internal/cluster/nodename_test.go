@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -108,5 +109,13 @@ func TestWorkerRestartSavesAMixedCaseNodeNameAsRegistered(t *testing.T) {
 	}
 	if saved.ClusterDNSIP != "10.96.0.10" || saved.KubeletNodeIP != "192.0.2.8" {
 		t.Errorf("the rename save dropped other fields: %+v", saved)
+	}
+}
+
+// The preparation seams read the node name, not some other spelling of the
+// hostname: the tests above swap hostHostname, so this pins its default.
+func TestHostHostnameIsTheNodeName(t *testing.T) {
+	if reflect.ValueOf(hostHostname).Pointer() != reflect.ValueOf(host.NodeName).Pointer() {
+		t.Error("hostHostname is not host.NodeName")
 	}
 }

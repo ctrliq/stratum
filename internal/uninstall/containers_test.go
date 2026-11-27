@@ -228,8 +228,10 @@ func TestNodeNoticeSaysWhatIsLeftInTheCluster(t *testing.T) {
 		{"worker", false, []string{"Node object stays", "kubectl delete node node-a"}},
 		{"controller", false, []string{"etcdctl member remove", "kubectl delete node node-a"}},
 	} {
+		// Saved with its case, as an earlier release saved a worker's
+		// hostname: the Node it names is the lowercased one.
 		fx.loadNodeState = func() (*nodestate.NodeState, error) {
-			return &nodestate.NodeState{Role: tc.role, Hostname: "node-a"}, nil
+			return &nodestate.NodeState{Role: tc.role, Hostname: "Node-A"}, nil
 		}
 		got := nodeNotice(fx, tc.marked)
 		for _, w := range tc.want {

@@ -40,14 +40,30 @@ func NodeName() (string, error) {
 
 // NodeNameOf is NodeName for the given OS hostname.
 func NodeNameOf(hostname string) (string, error) {
-	short, _, _ := strings.Cut(hostname, ".")
-	name := strings.ToLower(short)
+	name := shortNameOf(hostname)
 	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
 		return "", fmt.Errorf("this host's name %q cannot name a Kubernetes node: its short form, lowercased, %q %s; "+
 			"set a hostname of lowercase letters, digits and '-' that starts and ends with a letter or digit "+
 			"(for example `hostnamectl set-hostname k8s-ctrl-01`)", hostname, name, strings.Join(errs, "; "))
 	}
 	return name, nil
+}
+
+// ShortName is NodeName without the check that the name can name a Node: the
+// short hostname, lowercased. It labels what this host keeps for itself, such
+// as its snapshots and backup evidence, which must still be taken and pruned
+// on a host renamed after it joined to a name no Node can take.
+func ShortName() (string, error) {
+	h, err := os.Hostname()
+	if err != nil {
+		return "", err
+	}
+	return shortNameOf(h), nil
+}
+
+func shortNameOf(hostname string) string {
+	short, _, _ := strings.Cut(hostname, ".")
+	return strings.ToLower(short)
 }
 
 // NodeIP returns $NODE_IP if set, else the IP of the default outbound route.

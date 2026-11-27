@@ -144,7 +144,7 @@ func snapshotContext(ctx context.Context, w io.Writer, path string) error {
 // and retention.
 type SaveOptions struct {
 	Dir    string           // local dir (default defaultSnapshotDir)
-	Host   string           // node name for the file name (default host.NodeName, short)
+	Host   string           // node name for the file name (default host.ShortName)
 	Name   string           // explicit file name (default ScheduledName(host, now))
 	S3     *objstore.Target // optional off-box copy (nil / !Enabled = local only)
 	Retain int              // keep newest N of THIS host's scheduled snapshots (0 = keep all)
@@ -193,10 +193,10 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	}
 	hn := o.Host
 	if hn == "" {
-		// Short name (host.NodeName strips the domain) to match the naming used
+		// Short name (host.ShortName strips the domain) to match the naming used
 		// by `snapshot prune`, rejoin, and the rest of the codebase — an FQDN here
 		// would make manual prune (which keys on the short name) never match.
-		hn, _ = host.NodeName()
+		hn, _ = host.ShortName()
 	}
 	stamp := NowStamp()
 	name := o.Name

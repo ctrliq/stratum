@@ -550,15 +550,16 @@ func hostSwapOrder(src string) ([]string, error) {
 // Only a supervisor started from a build with that callback re-stamps on the
 // next kubelet start. A worker has no admin.conf to stamp with;
 // `stratum upgrade --cluster` stamps it (stampVersion).
-// The node is st.Hostname, the name it registered under, not the OS hostname.
+// The node is nodeName(st), the name it registered under, not the OS hostname.
 func stampUpgraded(w io.Writer, st *nodestate.NodeState) {
 	if st.Role != "controller" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), stampWindow)
 	defer cancel()
-	if err := stampNode(ctx, st.Hostname); err != nil {
-		fmt.Fprintf(w, "  WARN: stamp the version annotations on %s: %v\n", st.Hostname, err)
+	node := nodeName(st)
+	if err := stampNode(ctx, node); err != nil {
+		fmt.Fprintf(w, "  WARN: stamp the version annotations on %s: %v\n", node, err)
 	}
 }
 
@@ -1519,15 +1520,22 @@ func nodeGate(isCP bool, node string) error {
 // what the version check must read. Kubelet runs with --hostname-override= the
 // persisted NodeState.Hostname (internal/cluster/processes.go), so that is not
 // the OS hostname once the two differ, and stampUpgraded uses it for the same
-// reason. Only with no node state at all (a rollback on a node that lost it)
-// does it fall back to the OS hostname, the name a kubelet with no override
-// registers under.
+// reason. The kubelet lowercases that name before it registers, and a worker
+// an earlier release joined on a mixed-case hostname saved it with its case,
+// so it is lowercased here too. Only with no node state at all (a rollback on
+// a node that lost it) does it fall back to the OS hostname, the name a
+// kubelet with no override registers under; "" when that is no node name.
 func nodeName(st *nodestate.NodeState) string {
+	n, _ := registeredNodeName(st)
+	return n
+}
+
+// registeredNodeName is nodeName with the reason it has no name.
+func registeredNodeName(st *nodestate.NodeState) (string, error) {
 	if st != nil && st.Hostname != "" {
-		return st.Hostname
+		return strings.ToLower(st.Hostname), nil
 	}
-	h, _ := host.NodeName()
-	return h
+	return host.NodeName()
 }
 
 // runtimeProbeWindow bounds each running-version probe of nodeGate. A var so
@@ -1939,7 +1947,14 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 		return fmt.Errorf("stratum upgrade: this node runs profile %q, which this binary does not register; nothing was changed: %w", st.ProfileName(), err)
 	}
 	isCP := st.Role == "controller"
-	hostname, _ := host.NodeName()
+	// The name the node registered under, which a control plane's certificates
+	// are reissued for: the OS hostname may have been renamed since, or no
+	// longer be a node name at all, and certificates for it would lock the
+	// kubelet out of its own Node.
+	hostname, err := registeredNodeName(st)
+	if err != nil {
+		return fmt.Errorf("stratum upgrade: this node's state records no node name, and %w; nothing was changed", err)
+	}
 
 	marker, err := readUpgradeMarker()
 	if err != nil {
@@ -2458,9 +2473,11 @@ func RollbackNode(w io.Writer, o RollbackOptions) error {
 	if o.SoakSec == 0 {
 		o.SoakSec = 15
 	}
-	hostname, _ := host.NodeName()
 	st, _ := nodestate.LoadState()
 	isCP := st != nil && st.Role == "controller"
+	// Only named in the progress lines: a rollback restores whatever it can
+	// even on a node whose name cannot be told.
+	hostname := nodeName(st)
 
 	// The supervisor only, not every host process (ensureNodeUp): a kubelet
 	// crash-looping on an interrupted upgrade's binaries is what this restores.

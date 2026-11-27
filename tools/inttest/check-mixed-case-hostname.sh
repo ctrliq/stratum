@@ -24,4 +24,11 @@ wait_for "control-plane label on $node" 120 sh -c \
   "$K get node $node -o jsonpath='{.metadata.labels.stratum\.ciq\.com/control-plane}' | grep -qx true"
 pass "stratum labelled $node control-plane"
 
+# The admission webhook's EndpointSlice names this Node in its endpoint. The
+# apiserver refuses an endpoint whose nodeName is not a valid node name, so a
+# mixed-case one left the webhook with no endpoint and HelmChart creates failed.
+wait_for "webhook EndpointSlice naming $node" 120 sh -c \
+  "$K -n kube-system get endpointslices -l kubernetes.io/service-name=stratum-operator-webhook -o jsonpath='{.items[*].endpoints[*].nodeName}' | grep -qw $node"
+pass "the webhook's EndpointSlice names $node"
+
 done_testing

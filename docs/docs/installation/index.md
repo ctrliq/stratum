@@ -91,6 +91,12 @@ Set a valid hostname, then run `stratum up` again:
 # hostnamectl set-hostname k8s-ctrl-01
 ```
 
+If you rename a node after it joined, it keeps the node name it registered
+under. A worker restart and `stratum upgrade` use that saved name. A control
+plane's next `stratum up` derives the name again and refuses a hostname that is
+not valid. Snapshots and backup evidence are named after the current
+hostname, lowercased, whether or not it is a valid node name.
+
 A control plane that an earlier release left unregistered because its hostname
 had capital letters needs no change of hostname. Run `stratum up` again with
 this release. It reissues the node's certificates for the lowercase name, and

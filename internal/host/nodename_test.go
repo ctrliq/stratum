@@ -54,3 +54,20 @@ func TestNodeNameOfRefusesANameNoNodeCanTake(t *testing.T) {
 		}
 	}
 }
+
+// ShortName names what this host keeps for itself the way NodeName does,
+// lowercased and cut at the first dot, but a name no Node can take is no
+// reason to stop a snapshot or its prune: on a host renamed after it joined
+// to such a name, they still run under it rather than under "".
+func TestShortNameIsTheNodeNameWithoutTheCheck(t *testing.T) {
+	short, err := host.ShortName()
+	if err != nil {
+		t.Skip(err)
+	}
+	if node, err := host.NodeName(); err == nil && node != short {
+		t.Errorf("ShortName = %q, NodeName = %q; want the same name on a host with a valid one", short, node)
+	}
+	if short == "" || short != strings.ToLower(short) || strings.Contains(short, ".") {
+		t.Errorf("ShortName = %q, want the lowercased short hostname", short)
+	}
+}
