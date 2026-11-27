@@ -391,8 +391,8 @@ certificate from one side of a rotation and its key from the other. It waits up
 to 30 seconds for an operation that holds the lock, and is not taken if the
 operation outlasts that. A bundle must hold the cluster CA certificate and its
 key, and a cluster config kept outside `/etc/stratum` if the node runs with
-one; without them none is taken. A cluster config kept outside `/etc/stratum`
-must be a `.yaml` or `.yml` file.
+one; without them none is taken. That config may have any name `stratum up
+--config` takes; a restore writes it only at the path given to `--allow-path`.
 
 A bundle that cannot be taken or uploaded does not fail the snapshot: the
 snapshot is kept, and the save reports the bundle's error beside it and exits

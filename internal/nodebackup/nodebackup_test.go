@@ -715,6 +715,76 @@ func TestCollectRequiresTheOutsideConfigItNames(t *testing.T) {
 	}
 }
 
+// `stratum up --config` takes a cluster config of any name. A node that runs
+// with one kept outside the configuration directory and not named .yaml takes
+// a bundle like any other, and a restore puts the config back at the path the
+// operator names, owner-only, and nowhere without it.
+func TestAnOutsideConfigOfAnyNameRoundTrips(t *testing.T) {
+	n := fixtureNode(t)
+	extra := filepath.Join(t.TempDir(), "srv", "cluster.conf")
+	write(t, extra, "spec: {site: true}\n", 0o644)
+	n.src.ExtraConfig, n.src.ConfigPath = extra, extra
+	plain, m, err := Collect(n.src, testMeta)
+	if err != nil {
+		t.Fatalf("Collect with the config at %s: %v", extra, err)
+	}
+	if m.ExtraConfig != extra || m.ConfigPath != extra {
+		t.Fatalf("manifest names the config as %q and %q, want %s", m.ExtraConfig, m.ConfigPath, extra)
+	}
+	if err := os.Remove(extra); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Extract(plain, n.dst)
+	if err != nil || res.ExtraConfigSkipped != extra {
+		t.Fatalf("Extract without the path allowed = %+v, %v; want %s skipped", res, err, extra)
+	}
+	if _, err := os.Lstat(extra); !os.IsNotExist(err) {
+		t.Fatalf("the outside config was written without being allowed (stat: %v)", err)
+	}
+	dst := n.dst
+	dst.AllowExtra = extra
+	if res, err = Extract(plain, dst); err != nil || res.ExtraConfigSkipped != "" {
+		t.Fatalf("Extract with the path allowed = %+v, %v", res, err)
+	}
+	fi, err := os.Lstat(extra)
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the outside config is %v, %v; want a regular file, 0600", fi.Mode(), err)
+	}
+	if b, err := os.ReadFile(extra); err != nil || string(b) != "spec: {site: true}\n" {
+		t.Errorf("the outside config = %q, %v", b, err)
+	}
+}
+
+// A save checks its bundle the way a restore will, and a save that refuses
+// one says so as a save: it has restored nothing because it restores
+// nothing. The restore that refuses the same bundle says nothing was
+// restored.
+func TestASaveRefusalReadsAsASave(t *testing.T) {
+	n := fixtureNode(t)
+	if err := os.Remove(filepath.Join(n.src.PKIDir, "ca.key")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Collect(n.src, testMeta)
+	if err == nil {
+		t.Fatal("Collect took a bundle without the cluster CA key")
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "nothing was restored") {
+		t.Errorf("Collect = %q; a save restores nothing and must not say so", err)
+	}
+	if !strings.Contains(err.Error(), "a restore would refuse") {
+		t.Errorf("Collect = %q, want the refusal to read as a save's", err)
+	}
+	plain := rebuildBundleManifest(t, fixtureNode(t), func(m *Manifest) { m.Hostname = "cp-1\nok" }, nil)
+	for name, restore := range map[string]func() error{
+		"Inspect": func() error { _, err := Inspect(plain, n.dst); return err },
+		"Extract": func() error { _, err := Extract(plain, n.dst); return err },
+	} {
+		if err := restore(); err == nil || !strings.HasSuffix(err.Error(), "; nothing was restored") {
+			t.Errorf("%s = %v, want the refusal to say nothing was restored", name, err)
+		}
+	}
+}
+
 // The fields a restore prints come from whoever sealed the bundle. One that
 // holds a control character could redraw the CA fingerprint on the terminal,
 // and a config path is printed inside a command to run, so neither is read.
@@ -725,9 +795,6 @@ func TestReadManifestRefusesTextThatCouldMislead(t *testing.T) {
 		"a newline in the hostname":         func(m *Manifest) { m.Hostname = "cp-1\nok" },
 		"a relative config path":            func(m *Manifest) { m.ConfigPath = "etc/stratum/config.yaml" },
 		"an outside config not the one run": func(m *Manifest) { m.ExtraConfig = "/root/elsewhere.yaml" },
-		"an outside config that is not YAML": func(m *Manifest) {
-			m.ExtraConfig, m.ConfigPath = "/etc/cron.d/stratum", "/etc/cron.d/stratum"
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			plain := rebuildBundleManifest(t, n, mutate, nil)
