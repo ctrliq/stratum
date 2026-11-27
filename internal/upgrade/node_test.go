@@ -1307,7 +1307,7 @@ func TestWaitNodeGateHostPollingEndsWithTheWindow(t *testing.T) {
 // only the registered name.
 func TestKubeletCheckReadsTheRegisteredNode(t *testing.T) {
 	const registered = "registered-node.example"
-	if osName, _ := host.Hostname(); osName == registered {
+	if osName, _ := host.NodeName(); osName == registered {
 		t.Fatalf("test needs a registered name that differs from the OS hostname %q", osName)
 	}
 	backupFixture(t)
@@ -1338,7 +1338,7 @@ func TestKubeletCheckReadsTheRegisteredNode(t *testing.T) {
 		if len(asked) == 0 || asked[0] != registered {
 			t.Errorf("%s read %v, want the registered node %q", name, asked, registered)
 		}
-		osName, _ := host.Hostname()
+		osName, _ := host.NodeName()
 		if err := gate(osName); err == nil {
 			t.Errorf("%s passed for %q, a Node kubelet does not register under", name, osName)
 		}
@@ -1348,7 +1348,7 @@ func TestKubeletCheckReadsTheRegisteredNode(t *testing.T) {
 // TestNodeName: the registered name wins; only with no node state does the OS
 // hostname stand in.
 func TestNodeName(t *testing.T) {
-	osName, _ := host.Hostname()
+	osName, _ := host.NodeName()
 	for _, tc := range []struct {
 		name string
 		st   *nodestate.NodeState

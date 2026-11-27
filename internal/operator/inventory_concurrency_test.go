@@ -161,7 +161,7 @@ func TestLooseOwnershipSurvivesRemovalOfItsOriginalAPIVersion(t *testing.T) {
 func TestManifestInventoryUsesRegisteredNodeIdentity(t *testing.T) {
 	saved := inventoryHostname
 	t.Cleanup(func() { inventoryHostname = saved })
-	// host.Hostname supplies this short form even if the kernel hostname is
+	// host.NodeName supplies this short form even if the kernel hostname is
 	// fully qualified; the Node registers under the same short form.
 	inventoryHostname = func() (string, error) { return "registered-cp", nil }
 	d, err := newManifestDeployer(&rest.Config{Host: "https://127.0.0.1"}, t.TempDir())

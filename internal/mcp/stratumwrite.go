@@ -244,7 +244,7 @@ func SnapshotPruneHandler() sdk.ToolHandlerFor[SnapshotPruneIn, SnapshotPruneOut
 		}
 		s3 := cfg.S3Target()
 
-		hostname, err := host.Hostname()
+		hostname, err := host.NodeName()
 		if err != nil {
 			return nil, SnapshotPruneOut{}, fmt.Errorf("determine this node's name: %w", err)
 		}

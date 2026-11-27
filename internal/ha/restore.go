@@ -49,7 +49,7 @@ var rejoinLoadState = nodestate.LoadState
 // of the restored cluster.
 var rejoinSeedMembers = memberList
 
-var rejoinHostname = host.Hostname
+var rejoinHostname = host.NodeName
 var rejoinNodeIP = nodestate.NodeIP
 
 // rejoinSeedIsThisNode reports whether the etcd that answers at the seed's address is

@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/util/keyutil"
 
 	"github.com/ctrliq/stratum/internal/comps"
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/nodejob"
 	"github.com/ctrliq/stratum/internal/pki"
@@ -639,9 +640,11 @@ func localTokenGate(ctx context.Context, w io.Writer, o CARotateOptions) error {
 	if len(stale) == 0 {
 		return nil
 	}
-	if host, err := os.Hostname(); err == nil {
+	// The pods are listed by spec.nodeName, so the name is the one this
+	// node's Node registered under, not the raw OS hostname.
+	if node, err := host.NodeName(); err == nil {
 		if cs, err := k8sutil.AdminClientset(); err == nil {
-			nameStale(ctx, cs, host, stale)
+			nameStale(ctx, cs, node, stale)
 		}
 	}
 	return fmt.Errorf("%d token(s) mounted on this node are signed by the old service-account key, which finalize drops (their clients would get 401): %s. "+

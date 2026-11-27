@@ -691,7 +691,7 @@ func anyLeafExpiringWithin(ss []CertStatus, days int) bool {
 // dual-stack node whose state lost the recorded pair included — and a node
 // with no state file yet is detected, the way its first boot resolved it.
 func hostNodeIP() (string, string, *pki.APISANs, string, error) {
-	h, err := host.Hostname()
+	h, err := host.NodeName()
 	if err != nil {
 		return "", "", nil, "", err
 	}

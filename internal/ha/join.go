@@ -1271,7 +1271,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 	if err != nil {
 		return preparedJoin{}, err
 	}
-	hostname, err := host.Hostname()
+	hostname, err := host.NodeName()
 	if err != nil {
 		return preparedJoin{}, err
 	}

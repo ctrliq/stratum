@@ -90,3 +90,37 @@ func parse(t *testing.T, pemBytes []byte) *x509.Certificate {
 	}
 	return c
 }
+
+// A control plane that an earlier release brought up on a mixed-case hostname
+// holds a kubelet leaf for system:node:HK-k8s-ctrl-01, which its kubelet,
+// registering hk-k8s-ctrl-01, could never use. Run again under the lowercased
+// name, the leaf no longer covers its spec's DNS SAN and is reissued for the
+// name the kubelet registers, so the node recovers without removing its PKI.
+func TestIssueReissuesAKubeletLeafIssuedForAMixedCaseName(t *testing.T) {
+	orig := version.PKIDir
+	version.PKIDir = t.TempDir()
+	t.Cleanup(func() { version.PKIDir = orig })
+	ca, err := EnsureCA("ca", "stratum-ca")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kubeletSpec := func(host string) CertSpec {
+		for _, s := range LeafSpecs(host, "10.0.0.11", nil) {
+			if s.Name == "kubelet" {
+				return s
+			}
+		}
+		t.Fatal("LeafSpecs issues no kubelet leaf")
+		return CertSpec{}
+	}
+	if err := ca.Issue(kubeletSpec("HK-k8s-ctrl-01")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ca.Issue(kubeletSpec("hk-k8s-ctrl-01")); err != nil {
+		t.Fatal(err)
+	}
+	c := parse(t, readFile(t, path("kubelet", "crt")))
+	if c.Subject.CommonName != "system:node:hk-k8s-ctrl-01" || !slices.Contains(c.DNSNames, "hk-k8s-ctrl-01") {
+		t.Errorf("kubelet.crt is for %q with DNS %v; want it reissued for system:node:hk-k8s-ctrl-01", c.Subject.CommonName, c.DNSNames)
+	}
+}

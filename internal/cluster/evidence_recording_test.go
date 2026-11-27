@@ -266,7 +266,7 @@ func TestEvidenceRecordingRecordsAPruneRefusalAsAWarning(t *testing.T) {
 	t.Setenv("STRATUM_S3_ACCESS_KEY", "k")
 	t.Setenv("STRATUM_S3_SECRET_KEY", "s")
 	snapDir := t.TempDir()
-	hn, err := host.Hostname()
+	hn, err := host.NodeName()
 	if err != nil {
 		t.Fatal(err)
 	}

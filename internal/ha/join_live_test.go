@@ -44,7 +44,7 @@ func TestLiveJoinResumeRestoresTwoVoterQuorum(t *testing.T) {
 	defer cli.Close()
 	waitLiveJoinQuorum(t, func(ctx context.Context) error { _, err := cli.MemberList(ctx); return err })
 
-	hostname, err := host.Hostname()
+	hostname, err := host.NodeName()
 	if err != nil {
 		t.Fatal(err)
 	}

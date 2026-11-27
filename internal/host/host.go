@@ -17,16 +17,37 @@ import (
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/selinux"
 	"github.com/ctrliq/stratum/internal/version"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// Hostname returns the short hostname (hostname -s equivalent).
-func Hostname() (string, error) {
+// NodeName returns the name this node's Node registers under: the short
+// hostname (hostname -s equivalent), lowercased. The kubelet lowercases the
+// name it registers, even one given by --hostname-override, so a mixed-case
+// name in the kubelet's certificate or in what stratum waits for and labels
+// names a Node that never appears: the Node authorizer refuses a kubelet whose
+// certificate is for another name. Every use of this node's name as a Node,
+// kubelet or etcd member identity derives it here.
+//
+// A hostname that is still not a valid Node name once lowercased (an
+// underscore, say) is an error that names it and says how to fix it.
+func NodeName() (string, error) {
 	h, err := os.Hostname()
 	if err != nil {
 		return "", err
 	}
-	h, _, _ = strings.Cut(h, ".")
-	return h, nil
+	return NodeNameOf(h)
+}
+
+// NodeNameOf is NodeName for the given OS hostname.
+func NodeNameOf(hostname string) (string, error) {
+	short, _, _ := strings.Cut(hostname, ".")
+	name := strings.ToLower(short)
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return "", fmt.Errorf("this host's name %q cannot name a Kubernetes node: its short form, lowercased, %q %s; "+
+			"set a hostname of lowercase letters, digits and '-' that starts and ends with a letter or digit "+
+			"(for example `hostnamectl set-hostname k8s-ctrl-01`)", hostname, name, strings.Join(errs, "; "))
+	}
+	return name, nil
 }
 
 // NodeIP returns $NODE_IP if set, else the IP of the default outbound route.

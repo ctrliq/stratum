@@ -35,6 +35,7 @@ unpacks the payload without starting anything.
 | Network | none required for install; node IP autodetection needs a default route or a single global IPv4 address, see [Node IP](configuration.md#node-ip) |
 | Firewall | firewalld may be running; see [Host firewall](#host-firewall) |
 | Packages | on an SELinux host, the SELinux policy packages; for `stratum uninstall`, `tc`, `iptables` and `bpftool`; see [Required packages](#required-packages) |
+| Hostname | a valid Kubernetes node name once lowercased; see [Hostname](#hostname) |
 
 ### Required packages
 
@@ -71,6 +72,29 @@ away, run `sudo systemctl restart stratum`. Stratum was tested with
 
 Uninstall looks for these tools only in `/usr/sbin`, `/usr/bin`, `/sbin` and
 `/bin`, never on your `PATH`. A tool installed anywhere else counts as missing.
+
+### Hostname
+
+Stratum registers each node under its short hostname, the part before the
+first dot, in lowercase. A host named `HK-k8s-ctrl-01.example.com` registers as
+the node `hk-k8s-ctrl-01`. Use the lowercase name wherever a command names the
+node, such as `stratum kubectl get node hk-k8s-ctrl-01`.
+
+The lowercase short name must be a valid Kubernetes node name: lowercase
+letters, digits and `-`, starting and ending with a letter or digit. A name
+with an underscore or a space is not. `stratum up` refuses such a host before
+it changes anything on it, with an error that starts
+`stratum up: this host's name "<hostname>" cannot name a Kubernetes node`.
+Set a valid hostname, then run `stratum up` again:
+
+```console
+# hostnamectl set-hostname k8s-ctrl-01
+```
+
+A control plane that an earlier release left unregistered because its hostname
+had capital letters needs no change of hostname. Run `stratum up` again with
+this release. It reissues the node's certificates for the lowercase name, and
+the node registers.
 
 ### SELinux
 
@@ -462,6 +486,38 @@ The operator denies a request whose join token has expired or been deleted.
 Rejoin that machine with a new token. To reuse the name of a rebuilt machine, or
 to approve requests on a cluster without the operator, see
 [Reusing a node name](configuration.md#reusing-a-node-name).
+
+## If `stratum up` fails
+
+When `stratum up` stops with an error, or a node does not register, collect
+the following from the node before you change anything, and attach it to your
+report:
+
+1. The output of `stratum up`. When the node runs under systemd, save its
+   journal instead:
+
+    ```console
+    # journalctl -u stratum --no-pager > stratum-journal.txt
+    ```
+
+2. The version and the host's name:
+
+    ```console
+    # /usr/local/bin/stratum version
+    # hostname
+    ```
+
+3. The nodes the cluster knows, when the API server answers:
+
+    ```console
+    # /usr/local/bin/stratum kubectl get nodes -o wide
+    ```
+
+4. The logs of the supervised components in `/var/lib/stratum/log/`:
+   `kubelet.log`, `containerd.log` and, on a control plane, `operator.log`. A
+   node that does not register usually says why in `kubelet.log`.
+
+[Logs](../cluster-admin/index.md#logs) lists where the other logs are.
 
 ## Reboot persistence
 

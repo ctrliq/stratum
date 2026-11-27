@@ -27,7 +27,7 @@ func TestCAMigrationsRefuseUnfinishedRootRotationBeforeLocalChanges(t *testing.T
 					old := version.PKIDir
 					version.PKIDir = t.TempDir()
 					t.Cleanup(func() { version.PKIDir = old })
-					me, err := host.Hostname()
+					me, err := host.NodeName()
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -232,6 +232,9 @@ func runUp(parent context.Context, o runUpOptions) error {
 	if err != nil {
 		return err
 	}
+	if err := preflightNodeName(o); err != nil {
+		return err
+	}
 	// The run owns its signals from here, before the first preflight call:
 	// one interrupt context — SIGINT, SIGTERM and SIGHUP, where the first
 	// signal cancels and restores the default action so a second one kills
@@ -656,7 +659,26 @@ var (
 	// resolveJoinNodeIP is the pre-stage node-IP check's seam: the real one
 	// reads $NODE_IP and detects the host's address, so wiring tests stub it.
 	resolveJoinNodeIP = cluster.ResolveJoinNodeIP
+	// upNodeName is the pre-stage node-name check's seam: the real one reads
+	// this host's name, which a test cannot set.
+	upNodeName = host.NodeName
 )
+
+// preflightNodeName refuses, before the start lock, the SELinux relabel or the
+// payload stage touch the host, a start whose hostname cannot name its Node.
+// Every start that derives this node's name from the hostname is checked: a
+// control plane's, which re-derives it each time, and a worker's join. A
+// worker restart runs under the name it saved when it joined, so it is not.
+// Left to preparation, the same refusal came after the payload was staged.
+func preflightNodeName(o runUpOptions) error {
+	if o.worker && o.server == "" {
+		return nil
+	}
+	if _, err := upNodeName(); err != nil {
+		return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+	}
+	return nil
+}
 
 // runControllerWithEvidenceSampler runs the controller with the engine's
 // backup-evidence reader wired into its publisher: the reader's package

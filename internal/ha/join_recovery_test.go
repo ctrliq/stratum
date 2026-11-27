@@ -639,7 +639,7 @@ func TestJoinAdoptingTheJournalsMemberSkipsTheVIPCheck(t *testing.T) {
 			}
 		}},
 		{"a journal without one", func(t *testing.T, _ string) {
-			hostname, err := host.Hostname()
+			hostname, err := host.NodeName()
 			if err != nil {
 				t.Fatal(err)
 			}

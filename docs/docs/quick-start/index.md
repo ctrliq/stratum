@@ -11,6 +11,8 @@ to it.
   cgroup v1.
 - Linux kernel 4.19.57 or later. Kernel 5.10 or later is recommended.
 - Root access to the host.
+- A hostname that is a valid Kubernetes node name once lowercased: letters,
+  digits and `-`. See [Hostname](../installation/index.md#hostname).
 - About 2 GB of free disk space for the binary and its unpacked payload.
 - On an SELinux host, such as Rocky Linux, Red Hat Enterprise Linux (RHEL) or
   Rocky Linux from CIQ (RLC), the SELinux policy packages. `stratum up` needs

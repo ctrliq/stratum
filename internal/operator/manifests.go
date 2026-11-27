@@ -97,7 +97,7 @@ const CoreDNSStack = "coredns"
 const appliedRecordName = ".applied.json"
 
 // inventoryHostname follows the short hostname used to register the Node.
-var inventoryHostname = host.Hostname
+var inventoryHostname = host.NodeName
 
 // manifestDeployer applies and prunes the YAML stacks of one manifests
 // directory. One value per operator process, built by Run and driven by the

@@ -1526,7 +1526,7 @@ func nodeName(st *nodestate.NodeState) string {
 	if st != nil && st.Hostname != "" {
 		return st.Hostname
 	}
-	h, _ := host.Hostname()
+	h, _ := host.NodeName()
 	return h
 }
 
@@ -1939,7 +1939,7 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 		return fmt.Errorf("stratum upgrade: this node runs profile %q, which this binary does not register; nothing was changed: %w", st.ProfileName(), err)
 	}
 	isCP := st.Role == "controller"
-	hostname, _ := host.Hostname()
+	hostname, _ := host.NodeName()
 
 	marker, err := readUpgradeMarker()
 	if err != nil {
@@ -2458,7 +2458,7 @@ func RollbackNode(w io.Writer, o RollbackOptions) error {
 	if o.SoakSec == 0 {
 		o.SoakSec = 15
 	}
-	hostname, _ := host.Hostname()
+	hostname, _ := host.NodeName()
 	st, _ := nodestate.LoadState()
 	isCP := st != nil && st.Role == "controller"
 

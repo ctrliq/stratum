@@ -512,7 +512,7 @@ func cpTrustNew(w io.Writer, o CARotateOptions) error {
 	// (RotateCACluster); the bare phase path did not. The follower path is
 	// exempt — it legitimately arrives with the initiator's ca-new already
 	// staged.
-	node, err := host.Hostname()
+	node, err := host.NodeName()
 	if err != nil {
 		return err
 	}

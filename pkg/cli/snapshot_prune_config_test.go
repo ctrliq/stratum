@@ -39,7 +39,7 @@ func unreadableSnapshotConfig(t *testing.T) error {
 // and returns their names, oldest first.
 func writeSnapshots(t *testing.T, dir string, count int) []string {
 	t.Helper()
-	h, err := host.Hostname()
+	h, err := host.NodeName()
 	if err != nil {
 		t.Skip(err)
 	}

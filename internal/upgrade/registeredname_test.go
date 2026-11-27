@@ -18,7 +18,7 @@ import (
 // that same Node, as its gates and stamp do.
 func TestBackstopUsesRegisteredNodeName(t *testing.T) {
 	const registered, target = "cp-1.registered", "v1.37.9"
-	osName, err := host.Hostname()
+	osName, err := host.NodeName()
 	if err != nil {
 		t.Fatal(err)
 	}

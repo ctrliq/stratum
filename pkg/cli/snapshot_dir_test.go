@@ -111,7 +111,7 @@ func TestSnapshotListReadsTheConfiguredDir(t *testing.T) {
 
 func TestSnapshotPruneActsOnTheConfiguredDir(t *testing.T) {
 	dir := useSnapshotDir(t)
-	h, err := host.Hostname()
+	h, err := host.NodeName()
 	if err != nil {
 		t.Skip(err)
 	}
@@ -228,7 +228,7 @@ func TestSnapshotCommands_UseTheResolvedDir(t *testing.T) {
 	})
 
 	t.Run("prune", func(t *testing.T) {
-		h, err := host.Hostname()
+		h, err := host.NodeName()
 		if err != nil {
 			t.Skip(err)
 		}
