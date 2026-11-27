@@ -592,4 +592,7 @@ func TestTheIncompleteMarkerIsNotALeaf(t *testing.T) {
 	if interrupt.CancellationOnly(etcdsnap.NodeStateIncomplete(errors.New("pki unreadable"))) {
 		t.Error("a bundle that failed on its own read as a cancellation")
 	}
+	if err := etcdsnap.NodeStateIncomplete(nil); err != nil {
+		t.Errorf("NodeStateIncomplete(nil) = %v, want nil: no reason marks nothing", err)
+	}
 }

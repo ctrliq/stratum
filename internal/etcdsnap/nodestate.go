@@ -213,8 +213,14 @@ var ErrNodeStateIncomplete = errors.New("node-state bundle incomplete")
 // the result is ErrNodeStateIncomplete to errors.Is and unwraps to err alone.
 // The marker is never a leaf of its own, so a bundle missing because a
 // signal stopped the save is still only a cancellation to
-// interrupt.CancellationOnly, and that stop still exits clean.
-func NodeStateIncomplete(err error) error { return &incompleteError{err: err} }
+// interrupt.CancellationOnly, and that stop still exits clean. A nil err is
+// no reason, and marks nothing.
+func NodeStateIncomplete(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &incompleteError{err: err}
+}
 
 type incompleteError struct{ err error }
 
