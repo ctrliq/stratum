@@ -25,12 +25,14 @@ File names carry a UTC timestamp in the form `YYYYMMDD-HHMMSS`.
 - `snapshot save --name <file>` joins `<file>` onto the snapshot directory as
   given. A path such as `../<file>` writes outside the directory, so use a
   plain file name.
-- `snapshot list` shows local snapshots only when their names end in `.db`,
-  then the node-state bundles, as described in
-  [The node-state bundle](#the-node-state-bundle). It
-  lists S3 objects whatever their names, but only those directly under the
-  S3 prefix. Objects under a deeper prefix, such as another cluster's
+- `snapshot list` shows local snapshots only when their names end in `.db`.
+  It lists S3 snapshots whatever their names, but only those directly under
+  the S3 prefix. Objects under a deeper prefix, such as another cluster's
   `<prefix>/other/`, are not listed.
+- After the snapshots, `snapshot list` shows the node-state bundles: local
+  files ending in `.bundle` in `<snapshot directory>/node-state/`, and every
+  object under `<prefix>/node-state/`. See
+  [The node-state bundle](#the-node-state-bundle).
 - Pre-upgrade snapshots stay in `/var/backups/etcd` even when
   `spec.snapshots.dir` is set. `snapshot list` does not show them then.
 
@@ -384,7 +386,7 @@ plane takes a bundle with every scheduled snapshot and every
 | In S3 | `<prefix>/node-state/`, one level below the snapshots |
 | Retention | The snapshots' `retain`, counted for this host's scheduled bundles alone. The bundle of a `--name` snapshot is kept, as the snapshot is |
 | Holds | `/var/lib/stratum/pki/`, `/var/lib/stratum/config/node.yaml`, `/etc/stratum/`, `/var/lib/stratum/manifests/`, and the cluster config file when it is kept outside `/etc/stratum` |
-| Leaves out | The kubeconfigs and the systemd unit, which `stratum up` writes again. The image archives in `/etc/stratum/images.d/`, which you copy back yourself before the first start |
+| Leaves out | The kubeconfigs and the systemd unit, which `stratum up` writes again. It also leaves out the image archives in `/etc/stratum/images.d/`: copy them back yourself before the first start |
 | Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. A link is taken only when it points to a file beside it. A save checks its bundle the way a restore will, and refuses to keep one a restore would turn away. |
 | Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient, at most 16. |
 

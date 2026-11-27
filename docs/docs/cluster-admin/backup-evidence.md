@@ -238,7 +238,7 @@ an executable path or a storage address.
 | `lastUploadSuccess` | `Maintenance.LastUploadSuccess` | when the upload last succeeded |
 | `warnings` | `Maintenance.Warnings` | the scheduling and retention warnings the loop's last tick ran with |
 | `attemptsKnown` | `Maintenance.AttemptsKnown` | the record was read or does not exist; false means the diagnostics are unknown, never that no attempt was made |
-| `nodeState` | `Maintenance.NodeState` | the latest scheduled tick's attempt to save the node-state bundle taken beside the snapshot; absent when that tick took none. `lastNodeStateSuccess` keeps the history |
+| `nodeState` | `Maintenance.NodeState` | the node-state bundle attempt of the latest scheduled tick that saved a snapshot; absent when that tick took none. A tick whose snapshot fails leaves it as it was. `lastNodeStateSuccess` keeps the history |
 | `nodeStateUpload` | `Maintenance.NodeStateUpload` | the latest attempt to upload that bundle; absent when none was made |
 | `lastNodeStateSuccess` | `Maintenance.LastNodeStateSuccess` | when a node-state bundle was last saved |
 | `lastNodeStateUploadSuccess` | `Maintenance.LastNodeStateUploadSuccess` | when a node-state bundle was last uploaded |

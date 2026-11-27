@@ -473,8 +473,9 @@ because that start otherwise creates a new CA. The commands call Stratum as
     `--allow-hostname-mismatch` if the names differ only in how they are
     written. If the old controller's cluster config was not under
     `/etc/stratum`, the command names its path and writes nothing until you
-    pass `--allow-path <path>`, and writes that file owner-only. Remove the
-    identity file from the machine when the restore is done.
+    pass `--allow-path <path>`, and writes that file owner-only. When the
+    restore is done, remove both copies of the identity from the machine:
+    `<identity-file>` and `./stratum-backup-identity`.
 
     A bundle does not hold the image archives in `/etc/stratum/images.d/`. If
     the old controller had any, copy them back from where you keep them before
@@ -489,7 +490,7 @@ because that start otherwise creates a new CA. The commands call Stratum as
     ```
 
     - If the control plane comes up on an empty datastore, stop it with Ctrl-C
-      and run `systemctl start stratum`. Go on to step 6.
+      and run `sudo systemctl start stratum`. Go on to step 6.
     - If startup refuses with `refusing to start an empty member`, step 1
       confirmed no other control plane runs. Start it again with
       `--confirm-etcd-quorum-lost`:
@@ -501,8 +502,8 @@ because that start otherwise creates a new CA. The commands call Stratum as
         Leave it running in the foreground, and do step 6 in a second
         terminal. On a control plane that joined later, the API stays down
         until the restore. Once step 7 passes, stop it with Ctrl-C and run
-        `systemctl start stratum`. The unit starts without the flag from then
-        on.
+        `sudo systemctl start stratum`. The unit starts without the flag from
+        then on.
 4. Copy the encrypted backup to `/root` on the replacement, then decrypt and
     unpack it at `/`:
 
