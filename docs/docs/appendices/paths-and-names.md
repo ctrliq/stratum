@@ -35,7 +35,8 @@ page that explains them.
 | `/var/lib/stratum/kubeconfig/super-admin.conf` | the `system:masters` kubeconfig Stratum itself uses, on control planes |
 | `/var/lib/stratum/upgrade/in-progress.json` | present from an upgrade's first change until its health gate passes; see [What an upgrade leaves behind](upgrade-reference.md#what-an-upgrade-leaves-behind) |
 | `<file>.bak-<stamp>` | the file an upgrade replaced; see [What an upgrade leaves behind](upgrade-reference.md#what-an-upgrade-leaves-behind) |
-| `/var/backups/etcd/` | local etcd snapshots, unless `spec.snapshots.dir` sets another directory; pre-upgrade snapshots always go here. Local retention prunes only `etcd-snapshot-<host>-<stamp>.db`, and `snapshot list` shows only local files ending in `.db`; see [Snapshot files](snapshot-reference.md#snapshot-files) |
+| `/var/backups/etcd/` | local etcd snapshots, unless `spec.snapshots.dir` sets another directory; pre-upgrade snapshots always go here. Local retention prunes only `etcd-snapshot-<host>-<stamp>.db`, and `snapshot list` shows local files ending in `.db`, then the node-state bundles; see [Snapshot files](snapshot-reference.md#snapshot-files) |
+| `<snapshot directory>/node-state/*.bundle` | the encrypted node-state bundles a control plane takes beside its snapshots when it has a recipient; directory mode `0700`, files `0600`; see [The node-state bundle](snapshot-reference.md#the-node-state-bundle) |
 | `/var/lib/stratum/etcd.pre-restore-<stamp>/`, `/var/lib/stratum/etcd.failed-restore-<stamp>/` | the copies of etcd's data a snapshot restore keeps; `stratum snapshot prune-restores --yes` removes them; see [What restore does to the datastore](snapshot-reference.md#what-restore-does-to-the-datastore) |
 | `/var/lib/stratum/kubelet/` | the kubelet's root directory, in place of `/var/lib/kubelet`; see [Paths](../runtime/index.md#paths) |
 | `/var/lib/stratum/kubelet/pod-resources/kubelet.sock` | the kubelet's pod-resources API, which GPU metrics exporters read; see [Paths](../runtime/index.md#paths) |
@@ -76,6 +77,7 @@ Under `spec` in `/etc/stratum/config.yaml`:
 | `snapshots.intervalHours` | `12` | [Schedule settings](../cluster-admin/snapshot-restore.md#schedule-settings) |
 | `snapshots.disabled` | `false` | [Schedule settings](../cluster-admin/snapshot-restore.md#schedule-settings) |
 | `snapshots.dir` | `/var/backups/etcd`; a relative path or one with a `..` element is ignored | [The snapshot directory](snapshot-reference.md#the-snapshot-directory) |
+| `snapshots.nodeState.recipients` | none: no node-state bundle is taken; at most 16 | [Back up node state with every snapshot](../cluster-admin/snapshot-restore.md#back-up-node-state-with-every-snapshot) |
 | `snapshots.retain` | `5` | [Where retention and the upload target come from](snapshot-reference.md#where-retention-and-the-upload-target-come-from) |
 | `snapshots.s3` | none | [Where retention and the upload target come from](snapshot-reference.md#where-retention-and-the-upload-target-come-from) |
 
