@@ -458,3 +458,26 @@ func TestWaitNodeRegisteredStillRegistersAndStillGivesUp(t *testing.T) {
 		})
 	})
 }
+
+func TestLabelControlPlaneSetsStratumsLabelAndTheKubernetesRole(t *testing.T) {
+	args := filepath.Join(t.TempDir(), "args")
+	fakeKubectl(t, `printf '%s\n' "$@" > `+args)
+	if err := LabelControlPlaneContext(context.Background(), "cp1"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "label\nnode\ncp1\nstratum.ciq.com/control-plane=true\nnode-role.kubernetes.io/control-plane=\n--overwrite\n"
+	if string(got) != want {
+		t.Errorf("kubectl ran with %q, want %q: one write that sets both labels, the role with an empty value", got, want)
+	}
+}
+
+func TestLabelControlPlaneFailsWhenTheWriteFails(t *testing.T) {
+	fakeKubectl(t, "exit 1")
+	if err := LabelControlPlaneContext(context.Background(), "cp1"); err == nil {
+		t.Error("a failed kubectl label returned nil; the caller retries only on an error")
+	}
+}
