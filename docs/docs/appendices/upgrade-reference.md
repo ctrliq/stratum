@@ -107,6 +107,7 @@ check.
 | Lease | `kube-system/stratum-cluster-upgrade` and `kube-system/stratum-cluster-maintenance` | allow one cluster maintenance run at a time: an `upgrade --cluster`, a certificate rotation, renewal or CA migration. A refusal names the holder as `<host>/<pid>/<id>` |
 | Job | `stratum-upgrade-<node>`, labeled `stratum.ciq.com/upgrade=<node>` | runs the staged binary on that node |
 | Node label | `stratum.ciq.com/control-plane=true` | marks control planes, which upgrade first and one at a time |
+| Node label | `node-role.kubernetes.io/control-plane`, with an empty value | the Kubernetes role label, set beside the one above: `kubectl get nodes` shows the node as `control-plane`, and charts that prefer or select control planes find it. The upgrade does not read it |
 | Node annotation | `stratum.ciq.com/upgrade-cordoned=<kind>@<holder>` | who owns the node's cordon during the upgrade; see [Cordon ownership](#cordon-ownership) |
 | Node annotation | `stratum.ciq.com/upgrade-in-progress=<version>` | set before a node's Job starts, removed once the node is back Ready at that version and has passed its [post-upgrade checks](#post-upgrade-node-checks) |
 | Node annotation | `stratum.ciq.com/k8s-version=<version>` | the Kubernetes version the node runs |
@@ -126,9 +127,16 @@ check.
   was going to a different version. Every node sets `k8s-version` and `version`
   on its own Node each time its kubelet starts, and a cluster upgrade sets them
   when it finishes a node.
-- The control-plane label. Every control plane labels its own Node when it
-  starts. If no Node has the label, the upgrade reads the etcd member list to
-  tell control planes from workers, and refuses if it cannot read it.
+- The control-plane labels. Every control plane labels its own Node when it
+  starts, with `stratum.ciq.com/control-plane=true` and with
+  `node-role.kubernetes.io/control-plane`, so a control plane that came up on
+  a release that set only the first gets the second at its next start. The
+  role label is not a taint: a control plane still runs workloads unless you
+  [taint it](../installation/index.md#topologies). A
+  worker cannot give itself either label through `spec.node.labels`. If no
+  Node has `stratum.ciq.com/control-plane=true`, the upgrade reads the etcd
+  member list to tell control planes from workers, and refuses if it cannot
+  read it.
 
 ## How the rollout proceeds
 

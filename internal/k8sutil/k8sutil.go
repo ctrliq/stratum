@@ -41,7 +41,13 @@ import (
 // are done by the annotation.
 const (
 	ControlPlaneLabel = "stratum.ciq.com/control-plane"
-	VersionAnnotation = "stratum.ciq.com/k8s-version"
+	// KubernetesControlPlaneLabel is the role label Kubernetes tooling reads,
+	// with the empty value kubeadm gives it. kubectl shows it as the node's
+	// role, charts select and prefer control planes by it, and the API
+	// server's NodeRestriction refuses a kubelet that sets it on its own
+	// Node, so only an admin's write can put it there.
+	KubernetesControlPlaneLabel = "node-role.kubernetes.io/control-plane"
+	VersionAnnotation           = "stratum.ciq.com/k8s-version"
 	// StratumVersionAnnotation is the stratum build the node runs, the version
 	// shown for it in cluster views.
 	StratumVersionAnnotation = "stratum.ciq.com/version"
@@ -469,13 +475,14 @@ func WaitNodeRegistered(ctx context.Context, hostname string, attempts int) erro
 	return fmt.Errorf("node %s did not register", hostname)
 }
 
-// LabelControlPlaneContext marks a node control-plane (the upgrade orchestrator
-// upgrades CP nodes serially-first), bounded by ctx: the kubectl run is killed
+// LabelControlPlaneContext marks a node control-plane with stratum's own
+// label (the upgrade orchestrator upgrades CP nodes serially-first) and with
+// the Kubernetes role label, bounded by ctx: the kubectl run is killed
 // when ctx ends, so the node-registered task that calls it cannot hold its run
 // group's shutdown join open against a hung apiserver. Best-effort; requires
 // admin.conf, so only callable on a control-plane node.
 func LabelControlPlaneContext(ctx context.Context, node string) error {
-	return KubectlContext(ctx, "label", "node", node, ControlPlaneLabel+"=true", "--overwrite").Run()
+	return KubectlContext(ctx, "label", "node", node, ControlPlaneLabel+"=true", KubernetesControlPlaneLabel+"=", "--overwrite").Run()
 }
 
 // LabelControlPlane marks a node control-plane without a bound; new callers

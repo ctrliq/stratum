@@ -84,6 +84,7 @@ Under `spec` in `/etc/stratum/config.yaml`:
 | Name | Kind | See |
 |---|---|---|
 | `stratum.ciq.com/control-plane=true` | Node label | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
+| `node-role.kubernetes.io/control-plane` | Node label on every control plane, with an empty value | [What a cluster upgrade creates](upgrade-reference.md#what-a-cluster-upgrade-creates) |
 | `runtime.stratum.ciq.com/<handler>=true` | Node label, one per runtime handler the node declares | [Node labels, taints and runtime handlers](../installation/configuration.md#node-labels-taints-and-runtime-handlers) |
 | `stratum.ciq.com/unverified=true:NoSchedule` | Node taint, the startup taint a node can join with | [Releasing and holding a node](../installation/configuration.md#releasing-and-holding-a-node) |
 | `stratum.ciq.com/verified` | Node annotation | [Releasing and holding a node](../installation/configuration.md#releasing-and-holding-a-node) |
