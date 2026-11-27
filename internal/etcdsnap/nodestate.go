@@ -209,6 +209,23 @@ func (r nodeStateResult) err() error {
 // node-state bundle was not, or was not copied off the node.
 var ErrNodeStateIncomplete = errors.New("node-state bundle incomplete")
 
+// NodeStateIncomplete marks err as the reason a save's bundle is missing:
+// the result is ErrNodeStateIncomplete to errors.Is and unwraps to err alone.
+// The marker is never a leaf of its own, so a bundle missing because a
+// signal stopped the save is still only a cancellation to
+// interrupt.CancellationOnly, and that stop still exits clean.
+func NodeStateIncomplete(err error) error { return &incompleteError{err: err} }
+
+type incompleteError struct{ err error }
+
+func (e *incompleteError) Error() string {
+	return ErrNodeStateIncomplete.Error() + ": " + e.err.Error()
+}
+
+func (e *incompleteError) Unwrap() error { return e.err }
+
+func (e *incompleteError) Is(target error) bool { return target == ErrNodeStateIncomplete }
+
 // ListNodeState lists the node-state bundles beside the snapshots in dir and,
 // when s3 is a target, under it. Like List, a failed S3 listing returns the
 // local ones with the error.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/ctrliq/stratum/internal/backupevidence"
 	"github.com/ctrliq/stratum/internal/etcdsnap"
+	"github.com/ctrliq/stratum/internal/interrupt"
 	"github.com/ctrliq/stratum/internal/nodebackup"
 	"github.com/ctrliq/stratum/internal/objstore"
 	"github.com/ctrliq/stratum/internal/version"
@@ -558,5 +559,25 @@ func TestEvidenceForgetsTheBundleOnceNoneIsTaken(t *testing.T) {
 	}
 	if rec.LastNodeStateSuccess.IsZero() {
 		t.Error("the last bundle success was dropped; it stays as history")
+	}
+}
+
+// The incomplete marker never stands as an error of its own: a bundle missing
+// only because the save was cancelled is only a cancellation, so a
+// signal-stopped save still exits clean, while the marker and its message
+// stay.
+func TestTheIncompleteMarkerIsNotALeaf(t *testing.T) {
+	stopped := etcdsnap.NodeStateIncomplete(fmt.Errorf("the node-state bundle was not saved: %w", context.Canceled))
+	if !errors.Is(stopped, etcdsnap.ErrNodeStateIncomplete) || !errors.Is(stopped, context.Canceled) {
+		t.Fatalf("%v is not both the marker and its cause", stopped)
+	}
+	if want := "node-state bundle incomplete: the node-state bundle was not saved: context canceled"; stopped.Error() != want {
+		t.Errorf("message = %q, want %q", stopped.Error(), want)
+	}
+	if !interrupt.CancellationOnly(errors.Join(fmt.Errorf("upload: %w", context.Canceled), stopped)) {
+		t.Errorf("a cancelled upload and a bundle missing for the same cancellation read as a failure: %v", stopped)
+	}
+	if interrupt.CancellationOnly(etcdsnap.NodeStateIncomplete(errors.New("pki unreadable"))) {
+		t.Error("a bundle that failed on its own read as a cancellation")
 	}
 }

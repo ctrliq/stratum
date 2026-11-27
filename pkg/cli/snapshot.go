@@ -88,15 +88,18 @@ func newSnapshotSaveCommand() *cobra.Command {
 				ns, nerr := loadNodeStateBackup()
 				switch {
 				case nerr != nil:
-					nodeStateErr = fmt.Errorf("%w: no bundle was taken, because the cluster config could not be read for its recipients: %w",
-						etcdsnap.ErrNodeStateIncomplete, nerr)
+					nodeStateErr = etcdsnap.NodeStateIncomplete(
+						fmt.Errorf("no bundle was taken, because the cluster config could not be read for its recipients: %w", nerr))
 				case ns == nil:
 					fmt.Fprintln(os.Stderr, "note: no node-state bundle is taken with this snapshot: spec.snapshots.nodeState names no recipient")
 				}
 				opts.NodeState = ns
 			}
 			p, err := saveSnapshot(ctx, os.Stdout, opts)
-			if err == nil || (p != "" && errors.Is(err, etcdsnap.ErrNodeStateIncomplete)) {
+			// A snapshot that exists is reported with the reason it has no
+			// bundle, whatever else went wrong with it: a failed upload
+			// beside it must not hide that the backup set is incomplete.
+			if p != "" {
 				err = errors.Join(err, nodeStateErr)
 			}
 			if err != nil && interrupt.ExpectedStop(ctx, err) {

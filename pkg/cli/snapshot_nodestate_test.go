@@ -12,9 +12,13 @@ import (
 	"errors"
 	"io"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -312,6 +316,95 @@ func TestSnapshotSaveTakesTheConfiguredNodeStateBundle(t *testing.T) {
 	}
 	if err := run("--no-node-state"); err != nil {
 		t.Errorf("save --no-node-state with an unreadable config: %v, want success: no bundle was asked for", err)
+	}
+}
+
+// A save whose upload failed and whose recipients could not be read reports
+// both: the failed upload must not hide that the snapshot has no bundle.
+func TestSnapshotSaveReportsAFailedUploadAndAMissingBundleTogether(t *testing.T) {
+	useSnapshotDir(t)
+	oldSave, oldLoad := saveSnapshot, loadNodeStateBackup
+	t.Cleanup(func() { saveSnapshot, loadNodeStateBackup = oldSave, oldLoad })
+	loadNodeStateBackup = func() (*etcdsnap.NodeState, error) { return nil, errors.New("config.yaml: unreadable") }
+	upload := errors.New("S3 upload failed: denied")
+	saveSnapshot = func(_ context.Context, _ io.Writer, o etcdsnap.SaveOptions) (string, error) {
+		return filepath.Join(o.Dir, "x.db"), upload
+	}
+	cmd := newSnapshotSaveCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs(nil)
+	err := cmd.Execute()
+	if !errors.Is(err, upload) || !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) || !strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("save = %v, want the failed upload and the bundle that was not taken, both", err)
+	}
+}
+
+// A signal that arrives once the snapshot exists, while its S3 upload runs,
+// stops the save cleanly: the stop message and exit 0, not an incomplete
+// backup set. The bundle the stop left untaken is a consequence of the
+// signal, not a failure of its own. The save runs in a child process, as a
+// real signal is the stimulus and the save prints to the process's stdout.
+func TestSnapshotSaveStoppedAfterTheSnapshotExitsClean(t *testing.T) {
+	if os.Getenv("STRATUM_SNAPSHOT_SAVE_SIGNAL_CHILD") == "1" {
+		dir := realTempDir(t)
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "etcdctl"), []byte("#!/bin/sh\nprintf snapshot > \"$3\"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		oldBin, oldCfg, oldSave, oldLoad := version.BinDir, loadSnapshotConfig, saveSnapshot, loadNodeStateBackup
+		defer func() {
+			version.BinDir, loadSnapshotConfig, saveSnapshot, loadNodeStateBackup = oldBin, oldCfg, oldSave, oldLoad
+		}()
+		version.BinDir = bin
+		saveSnapshot = etcdsnap.SaveContext
+		// The snapshot's upload is the step the signal lands in: the bucket
+		// signals this process and holds the request until the save gives up
+		// on it or the test is over.
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+				t.Error(err)
+			}
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() {
+			close(release)
+			srv.Close()
+		}()
+		loadSnapshotConfig = func() (etcdsnap.Config, error) {
+			return etcdsnap.Config{Dir: dir, S3: objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}}, nil
+		}
+		loadNodeStateBackup = func() (*etcdsnap.NodeState, error) { return &etcdsnap.NodeState{NodeIP: "10.0.0.1"}, nil }
+		cmd := newSnapshotSaveCommand()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		cmd.SetArgs(nil)
+		err := cmd.Execute()
+		var exit *ErrExitCode
+		if !errors.As(err, &exit) || exit.Code != 0 || !errors.Is(err, context.Canceled) {
+			t.Fatalf("a save stopped by a signal after its snapshot returned %v, want a clean stop that exits 0", err)
+		}
+		if snaps, _ := filepath.Glob(filepath.Join(dir, "*.db")); len(snaps) != 1 {
+			t.Fatalf("snapshots = %v, want the one taken before the signal", snaps)
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSnapshotSaveStoppedAfterTheSnapshotExitsClean$")
+	cmd.Env = append(os.Environ(), "STRATUM_SNAPSHOT_SAVE_SIGNAL_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("signal child failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "snapshot save stopped (signal received)") || strings.Contains(string(out), "node-state bundle incomplete") {
+		t.Errorf("a save stopped by a signal after its snapshot printed:\n%s\nwant the stop message and no incomplete backup set", out)
 	}
 }
 
