@@ -88,6 +88,7 @@ func TestNodeStateSourcesNamesAConfigKeptElsewhere(t *testing.T) {
 		filepath.Join(version.ConfDir, "config.yaml"):   "",
 		filepath.Join(version.ConfDir, "sub", "c.yaml"): "",
 		"/srv/site/cluster.yaml":                        "/srv/site/cluster.yaml",
+		"/srv/cluster.conf":                             "/srv/cluster.conf",
 		version.ConfDir + "-other/config.yaml":          version.ConfDir + "-other/config.yaml",
 		"relative.yaml":                                 "",
 	} {

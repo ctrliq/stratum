@@ -473,14 +473,17 @@ func testCA(t *testing.T) (certPEM, keyPEM string) {
 // A cluster config the node kept outside its configuration directory is
 // named before anything is written, and nothing is written until the operator
 // allows its path: a node restored without the config it starts with would
-// have to be wiped to try again.
+// have to be wiped to try again. The config is named as `stratum up --config`
+// allows, not only .yaml. The path comes from the bundle, so the --allow-path
+// the refusal tells the operator to run quotes it for the shell: a path with a
+// space or a command substitution in it stays one argument and runs nothing.
 func TestRestoreNodeStateSettlesAnOutsideConfigBeforeItWrites(t *testing.T) {
 	nodeStateRoots(t)
 	ca, caKey := testCA(t)
 	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.crt"), ca)
 	writeNodeFile(t, filepath.Join(version.PKIDir, "ca.key"), caKey)
 	writeNodeFile(t, nodestate.StatePath(), "role: controller\n")
-	extra := filepath.Join(t.TempDir(), "site", "cluster.yaml")
+	extra := filepath.Join(t.TempDir(), "site conf;$(id)", "cluster.conf")
 	writeNodeFile(t, extra, "spec: {site: true}\n")
 	id, err := nodebackup.GenerateIdentity()
 	if err != nil {
@@ -510,8 +513,8 @@ func TestRestoreNodeStateSettlesAnOutsideConfigBeforeItWrites(t *testing.T) {
 	nodeStateHostname = func() (string, error) { return "cp-1", nil }
 
 	out, err := runRestoreNodeState(t, bundle, "--identity-file", identity, "--yes")
-	if err == nil || !strings.Contains(err.Error(), "--allow-path "+extra) {
-		t.Fatalf("error = %v, want one naming --allow-path %s", err, extra)
+	if err == nil || !strings.Contains(err.Error(), "--allow-path '"+extra+"' ") {
+		t.Fatalf("error = %v, want one naming --allow-path with %s quoted for the shell", err, extra)
 	}
 	if caKeyRestored() {
 		t.Fatal("the CA key was written before the outside config's path was settled")

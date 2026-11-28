@@ -344,7 +344,10 @@ func writeArchive(m Manifest, entries []entry) ([]byte, error) {
 // not taken from what the bundle says of itself.
 func Inspect(plain []byte, dst Destination) (Manifest, error) {
 	m, _, _, err := readBundle(plain, dst)
-	return m, err
+	if err != nil {
+		return Manifest{}, fmt.Errorf("%w; nothing was restored", err)
+	}
+	return m, nil
 }
 
 func openArchive(plain []byte) (*tar.Reader, error) {
@@ -375,7 +378,7 @@ func readManifest(tr *tar.Reader) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("node-state bundle manifest is format %d; this stratum reads format %d", m.Format, formatVersion)
 	}
 	if err := checkManifest(m); err != nil {
-		return Manifest{}, fmt.Errorf("node-state bundle manifest: %w; nothing was restored", err)
+		return Manifest{}, fmt.Errorf("node-state bundle manifest: %w", err)
 	}
 	return m, nil
 }
@@ -404,14 +407,12 @@ func checkManifest(m Manifest) error {
 	}
 	// The cluster config kept outside the configuration directory is the one
 	// file a restore may write outside node state. It is the config the node
-	// ran with and a YAML file, never a path of the bundle's choosing.
-	if m.ExtraConfig != "" {
-		if m.ExtraConfig != m.ConfigPath {
-			return fmt.Errorf("extraConfig %q is not the config the node ran with, %q", m.ExtraConfig, m.ConfigPath)
-		}
-		if ext := filepath.Ext(m.ExtraConfig); ext != ".yaml" && ext != ".yml" {
-			return fmt.Errorf("extraConfig %q is not a .yaml or .yml file", m.ExtraConfig)
-		}
+	// ran with, whatever its name: `stratum up --config` takes any file. Its
+	// name is no safeguard; what keeps it in its place is that a restore
+	// writes it only at the path it was recorded under, only when the
+	// operator allows that same path, and as a regular owner-only file.
+	if m.ExtraConfig != "" && m.ExtraConfig != m.ConfigPath {
+		return fmt.Errorf("extraConfig %q is not the config the node ran with, %q", m.ExtraConfig, m.ConfigPath)
 	}
 	return nil
 }
@@ -452,7 +453,7 @@ type Restored struct {
 func Extract(plain []byte, dst Destination) (Restored, error) {
 	_, entries, skipped, err := readBundle(plain, dst)
 	if err != nil {
-		return Restored{}, err
+		return Restored{}, fmt.Errorf("%w; nothing was restored", err)
 	}
 	res := Restored{ExtraConfigSkipped: skipped}
 	// The allowlist is of names, and a write follows a link that is already
@@ -481,6 +482,9 @@ func Extract(plain []byte, dst Destination) (Restored, error) {
 // lands inside dst, the cluster CA fingerprint the manifest states is the
 // certificate's, and the CA key is that certificate's. It returns the
 // entries to write and the path of an outside config file it left out.
+// A save checks its own bundle with it too, so its errors say what is wrong
+// with the bundle and leave what follows to the caller: a restore adds that
+// nothing was restored, a save that it kept no bundle.
 func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error) {
 	fail := func(err error) (Manifest, []entry, string, error) { return Manifest{}, nil, "", err }
 	tr, err := openArchive(plain)
@@ -517,14 +521,14 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 		delete(listed, path)
 		extra := m.ExtraConfig != "" && path == m.ExtraConfig
 		if extra && h.Typeflag != tar.TypeReg {
-			return fail(fmt.Errorf("node-state bundle holds its cluster config %s as something other than a file; nothing was restored", path))
+			return fail(fmt.Errorf("node-state bundle holds its cluster config %s as something other than a file", path))
 		}
 		if !dst.allows(path, m.ExtraConfig) {
 			if extra {
 				skipped = path
 				continue
 			}
-			return fail(fmt.Errorf("node-state bundle holds %s, which is not node state; nothing was restored", path))
+			return fail(fmt.Errorf("node-state bundle holds %s, which is not node state", path))
 		}
 		e := entry{File: want}
 		if extra {
@@ -540,7 +544,7 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 		case tar.TypeSymlink:
 			if want.Link != h.Linkname || h.Linkname == "" || h.Linkname == "." || h.Linkname == ".." ||
 				strings.ContainsRune(h.Linkname, filepath.Separator) || !dst.linkAllowed(path) {
-				return fail(fmt.Errorf("node-state bundle holds a link at %s it may not; nothing was restored", path))
+				return fail(fmt.Errorf("node-state bundle holds a link at %s it may not", path))
 			}
 		case tar.TypeReg:
 			if h.Size > maxFileBytes || h.Size != want.Size {
@@ -573,15 +577,15 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 	// sealed it wrote that too. The fingerprint a restore shows and pins is
 	// the certificate's own.
 	if got := certFingerprint(caCert); got != m.ClusterCASHA256 {
-		return fail(fmt.Errorf("node-state bundle states cluster CA %s and carries %s; nothing was restored",
+		return fail(fmt.Errorf("node-state bundle states cluster CA %s and carries %s",
 			orNone(m.ClusterCASHA256), orNone(got)))
 	}
 	if caCert == nil || caKey == nil {
 		return fail(errors.New("node-state bundle does not hold the cluster CA certificate and its key; a node started " +
-			"from it would mint a new CA or refuse to start. Nothing was restored"))
+			"from it would mint a new CA or refuse to start"))
 	}
 	if err := caKeyMatches(caCert, caKey); err != nil {
-		return fail(fmt.Errorf("node-state bundle: %w; nothing was restored", err))
+		return fail(fmt.Errorf("node-state bundle: %w", err))
 	}
 	// A link in a bundle points to a file beside it. An entry beneath one
 	// would be written through it, into whatever directory it named.
@@ -594,7 +598,7 @@ func readBundle(plain []byte, dst Destination) (Manifest, []entry, string, error
 	for _, e := range entries {
 		for dir := filepath.Dir(e.Path); dir != "/" && dir != "."; dir = filepath.Dir(dir) {
 			if links[dir] {
-				return fail(fmt.Errorf("node-state bundle holds %s beneath the link %s; nothing was restored", e.Path, dir))
+				return fail(fmt.Errorf("node-state bundle holds %s beneath the link %s", e.Path, dir))
 			}
 		}
 	}
