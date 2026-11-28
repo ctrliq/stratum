@@ -86,7 +86,11 @@ bundle="$KEEP/${taken##*/}"
 $K -n default create configmap after-snapshot --from-literal=at=after >/dev/null
 
 # --- the machine is lost ---------------------------------------------
-if out=$("$STRATUM" uninstall --yes --assume-no-foreign-runtimes 2>&1); then pass "the node was uninstalled"; else fail "uninstall failed: $out"; fi
+if out=$("$STRATUM" uninstall --yes --assume-no-foreign-runtimes 2>&1); then
+  pass "the node was uninstalled"
+else
+  fail "uninstall failed: $out"; done_testing; exit 1
+fi
 wait "$STRATUM_PID" 2>/dev/null || true
 STRATUM_PID=
 if [[ -e $ROOT/pki || -e $ROOT/config/node.yaml ]]; then
