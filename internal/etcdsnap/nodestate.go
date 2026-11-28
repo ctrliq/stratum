@@ -63,7 +63,7 @@ func nodeStateNameFor(host, stamp, snapshot string, named bool) string {
 func hostNodeState(host string) func(name string) bool {
 	hp := nodeStatePrefix + host + "-"
 	return func(name string) bool {
-		ts, ok := strings.CutPrefix(name, hp)
+		ts, ok := cutHostPrefix(name, hp)
 		if !ok {
 			return false
 		}

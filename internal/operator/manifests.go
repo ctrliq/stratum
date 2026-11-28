@@ -76,8 +76,8 @@ import (
 	"k8s.io/client-go/restmapper"
 
 	"github.com/ctrliq/stratum/internal/addons"
-	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/k8sutil"
+	"github.com/ctrliq/stratum/internal/nodestate"
 )
 
 // manifestResync forces a periodic re-apply even when a file's bytes are
@@ -96,8 +96,11 @@ const CoreDNSStack = "coredns"
 // migration to the cluster inventory has closed.
 const appliedRecordName = ".applied.json"
 
-// inventoryHostname follows the short hostname used to register the Node.
-var inventoryHostname = host.Hostname
+// inventoryHostname is the name this node's Node registered under: the one
+// node.yaml saved, so an operator restarted after the host was renamed keeps
+// publishing under the Node that exists. Only a node with no saved name falls
+// back to the current hostname.
+var inventoryHostname = nodestate.RegisteredNodeName
 
 // manifestDeployer applies and prunes the YAML stacks of one manifests
 // directory. One value per operator process, built by Run and driven by the

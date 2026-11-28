@@ -196,6 +196,21 @@ func TestRunStopsContainersBeforeHostProcesses(t *testing.T) {
 	}
 }
 
+// A worker an earlier release joined saved its hostname with its case, while
+// its kubelet registered the Node lowercased: the mark goes to that Node.
+func TestRunMarksTheLowercasedSavedNodeName(t *testing.T) {
+	events, fx := runNode(t, "worker")
+	fx.loadNodeState = func() (*nodestate.NodeState, error) {
+		return &nodestate.NodeState{Role: "worker", Hostname: "Node-A"}, nil
+	}
+	if err := runUninstall(io.Discard, true, fx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(*events, "mark node-a") {
+		t.Errorf("teardown = %q, want the mark on node-a", *events)
+	}
+}
+
 // TestRunDeletesNothingWhenContainersCannotBeStopped: a container that cannot
 // be stopped keeps its shim, so the node's state stays where it is.
 func TestRunDeletesNothingWhenContainersCannotBeStopped(t *testing.T) {
@@ -228,8 +243,10 @@ func TestNodeNoticeSaysWhatIsLeftInTheCluster(t *testing.T) {
 		{"worker", false, []string{"Node object stays", "kubectl delete node node-a"}},
 		{"controller", false, []string{"etcdctl member remove", "kubectl delete node node-a"}},
 	} {
+		// Saved with its case, as an earlier release saved a worker's
+		// hostname: the Node it names is the lowercased one.
 		fx.loadNodeState = func() (*nodestate.NodeState, error) {
-			return &nodestate.NodeState{Role: tc.role, Hostname: "node-a"}, nil
+			return &nodestate.NodeState{Role: tc.role, Hostname: "Node-A"}, nil
 		}
 		got := nodeNotice(fx, tc.marked)
 		for _, w := range tc.want {

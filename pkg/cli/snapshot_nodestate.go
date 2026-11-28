@@ -28,7 +28,7 @@ import (
 // neither the node's config nor its name.
 var (
 	loadNodeStateBackup = cluster.LoadNodeStateBackup
-	nodeStateHostname   = host.Hostname
+	nodeStateHostname   = host.ShortName
 	nodeStateS3Config   = etcdsnap.LoadConfigOr
 )
 

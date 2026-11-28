@@ -1105,7 +1105,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 		return unsetEffect("loadNodeState")
 	}
 	if st, err := fx.loadNodeState(); err == nil && st.Role == "worker" && st.Hostname != "" {
-		host = st.Hostname
+		host = st.NodeName()
 		if fx.nodeMarkerFn == nil {
 			return unsetEffect("nodeMarkerFn")
 		}
@@ -1396,18 +1396,19 @@ func nodeNotice(fx *hostEffects, marked bool) string {
 	if err != nil || st.Hostname == "" {
 		return ""
 	}
+	node := st.NodeName()
 	if st.Role == "worker" && marked {
 		return fmt.Sprintf("This worker's Node object is removed by the control plane once the worker has been gone for\n"+
 			"2 minutes. On a cluster that runs no operator, remove it from a control plane:\n"+
-			"  kubectl delete node %s", st.Hostname)
+			"  kubectl delete node %s", node)
 	}
 	if st.Role == "worker" {
 		return fmt.Sprintf("This worker's Node object stays in the cluster. Remove it from a control plane:\n"+
-			"  kubectl delete node %s", st.Hostname)
+			"  kubectl delete node %s", node)
 	}
 	return fmt.Sprintf("If this control plane was part of an HA cluster, remove its etcd member and its Node from a\n"+
 		"remaining control plane:\n  stratum etcdctl member remove <member-id>   (see: stratum etcdctl member list)\n"+
-		"  kubectl delete node %s", st.Hostname)
+		"  kubectl delete node %s", node)
 }
 
 // unmountState lazy-unmounts every mount point below the directories uninstall

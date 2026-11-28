@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/nodejob"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/pki"
@@ -115,7 +116,7 @@ func rollbackCheckClusterNodes(t *testing.T) (string, func() (kubernetes.Interfa
 	prep(t)
 	objs := append(thisCPNode(t), certNodeFixture("w1", false))
 	cs := fakeAdminClientset(t, objs...)
-	me, _ := os.Hostname()
+	me, _ := host.NodeName()
 	return me, func() (kubernetes.Interface, error) { return cs, nil }
 }
 

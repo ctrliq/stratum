@@ -30,7 +30,7 @@ import (
 // stand in for a host it cannot prepare (dirs, sysctls, modules, firewalld) or
 // detect addresses on. Behavior-neutral indirections over internal/host.
 var (
-	hostHostname      = host.Hostname
+	hostHostname      = host.NodeName
 	hostDirs          = host.Dirs
 	hostPrereqs       = host.Prereqs
 	hostTrustPodCIDRs = host.TrustPodCIDRs

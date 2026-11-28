@@ -925,7 +925,7 @@ func RotateCAClusterContext(ctx context.Context, w io.Writer, o CARotateOptions,
 	if err != nil {
 		return err
 	}
-	me, err := host.Hostname()
+	me, err := host.NodeName()
 	if err != nil {
 		return err
 	}

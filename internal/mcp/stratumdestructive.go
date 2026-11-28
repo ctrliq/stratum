@@ -318,10 +318,10 @@ var thisNodeName = func() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read this node's state: %w", err)
 	}
-	if st.Hostname == "" {
-		return "", fmt.Errorf("this node's state records no node name")
+	if n := st.NodeName(); n != "" {
+		return n, nil
 	}
-	return strings.ToLower(st.Hostname), nil
+	return "", fmt.Errorf("this node's state records no node name")
 }
 
 // localCluster is this node's own cluster, through its super-admin.conf, with the

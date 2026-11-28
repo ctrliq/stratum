@@ -1,9 +1,9 @@
 package certs
 
 import (
-	"os"
 	"testing"
 
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/pki"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -15,7 +15,9 @@ func prep(t *testing.T) {
 	if err := pki.GenerateAll("cp1", "10.0.0.9", nil); err != nil {
 		t.Fatalf("GenerateAll: %v", err)
 	}
-	if _, err := os.Hostname(); err != nil {
-		t.Skip("no hostname")
+	// The code under test looks this node up by host.NodeName, which refuses
+	// a hostname no Node can take: such a dev host skips rather than fails.
+	if _, err := host.NodeName(); err != nil {
+		t.Skip("no usable hostname: ", err)
 	}
 }

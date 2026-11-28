@@ -23,6 +23,7 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/utils/ptr"
 
 	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/pki"
@@ -130,6 +131,27 @@ func TestBuildEndpointSlice(t *testing.T) {
 		es := buildEndpointSlice("cp-1", "10.0.0.5,fd00::5")
 		if es.AddressType != discoveryv1.AddressTypeIPv4 || es.Endpoints[0].Addresses[0] != "10.0.0.5" {
 			t.Errorf("dual-stack primary = %v/%v", es.AddressType, es.Endpoints[0].Addresses)
+		}
+	})
+	// The endpoint names the Node, which the apiserver validates: the
+	// hostname cut at the first dot and lowercased. The slice keeps the name
+	// it has always had, so an upgrade does not rename a running node's slice.
+	t.Run("the endpoint names the Node, the slice keeps its name", func(t *testing.T) {
+		for _, tc := range []struct{ hostname, node, slice string }{
+			{"HK-k8s-ctrl-01", "hk-k8s-ctrl-01", webhookServiceName + "-hk-k8s-ctrl-01"},
+			{"cp1.Example.COM", "cp1", webhookServiceName + "-cp1.example.com"},
+			{"cp-1", "cp-1", webhookServiceName + "-cp-1"},
+		} {
+			es := buildEndpointSlice(tc.hostname, "10.0.0.5")
+			if got := es.Endpoints[0].NodeName; got == nil || *got != tc.node {
+				t.Errorf("hostname %q: endpoint nodeName = %q, want %q", tc.hostname, ptr.Deref(got, "<unset>"), tc.node)
+			}
+			if es.Name != tc.slice {
+				t.Errorf("hostname %q: slice name = %q, want %q", tc.hostname, es.Name, tc.slice)
+			}
+		}
+		if got := buildEndpointSlice("k8s_ctrl", "10.0.0.5").Endpoints[0].NodeName; got != nil {
+			t.Errorf("a hostname that is no node name set endpoint nodeName %q; want it unset", *got)
 		}
 	})
 }

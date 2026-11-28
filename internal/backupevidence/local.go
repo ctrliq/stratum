@@ -112,7 +112,7 @@ type LocalResult struct {
 var (
 	// localHostname resolves this host's short name when the options do not
 	// scope the walk to a node.
-	localHostname = host.Hostname
+	localHostname = host.ShortName
 	// localOpen opens the snapshot directory for the paged walk.
 	localOpen = func(path string) (*os.File, error) {
 		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)

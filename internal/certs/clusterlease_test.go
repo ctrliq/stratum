@@ -54,6 +54,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/maintlease"
 	"github.com/ctrliq/stratum/internal/pki"
@@ -156,9 +157,11 @@ func assertNoNodeJob(t *testing.T, cs *fake.Clientset) {
 // more control plane, the smallest cluster the --cluster entry points accept.
 func thisCPNode(t *testing.T) []runtime.Object {
 	t.Helper()
-	me, err := os.Hostname()
+	// The name the code under test looks itself up by: the Node name, not
+	// the raw hostname, which can differ in case or carry a domain.
+	me, err := host.NodeName()
 	if err != nil {
-		t.Skip("no hostname")
+		t.Skip("no usable hostname")
 	}
 	return []runtime.Object{
 		certNodeFixture(me, true),

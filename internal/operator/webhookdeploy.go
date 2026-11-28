@@ -42,6 +42,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
 
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/k8sutil"
 	"github.com/ctrliq/stratum/internal/netcfg"
 	"github.com/ctrliq/stratum/internal/pki"
@@ -401,7 +402,18 @@ func endpointSliceName(nodeName string) string {
 }
 
 // buildEndpointSlice is the pure EndpointSlice builder for one node's endpoint.
+// nodeName is the raw OS hostname the slice has always been named after, kept
+// so an upgrade does not rename a running node's slice. The endpoint's
+// nodeName must be the Node's name, which is that hostname cut at the first
+// dot and lowercased: the apiserver refuses a slice whose endpoint names an
+// invalid node name, as a mixed-case hostname is, and with failurePolicy Fail
+// that blocks every HelmChart create. A hostname that is no node name at all
+// leaves the optional field unset.
 func buildEndpointSlice(nodeName, nodeIP string) *discoveryv1.EndpointSlice {
+	var endpointNode *string
+	if n, err := host.NodeNameOf(nodeName); err == nil {
+		endpointNode = ptr.To(n)
+	}
 	ip := primaryIP(nodeIP)
 	addrType := discoveryv1.AddressTypeIPv4
 	if strings.Contains(ip, ":") {
@@ -421,7 +433,7 @@ func buildEndpointSlice(nodeName, nodeIP string) *discoveryv1.EndpointSlice {
 		Endpoints: []discoveryv1.Endpoint{{
 			Addresses:  []string{ip},
 			Conditions: discoveryv1.EndpointConditions{Ready: ptr.To(true)},
-			NodeName:   ptr.To(nodeName),
+			NodeName:   endpointNode,
 		}},
 		Ports: []discoveryv1.EndpointPort{{
 			Name:     ptr.To("https"),

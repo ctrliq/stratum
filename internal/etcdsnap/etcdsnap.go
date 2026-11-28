@@ -72,13 +72,25 @@ func ScheduledName(host, ts string) string {
 // (what Prune keys on so a node only prunes its own copies, locally and in S3).
 func scheduledHostPrefix(host string) string { return scheduledPrefix + host + "-" }
 
+// cutHostPrefix is strings.CutPrefix with the host prefix compared without
+// regard to case. Names are lowercased now, but a host an earlier release ran
+// under a mixed-case hostname wrote its files with that case, and they stay
+// this host's to prune. No two Nodes take names that differ only in case, so a
+// shared store holds no other host's files under it.
+func cutHostPrefix(name, prefix string) (string, bool) {
+	if len(name) < len(prefix) || !strings.EqualFold(name[:len(prefix)], prefix) {
+		return "", false
+	}
+	return name[len(prefix):], true
+}
+
 // hostSnapshot matches host's scheduled snapshot names: the host prefix, then
 // exactly one NowStamp and ".db". A bare prefix match would also take host
 // "cp-2"'s snapshots for host "cp"'s, and prune them first in a shared bucket.
 func hostSnapshot(host string) func(name string) bool {
 	hp := scheduledHostPrefix(host)
 	return func(name string) bool {
-		ts, ok := strings.CutPrefix(name, hp)
+		ts, ok := cutHostPrefix(name, hp)
 		if !ok {
 			return false
 		}
@@ -144,7 +156,7 @@ func snapshotContext(ctx context.Context, w io.Writer, path string) error {
 // and retention.
 type SaveOptions struct {
 	Dir    string           // local dir (default defaultSnapshotDir)
-	Host   string           // node name for the file name (default host.Hostname, short)
+	Host   string           // node name for the file name (default host.ShortName)
 	Name   string           // explicit file name (default ScheduledName(host, now))
 	S3     *objstore.Target // optional off-box copy (nil / !Enabled = local only)
 	Retain int              // keep newest N of THIS host's scheduled snapshots (0 = keep all)
@@ -193,10 +205,10 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 	}
 	hn := o.Host
 	if hn == "" {
-		// Short name (host.Hostname strips the domain) to match the naming used
+		// Short name (host.ShortName strips the domain) to match the naming used
 		// by `snapshot prune`, rejoin, and the rest of the codebase — an FQDN here
 		// would make manual prune (which keys on the short name) never match.
-		hn, _ = host.Hostname()
+		hn, _ = host.ShortName()
 	}
 	stamp := NowStamp()
 	name := o.Name

@@ -1076,7 +1076,7 @@ func MigrateEtcdCAClusterContext(ctx context.Context, w io.Writer, o EtcdCAOptio
 	if err != nil {
 		return err
 	}
-	me, err := host.Hostname()
+	me, err := host.NodeName()
 	if err != nil {
 		return err
 	}

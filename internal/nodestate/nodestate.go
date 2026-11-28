@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/boundedfile"
 	"github.com/ctrliq/stratum/internal/etcddata"
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/netcfg/netdefault"
 	"github.com/ctrliq/stratum/internal/profile"
 	"github.com/ctrliq/stratum/internal/version"
@@ -260,6 +262,39 @@ func stateForMutation() (*NodeState, error) {
 		return &NodeState{}, nil
 	}
 	return nil, err
+}
+
+// NodeName is the name this node's Node registered under: the saved Hostname,
+// lowercased as the kubelet lowercases it. A node an earlier release set up on
+// a mixed-case hostname saved the name with its case. It is "" when the state
+// records no hostname.
+func (st *NodeState) NodeName() string {
+	if st == nil {
+		return ""
+	}
+	return strings.ToLower(st.Hostname)
+}
+
+// RegisteredName is the name this node's Node registered under: NodeName, or,
+// with no name saved, the name the current hostname registers as. It answers
+// what was registered; host.NodeName answers what the hostname would register
+// as now, and the two differ on a host renamed since it joined.
+func (st *NodeState) RegisteredName() (string, error) {
+	if n := st.NodeName(); n != "" {
+		return n, nil
+	}
+	return host.NodeName()
+}
+
+// RegisteredNodeName is RegisteredName for the state saved on this host. With
+// no node.yaml it falls back to the hostname; a node.yaml that cannot be read
+// is an error, not a guess.
+func RegisteredNodeName() (string, error) {
+	st, err := LoadState()
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("read this node's registered name: %w", err)
+	}
+	return st.RegisteredName()
 }
 
 // LoadState reads the persisted node state.

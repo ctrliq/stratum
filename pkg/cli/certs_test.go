@@ -707,7 +707,7 @@ func stageCertsCheckHost(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	h, err := host.Hostname()
+	h, err := host.NodeName()
 	if err != nil {
 		t.Fatal(err)
 	}

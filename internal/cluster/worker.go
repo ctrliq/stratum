@@ -242,6 +242,20 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		// A worker joined by an earlier release under a mixed-case hostname
+		// saved that name, but its kubelet registered the Node lowercased,
+		// as every kubelet does. Saved as registered, so the labels, taint
+		// checks and every later start address the Node that exists.
+		if registered := st.NodeName(); registered != st.Hostname {
+			if err := nodestate.Mutate(func(cur *NodeState) error {
+				cur.Hostname = strings.ToLower(cur.Hostname)
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("save this worker's node name %s as its kubelet registered it: %w", registered, err)
+			}
+			fmt.Printf("stratum: node name %s is now saved as %s, the name its kubelet registered\n", st.Hostname, registered)
+			st.Hostname = registered
+		}
 		if len(replaced) > 0 {
 			if err := nodestate.Mutate(func(cur *NodeState) error {
 				if o.Node.Labels != nil {

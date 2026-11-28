@@ -12,6 +12,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+
+	"github.com/ctrliq/stratum/internal/host"
+	"github.com/ctrliq/stratum/internal/nodestate"
+	"github.com/ctrliq/stratum/internal/version"
 )
 
 func TestPrunePreservesConcurrentMigrationContribution(t *testing.T) {
@@ -161,7 +165,7 @@ func TestLooseOwnershipSurvivesRemovalOfItsOriginalAPIVersion(t *testing.T) {
 func TestManifestInventoryUsesRegisteredNodeIdentity(t *testing.T) {
 	saved := inventoryHostname
 	t.Cleanup(func() { inventoryHostname = saved })
-	// host.Hostname supplies this short form even if the kernel hostname is
+	// host.NodeName supplies this short form even if the kernel hostname is
 	// fully qualified; the Node registers under the same short form.
 	inventoryHostname = func() (string, error) { return "registered-cp", nil }
 	d, err := newManifestDeployer(&rest.Config{Host: "https://127.0.0.1"}, t.TempDir())
@@ -189,5 +193,38 @@ func TestManifestInventoryPropagatesNodeIdentityFailure(t *testing.T) {
 	inventoryHostname = func() (string, error) { return "", want }
 	if _, err := newManifestDeployer(&rest.Config{Host: "https://127.0.0.1"}, t.TempDir()); !errors.Is(err, want) {
 		t.Fatalf("constructor error = %v, want %v", err, want)
+	}
+}
+
+// The operator publishes under the name node.yaml saved, lowercased as the
+// kubelet registered it, not the current hostname: a controller renamed after
+// it joined, even to a name no Node can take, still starts its operator under
+// the Node that exists. A node with no saved name falls back to the hostname,
+// and a node.yaml that cannot be read is an error, not a guess.
+func TestManifestInventoryNameIsTheSavedNodeName(t *testing.T) {
+	origConf := version.K8sConfDir
+	version.K8sConfDir = t.TempDir()
+	t.Cleanup(func() { version.K8sConfDir = origConf })
+
+	if got, err := nodestate.RegisteredNodeName(); err != nil {
+		if want, werr := host.NodeName(); werr == nil {
+			t.Fatalf("with no node.yaml, name = %v; want the hostname's %q", err, want)
+		}
+	} else if want, _ := host.NodeName(); got != want {
+		t.Fatalf("with no node.yaml, name = %q; want the hostname's %q", got, want)
+	}
+
+	if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller", Hostname: "HK-K8s-Ctrl-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nodestate.RegisteredNodeName(); err != nil || got != "hk-k8s-ctrl-01" {
+		t.Fatalf("name = %q, %v; want the saved name lowercased", got, err)
+	}
+
+	if err := os.WriteFile(nodestate.StatePath(), []byte("hostname: [unterminated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nodestate.RegisteredNodeName(); err == nil {
+		t.Fatalf("an unreadable node.yaml named this node %q", got)
 	}
 }
