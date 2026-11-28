@@ -747,8 +747,11 @@ func TestAnOutsideConfigOfAnyNameRoundTrips(t *testing.T) {
 		t.Fatalf("Extract with the path allowed = %+v, %v", res, err)
 	}
 	fi, err := os.Lstat(extra)
-	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("the outside config is %v, %v; want a regular file, 0600", fi.Mode(), err)
+	if err != nil {
+		t.Fatalf("the outside config was not restored: %v", err)
+	}
+	if !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the outside config is %v; want a regular file, 0600", fi.Mode())
 	}
 	if b, err := os.ReadFile(extra); err != nil || string(b) != "spec: {site: true}\n" {
 		t.Errorf("the outside config = %q, %v", b, err)
