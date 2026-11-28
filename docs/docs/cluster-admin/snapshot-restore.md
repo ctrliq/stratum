@@ -492,12 +492,18 @@ because that start otherwise creates a new CA. The commands call Stratum as
     - If the control plane comes up on an empty datastore, stop it with Ctrl-C
       and run `sudo systemctl start stratum`. Go on to step 6.
     - If startup refuses with `refusing to start an empty member`, step 1
-      confirmed no other control plane runs. Start it again with
+      confirmed no other control plane runs. Start it again with the
+      command the restore printed, keeping its `--config` path, and add
       `--confirm-etcd-quorum-lost`:
 
         ```console
         # /usr/local/bin/stratum up --config /etc/stratum/config.yaml --confirm-etcd-quorum-lost
         ```
+
+        If the node's config was outside `/etc/stratum`, the restore printed
+        that path. Use it in place of `/etc/stratum/config.yaml`; with the
+        default path, `stratum up` starts with defaults and writes the wrong
+        path into the unit.
 
         Leave it running in the foreground, and do step 6 in a second
         terminal. On a control plane that joined later, the API stays down

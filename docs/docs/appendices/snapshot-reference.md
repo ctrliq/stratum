@@ -30,8 +30,9 @@ File names carry a UTC timestamp in the form `YYYYMMDD-HHMMSS`.
   the S3 prefix. Objects under a deeper prefix, such as another cluster's
   `<prefix>/other/`, are not listed.
 - After the snapshots, `snapshot list` shows the node-state bundles: local
-  files ending in `.bundle` in `<snapshot directory>/node-state/`, and every
-  object under `<prefix>/node-state/`. See
+  files ending in `.bundle` in `<snapshot directory>/node-state/`, and the
+  objects directly under `<prefix>/node-state/`. Objects under a deeper
+  prefix, such as `<prefix>/node-state/other/`, are not listed. See
   [The node-state bundle](#the-node-state-bundle).
 - Pre-upgrade snapshots stay in `/var/backups/etcd` even when
   `spec.snapshots.dir` is set. `snapshot list` does not show them then.
