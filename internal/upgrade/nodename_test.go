@@ -77,36 +77,63 @@ func TestUpgradeRefreshesCertsForTheRegisteredName(t *testing.T) {
 	}
 }
 
-// A control plane renamed to a hostname no Node can take still has a valid
-// saved name, but the upgrade ends by restarting it with `stratum up`, which
-// re-derives the name from the hostname and refuses it. The upgrade refuses
-// first, --check included, before it backs anything up or reissues any
-// certificate. A worker restarts under its saved name, so it is not refused.
-func TestUpgradeRefusesAControlPlaneWhoseHostnameNoNodeCanTake(t *testing.T) {
-	for _, check := range []bool{false, true} {
-		t.Run("check="+strconv.FormatBool(check), func(t *testing.T) {
-			controllerUpgradeFixture(t, "v1.37.9", 0)
-			writeFile(t, filepath.Join(version.K8sConfDir, "node.yaml"),
-				"role: controller\nhostname: cp-1\nnodeIP: 10.0.0.1\n", 0o600)
-			bad := errors.New(`this host's name "cp_1" cannot name a Kubernetes node`)
-			swap(t, &upgradeHostNodeName, func() (string, error) { return "", bad })
-			refreshed := 0
-			swap(t, &refreshCerts, func(io.Writer, *nodestate.NodeState, string) (bool, error) {
-				refreshed++
-				return false, nil
+// A control plane renamed since it registered still has a valid saved name,
+// but the upgrade ends by restarting it with `stratum up`, which re-derives the
+// name from the hostname: it refuses a hostname no Node can take, and
+// registers the node under any other one while the upgrade's checks wait for
+// the saved name. The upgrade refuses both first, --check included, before it
+// backs anything up or reissues any certificate. A worker restarts under its
+// saved name, so it is not refused.
+func TestUpgradeRefusesAControlPlaneWhoseHostnameChanged(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current func() (string, error)
+		want    string
+	}{
+		{"no node name", func() (string, error) {
+			return "", errors.New(`this host's name "cp_1" cannot name a Kubernetes node`)
+		}, `"cp_1" cannot name`},
+		{"another node name", func() (string, error) { return "cp-new", nil }, `registered as Node "cp-1", but its hostname now names "cp-new"`},
+	} {
+		for _, check := range []bool{false, true} {
+			t.Run(tc.name+"/check="+strconv.FormatBool(check), func(t *testing.T) {
+				controllerUpgradeFixture(t, "v1.37.9", 0)
+				writeFile(t, filepath.Join(version.K8sConfDir, "node.yaml"),
+					"role: controller\nhostname: CP-1\nnodeIP: 10.0.0.1\n", 0o600)
+				swap(t, &upgradeHostNodeName, tc.current)
+				refreshed := 0
+				swap(t, &refreshCerts, func(io.Writer, *nodestate.NodeState, string) (bool, error) {
+					refreshed++
+					return false, nil
+				})
+				_, err := runWriter(t, func(w io.Writer) error {
+					return UpgradeNode(w, NodeOptions{SkipSnapshot: true, Check: check})
+				})
+				if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "nothing was changed") {
+					t.Fatalf("UpgradeNode = %v; want the refusal %q, saying nothing was changed", err, tc.want)
+				}
+				if refreshed != 0 {
+					t.Errorf("certificates were refreshed %d times before the refusal", refreshed)
+				}
+				if m, err := readUpgradeMarker(); err != nil || m != nil {
+					t.Errorf("the refused upgrade left a marker %+v, %v", m, err)
+				}
 			})
-			_, err := runWriter(t, func(w io.Writer) error {
-				return UpgradeNode(w, NodeOptions{SkipSnapshot: true, Check: check})
-			})
-			if !errors.Is(err, bad) || !strings.Contains(err.Error(), "nothing was changed") {
-				t.Fatalf("UpgradeNode = %v; want the hostname refusal, saying nothing was changed", err)
-			}
-			if refreshed != 0 {
-				t.Errorf("certificates were refreshed %d times before the refusal", refreshed)
-			}
-			if m, err := readUpgradeMarker(); err != nil || m != nil {
-				t.Errorf("the refused upgrade left a marker %+v, %v", m, err)
-			}
-		})
+		}
+	}
+}
+
+// The same control plane whose hostname differs from its saved name only in
+// case is the same Node: the kubelet registered the name lowercased, which is
+// what the current hostname names too. It upgrades.
+func TestUpgradeTakesAControlPlaneSavedWithItsHostnamesCase(t *testing.T) {
+	controllerUpgradeFixture(t, "v1.37.9", 0)
+	writeFile(t, filepath.Join(version.K8sConfDir, "node.yaml"),
+		"role: controller\nhostname: CP-1\nnodeIP: 10.0.0.1\n", 0o600)
+	swap(t, &upgradeHostNodeName, func() (string, error) { return "cp-1", nil })
+	if _, err := runWriter(t, func(w io.Writer) error {
+		return UpgradeNode(w, NodeOptions{SkipSnapshot: true, Check: true})
+	}); !errors.Is(err, ErrUpgradeNeeded) {
+		t.Fatalf("UpgradeNode --check = %v on a control plane saved as CP-1 on the host cp-1; want %v", err, ErrUpgradeNeeded)
 	}
 }

@@ -36,6 +36,7 @@ func controllerUpgradeFixture(t *testing.T, payloadVer string, failGate int) *[]
 	fakeKubelet(t, "v1.37.8")
 	writeFile(t, filepath.Join(version.K8sConfDir, "node.yaml"),
 		"role: controller\nhostname: cp-1.registered\nnodeIP: 10.0.0.1\n", 0o600)
+	swap(t, &upgradeHostNodeName, func() (string, error) { return "cp-1.registered", nil })
 	for _, n := range staticpod.Names {
 		writeFile(t, staticpod.Path(n), "name: "+n+"\n", 0o600)
 	}

@@ -739,9 +739,10 @@ func TestResumedJoinTakesThisRunsNodeFacts(t *testing.T) {
 // An earlier release journaled an unfinished join under the host's name with
 // its case; this one names the node lowercased. The re-run resumes that
 // journal, with or without the recovery state it carried, rather than refusing
-// the unchanged host as another one. The node it finishes, and the journal it
-// rewrites, name it lowercased: etcd learns a member's name only when the
-// member starts, under the name its initial cluster gives it.
+// the unchanged host as another one. The node it finishes, its etcd member,
+// and the journal it rewrites, name it lowercased: etcd learns a member's name
+// only when the member starts, and it starts under --name, which must be the
+// name its initial cluster gives it.
 func TestJoinResumesAJournalRecordedUnderAMixedCaseHostname(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -772,7 +773,7 @@ func TestJoinResumesAJournalRecordedUnderAMixedCaseHostname(t *testing.T) {
 				t.Fatal("the journal carries no recovery state to recase")
 			}
 			if tc.recovery {
-				j.Recovery.State.Hostname = mixed
+				j.Recovery.State.Hostname, j.Recovery.State.EtcdName = mixed, mixed
 			} else {
 				j.Recovery = nil
 			}
@@ -789,8 +790,12 @@ func TestJoinResumesAJournalRecordedUnderAMixedCaseHostname(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the re-run refused the journal recorded as %q: %v", mixed, err)
 			}
-			if r2.addCalls != 0 || st.Hostname != lower {
-				t.Errorf("the re-run ran %d member-adds and named the node %q; want the recorded member adopted, the node %q", r2.addCalls, st.Hostname, lower)
+			if r2.addCalls != 0 || st.Hostname != lower || st.EtcdName != lower {
+				t.Errorf("the re-run ran %d member-adds and named the node %q, its etcd member %q; want the recorded member adopted, both %q",
+					r2.addCalls, st.Hostname, st.EtcdName, lower)
+			}
+			if !strings.Contains(st.EtcdInitialCluster, st.EtcdName+"=") {
+				t.Errorf("the initial cluster %q does not name the etcd member %q, so etcd cannot start", st.EtcdInitialCluster, st.EtcdName)
 			}
 			if after, err := readJoinIntent(); err != nil || after == nil || after.MemberName != lower || after.MemberID != j.MemberID {
 				t.Errorf("the journal after the re-run = %+v, %v; want the adopted member %d named %q", after, err, j.MemberID, lower)

@@ -1539,7 +1539,8 @@ func registeredNodeName(st *nodestate.NodeState) (string, error) {
 }
 
 // upgradeHostNodeName is the current hostname's Node name, which `stratum up`
-// re-derives on every control-plane start and refuses when it is no node name.
+// re-derives on every control-plane start: it refuses one that is no node name,
+// and registers the node under any other.
 // A var so tests can stand in a hostname.
 var upgradeHostNodeName = host.NodeName
 
@@ -1961,9 +1962,16 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 		return fmt.Errorf("stratum upgrade: this node's state records no node name, and %w; nothing was changed", err)
 	}
 	if isCP {
-		if _, err := upgradeHostNodeName(); err != nil {
+		current, err := upgradeHostNodeName()
+		if err != nil {
 			return fmt.Errorf("stratum upgrade: %w. The upgrade restarts this control plane with `stratum up`, which "+
 				"refuses this hostname; nothing was changed", err)
+		}
+		if current != hostname {
+			return fmt.Errorf("stratum upgrade: this control plane registered as Node %q, but its hostname now names %q. "+
+				"The upgrade restarts it with `stratum up`, which would register it as %q while the upgrade's checks "+
+				"wait for %q. Set the hostname back (for example `hostnamectl set-hostname %s`) and upgrade again; "+
+				"nothing was changed", hostname, current, current, hostname, hostname)
 		}
 	}
 

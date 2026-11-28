@@ -1471,7 +1471,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 					return netcfg.Config{}, err
 				}
 				*st = r.State
-				st.Hostname = hostname
+				st.Hostname, st.EtcdName = hostname, hostname
 				// The node facts are this run's spec.node, as on a fresh join: a
 				// journal an older build wrote has none, and the operator may have
 				// corrected them before retrying.
