@@ -367,7 +367,13 @@ func TestSnapshotSaveStoppedAfterTheSnapshotExitsClean(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSnapshotSaveStoppedAfterTheSnapshotExitsClean$")
-			cmd.Env = append(os.Environ(), "STRATUM_SNAPSHOT_SAVE_SIGNAL_CHILD="+tc.mode)
+			env := make([]string, 0, len(os.Environ())+1)
+			for _, kv := range os.Environ() {
+				if !strings.HasPrefix(kv, "KUBEBUILDER_ASSETS=") {
+					env = append(env, kv)
+				}
+			}
+			cmd.Env = append(env, "STRATUM_SNAPSHOT_SAVE_SIGNAL_CHILD="+tc.mode)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("signal child failed: %v\n%s", err, out)
