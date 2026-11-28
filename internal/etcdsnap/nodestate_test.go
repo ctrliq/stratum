@@ -412,6 +412,14 @@ func TestAFailedBundlePruneIsRecorded(t *testing.T) {
 	if !slices.ContainsFunc(rec.Warnings, func(w string) bool { return strings.Contains(w, "node-state prune") }) {
 		t.Errorf("the failed bundle prune is not among the recorded warnings: %v", rec.Warnings)
 	}
+	// The evidence reader — what `snapshot list -o json` and the
+	// backup_evidence tool serve — names the failure, never stating it as a
+	// warning it cannot state safely.
+	m := backupevidence.Evidence(context.Background(), backupevidence.EvidenceOptions{Node: "cp1"}).Maintenance
+	const named = "WARN: the recorded tick's remote node-state bundle prune failed; remote bundle retention may not have held"
+	if !slices.Contains(m.Warnings, named) {
+		t.Errorf("the evidence states the recorded warnings as %q, want the failed bundle prune named: %q", m.Warnings, named)
+	}
 }
 
 // A save stopped after its snapshot was taken has no bundle. It says so, and

@@ -359,6 +359,39 @@ func TestReaderNeverLeaksCredentialsExecutablePathsOrRawErrors(t *testing.T) {
 	}
 }
 
+// A failed node-state bundle prune is named, as a snapshot prune is: an
+// operator whose bucket keeps refusing bundle deletes is told bundle
+// retention is failing, not handed a warning the reader cannot state. Each
+// of the four prune conditions keeps its own sentence — no phrase is matched
+// by another's — and the raw error after each phrase never crosses.
+func TestReaderNamesAFailedBundlePrune(t *testing.T) {
+	seedAttempts(t, func(a *Attempts) {
+		a.Warnings = []string{
+			"WARN: local node-state prune: remove /var/backups/etcd/node-state/cp-1.tar: permission denied 0xfeedface",
+			"WARN: S3 node-state prune: delete node-state/cp-1.tar: 403 AKIA7QLEAKEDKEY",
+			"WARN: local snapshot prune: remove /var/backups/etcd/old.db: permission denied",
+			"WARN: S3 snapshot prune: delete old.db: 403 from the store",
+		}
+	})
+
+	m := Evidence(context.Background(), EvidenceOptions{Node: "cp-1"}).Maintenance
+
+	want := []string{
+		"WARN: the recorded tick's local node-state bundle prune failed; local bundle retention may not have held",
+		"WARN: the recorded tick's remote node-state bundle prune failed; remote bundle retention may not have held",
+		warningTickLocalPrune,
+		warningTickRemotePrune,
+	}
+	if !slices.Equal(m.Warnings, want) {
+		t.Errorf("Maintenance.Warnings = %q, want each prune condition stated on its own:\n%q", m.Warnings, want)
+	}
+	for _, leak := range []string{"0xfeedface", "AKIA7QLEAKEDKEY", "/var/backups", "cp-1.tar"} {
+		if strings.Contains(strings.Join(m.Warnings, "\n"), leak) {
+			t.Errorf("%q escaped into the maintenance warnings: %q", leak, m.Warnings)
+		}
+	}
+}
+
 // The overall time budget is one deadline across every read the call
 // makes. A hung local read is ended by the caller's deadline, and a store
 // that never answers is ended by the overall budget the caller set — the
