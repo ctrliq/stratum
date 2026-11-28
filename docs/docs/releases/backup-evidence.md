@@ -92,9 +92,11 @@ The release changes nothing a consumer of an earlier one relies on:
   exported-surface golden list gained entries only and changed no existing
   identifier (tools/apiboundary/testdata/pkgcli.api). No internal type
   crosses the surface.
-- The native `stratum snapshot list` text table stays byte-for-byte what it
-  was; `-o json` is the only addition, and the JSON rows are additive, not a
-  replacement (pkg/cli/snapshot_evidence_cli_test.go).
+- Where no node-state bundle is stored, the native `stratum snapshot list`
+  text table stays byte-for-byte what it was. Where bundles are stored, they
+  follow the snapshots as extra rows. `-o json` is the only new flag, and
+  its JSON rows are additive, not a replacement
+  (pkg/cli/snapshot_evidence_cli_test.go).
 - The MCP server gains one tool at the read tier and no flags; every
   existing tool and contract is unchanged.
 - The read is read-only on the node: it takes no locks and writes nothing,

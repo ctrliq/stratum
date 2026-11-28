@@ -25,10 +25,15 @@ File names carry a UTC timestamp in the form `YYYYMMDD-HHMMSS`.
 - `snapshot save --name <file>` joins `<file>` onto the snapshot directory as
   given. A path such as `../<file>` writes outside the directory, so use a
   plain file name.
-- `snapshot list` shows local files only when their names end in `.db`. It
-  lists S3 objects whatever their names, but only those directly under the
-  S3 prefix. Objects under a deeper prefix, such as another cluster's
+- `snapshot list` shows local snapshots only when their names end in `.db`.
+  It lists S3 snapshots whatever their names, but only those directly under
+  the S3 prefix. Objects under a deeper prefix, such as another cluster's
   `<prefix>/other/`, are not listed.
+- After the snapshots, `snapshot list` shows the node-state bundles: local
+  files ending in `.bundle` in `<snapshot directory>/node-state/`, and the
+  objects directly under `<prefix>/node-state/`. Objects under a deeper
+  prefix, such as `<prefix>/node-state/other/`, are not listed. See
+  [The node-state bundle](#the-node-state-bundle).
 - Pre-upgrade snapshots stay in `/var/backups/etcd` even when
   `spec.snapshots.dir` is set. `snapshot list` does not show them then.
 
@@ -377,12 +382,12 @@ plane takes a bundle with every scheduled snapshot and every
 
 | | |
 |---|---|
-| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it. Beside a snapshot saved with `--name <name>.db`, `node-state-<host>--<name>.bundle`, so each control plane's is its own |
+| Name | `node-state-<host>-<stamp>.bundle`, with the stamp of the snapshot taken with it. A bundle taken beside a snapshot saved with `--name <name>.db` is named `node-state-<host>--<name>.bundle`; the host in the name keeps each control plane's bundle distinct |
 | On the node | `<snapshot directory>/node-state/`, directory mode `0700`, file mode `0600` |
 | In S3 | `<prefix>/node-state/`, one level below the snapshots |
 | Retention | The snapshots' `retain`, counted for this host's scheduled bundles alone. The bundle of a `--name` snapshot is kept, as the snapshot is |
 | Holds | `/var/lib/stratum/pki/`, `/var/lib/stratum/config/node.yaml`, `/etc/stratum/`, `/var/lib/stratum/manifests/`, and the cluster config file when it is kept outside `/etc/stratum` |
-| Leaves out | `/etc/stratum/images.d/`, the kubeconfigs and the systemd unit, which `stratum up` writes again |
+| Leaves out | The kubeconfigs and the systemd unit, which `stratum up` writes again. It also leaves out the image archives in `/etc/stratum/images.d/`: copy them back yourself before the first start |
 | Limits | 16 MiB for one file and 64 MiB in all. A node over either takes no bundle, and the save says which file. A link is taken only when it points to a file beside it. A save checks its bundle the way a restore will, and refuses to keep one a restore would turn away. |
 | Encryption | HPKE (RFC 9180) with X25519, HKDF-SHA256 and AES-256-GCM. One data key seals the bundle and is wrapped for each recipient, at most 16. |
 
@@ -405,14 +410,20 @@ evidence, which `stratum snapshot list -o json` shows as `nodeState` and
 `node-state/<name>`. Nothing that lists, counts or prunes snapshots reads the
 `node-state` directory or prefix, so a bundle is never counted as a snapshot.
 
-`stratum snapshot restore-node-state` writes only under `/var/lib/stratum/pki/`,
-`/etc/stratum/` and `/var/lib/stratum/manifests/`, and `node.yaml`, whatever a
-bundle names, and the bundle's own outside cluster config at the path given to
-`--allow-path`, mode `0600`. It checks the whole bundle against its manifest
-before it writes the first file, refuses a manifest whose text holds a
-character that is not printable, and refuses to write through a link on the
-machine. With `--yes` it needs `--ca-sha256`, or `--no-ca-pin`, and prints the
-fingerprint after every field the bundle states about itself.
+`stratum snapshot restore-node-state` writes only these, whatever a bundle
+names:
+
+- files under `/var/lib/stratum/pki/`, `/etc/stratum/` and
+  `/var/lib/stratum/manifests/`
+- `/var/lib/stratum/config/node.yaml`
+- the bundle's cluster config kept outside `/etc/stratum`, only when
+  `--allow-path` names that same path. The restore writes it owner-only.
+
+Before it writes the first file, it checks the whole bundle against its
+manifest. It refuses a manifest whose text holds a character that is not
+printable, and refuses to write through a link on the machine. With `--yes` it
+needs `--ca-sha256`, or `--no-ca-pin`. It prints the CA fingerprint after
+every field the bundle states about itself.
 
 ### The etcdHasPeers record
 

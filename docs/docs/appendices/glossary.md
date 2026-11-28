@@ -50,6 +50,12 @@ plane but no workloads.
 root, so a certificate issued for the cluster is not a valid etcd client. See
 [etcd's trust domain](../cluster-admin/hardening.md#etcds-trust-domain).
 
+**Identity**: the private key of a backup key pair, the only thing that opens a
+node-state bundle. `stratum snapshot keygen` writes it to a file, and
+`stratum snapshot restore-node-state --identity-file` reads it. Keep it off the
+cluster. See
+[Back up node state with every snapshot](../cluster-admin/snapshot-restore.md#back-up-node-state-with-every-snapshot).
+
 **Learner**: an etcd member with no vote. A joining or rejoining control plane
 joins as a learner and becomes a voter once it has caught up. See
 [High Availability](../cluster-admin/high-availability.md) and
@@ -57,6 +63,12 @@ joins as a learner and becomes a voter once it has caught up. See
 
 **Node**: the `stratum up` default: one machine that is both control plane (run
 as kubelet-managed static pods) and workload host, registered and schedulable.
+
+**Node-state bundle**: one encrypted file a control plane takes beside each etcd
+snapshot when it has a recipient. It holds more than the NodeState: the PKI,
+`node.yaml`, `/etc/stratum/`, `/var/lib/stratum/manifests/` and a cluster
+config kept outside `/etc/stratum`, which a replacement controller needs. See
+[The node-state bundle](snapshot-reference.md#the-node-state-bundle).
 
 **NodeState**: the persisted per-node facts at
 `/var/lib/stratum/config/node.yaml`: role, addresses, etcd membership.
@@ -72,6 +84,12 @@ ships no profile of its own. The CIS profile is in
 
 **Raft**: the consensus algorithm etcd members use to agree on the cluster's
 data. A member that has rejoined raft takes part in that agreement again.
+
+**Recipient**: the public key of a backup key pair, printed by
+`stratum snapshot keygen` and listed under
+`spec.snapshots.nodeState.recipients`. Each node-state bundle is encrypted to
+every recipient listed, at most 16. See
+[Back up node state with every snapshot](../cluster-admin/snapshot-restore.md#back-up-node-state-with-every-snapshot).
 
 **Rendered manifests**: the control-plane static pod manifests, generated from
 configuration on every start and written to

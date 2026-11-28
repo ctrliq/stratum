@@ -325,6 +325,7 @@ bundle, and it never needs to be on a control plane.
 
     ```console
     # /usr/local/bin/stratum snapshot save
+
     # /usr/local/bin/stratum snapshot list
     ```
 
@@ -446,13 +447,18 @@ because that start otherwise creates a new CA. The commands call Stratum as
    the old controller. The certificates and node state name that address, and
    the workers connect to it.
 3. Install the same Stratum release the old controller ran, at
-   `/usr/local/bin/stratum`. Do not start it.
+   `/usr/local/bin/stratum`. Do not start it until the old controller's files
+   are restored, from a bundle in this step or from the backup in step 4.
 
     If you have a node-state bundle of the old controller, restore it now,
     skip the next step, and start the node as this step says, not as step 5
-    does. Copy the identity file to the machine, mode `0600`:
+    does. Copy the identity file to the machine, owned by root and readable
+    only by root. The restore refuses an identity file that another user owns
+    or can read:
 
     ```console
+    # install -o root -m 0600 <identity-file> ./stratum-backup-identity
+
     # /usr/local/bin/stratum snapshot restore-node-state <bundle> \
       --identity-file ./stratum-backup-identity --ca-sha256 <fingerprint> --yes
     ```
@@ -467,20 +473,42 @@ because that start otherwise creates a new CA. The commands call Stratum as
     `--allow-hostname-mismatch` if the names differ only in how they are
     written. If the old controller's cluster config was not under
     `/etc/stratum`, the command names its path and writes nothing until you
-    pass `--allow-path <path>`, and writes that file owner-only. Remove the
-    identity file from the machine when the restore is done.
+    pass `--allow-path <path>`, and writes that file owner-only. When the
+    restore is done, remove both copies of the identity from the machine:
+    `<identity-file>` and `./stratum-backup-identity`.
 
-    A bundle does not hold the systemd unit, so there is none to start yet.
-    Start Stratum with the command the restore prints, which writes the unit:
+    A bundle does not hold the image archives in `/etc/stratum/images.d/`. If
+    the old controller had any, copy them back from where you keep them before
+    the first start.
+
+    A bundle does not hold the systemd unit either, so there is none to start
+    yet. Start Stratum with the command the restore prints, which writes the
+    unit. The examples here show the default `--config` path. Use the path the
+    restore printed: when the node ran with any other config, the default path
+    starts Stratum with defaults and writes the wrong path into the unit.
+
+    The command runs in the foreground:
 
     ```console
     # /usr/local/bin/stratum up --config /etc/stratum/config.yaml
     ```
 
-    It runs in the foreground. Once the node is up, stop it with Ctrl-C and
-    run `systemctl start stratum`. If it refuses to start an empty member,
-    add `--confirm-etcd-quorum-lost` for this one start, as step 5 describes.
-    Then go on to step 6.
+    - If the control plane comes up on an empty datastore, stop it with Ctrl-C
+      and run `sudo systemctl start stratum`. Go on to step 6.
+    - If startup refuses with `refusing to start an empty member`, step 1
+      confirmed no other control plane runs. Start it again with the
+      command the restore printed, keeping its `--config` path, and add
+      `--confirm-etcd-quorum-lost`:
+
+        ```console
+        # /usr/local/bin/stratum up --config /etc/stratum/config.yaml --confirm-etcd-quorum-lost
+        ```
+
+        Leave it running in the foreground, and do step 6 in a second
+        terminal. On a control plane that joined later, the API stays down
+        until the restore. Once step 7 passes, stop it with Ctrl-C and run
+        `sudo systemctl start stratum`. The unit starts without the flag from
+        then on.
 4. Copy the encrypted backup to `/root` on the replacement, then decrypt and
     unpack it at `/`:
 
