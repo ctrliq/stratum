@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/ctrliq/stratum/internal/atomicfile"
 	"github.com/ctrliq/stratum/internal/boundedfile"
@@ -260,6 +261,17 @@ func stateForMutation() (*NodeState, error) {
 		return &NodeState{}, nil
 	}
 	return nil, err
+}
+
+// NodeName is the name this node's Node registered under: the saved Hostname,
+// lowercased as the kubelet lowercases it. A node an earlier release set up on
+// a mixed-case hostname saved the name with its case. It is "" when the state
+// records no hostname.
+func (st *NodeState) NodeName() string {
+	if st == nil {
+		return ""
+	}
+	return strings.ToLower(st.Hostname)
 }
 
 // LoadState reads the persisted node state.

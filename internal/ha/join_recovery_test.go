@@ -735,3 +735,66 @@ func TestResumedJoinTakesThisRunsNodeFacts(t *testing.T) {
 		}
 	}
 }
+
+// An earlier release journaled an unfinished join under the host's name with
+// its case; this one names the node lowercased. The re-run resumes that
+// journal, with or without the recovery state it carried, rather than refusing
+// the unchanged host as another one. The node it finishes, and the journal it
+// rewrites, name it lowercased: etcd learns a member's name only when the
+// member starts, under the name its initial cluster gives it.
+func TestJoinResumesAJournalRecordedUnderAMixedCaseHostname(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		recovery bool
+	}{
+		{"with the recovery state", true},
+		{"without the recovery state", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			joinFixture(t)
+			etcdDir := t.TempDir()
+			r1 := &recordedJoin{listMembers: listedMembers(), failSaveState: errors.New("disk full"),
+				quorumHeldErr: errors.New("one running voter out of two")}
+			if _, err := prepareControlPlaneJoin(context.Background(), freshJoinOpts(), etcdDir, fakeJoinEffects(r1)); err == nil {
+				t.Fatal("the first join must fail after adding its member")
+			}
+			j, err := readJoinIntent()
+			if err != nil || j == nil {
+				t.Fatalf("the failed join left no journal: %v", err)
+			}
+			lower := j.MemberName
+			mixed := strings.ToUpper(lower[:1]) + lower[1:]
+			if mixed == lower {
+				t.Skipf("this host's name %q has no letter to recase", lower)
+			}
+			j.MemberName = mixed
+			if j.Recovery == nil {
+				t.Fatal("the journal carries no recovery state to recase")
+			}
+			if tc.recovery {
+				j.Recovery.State.Hostname = mixed
+			} else {
+				j.Recovery = nil
+			}
+			if err := writeJoinIntent(*j); err != nil {
+				t.Fatal(err)
+			}
+			members := listedMembers()
+			r2 := &recordedJoin{listMembers: members}
+			if tc.recovery {
+				members.Quorum = false
+				r2 = &recordedJoin{listMembers: members, failProbe: errors.New("no quorum")}
+			}
+			st, err := prepareControlPlaneJoin(context.Background(), freshJoinOpts(), etcdDir, fakeJoinEffects(r2))
+			if err != nil {
+				t.Fatalf("the re-run refused the journal recorded as %q: %v", mixed, err)
+			}
+			if r2.addCalls != 0 || st.Hostname != lower {
+				t.Errorf("the re-run ran %d member-adds and named the node %q; want the recorded member adopted, the node %q", r2.addCalls, st.Hostname, lower)
+			}
+			if after, err := readJoinIntent(); err != nil || after == nil || after.MemberName != lower || after.MemberID != j.MemberID {
+				t.Errorf("the journal after the re-run = %+v, %v; want the adopted member %d named %q", after, err, j.MemberID, lower)
+			}
+		})
+	}
+}

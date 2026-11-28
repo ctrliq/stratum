@@ -1532,11 +1532,16 @@ func nodeName(st *nodestate.NodeState) string {
 
 // registeredNodeName is nodeName with the reason it has no name.
 func registeredNodeName(st *nodestate.NodeState) (string, error) {
-	if st != nil && st.Hostname != "" {
-		return strings.ToLower(st.Hostname), nil
+	if n := st.NodeName(); n != "" {
+		return n, nil
 	}
 	return host.NodeName()
 }
+
+// upgradeHostNodeName is the current hostname's Node name, which `stratum up`
+// re-derives on every control-plane start and refuses when it is no node name.
+// A var so tests can stand in a hostname.
+var upgradeHostNodeName = host.NodeName
 
 // runtimeProbeWindow bounds each running-version probe of nodeGate. A var so
 // tests can shorten it.
@@ -1954,6 +1959,12 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 	hostname, err := registeredNodeName(st)
 	if err != nil {
 		return fmt.Errorf("stratum upgrade: this node's state records no node name, and %w; nothing was changed", err)
+	}
+	if isCP {
+		if _, err := upgradeHostNodeName(); err != nil {
+			return fmt.Errorf("stratum upgrade: %w. The upgrade restarts this control plane with `stratum up`, which "+
+				"refuses this hostname; nothing was changed", err)
+		}
 	}
 
 	marker, err := readUpgradeMarker()

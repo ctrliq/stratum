@@ -1431,7 +1431,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 		ResolveNet: func() (netcfg.Config, error) {
 			if useRecovery && preIntent != nil && preIntent.Recovery != nil {
 				r := preIntent.Recovery
-				if r.CAHash != o.CAHash || r.State.Hostname != hostname || r.State.ProfileName() != o.Profile || r.State.CIS != o.CIS || r.State.VIP != st.VIP {
+				if r.CAHash != o.CAHash || !strings.EqualFold(r.State.Hostname, hostname) || r.State.ProfileName() != o.Profile || r.State.CIS != o.CIS || r.State.VIP != st.VIP {
 					return netcfg.Config{}, fmt.Errorf("HA join: the options differ from the preparation in %s; re-run with the recorded CA pin, hostname, profile and VIP", joinIntentPath)
 				}
 				if err := fx.verifyResumeTrust(r.CAHash); err != nil {
@@ -1471,6 +1471,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 					return netcfg.Config{}, err
 				}
 				*st = r.State
+				st.Hostname = hostname
 				// The node facts are this run's spec.node, as on a fresh join: a
 				// journal an older build wrote has none, and the operator may have
 				// corrected them before retrying.
@@ -1603,7 +1604,7 @@ func prepareJoinNodeWithRecovery(ctx context.Context, o JoinOptions, etcdDataDir
 					// cluster does not know. A joiner has no saved state to pin its
 					// address between runs, so the refusal, not adoption, is what
 					// keeps the record recoverable.
-					if preIntent.MemberName != hostname || preIntent.PeerURL != newPeer {
+					if !strings.EqualFold(preIntent.MemberName, hostname) || preIntent.PeerURL != newPeer {
 						removal := fmt.Sprintf("find this node's member in `stratum etcdctl member list` by its peer URL %s "+
 							"and remove it by ID on a healthy control plane", preIntent.PeerURL)
 						if preIntent.MemberID != 0 {
