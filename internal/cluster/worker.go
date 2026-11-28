@@ -246,7 +246,7 @@ func PrepareWorker(ctx context.Context, o WorkerOptions) (*NodeState, error) {
 		// saved that name, but its kubelet registered the Node lowercased,
 		// as every kubelet does. Saved as registered, so the labels, taint
 		// checks and every later start address the Node that exists.
-		if registered := strings.ToLower(st.Hostname); registered != st.Hostname {
+		if registered := st.NodeName(); registered != st.Hostname {
 			if err := nodestate.Mutate(func(cur *NodeState) error {
 				cur.Hostname = strings.ToLower(cur.Hostname)
 				return nil

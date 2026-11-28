@@ -1526,16 +1526,8 @@ func nodeGate(isCP bool, node string) error {
 // a node that lost it) does it fall back to the OS hostname, the name a
 // kubelet with no override registers under; "" when that is no node name.
 func nodeName(st *nodestate.NodeState) string {
-	n, _ := registeredNodeName(st)
+	n, _ := st.RegisteredName()
 	return n
-}
-
-// registeredNodeName is nodeName with the reason it has no name.
-func registeredNodeName(st *nodestate.NodeState) (string, error) {
-	if n := st.NodeName(); n != "" {
-		return n, nil
-	}
-	return host.NodeName()
 }
 
 // upgradeHostNodeName is the current hostname's Node name, which `stratum up`
@@ -1957,12 +1949,17 @@ func UpgradeNode(w io.Writer, o NodeOptions) error {
 	// are reissued for: the OS hostname may have been renamed since, or no
 	// longer be a node name at all, and certificates for it would lock the
 	// kubelet out of its own Node.
-	hostname, err := registeredNodeName(st)
+	hostname, err := st.RegisteredName()
 	if err != nil {
 		return fmt.Errorf("stratum upgrade: this node's state records no node name, and %w; nothing was changed", err)
 	}
 	if isCP {
 		current, err := upgradeHostNodeName()
+		if inv := (*host.InvalidNodeNameError)(nil); errors.As(err, &inv) {
+			return fmt.Errorf("stratum upgrade: %s. The upgrade restarts this control plane with `stratum up`, which "+
+				"refuses this hostname. This control plane registered as Node %q: set the hostname back "+
+				"(`hostnamectl set-hostname %s`) and upgrade again; nothing was changed", inv.Problem(), hostname, hostname)
+		}
 		if err != nil {
 			return fmt.Errorf("stratum upgrade: %w. The upgrade restarts this control plane with `stratum up`, which "+
 				"refuses this hostname; nothing was changed", err)

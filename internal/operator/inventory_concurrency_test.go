@@ -206,7 +206,7 @@ func TestManifestInventoryNameIsTheSavedNodeName(t *testing.T) {
 	version.K8sConfDir = t.TempDir()
 	t.Cleanup(func() { version.K8sConfDir = origConf })
 
-	if got, err := registeredNodeName(); err != nil {
+	if got, err := nodestate.RegisteredNodeName(); err != nil {
 		if want, werr := host.NodeName(); werr == nil {
 			t.Fatalf("with no node.yaml, name = %v; want the hostname's %q", err, want)
 		}
@@ -217,14 +217,14 @@ func TestManifestInventoryNameIsTheSavedNodeName(t *testing.T) {
 	if err := nodestate.SaveState(&nodestate.NodeState{Role: "controller", Hostname: "HK-K8s-Ctrl-01"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := registeredNodeName(); err != nil || got != "hk-k8s-ctrl-01" {
+	if got, err := nodestate.RegisteredNodeName(); err != nil || got != "hk-k8s-ctrl-01" {
 		t.Fatalf("name = %q, %v; want the saved name lowercased", got, err)
 	}
 
 	if err := os.WriteFile(nodestate.StatePath(), []byte("hostname: [unterminated\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := registeredNodeName(); err == nil {
+	if got, err := nodestate.RegisteredNodeName(); err == nil {
 		t.Fatalf("an unreadable node.yaml named this node %q", got)
 	}
 }

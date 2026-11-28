@@ -38,15 +38,36 @@ func NodeName() (string, error) {
 	return NodeNameOf(h)
 }
 
-// NodeNameOf is NodeName for the given OS hostname.
+// NodeNameOf is NodeName for the given OS hostname. The short name holds no
+// dot, so it is checked as a DNS label: at most 63 characters, the limit of the
+// kubernetes.io/hostname label the kubelet copies it into.
 func NodeNameOf(hostname string) (string, error) {
 	name := shortNameOf(hostname)
-	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
-		return "", fmt.Errorf("this host's name %q cannot name a Kubernetes node: its short form, lowercased, %q %s; "+
-			"set a hostname of lowercase letters, digits and '-' that starts and ends with a letter or digit "+
-			"(for example `hostnamectl set-hostname k8s-ctrl-01`)", hostname, name, strings.Join(errs, "; "))
+	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
+		return "", &InvalidNodeNameError{Hostname: hostname, Name: name, Reasons: errs}
 	}
 	return name, nil
+}
+
+// InvalidNodeNameError is NodeNameOf's refusal of a hostname whose short form,
+// lowercased, no Node can take. Its message advises a new hostname; a caller
+// that knows the name the node already registered under advises that one
+// instead, from Problem.
+type InvalidNodeNameError struct {
+	Hostname string
+	Name     string
+	Reasons  []string
+}
+
+// Problem says why the hostname names no Node, without advice.
+func (e *InvalidNodeNameError) Problem() string {
+	return fmt.Sprintf("this host's name %q cannot name a Kubernetes node: its short form, lowercased, %q is not a valid node name (%s)",
+		e.Hostname, e.Name, strings.Join(e.Reasons, "; "))
+}
+
+func (e *InvalidNodeNameError) Error() string {
+	return e.Problem() + "; set a hostname whose short form is at most 63 letters, digits and '-', starting and ending " +
+		"with a letter or digit (for example `hostnamectl set-hostname k8s-ctrl-01`)"
 }
 
 // ShortName is NodeName without the check that the name can name a Node: the

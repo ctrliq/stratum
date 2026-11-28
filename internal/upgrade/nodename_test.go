@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ctrliq/stratum/internal/host"
 	"github.com/ctrliq/stratum/internal/nodestate"
 	"github.com/ctrliq/stratum/internal/version"
 )
@@ -90,9 +91,8 @@ func TestUpgradeRefusesAControlPlaneWhoseHostnameChanged(t *testing.T) {
 		current func() (string, error)
 		want    string
 	}{
-		{"no node name", func() (string, error) {
-			return "", errors.New(`this host's name "cp_1" cannot name a Kubernetes node`)
-		}, `"cp_1" cannot name`},
+		{"no node name", func() (string, error) { return host.NodeNameOf("cp_1") },
+			`registered as Node "cp-1": set the hostname back (` + "`hostnamectl set-hostname cp-1`)"},
 		{"another node name", func() (string, error) { return "cp-new", nil }, `registered as Node "cp-1", but its hostname now names "cp-new"`},
 	} {
 		for _, check := range []bool{false, true} {

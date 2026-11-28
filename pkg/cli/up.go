@@ -662,6 +662,16 @@ var (
 	// upNodeName is the pre-stage node-name check's seam: the real one reads
 	// this host's name, which a test cannot set.
 	upNodeName = host.NodeName
+	// upSavedNodeName is the name a node already set up here registered
+	// under, "" with none saved: the pre-stage check names it on a control
+	// plane's restart, where a new hostname would register a new Node.
+	upSavedNodeName = func() string {
+		st, err := nodestate.LoadState()
+		if err != nil {
+			return ""
+		}
+		return st.NodeName()
+	}
 )
 
 // preflightNodeName refuses, before the start lock, the SELinux relabel or the
@@ -674,10 +684,18 @@ func preflightNodeName(o runUpOptions) error {
 	if o.worker && o.server == "" {
 		return nil
 	}
-	if _, err := upNodeName(); err != nil {
-		return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
+	_, err := upNodeName()
+	if err == nil {
+		return nil
 	}
-	return nil
+	if inv := (*host.InvalidNodeNameError)(nil); errors.As(err, &inv) && !o.worker && o.join == "" {
+		if saved := upSavedNodeName(); saved != "" {
+			return fmt.Errorf("stratum up: %s. This control plane registered as Node %q: set the hostname back "+
+				"(`hostnamectl set-hostname %s`) and run `stratum up` again. Nothing on this host was changed",
+				inv.Problem(), saved, saved)
+		}
+	}
+	return fmt.Errorf("stratum up: %w. Nothing on this host was changed", err)
 }
 
 // runControllerWithEvidenceSampler runs the controller with the engine's

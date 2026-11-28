@@ -54,3 +54,33 @@ func TestPreflightNodeNameCoversTheStartsThatReadTheHostname(t *testing.T) {
 		}
 	}
 }
+
+// A control plane that already registered restarts under the name it saved
+// only if the hostname still names it, so a hostname no Node can take is
+// refused with that saved name as the fix, not a new one: a new hostname
+// would register a new Node and etcd member. A first start, a join and a
+// worker's join have no such name, and keep the general advice.
+func TestPreflightNodeNameNamesAControlPlanesSavedName(t *testing.T) {
+	oldName, oldSaved := upNodeName, upSavedNodeName
+	t.Cleanup(func() { upNodeName, upSavedNodeName = oldName, oldSaved })
+	upNodeName = func() (string, error) { return host.NodeNameOf("cp_1") }
+	upSavedNodeName = func() string { return "cp-1" }
+	err := preflightNodeName(runUpOptions{})
+	for _, want := range []string{`"cp_1"`, `registered as Node "cp-1"`, "hostnamectl set-hostname cp-1", "Nothing on this host was changed"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("control plane restart refused with %v; want it to say %s", err, want)
+		}
+	}
+	if err != nil && strings.Contains(err.Error(), "k8s-ctrl-01") {
+		t.Errorf("control plane restart refused with %v, which advises a new hostname", err)
+	}
+	for _, o := range []runUpOptions{{join: "10.50.0.3"}, {worker: true, server: "https://10.50.0.3:6443"}} {
+		if err := preflightNodeName(o); err == nil || !strings.Contains(err.Error(), "k8s-ctrl-01") {
+			t.Errorf("%+v refused with %v; want the general advice", o, err)
+		}
+	}
+	upSavedNodeName = func() string { return "" }
+	if err := preflightNodeName(runUpOptions{}); err == nil || !strings.Contains(err.Error(), "k8s-ctrl-01") {
+		t.Errorf("first control-plane start refused with %v; want the general advice", err)
+	}
+}

@@ -509,27 +509,29 @@ When `stratum up` stops with an error, or a node does not register, collect
 the following from the node before you change anything, and attach it to your
 report:
 
-1. The output of `stratum up`. When the node runs under systemd, save its
+1. Save the output of `stratum up`. When the node runs under systemd, save its
    journal instead:
 
     ```console
     # journalctl -u stratum --no-pager > stratum-journal.txt
     ```
 
-2. The version and the host's name:
+2. Record the version and the host's name:
 
     ```console
     # /usr/local/bin/stratum version
+
     # hostname
     ```
 
-3. The nodes the cluster knows, when the API server answers:
+3. On a control plane, list the nodes the cluster knows, when the API server
+   answers:
 
     ```console
     # /usr/local/bin/stratum kubectl get nodes -o wide
     ```
 
-4. The logs of the supervised components in `/var/lib/stratum/log/`:
+4. Copy the supervised components' logs from `/var/lib/stratum/log/`:
    `kubelet.log`, `containerd.log` and, on a control plane, `operator.log`. A
    node that does not register usually says why in `kubelet.log`.
 

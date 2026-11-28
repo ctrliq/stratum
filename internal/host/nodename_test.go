@@ -1,6 +1,7 @@
 package host_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -18,6 +19,7 @@ func TestNodeNameOfLowercasesTheShortHostname(t *testing.T) {
 		{"cp1.example.com", "cp1"},
 		{"cp1", "cp1"},
 		{"NODE7", "node7"},
+		{strings.Repeat("A", 63) + ".example.com", strings.Repeat("a", 63)},
 	} {
 		got, err := host.NodeNameOf(tc.hostname)
 		if err != nil {
@@ -41,7 +43,7 @@ func TestNodeNameOfRefusesANameNoNodeCanTake(t *testing.T) {
 		"",
 		".example.com",
 		"cp 1",
-		strings.Repeat("a", 254),
+		strings.Repeat("a", 64),
 	} {
 		got, err := host.NodeNameOf(hostname)
 		if err == nil {
@@ -51,6 +53,13 @@ func TestNodeNameOfRefusesANameNoNodeCanTake(t *testing.T) {
 		msg := err.Error()
 		if !strings.Contains(msg, `"`+hostname+`"`) || !strings.Contains(msg, "hostnamectl set-hostname") {
 			t.Errorf("NodeNameOf(%q) refused with %q; want it to name the hostname and the hostnamectl fix", hostname, msg)
+		}
+		var inv *host.InvalidNodeNameError
+		if !errors.As(err, &inv) || inv.Hostname != hostname || strings.Contains(inv.Problem(), "hostnamectl") {
+			t.Errorf("NodeNameOf(%q) refused with %#v; want an InvalidNodeNameError whose Problem gives no advice", hostname, err)
+		}
+		if strings.Contains(msg, "'.'") {
+			t.Errorf("NodeNameOf(%q) refused with %q, which allows a dot the short name cannot hold", hostname, msg)
 		}
 	}
 }

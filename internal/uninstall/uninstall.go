@@ -1105,7 +1105,7 @@ func removeState(w io.Writer, fx *hostEffects) error {
 		return unsetEffect("loadNodeState")
 	}
 	if st, err := fx.loadNodeState(); err == nil && st.Role == "worker" && st.Hostname != "" {
-		host = st.Hostname
+		host = st.NodeName()
 		if fx.nodeMarkerFn == nil {
 			return unsetEffect("nodeMarkerFn")
 		}
@@ -1396,9 +1396,7 @@ func nodeNotice(fx *hostEffects, marked bool) string {
 	if err != nil || st.Hostname == "" {
 		return ""
 	}
-	// The Node is named as the kubelet registered it, lowercased; a worker an
-	// earlier release joined saved its hostname with its case.
-	node := strings.ToLower(st.Hostname)
+	node := st.NodeName()
 	if st.Role == "worker" && marked {
 		return fmt.Sprintf("This worker's Node object is removed by the control plane once the worker has been gone for\n"+
 			"2 minutes. On a cluster that runs no operator, remove it from a control plane:\n"+

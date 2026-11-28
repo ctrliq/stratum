@@ -104,6 +104,47 @@ func TestPruneLeavesAHostWhoseNameExtendsThisOne(t *testing.T) {
 	}
 }
 
+// TestPruneTakesThisHostsMixedCaseSnapshots: a control plane an earlier
+// release ran under a mixed-case hostname wrote its snapshots with that case.
+// Names are lowercased now, and those older files are still this host's to
+// prune, in a shared bucket too; another host's are not.
+func TestPruneTakesThisHostsMixedCaseSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{
+		ScheduledName("HK-cp1", "20260704-010000"),
+		ScheduledName("HK-cp1", "20260704-020000"),
+		ScheduledName("hk-cp1", "20260704-030000"),
+		ScheduledName("hk-cp1", "20260704-040000"),
+		ScheduledName("HK-cp2", "20260704-010000"),
+	} {
+		write(t, dir, n)
+	}
+	if err := Prune(dir, hostSnapshot("hk-cp1"), 1); err != nil {
+		t.Fatal(err)
+	}
+	for _, gone := range []string{
+		ScheduledName("HK-cp1", "20260704-010000"),
+		ScheduledName("HK-cp1", "20260704-020000"),
+		ScheduledName("hk-cp1", "20260704-030000"),
+	} {
+		if exists(dir, gone) {
+			t.Errorf("%s should have been pruned", gone)
+		}
+	}
+	for _, keep := range []string{ScheduledName("hk-cp1", "20260704-040000"), ScheduledName("HK-cp2", "20260704-010000")} {
+		if !exists(dir, keep) {
+			t.Errorf("%s should have survived hk-cp1's prune", keep)
+		}
+	}
+	bundle := hostNodeState("hk-cp1")
+	if !bundle(nodeStatePrefix + "HK-cp1-20260704-010000" + nodeStateSuffix) {
+		t.Error("hk-cp1's bundle matcher does not take its mixed-case predecessor's bundle")
+	}
+	if bundle(nodeStatePrefix + "HK-cp2-20260704-010000" + nodeStateSuffix) {
+		t.Error("hk-cp1's bundle matcher takes another host's bundle")
+	}
+}
+
 func TestPruneNoopWhenUnderKeep(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, ScheduledName("cp1", "20260704-010000"))
