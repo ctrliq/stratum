@@ -309,7 +309,7 @@ func newSnapshotRestoreNodeStateCommand() *cobra.Command {
 				return fmt.Errorf("the bundle says the cluster config its node ran with is %s, which is outside %s, and a "+
 					"bundle may not choose where it writes. Check that %s is this node's cluster config, then pass "+
 					"--allow-path %s to restore it there. Nothing was restored", m.ExtraConfig, version.ConfDir, m.ExtraConfig,
-					m.ExtraConfig)
+					shellQuote(m.ExtraConfig))
 			}
 			if !yes {
 				return errors.New("this writes that cluster's CA keys and this node's identity onto this machine; " +
