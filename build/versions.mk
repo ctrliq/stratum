@@ -54,8 +54,8 @@ pnpm_version = 12.21.0
 # --- kubernetes --------------------------------------------------------------
 
 # renovate: datasource=github-tags depName=kubernetes/kubernetes
-kubernetes_version = 1.37.2
-kubernetes_revision = c50e5395f1ae2d4a2c05f28fdcc38c0916cc1a32
+kubernetes_version = 1.37.3
+kubernetes_revision = f81a9c5f95912fd97b7c8aa4966301aeae84a253
 kubernetes_buildimage = $(default_buildimage)
 kubernetes_build_go_tags = providerless
 kubernetes_build_go_cgo_enabled = 0
