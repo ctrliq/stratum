@@ -275,7 +275,7 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		if evidence != nil {
 			evidence.recordNodeState(stopped)
 		}
-		return path, errors.Join(uploadErr, fmt.Errorf("%w: %w", ErrNodeStateIncomplete, stopped.err()))
+		return path, errors.Join(uploadErr, NodeStateIncomplete(stopped.err()))
 	}
 	ns := saveNodeState(ctx, w, dir, hn, nodeStateNameFor(hn, stamp, name, o.Name != ""), name, o.NodeState, o.S3, o.Retain)
 	for _, perr := range ns.prune {
@@ -291,7 +291,7 @@ func SaveContext(ctx context.Context, w io.Writer, o SaveOptions) (string, error
 		evidence.recordNodeState(ns)
 	}
 	if nerr := ns.err(); nerr != nil {
-		return path, errors.Join(uploadErr, fmt.Errorf("%w: %w", ErrNodeStateIncomplete, nerr))
+		return path, errors.Join(uploadErr, NodeStateIncomplete(nerr))
 	}
 	return path, uploadErr
 }

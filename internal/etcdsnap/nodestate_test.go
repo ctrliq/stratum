@@ -24,6 +24,7 @@ import (
 
 	"github.com/ctrliq/stratum/internal/backupevidence"
 	"github.com/ctrliq/stratum/internal/etcdsnap"
+	"github.com/ctrliq/stratum/internal/interrupt"
 	"github.com/ctrliq/stratum/internal/nodebackup"
 	"github.com/ctrliq/stratum/internal/objstore"
 	"github.com/ctrliq/stratum/internal/version"
@@ -424,40 +425,52 @@ func TestAFailedBundlePruneIsRecorded(t *testing.T) {
 
 // A save stopped after its snapshot was taken has no bundle. It says so, and
 // records the bundle as not taken, instead of returning the snapshot as a
-// whole backup set.
+// whole backup set. The stop lands while the snapshot's own upload is in
+// flight: the bucket cancels the save from inside that request, so the
+// snapshot exists and nothing of the bundle has started.
 func TestAStoppedSaveReportsItsMissingBundle(t *testing.T) {
 	redirectEvidence(t)
 	dir := t.TempDir()
+	fakeEtcdctl(t, "printf snapshot > \"$3\"")
 	ns, _ := nodeStateFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := filepath.Join(t.TempDir(), "taken")
-	fakeEtcdctl(t, "printf snapshot > \"$3\"; : > "+stop)
-	go func() {
-		for {
-			if _, err := os.Stat(stop); err == nil {
-				cancel()
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || strings.Contains(r.URL.Path, "/node-state/") {
+			t.Errorf("unexpected %s %s once the save was stopped", r.Method, r.URL.Path)
+			return
 		}
-	}()
-	var path string
-	var err error
-	for range 200 {
-		path, err = etcdsnap.SaveContext(ctx, io.Discard, etcdsnap.SaveOptions{Dir: dir, Host: "cp1", Evidence: true, NodeState: ns})
-		if ctx.Err() != nil {
-			break
+		cancel()
+		select {
+		case <-r.Context().Done():
+		case <-release:
 		}
-	}
-	if path == "" {
-		t.Skipf("the save was stopped before its snapshot was taken (%v); nothing to check", err)
+	}))
+	t.Cleanup(func() {
+		close(release)
+		srv.Close()
+	})
+	target := &objstore.Target{Endpoint: srv.URL, Bucket: "b", AccessKey: "k", SecretKey: "s", PathStyle: true}
+	path, err := etcdsnap.SaveContext(ctx, io.Discard, etcdsnap.SaveOptions{Dir: dir, Host: "cp1", Evidence: true, S3: target, NodeState: ns})
+	if _, serr := os.Stat(path); path == "" || serr != nil {
+		t.Fatalf("the snapshot taken before the stop is not returned: %q (%v)", path, serr)
 	}
 	if !errors.Is(err, etcdsnap.ErrNodeStateIncomplete) {
-		bundles, _ := filepath.Glob(filepath.Join(dir, etcdsnap.NodeStateDir, "*.bundle"))
-		if len(bundles) == 0 {
-			t.Fatalf("a stopped save returned %v with a snapshot and no bundle, want ErrNodeStateIncomplete", err)
-		}
+		t.Fatalf("a stopped save returned %v with a snapshot and no bundle, want ErrNodeStateIncomplete", err)
+	}
+	if !interrupt.CancellationOnly(err) {
+		t.Errorf("a save stopped and nothing else reads as a failure: %v", err)
+	}
+	if bundles, _ := filepath.Glob(filepath.Join(dir, etcdsnap.NodeStateDir, "*.bundle")); len(bundles) != 0 {
+		t.Errorf("a stopped save went on to take a bundle: %v", bundles)
+	}
+	rec, lerr := backupevidence.LoadAttempts()
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if rec.NodeState.AttemptedAt.IsZero() || rec.NodeState.Result == "" || !rec.LastNodeStateSuccess.IsZero() {
+		t.Errorf("the untaken bundle was not recorded as a failed attempt: %+v (last success %v)", rec.NodeState, rec.LastNodeStateSuccess)
 	}
 }
 
@@ -566,5 +579,28 @@ func TestEvidenceForgetsTheBundleOnceNoneIsTaken(t *testing.T) {
 	}
 	if rec.LastNodeStateSuccess.IsZero() {
 		t.Error("the last bundle success was dropped; it stays as history")
+	}
+}
+
+// The incomplete marker never stands as an error of its own: a bundle missing
+// only because the save was cancelled is only a cancellation, so a
+// signal-stopped save still exits clean, while the marker and its message
+// stay.
+func TestTheIncompleteMarkerIsNotALeaf(t *testing.T) {
+	stopped := etcdsnap.NodeStateIncomplete(fmt.Errorf("the node-state bundle was not saved: %w", context.Canceled))
+	if !errors.Is(stopped, etcdsnap.ErrNodeStateIncomplete) || !errors.Is(stopped, context.Canceled) {
+		t.Fatalf("%v is not both the marker and its cause", stopped)
+	}
+	if want := "node-state bundle incomplete: the node-state bundle was not saved: context canceled"; stopped.Error() != want {
+		t.Errorf("message = %q, want %q", stopped.Error(), want)
+	}
+	if !interrupt.CancellationOnly(errors.Join(fmt.Errorf("upload: %w", context.Canceled), stopped)) {
+		t.Errorf("a cancelled upload and a bundle missing for the same cancellation read as a failure: %v", stopped)
+	}
+	if interrupt.CancellationOnly(etcdsnap.NodeStateIncomplete(errors.New("pki unreadable"))) {
+		t.Error("a bundle that failed on its own read as a cancellation")
+	}
+	if err := etcdsnap.NodeStateIncomplete(nil); err != nil {
+		t.Errorf("NodeStateIncomplete(nil) = %v, want nil: no reason marks nothing", err)
 	}
 }
