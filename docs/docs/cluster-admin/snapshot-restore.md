@@ -483,7 +483,11 @@ because that start otherwise creates a new CA. The commands call Stratum as
 
     A bundle does not hold the systemd unit either, so there is none to start
     yet. Start Stratum with the command the restore prints, which writes the
-    unit. It runs in the foreground:
+    unit. The examples here show the default `--config` path. Use the path the
+    restore printed: when the node ran with any other config, the default path
+    starts Stratum with defaults and writes the wrong path into the unit.
+
+    The command runs in the foreground:
 
     ```console
     # /usr/local/bin/stratum up --config /etc/stratum/config.yaml
@@ -499,11 +503,6 @@ because that start otherwise creates a new CA. The commands call Stratum as
         ```console
         # /usr/local/bin/stratum up --config /etc/stratum/config.yaml --confirm-etcd-quorum-lost
         ```
-
-        If the node's config was outside `/etc/stratum`, the restore printed
-        that path. Use it in place of `/etc/stratum/config.yaml`; with the
-        default path, `stratum up` starts with defaults and writes the wrong
-        path into the unit.
 
         Leave it running in the foreground, and do step 6 in a second
         terminal. On a control plane that joined later, the API stays down
